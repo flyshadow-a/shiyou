@@ -14,6 +14,11 @@ from pages.construction_docs_page import ConstructionDocsPage
 from pages.platform_summary_page import PlatformSummaryPage
 from pages.platform_basic_info_page import PlatformBasicInfoPage
 from pages.platform_structure_info_page import PlatformStructureInfoPage
+from pages.platform_structure_info_page import PlatformStructureInfoPage
+from pages.special_inspection_strategy import SpecialInspectionStrategy
+from pages.model_files_page import ModelFilesPage
+from pages.history_rebuild_files_page import HistoryRebuildFilesPage
+from pages.important_history_rebuild_info_page import ImportantHistoryEventsPage
 
 NAV_CONFIG = [
     {
@@ -43,7 +48,7 @@ NAV_CONFIG = [
             {"text": "载荷信息",},
             {"text": "状态检测（结构和腐蚀性检测）",},
             {"text": "结构强度/改造可行性评估",},
-            {"text": "特检策略",},
+            {"text": "特检策略","page": SpecialInspectionStrategy},
             # 后续可以在这里继续增加其他功能菜单
         ],
     },
@@ -51,9 +56,9 @@ NAV_CONFIG = [
         "text": "文件管理",
         "children": [
             {"text": "建设阶段完工文件","page":ConstructionDocsPage },
-            {"text": "历史改造文件", },
-            {"text": "模型文件", },
-            {"text": "重要历史事件记录", },
+            {"text": "历史改造文件", "page":HistoryRebuildFilesPage},
+            {"text": "模型文件","page":ModelFilesPage},
+            {"text": "重要历史事件记录", "page":ImportantHistoryEventsPage},
             {"text": "历史检测及结论", },
         ],
     },

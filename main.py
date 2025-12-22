@@ -13,7 +13,8 @@ from nav_config import NAV_CONFIG
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtGui import QPixmap, QIcon
 import os
-
+from pages.new_special_inspection_page import NewSpecialInspectionPage
+from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -359,8 +360,31 @@ class MainWindow(QMainWindow):
         item.setHidden(not visible)
         if text and child_match:
             item.setExpanded(True)
+
         return visible
 
+    # 打开一个临时的页面（新增特检策略）
+    def open_new_special_strategy_tab(self, facility_code: str):
+        tab_title = f"{facility_code} - 特检策略"
+
+        # 创建新的特检策略新增页面
+        page = NewSpecialInspectionPage(facility_code, self)
+
+        # 添加新 Tab，并为其设置图标
+        index = self.tab_widget.addTab(page, tab_title)
+        self.tab_widget.setTabIcon(index, QIcon('./pict/logo.png'))  # 设置 Tab 图标
+        self.tab_widget.setCurrentIndex(index)
+
+    # 打开风险更新结果页面
+    def open_upgrade_special_inspection_result_tab(self, facility_code: str):
+        tab_title = f"{facility_code}更新风险结果"
+        page = UpgradeSpecialInspectionResultPage(facility_code, self)
+        index = self.tab_widget.addTab(page, tab_title)
+        self.tab_widget.setCurrentIndex(index)
+
+    def close_current_tab(self):
+        current_index = self.tab_widget.currentIndex()
+        self.tab_widget.removeTab(current_index)
 
 def main():
     app = QApplication(sys.argv)
