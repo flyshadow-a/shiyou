@@ -20,8 +20,22 @@ project_root/
 ├─ dropdown_bar.py        # 可复用的筛选条控件
 ├─ pages/
 │  ├─ dashboard_page.py           # 示例：首页
+#平台载荷管理
+│  ├─ platform_summary_page.py          #汇总信息
+│  ├─ oilfield_water_level_page.py      #油气田信息
+│  ├─ platform_structure_info_page.py   #平台结构信息
+│  ├─ platform_basic_info_page.py       # 平台基本信息
+│  ├─ special_inspection_strategy.py    #特检策略
+│    ├─ upgrade_special_inspection_result_page.py#特检升级结果
+│    ├─new_special_inspection_page.py    #新特检信息
+#文件管理    
 │  ├─ construction_docs_page.py   # “建设阶段完工文件”页面
-│  └─ ...                        # 其他业务页面
+│     ├─ construction_docs_widget.py    #文件管理组件
+│  ├─ important_history_rebuild_info_page.py  #重要历史事件
+│  ├─ history_rebuild_files_page.py     #历史改造文件
+│  ├─ model_files_page.py           #模型文件
+
+│  └─ 
 ├─ pict/
 │  ├─ logo.png
 │  ├─ wenjian.png
