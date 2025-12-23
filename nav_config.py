@@ -19,6 +19,8 @@ from pages.special_inspection_strategy import SpecialInspectionStrategy
 from pages.model_files_page import ModelFilesPage
 from pages.history_rebuild_files_page import HistoryRebuildFilesPage
 from pages.important_history_rebuild_info_page import ImportantHistoryEventsPage
+from pages.history_inspection_summary_page import HistoryInspectionSummaryPage
+
 
 NAV_CONFIG = [
     {
@@ -59,7 +61,7 @@ NAV_CONFIG = [
             {"text": "历史改造文件", "page":HistoryRebuildFilesPage},
             {"text": "模型文件","page":ModelFilesPage},
             {"text": "重要历史事件记录", "page":ImportantHistoryEventsPage},
-            {"text": "历史检测及结论", },
+            {"text": "历史检测及结论", "page":HistoryInspectionSummaryPage},
         ],
     },
     # 还可以继续增加「文件管理」等大类

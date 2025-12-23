@@ -34,7 +34,7 @@ project_root/
 │  ├─ important_history_rebuild_info_page.py  #重要历史事件
 │  ├─ history_rebuild_files_page.py     #历史改造文件
 │  ├─ model_files_page.py           #模型文件
-
+│  ├─history_inspection_summary_page.py  #历史检测及结论
 │  └─ 
 ├─ pict/
 │  ├─ logo.png
