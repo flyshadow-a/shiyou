@@ -21,6 +21,11 @@ from pages.upper_block_subproject_calculation_table_page import UpperBlockSubpro
 from pages.platform_strength_page import PlatformStrengthPage
 from pages.feasibility_assessment_page import FeasibilityAssessmentPage
 from pages.feasibility_assessment_results_page import FeasibilityAssessmentResultsPage
+from pages.model_files_page import ModelFilesPage
+from pages.history_rebuild_files_page import HistoryRebuildFilesPage
+from pages.important_history_rebuild_info_page import ImportantHistoryEventsPage
+from pages.history_inspection_summary_page import HistoryInspectionSummaryPage
+
 
 NAV_CONFIG = [
     {
@@ -71,10 +76,10 @@ NAV_CONFIG = [
         "text": "文件管理",
         "children": [
             {"text": "建设阶段完工文件","page":ConstructionDocsPage },
-            {"text": "历史改造文件", },
-            {"text": "模型文件", },
-            {"text": "重要历史事件记录", },
-            {"text": "历史检测及结论", },
+            {"text": "历史改造文件", "page":HistoryRebuildFilesPage},
+            {"text": "模型文件","page":ModelFilesPage},
+            {"text": "重要历史事件记录", "page":ImportantHistoryEventsPage},
+            {"text": "历史检测及结论", "page":HistoryInspectionSummaryPage},
         ],
     },
     # 还可以继续增加「文件管理」等大类
