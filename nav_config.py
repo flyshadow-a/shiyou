@@ -25,14 +25,11 @@ from pages.model_files_page import ModelFilesPage
 from pages.history_rebuild_files_page import HistoryRebuildFilesPage
 from pages.important_history_rebuild_info_page import ImportantHistoryEventsPage
 from pages.history_inspection_summary_page import HistoryInspectionSummaryPage
-
+from pages.personal_center_page import PersonalCenterPage
 
 NAV_CONFIG = [
     {
-        "text": "个人中心",
-        "children": [
-            {"text": "首页", "page": DashboardPage},
-        ],
+        "text": "个人中心","page": PersonalCenterPage
     },
     {
         "text": "平台载荷管理",

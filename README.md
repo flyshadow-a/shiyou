@@ -19,7 +19,9 @@ project_root/
 ├─ nav_config.py          # 左侧导航配置（菜单 → 页面类）
 ├─ dropdown_bar.py        # 可复用的筛选条控件
 ├─ pages/
-│  ├─ dashboard_page.py           # 示例：首页
+│  ├─ personal_center_page.py           # 个人中心
+│  ├─ login_dialog.py                   # 登录
+│    ├─测试：用户名：工程师1  ，密码：123456；
 #平台载荷管理
 │  ├─ platform_summary_page.py          #汇总信息
 │  ├─ oilfield_water_level_page.py      #油气田信息
