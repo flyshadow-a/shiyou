@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-# pages/special_inspection_result_page.py
+# pages/upgrade_special_inspection_result_page.py
+
 
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -63,11 +64,21 @@ class PlanDiagram(QWidget):
 
 class UpgradeSpecialInspectionResultPage(BasePage):
     """
-    更新风险等级结果页（示例）：
-    - 左：构件/节点二级tab + 明细表 + 多段汇总
-    - 右：黑底示意图 + 生成报告按钮 + 绿色占位块
-    - 支持滚轮滚动（QScrollArea）
+    更新风险等级结果页（严格表头/汇总样式版）
     """
+    HEADER_ROWS = 2
+    SUMMARY_YEARS = ["构件","当前", "第5年", "第10年", "第15年", "第20年", "第25年"]
+
+    # 汇总颜色条（红、橙、黄、蓝、棕）
+    RISK_COLORS = [
+        QColor("#ff3b30"),
+        QColor("#ffcc00"),
+        QColor("#ffee58"),
+        QColor("#1e88e5"),
+        QColor("#6d4c41"),
+    ]
+    RISK_LABELS = ["一", "二", "三", "四", "五"]
+
     def __init__(self, facility_code: str, parent=None):
         self.facility_code = facility_code
         super().__init__(f"{facility_code}更新风险结果", parent)
@@ -90,8 +101,18 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             }
             QTabBar::tab:selected { background: #d6f0d0; }
 
-            QTableWidget { background: #f7fbff; gridline-color: #7b8798; border: 1px solid #7b8798; }
-            QHeaderView::section { background: #d9e6f5; border: 1px solid #7b8798; padding: 4px 6px; font-weight: bold; }
+            /* 表格（网格线明显） */
+            QTableWidget {
+                background: #f7fbff;
+                gridline-color: #7b8798;
+                border: 1px solid #7b8798;
+            }
+            QHeaderView::section {
+                background: #d9e6f5;
+                border: 1px solid #7b8798;
+                padding: 4px 6px;
+                font-weight: bold;
+            }
 
             QPushButton#ReportBtn {
                 background: #00a0d6;
@@ -126,6 +147,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         lay.addWidget(self._build_left(), 3)
         lay.addWidget(self._build_right(), 2)
 
+    # ---------------- Left ----------------
     def _build_left(self) -> QWidget:
         panel = QWidget()
         v = QVBoxLayout(panel)
@@ -142,109 +164,196 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         row_bar.addStretch(1)
         v.addLayout(row_bar)
 
-        # 构件/节点 二级tab（贴近截图）
+        # 构件/节点 二级tab
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.North)
-
-        self.table_comp = self._make_detail_table(is_node=False)
-        self.table_node = self._make_detail_table(is_node=True)
 
         comp_wrap = QWidget()
         comp_l = QVBoxLayout(comp_wrap)
         comp_l.setContentsMargins(0, 0, 0, 0)
-        comp_l.addWidget(self.table_comp)
+        comp_l.setSpacing(10)
+        self.table_comp = self._make_detail_table(is_node=False)
+        self.summary_comp = self._make_summary_table()
+
+        comp_l.addWidget(self.table_comp, 0)
+        comp_l.addWidget(self.summary_comp, 1)
+
 
         node_wrap = QWidget()
         node_l = QVBoxLayout(node_wrap)
         node_l.setContentsMargins(0, 0, 0, 0)
-        node_l.addWidget(self.table_node)
+        node_l.setSpacing(10)
+        self.table_node = self._make_detail_table(is_node=True)
+        self.summary_node = self._make_summary_table()
+        node_l.addWidget(self.table_node, 0)
+        node_l.addWidget(self.summary_node, 1)
 
         self.tabs.addTab(comp_wrap, "构件风险等级")
         self.tabs.addTab(node_wrap, "节点风险等级")
-        v.addWidget(self.tabs, 0)
-
-        # 汇总信息（当前、5、10、15、20、25年）
-        v.addWidget(self._build_summary_block(), 1)
+        v.addWidget(self.tabs, 1)
 
         return panel
 
+    # ---------------- Detail table with merged headers ----------------
     def _make_detail_table(self, is_node: bool) -> QTableWidget:
-        cols = [
-            "A", "B", "MemberType", "失效后果等级", "A", "B", "倒塌分析载荷系数Rn", "Vr", "Pf", "构件风险等级"
-        ]
-        if is_node:
-            cols = [
-                "JointA", "JointB", "WeldType", "失效后果等级", "A", "B", "倒塌分析载荷系数Rn", "Vr", "Pf", "节点风险等级"
+        """
+        明细表：两行表头（row 0 分组，row 1 字段），数据从 row=2 开始。
+        """
+        if not is_node:
+            # 4 + 6 + 1 = 11 列
+            sub_headers = [
+                "A", "B", "MemberType", "失效后果等级",
+                "A", "B", "倒塌分析载荷系数Rn", "Vr", "Pf", "失效概率等级",
+                "构件风险等级",
+            ]
+        else:
+            sub_headers = [
+                "JointA", "JointB", "WeldType", "失效后果等级",
+                "A", "B", "倒塌分析载荷系数Rn", "Vr", "Pf", "失效概率等级",
+                "节点风险等级",
             ]
 
-        t = QTableWidget(120, len(cols))
-        t.setHorizontalHeaderLabels(cols)
-        t.verticalHeader().setVisible(False)
-        t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        t.setMinimumHeight(240)
-        return t
+        cols = len(sub_headers)
+        data_rows = 120
 
-    def _build_summary_block(self) -> QWidget:
-        wrap = QWidget()
-        v = QVBoxLayout(wrap)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(10)
-
-        for title in ["当前", "第5年", "第10年", "第15年", "第20年", "第25年"]:
-            v.addWidget(self._make_one_summary_table(title), 0)
-
-        v.addStretch(1)
-        return wrap
-
-    def _make_one_summary_table(self, title: str) -> QTableWidget:
-        # 3行 x 6列（0列标签 + 1~5列风险等级一~五），颜色条贴近截图
-        t = QTableWidget(3, 6)
-        t.setFixedHeight(100)
+        t = QTableWidget(self.HEADER_ROWS + data_rows, cols)
         t.verticalHeader().setVisible(False)
         t.horizontalHeader().setVisible(False)
-        t.setStyleSheet("QTableWidget{background:#dfe9f6;border:1px solid #7b8798;}")
+        t.setShowGrid(True)
+        t.setGridStyle(Qt.SolidLine)
+        t.setSelectionBehavior(QTableWidget.SelectRows)
+        t.setSelectionMode(QTableWidget.SingleSelection)
 
-        # 标签列
-        labels = ["风险等级", "数量", "占比"]
-        for r, lab in enumerate(labels):
-            it = QTableWidgetItem(lab)
-            it.setTextAlignment(Qt.AlignCenter)
-            t.setItem(r, 0, it)
-
-        # 左上角显示“当前/第5年...”
-        corner = QTableWidgetItem(title)
-        corner.setTextAlignment(Qt.AlignCenter)
-        corner.setBackground(QColor("#cfe6b8"))
-        t.setItem(0, 0, corner)
-
-        # 颜色条（红、橙、黄、蓝、棕）
-        colors = [QColor("#ff3b30"), QColor("#ffcc00"), QColor("#ffee58"), QColor("#1e88e5"), QColor("#6d4c41")]
-        headers = ["一", "二", "三", "四", "五"]
-
-        for i in range(5):
-            h = QTableWidgetItem(headers[i])
-            h.setTextAlignment(Qt.AlignCenter)
-            h.setBackground(colors[i])
-            t.setItem(0, i + 1, h)
-
-            # 示例数字/占比（你后续接真实算法结果即可）
-            num = QTableWidgetItem(str((i * 97 + len(title) * 13) % 900))
-            pct = QTableWidgetItem(f"{((i + 1) * 7.41) % 80:.2f}%")
-            num.setTextAlignment(Qt.AlignCenter)
-            pct.setTextAlignment(Qt.AlignCenter)
-            t.setItem(1, i + 1, num)
-            t.setItem(2, i + 1, pct)
-
+        # 列宽：用 Stretch（和你现有实现一致）
         t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        # ---- row 0: group headers ----
+        hdr_bg = QColor("#d9e6f5")
+        bold = True
+        # 基本信息：0..3
+        t.setSpan(0, 0, 1, 4)
+        self._set_cell(t, 0, 0, "基本信息", hdr_bg, bold)
+        for c in range(1, 4):
+            self._set_cell(t, 0, c, "", hdr_bg, bold)
+
+        # 失效概率等级：4..9
+        t.setSpan(0, 4, 1, 6)
+        self._set_cell(t, 0, 4, "失效概率等级", hdr_bg, bold)
+        for c in range(5, 10):
+            self._set_cell(t, 0, c, "", hdr_bg, bold)
+
+        # 风险等级（最后一列）
+        self._set_cell(t, 0, 10, "风险等级", hdr_bg, bold)
+
+        # ---- row 1: sub headers ----
+        for c, name in enumerate(sub_headers):
+            self._set_cell(t, 1, c, name, hdr_bg, True)
+
+        # row heights
+        t.setRowHeight(0, 26)
+        t.setRowHeight(1, 26)
+        for r in range(2, t.rowCount()):
+            t.setRowHeight(r, 24)
+
+        # minimum height so it looks like the sample (scroll inside table)
+        t.setMinimumHeight(260)
+
         return t
 
+    def _set_cell(self, table: QTableWidget, r: int, c: int, text: str, bg: QColor = None, bold: bool = False):
+        it = QTableWidgetItem(str(text))
+        it.setTextAlignment(Qt.AlignCenter)
+        if bg is not None:
+            it.setBackground(bg)
+        if bold:
+            f = it.font()
+            f.setBold(True)
+            it.setFont(f)
+        table.setItem(r, c, it)
+
+    # ---------------- Summary big table (tagged) ----------------
+    def _make_summary_table(self) -> QTableWidget:
+        """
+        汇总表：顶部 1 行标签（合并单元格），下面每个年份 3 行：
+        - 年份标签 + 风险等级颜色条
+        - 数量
+        - 占比
+        """
+        cols = 6  # 0: 标签列，1..5: 风险等级一~五
+        rows =  len(self.SUMMARY_YEARS) * 4
+
+        t = QTableWidget(rows, cols)
+        t.verticalHeader().setVisible(False)
+        t.horizontalHeader().setVisible(False)
+        t.setShowGrid(True)
+        t.setGridStyle(Qt.SolidLine)
+        t.setSelectionMode(QTableWidget.NoSelection)
+        t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        t.setStyleSheet("QTableWidget{background:#dfe9f6;}")
+
+        # Tag row
+        # t.setSpan(0, 0, 1, cols)
+        tag_bg = QColor("#e3e7ef")
+        green = QColor("#cfe6b8")
+        for r in range(len(self.SUMMARY_YEARS)):
+            t.setSpan(r * 4, 0, 1, 6)
+            self._set_cell(t, r * 4, 0, self.SUMMARY_YEARS[r], green, True)
+
+
+
+
+
+
+
+        # Year blocks
+        green = QColor("#cfe6b8")
+        for i, year in enumerate(self.SUMMARY_YEARS):
+            base_r = 1 + i * 4
+
+
+            # row base_r: year label + risk headers
+            # self._set_cell(t, base_r, 0, year, green, True)
+
+            for k in range(5):
+                it = QTableWidgetItem(self.RISK_LABELS[k])
+                it.setTextAlignment(Qt.AlignCenter)
+                it.setBackground(self.RISK_COLORS[k])
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+                t.setItem(base_r, 1 + k, it)
+
+            # row base_r+1: 风险等级
+            self._set_cell(t, base_r, 0, "风险等级", QColor("#e3e7ef"), True)
+            # for k in range(1,5):
+            #     self._set_cell(t, base_r + 1, 1 + k, "", None, False)
+
+            # row base_r+2: 数量
+            self._set_cell(t, base_r + 1, 0, "数量", QColor("#e3e7ef"), True)
+            for k in range(5):
+                self._set_cell(t, base_r + 1, 1 + k, "", None, False)
+
+            # row base_r+3: 占比
+            self._set_cell(t, base_r +2 , 0, "占比", QColor("#e3e7ef"), True)
+            for k in range(5):
+                self._set_cell(t, base_r + 2, 1 + k, "", None, False)
+
+            # row heights
+            t.setRowHeight(base_r, 26)
+            t.setRowHeight(base_r + 1, 24)
+            t.setRowHeight(base_r + 2, 24)
+
+        t.setRowHeight(0, 26)
+        t.setMinimumHeight(430)
+        return t
+
+    # ---------------- Right ----------------
     def _build_right(self) -> QWidget:
         panel = QWidget()
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(10)
 
-        # 黑底示意图（一个）
         frame = QFrame()
         frame.setStyleSheet("background:black;border:1px solid #c7d2e3;")
         fl = QVBoxLayout(frame)
@@ -252,59 +361,83 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         fl.addWidget(PlanDiagram(), 1)
         v.addWidget(frame, 1)
 
-        # 生成报告按钮（示例）
         btn = QPushButton("生成特检策略报告")
         btn.setObjectName("ReportBtn")
         btn.clicked.connect(self._on_report)
         v.addWidget(btn, 0)
 
-        # 绿色占位块（贴近截图右下角）
-        green = QFrame()
-        green.setMinimumHeight(130)
-        green.setStyleSheet("background:#b7e37a;border:1px solid #7b8798;")
-        gl = QVBoxLayout(green)
-        gl.addStretch(1)
-        lab = QLabel("某个平台特检策略页面3")
-        lab.setAlignment(Qt.AlignCenter)
-        lab.setStyleSheet("font-size:20px;")
-        gl.addWidget(lab)
-        gl.addStretch(1)
-        v.addWidget(green, 0)
-
         return panel
 
-    # -------- demo data --------
+    # ---------------- demo data fill ----------------
     def _fill_demo(self):
-        # 构件明细示例
-        for r in range(self.table_comp.rowCount()):
-            vals = ["501L", "511L", "LEG", "2", "0.272", "0.158", "1.9", "10%", "6.9E-05", "三" if r % 3 == 0 else "四"]
-            for c, v in enumerate(vals):
-                it = QTableWidgetItem(str(v))
-                it.setTextAlignment(Qt.AlignCenter)
-                self.table_comp.setItem(r, c, it)
+        # 明细表填充（从第2行开始）
+        self._fill_detail_demo(self.table_comp, is_node=False)
+        self._fill_detail_demo(self.table_node, is_node=True)
 
-        # 节点明细示例
-        for r in range(self.table_node.rowCount()):
-            vals = [f"J{r+1:02d}", f"J{r+2:02d}", "WELD", "2", "0.272", "0.158", "1.9", "10%", "6.9E-05", "二" if r % 4 == 0 else "三"]
-            for c, v in enumerate(vals):
-                it = QTableWidgetItem(str(v))
-                it.setTextAlignment(Qt.AlignCenter)
-                self.table_node.setItem(r, c, it)
+        # 汇总填充（构件/节点分别一套）
+        self._fill_summary_demo(self.summary_comp, seed=13)
+        self._fill_summary_demo(self.summary_node, seed=29)
 
         self._apply_row_limit()
+
+    def _fill_detail_demo(self, table: QTableWidget, is_node: bool):
+        start = self.HEADER_ROWS
+        for r in range(start, table.rowCount()):
+            idx = r - start
+            if not is_node:
+                vals = [
+                    "501L", "511L", "LEG", "2",
+                    "0.272", "0.158", "1.9", "10%", "6.9E-05", "4",
+                    "三" if idx % 3 == 0 else "四"
+                ]
+            else:
+                vals = [
+                    f"J{idx+1:03d}", f"J{idx+2:03d}", "WELD", "2",
+                    "0.272", "0.158", "1.9", "10%", "6.9E-05", "4",
+                    "二" if idx % 4 == 0 else "三"
+                ]
+            for c, v in enumerate(vals):
+                it = QTableWidgetItem(str(v))
+                it.setTextAlignment(Qt.AlignCenter)
+                table.setItem(r, c, it)
+
+    def _fill_summary_demo(self, summary_table: QTableWidget, seed: int = 7):
+        """
+        给汇总表填一组稳定的演示数据（数量 + 占比）。
+        每个年份块：数量行在 base_r+1，比例行 base_r+2。
+        """
+        import random
+        rnd = random.Random(seed)
+
+        for i, _year in enumerate(self.SUMMARY_YEARS):
+            base_r = 1 + i * 4
+            nums = [rnd.randint(0, 500) for _ in range(5)]
+            total = sum(nums) or 1
+            pcts = [n * 100.0 / total for n in nums]
+
+            for k in range(5):
+                # 数量
+                itn = QTableWidgetItem(str(nums[k]))
+                itn.setTextAlignment(Qt.AlignCenter)
+                summary_table.setItem(base_r + 1, 1 + k, itn)
+
+                # 占比
+                itp = QTableWidgetItem(f"{pcts[k]:.2f}%")
+                itp.setTextAlignment(Qt.AlignCenter)
+                summary_table.setItem(base_r + 2, 1 + k, itp)
 
     def _apply_row_limit(self):
         choice = self.cb_rows.currentText()
         limit = None if choice == "全部" else int(choice)
 
         def apply(table: QTableWidget):
-            for r in range(table.rowCount()):
-                table.setRowHidden(r, (limit is not None and r >= limit))
+            start = self.HEADER_ROWS
+            for r in range(start, table.rowCount()):
+                table.setRowHidden(r, (limit is not None and (r - start) >= limit))
 
         apply(self.table_comp)
         apply(self.table_node)
 
     def _on_report(self):
-        # 这里后续接你真实“导出报告（PDF/Word）”
         from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.information(self, "生成报告", "示例：按预定义格式生成评估报告（后续接导出PDF/Word）。")
+        QMessageBox.information(self, "生成报告", "示例：按预定义格式生成特检策略报告（后续接导出PDF/Word）。")
