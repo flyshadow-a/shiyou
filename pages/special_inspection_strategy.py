@@ -1,25 +1,25 @@
 # -*- coding: utf-8 -*-
 # pages/special_inspection_strategy.py
 
+
 import os
 import csv
+from typing import List, Tuple
+
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QComboBox, QPushButton, QScrollArea, QSizePolicy
+    QComboBox, QPushButton, QScrollArea, QSizePolicy, QLabel
 )
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 
 from base_page import BasePage
+from dropdown_bar import DropdownBar
 
 
 class SimpleTowerDiagram(QWidget):
-    """
-    右侧黑底“塔架示意图”占位控件（不依赖图片）：
-    - 画两根立柱 + 斜撑
-    - 画几个彩色节点
-    """
+    """右侧黑底“塔架示意图”占位控件（不依赖图片）。"""
     def __init__(self, variant: int = 0, parent=None):
         super().__init__(parent)
         self.variant = variant
@@ -29,8 +29,6 @@ class SimpleTowerDiagram(QWidget):
     def paintEvent(self, _evt):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-
-        # 背景
         p.fillRect(self.rect(), QColor(0, 0, 0))
 
         w, h = self.width(), self.height()
@@ -38,28 +36,22 @@ class SimpleTowerDiagram(QWidget):
         x1, x2 = margin, w - margin
         y_top, y_bot = margin, h - margin
 
-        # 绿线框架
         pen_line = QPen(QColor(0, 255, 0), 2)
         p.setPen(pen_line)
 
-        # 立柱
         p.drawLine(x1, y_top, x1, y_bot)
         p.drawLine(x2, y_top, x2, y_bot)
 
-        # 横撑
         for t in [0.18, 0.35, 0.52, 0.70, 0.86]:
             y = int(y_top + (y_bot - y_top) * t)
             p.drawLine(x1, y, x2, y)
 
-        # 斜撑
         for t in [0.18, 0.35, 0.52, 0.70]:
             yA = int(y_top + (y_bot - y_top) * t)
             yB = int(y_top + (y_bot - y_top) * (t + 0.17))
             p.drawLine(x1, yA, x2, yB)
             p.drawLine(x2, yA, x1, yB)
 
-        # 节点（彩色圆）
-        # variant=0 / 1 画不同“阶段”
         if self.variant == 0:
             pts = [
                 (0.30, 0.22, QColor(0, 140, 255)),
@@ -86,36 +78,29 @@ class SimpleTowerDiagram(QWidget):
 
 class SpecialInspectionStrategy(BasePage):
     """
-    重做后的“特检策略”页面（对应你第二张图）：
-    - 顶部：1行表格（设施编码/设施名称/检测序号/检测时间/检测策略查看/节点检测历史查看/新增检测策略）
-    - 下部：左侧两张汇总表（构件、节点）+ 年限切换；右侧两幅示意图
+    “特检策略”页面（顶部继承 DropdownBar 设计）
     """
 
     def __init__(self, main_window, parent=None):
-        # 兼容 MainWindow: page_cls(self) 的调用方式
         if parent is None:
             parent = main_window
-
-        # BasePage 默认会加标题，这里传空字符串避免页面内部再出现“特检策略”标题
         super().__init__("", parent)
         self.main_window = main_window
 
-        # 你原来用 CSV 的方式，我这里继续沿用：
         self.data_dir = os.path.join(os.getcwd(), "data")
-
-        # 记录当前年限
         self.current_year = "5年"
 
-        # 让页面更贴近截图：减小边距
         self.main_layout.setContentsMargins(10, 10, 10, 10)
         self.main_layout.setSpacing(8)
 
         self._build_ui()
-        self._load_year_data(self.current_year)
+
+        # 初始：上表固定示例数据，下表按年份
+        self._fill_component_demo_data()
+        self._load_node_year_data(self.current_year)
 
     # ---------------- UI ----------------
     def _build_ui(self):
-        # 使用滚动区，防止小分辨率下挤压
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         self.main_layout.addWidget(scroll, 1)
@@ -126,10 +111,8 @@ class SpecialInspectionStrategy(BasePage):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
 
-        # 顶部表格（1行7列）
-        root.addWidget(self._build_top_table(), 0)
+        root.addWidget(self._build_top_bar_dropdown_style(), 0)
 
-        # 下部：左（表格） + 右（示意图）
         bottom = QFrame()
         bottom_lay = QHBoxLayout(bottom)
         bottom_lay.setContentsMargins(0, 0, 0, 0)
@@ -138,90 +121,127 @@ class SpecialInspectionStrategy(BasePage):
         bottom_lay.addWidget(self._build_left_tables(), 3)
         bottom_lay.addWidget(self._build_right_diagrams(), 2)
 
-        root.addWidget(bottom, 1)
+        root.addWidget(bottom, 1)  # 填满剩余空间（减少底部留白）
 
-    def _build_top_table(self) -> QTableWidget:
-        table = QTableWidget(1, 7)
-        table.setHorizontalHeaderLabels([
-            "设施编码", "设施名称", "检测序号", "检测时间", "检测策略", "节点检测历史", "操作"
-        ])
-        table.verticalHeader().setVisible(False)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        table.setFixedHeight(78)
+    # ---------------- 顶部：DropdownBar + 补充操作栏（同风格） ----------------
+    def _build_top_bar_dropdown_style(self) -> QWidget:
+        wrap = QFrame()
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
 
-        # 表头风格（接近截图）
-        table.horizontalHeader().setStyleSheet("""
-            QHeaderView::section {
-                background-color: #00BFFF;
-                color: white;
-                font-weight: bold;
-                font-size: 13px;
-                border: 1px solid #4a4a4a;
-            }
+        # 左侧 4 列：DropdownBar 原样式
+        fields = [
+            {"key": "facility_code", "label": "设施编码",
+             "options": ["WC19-1WHPC", "WC19-2WHPC", "WC19-3WHPC"], "default": "WC19-1WHPC"},
+            {"key": "facility_name", "label": "设施名称",
+             "options": ["文昌19-1WHPC井口平台", "文昌19-2井口平台", "文昌19-3井口平台"], "default": "文昌19-1WHPC井口平台"},
+            {"key": "inspect_seq", "label": "检测序号",
+             "options": ["0", "1", "2", "3"], "default": "0"},
+            {"key": "inspect_time", "label": "检测时间",
+             "options": ["2008-06-26", "2008-07-12", "2008-08-21"], "default": "2008-06-26"},
+        ]
+        self.dropdown_bar = DropdownBar(fields, parent=self)
+        self.dropdown_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        # DropdownBar 在不同 DPI/字体下可能需要更高的高度，否则第二行控件会被遮挡
+        # 这里给一个可靠的最小高度，并在后面用真实 sizeHint 取最大值。
+        self.dropdown_bar.setMinimumHeight(72)
+
+        lay.addWidget(self.dropdown_bar, 1)
+
+        # 右侧 3 列：补充栏（模仿 DropdownBar：蓝底标题 + 白底按钮/按钮）
+        right = QFrame()
+        right.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        # 使用与 dropdown_bar.py 一致的主色（你项目里为 #0090d0）
+        right.setStyleSheet("""
+            QFrame#RightActions { background-color: #0090d0; }
+            QLabel { color: white; font-weight: bold; }
+            QPushButton { background: #efefef; border: 1px solid #666; }
+            QPushButton:hover { background: #f7f7f7; }
+            QPushButton#AddBtn { background:#cfe6b8; font-weight:bold; }
         """)
-        table.setStyleSheet("""
-            QTableWidget {
-                background: #dfe9f6;
-                gridline-color: #4a4a4a;
-            }
-            QTableWidget::item {
-                background: #dfe9f6;
-            }
-        """)
+        right.setObjectName("RightActions")
 
-        # 设施编码/名称/序号/时间（用下拉框模拟）
-        cb_code = QComboBox()
-        cb_code.addItems(["WC19-1WHPC", "WC19-2WHPC", "WC19-3WHPC"])
-        table.setCellWidget(0, 0, cb_code)
+        g = QVBoxLayout(right)
+        g.setContentsMargins(10, 10, 10, 10)
+        g.setSpacing(6)
 
-        cb_name = QComboBox()
-        cb_name.addItems(["文昌19-1WHPC井口平台", "文昌19-2井口平台", "文昌19-3井口平台"])
-        table.setCellWidget(0, 1, cb_name)
+        # 标题行
+        titles = QFrame()
+        tl = QHBoxLayout(titles)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(8)
 
-        cb_seq = QComboBox()
-        cb_seq.addItems(["0", "1", "2", "3"])
-        table.setCellWidget(0, 2, cb_seq)
+        for t in ["检测策略", "节点检测历史", "操作"]:
+            lab = QLabel(t)
+            lab.setAlignment(Qt.AlignCenter)
+            lab.setMinimumWidth(90)
+            lab.setMinimumHeight(22)
+            tl.addWidget(lab)
 
-        cb_time = QComboBox()
-        cb_time.addItems(["2008-06-26", "2008-07-12", "2008-08-21"])
-        table.setCellWidget(0, 3, cb_time)
+        g.addWidget(titles, 0)
 
-        # 查看按钮
-        btn_view_strategy = QPushButton("查看")
-        btn_view_strategy.clicked.connect(self._on_view_strategy)
-        table.setCellWidget(0, 4, btn_view_strategy)
+        # 控件行
+        row = QFrame()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(8)
 
-        btn_view_history = QPushButton("查看")
-        btn_view_history.clicked.connect(self._on_view_history)
-        table.setCellWidget(0, 5, btn_view_history)
+        self.btn_view_strategy = QPushButton("查看")
+        self.btn_view_history = QPushButton("查看")
+        self.btn_add = QPushButton("新增检测策略")
+        self.btn_add.setObjectName("AddBtn")
 
-        # 新增检测策略
-        btn_add = QPushButton("新增检测策略")
-        btn_add.setStyleSheet("background:#cfe6b8;font-weight:bold;")
-        btn_add.clicked.connect(lambda: self._on_add_strategy(cb_code))
-        table.setCellWidget(0, 6, btn_add)
+        for b in [self.btn_view_strategy, self.btn_view_history]:
+            b.setFixedSize(90, 30)
+        self.btn_add.setFixedSize(120, 30)
 
-        return table
+        self.btn_view_strategy.clicked.connect(self._on_view_strategy)
+        self.btn_view_history.clicked.connect(self._on_view_history)
+        self.btn_add.clicked.connect(self._on_add_strategy)
 
+        rl.addWidget(self.btn_view_strategy)
+        rl.addWidget(self.btn_view_history)
+        rl.addWidget(self.btn_add)
+
+        g.addWidget(row, 0)
+
+        # 让顶部整条栏位“足够高”，避免内容被遮挡（取 sizeHint / minimumHeight 的最大值）
+        h_candidates = [
+            self.dropdown_bar.sizeHint().height(),
+            self.dropdown_bar.minimumSizeHint().height(),
+            self.dropdown_bar.minimumHeight(),
+            72,
+        ]
+        bar_h = max([v for v in h_candidates if v and v > 0])
+        wrap.setMinimumHeight(bar_h)
+        right.setFixedHeight(bar_h)
+
+        lay.addWidget(right, 0)
+        return wrap
+
+    # ---------------- 左侧表格区 ----------------
     def _build_left_tables(self) -> QWidget:
         left = QWidget()
         v = QVBoxLayout(left)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(10)
 
-        # 构件检验汇总
+        # 上表：构件检验汇总（固定示例数据）
         self.component_table = QTableWidget(6, 5)
         self.component_table.setHorizontalHeaderLabels(["构件风险等级", "构件数量", "检验等级II", "检验等级III", "检验等级IV"])
-        self._style_summary_table(self.component_table, title="构件检验汇总")
+        self._style_summary_table(self.component_table)
         v.addWidget(self._wrap_with_title("构件检验汇总", self.component_table), 0)
 
-        # 年限切换条
+        # 年份切换条
         v.addWidget(self._build_year_bar(), 0)
 
-        # 节点风险等级汇总
+        # 下表：节点风险等级汇总（随年份变化，并吃掉剩余高度）
         self.node_table = QTableWidget(6, 5)
         self.node_table.setHorizontalHeaderLabels(["节点风险等级", "节点焊缝数量", "检验等级II", "检验等级III", "检验等级IV"])
-        self._style_summary_table(self.node_table, title="节点风险等级汇总")
+        self._style_summary_table(self.node_table)
         v.addWidget(self._wrap_with_title("节点风险等级汇总", self.node_table), 1)
 
         return left
@@ -231,13 +251,8 @@ class SpecialInspectionStrategy(BasePage):
         h = QHBoxLayout(right)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(10)
-
-        # 两幅示意图（对应截图右侧两个黑框）
-        d1 = SimpleTowerDiagram(variant=0)
-        d2 = SimpleTowerDiagram(variant=1)
-
-        h.addWidget(d1, 1)
-        h.addWidget(d2, 1)
+        h.addWidget(SimpleTowerDiagram(variant=0), 1)
+        h.addWidget(SimpleTowerDiagram(variant=1), 1)
         return right
 
     def _build_year_bar(self) -> QWidget:
@@ -254,23 +269,14 @@ class SpecialInspectionStrategy(BasePage):
             btn.setCheckable(True)
             btn.setFixedHeight(28)
             btn.setStyleSheet("""
-                QPushButton {
-                    background: #efefef;
-                    border: 1px solid #333;
-                    padding: 2px 14px;
-                }
-                QPushButton:checked {
-                    background: #d6f0d0;
-                    font-weight: bold;
-                }
+                QPushButton { background: #efefef; border: 1px solid #333; padding: 2px 14px; }
+                QPushButton:checked { background: #d6f0d0; font-weight: bold; }
             """)
             btn.clicked.connect(lambda _, yy=y: self._on_year_changed(yy))
             lay.addWidget(btn)
             self.year_buttons.append(btn)
 
         lay.addStretch(1)
-
-        # 默认选中 5年
         self._sync_year_buttons("5年")
         return bar
 
@@ -279,33 +285,37 @@ class SpecialInspectionStrategy(BasePage):
         frame = QFrame()
         v = QVBoxLayout(frame)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(4)
+        v.setSpacing(0)
 
-        # 蓝色标题条（接近截图）
         title_bar = QFrame()
+        title_bar.setFixedHeight(28)
         title_bar.setStyleSheet("background:#4f79bd;")
         tl = QHBoxLayout(title_bar)
         tl.setContentsMargins(10, 4, 10, 4)
-        lab = QPushButton(title)
-        lab.setEnabled(False)
-        lab.setStyleSheet("color:white;font-weight:bold;border:none;background:transparent;")
-        tl.addWidget(lab)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet("color:white;font-weight:bold;")
+        tl.addWidget(title_label)
         tl.addStretch(1)
 
-        v.addWidget(title_bar)
-        v.addWidget(table)
+        v.addWidget(title_bar, 0)
+        v.addWidget(table, 1)
         return frame
 
-    def _style_summary_table(self, table: QTableWidget, title: str = ""):
+    def _style_summary_table(self, table: QTableWidget):
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        table.setFixedHeight(220)
+        table.setShowGrid(True)
+
+        # 表格自身出现滚动条（原型有）
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
         table.setStyleSheet("""
             QTableWidget { background: #dfe9f6; gridline-color: #ffffff; }
-            QHeaderView::section { background-color: #4f79bd; color: white; font-weight: bold; }
+            QHeaderView::section { background-color: #4f79bd; color: white; font-weight: bold; border: 1px solid #2f3a4a; }
         """)
 
-        # 预填充风险等级行头（1~5+总计），和截图一致
         row_heads = ["一", "二", "三", "四", "五", "总计"]
         for r, head in enumerate(row_heads):
             it = QTableWidgetItem(head)
@@ -314,35 +324,66 @@ class SpecialInspectionStrategy(BasePage):
             it.setForeground(QColor("white"))
             table.setItem(r, 0, it)
 
-    # ---------------- data loading ----------------
-    def _load_year_data(self, year: str):
-        # 构件汇总
-        comp_csv = os.path.join(self.data_dir, f"component_summary_{year}_years.csv")
-        self._fill_table_from_csv(self.component_table, comp_csv, start_col=1)
+        for r in range(table.rowCount()):
+            for c in range(1, table.columnCount()):
+                it = QTableWidgetItem("-")
+                it.setTextAlignment(Qt.AlignCenter)
+                table.setItem(r, c, it)
 
-        # 节点汇总
+    # ---------------- data ----------------
+    def _fill_component_demo_data(self):
+        comp = [
+            ("2",   "-",  "-",  "-"),
+            ("6",   "-",  "-",  "5"),
+            ("188", "151", "37", "-"),
+            ("758", "758", "-",  "-"),
+            ("0",   "0",   "-",  "-"),
+            ("954", "909", "42", "3"),
+        ]
+        self._fill_rows(self.component_table, comp)
+
+    def _load_node_year_data(self, year: str):
+        if year == "5年":
+            node = [
+                ("30",  "-",  "-",  "30"),
+                ("64",  "-",  "52", "12"),
+                ("226", "181", "45", "-"),
+                ("422", "422", "-",  "-"),
+                ("0",   "0",   "-",  "-"),
+                ("742", "603", "97", "42"),
+            ]
+            self._fill_rows(self.node_table, node)
+            return
+
         node_csv = os.path.join(self.data_dir, f"node_risk_summary_{year}_years.csv")
         self._fill_table_from_csv(self.node_table, node_csv, start_col=1)
 
+    def _fill_rows(self, table: QTableWidget, rows: List[Tuple[str, str, str, str]]):
+        for r, row in enumerate(rows):
+            if r >= table.rowCount():
+                break
+            for i, val in enumerate(row):
+                c = 1 + i
+                if c >= table.columnCount():
+                    break
+                it = QTableWidgetItem(str(val))
+                it.setTextAlignment(Qt.AlignCenter)
+                table.setItem(r, c, it)
+
     def _fill_table_from_csv(self, table: QTableWidget, filepath: str, start_col: int = 0):
-        """
-        从 CSV 填充表格。
-        - CSV第一行默认是表头，会跳过
-        - 如果文件不存在，用 '-' 填充
-        """
-        # 先清空除“风险等级列(0列)”之外的内容
         for r in range(table.rowCount()):
             for c in range(start_col, table.columnCount()):
-                table.setItem(r, c, QTableWidgetItem("-"))
+                it = QTableWidgetItem("-")
+                it.setTextAlignment(Qt.AlignCenter)
+                table.setItem(r, c, it)
 
         if not os.path.exists(filepath):
-            # 没有数据文件就保持占位
             return
 
         with open(filepath, "r", encoding="utf-8") as f:
             reader = csv.reader(f)
             try:
-                next(reader)  # 跳过标题行
+                next(reader)
             except StopIteration:
                 return
 
@@ -353,8 +394,7 @@ class SpecialInspectionStrategy(BasePage):
                     col = start_col + c
                     if col >= table.columnCount():
                         break
-                    value = "" if val == "-" else str(val)
-                    it = QTableWidgetItem(value)
+                    it = QTableWidgetItem("-" if val == "-" else str(val))
                     it.setTextAlignment(Qt.AlignCenter)
                     table.setItem(r, col, it)
 
@@ -362,21 +402,40 @@ class SpecialInspectionStrategy(BasePage):
     def _on_year_changed(self, year: str):
         self.current_year = year
         self._sync_year_buttons(year)
-        self._load_year_data(year)
+        # 只刷新下表
+        self._load_node_year_data(year)
 
     def _sync_year_buttons(self, year: str):
         for btn in getattr(self, "year_buttons", []):
             btn.setChecked(btn.text() == year)
 
-    def _on_add_strategy(self, cb_code: QComboBox):
-        facility_code = cb_code.currentText()
+    def _get_dropdown_value(self, key: str) -> str:
+        """兼容不同 DropdownBar 实现的取值方式。"""
+        if not hasattr(self, "dropdown_bar"):
+            return ""
+        bar = self.dropdown_bar
+        if hasattr(bar, "get_value"):
+            try:
+                v = bar.get_value(key)
+                return (v or "").strip()
+            except Exception:
+                pass
+        if hasattr(bar, "values") and isinstance(bar.values, dict):
+            return (bar.values.get(key, "") or "").strip()
+        # 兜底：尝试在 bar 内部找同名 combobox
+        for attr in ("combos", "combo_boxes", "widgets"):
+            d = getattr(bar, attr, None)
+            if isinstance(d, dict) and key in d and isinstance(d[key], QComboBox):
+                return d[key].currentText().strip()
+        return ""
+
+    def _on_add_strategy(self):
+        facility_code = self._get_dropdown_value("facility_code")
         if self.main_window is not None and hasattr(self.main_window, "open_new_special_strategy_tab"):
             self.main_window.open_new_special_strategy_tab(facility_code)
 
     def _on_view_strategy(self):
-        # 这里先留空：你后面可以打开“历史检测策略汇总结论”的页面/对话框/新Tab
         pass
 
     def _on_view_history(self):
-        # 这里先留空：你后面可以打开“节点检测历史”的页面/对话框/新Tab
         pass
