@@ -6,10 +6,10 @@ import shutil
 import datetime
 from typing import Dict, List
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFontMetrics
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QFontMetrics, QPixmap
 from PyQt5.QtWidgets import (
-    QFrame, QVBoxLayout, QSizePolicy, QLabel,
+    QFrame, QVBoxLayout, QHBoxLayout, QSizePolicy, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QStackedWidget, QMessageBox, QFileDialog, QWidget
 )
@@ -22,15 +22,30 @@ from .construction_docs_widget import ConstructionDocsWidget
 
 
 # ============================================================
+# 辅助：可点击 Label（用于“首页”）
+# ============================================================
+class ClickableLabel(QLabel):
+    clicked = pyqtSignal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+# ============================================================
 # 1) Widget：文件夹UI = ConstructionDocsWidget；叶子表格页 = 旧逻辑表格
 #    - 不自写文件夹布局
 #    - 保留旧的“表格行配置 + 上传/下载 + 扫描恢复”逻辑
+#    - ✅ 调整：文件夹/首页页完全使用 ConstructionDocsWidget 自带 PathBar；
+#             自己的蓝色面包屑仅在“叶子表格页”显示，避免重复顶栏
 # ============================================================
 class ModelFilesDocsWidget(QWidget):
     """
     模型文件专用内容区：
     - Folder View：直接用 ConstructionDocsWidget 画（严格复用其布局/样式/交互）
     - Leaf View：使用旧逻辑的 QTableWidget（序号|类别|格式|修改时间|上传|下载|备注）
+    - ✅ Breadcrumb：本文件自带的蓝色 HeaderBar 仅用于叶子页；文件夹页使用 ConstructionDocsWidget 自带 PathBar
     """
 
     def __init__(self, parent=None):
@@ -160,6 +175,105 @@ class ModelFilesDocsWidget(QWidget):
         return node
 
     # ------------------------------------------------------------------
+    # （保留）面包屑 HeaderBar：仅用于叶子页（不影响其他逻辑）
+    # ------------------------------------------------------------------
+    def _build_breadcrumb_bar(self) -> QWidget:
+        bar = QFrame(self)
+        bar.setObjectName("BreadcrumbBar")
+        bar.setFixedHeight(40)
+
+        self.breadcrumb_layout = QHBoxLayout(bar)
+        self.breadcrumb_layout.setContentsMargins(12, 0, 12, 0)
+        self.breadcrumb_layout.setSpacing(8)
+        self.breadcrumb_layout.setAlignment(Qt.AlignVCenter)
+
+        # 统一样式（蓝色 header bar + 白字）
+        bar.setStyleSheet("""
+            QFrame#BreadcrumbBar { background-color: #1e3a8a; border: none; }
+            QLabel { color: #ffffff; font-size: 14px; }
+            QLabel#BreadcrumbHome { font-weight: 600; }
+            QLabel#BreadcrumbCrumb { font-weight: 600; }
+        """)
+        return bar
+
+    def _clear_layout(self, layout: QHBoxLayout):
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+    def _load_folder_icon_pixmap(self):
+        # 优先使用项目根目录/pict 下的资源（按你项目约定）
+        project_root = self._get_project_root()
+        pict_dir = os.path.join(project_root, "pict")
+        candidates = [
+            os.path.join(pict_dir, "folder.png"),
+            os.path.join(pict_dir, "wenjian.png"),
+            os.path.join(pict_dir, "folder_icon.png"),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                pix = QPixmap(p)
+                if not pix.isNull():
+                    return pix
+        return None
+
+    def _go_home_from_breadcrumb(self):
+        # 点击“首页” => 回根目录文件夹视图
+        self.current_path = []
+        self.current_leaf_key = ""
+        self._refresh_folder_view()
+        self.content_stack.setCurrentWidget(self.docs_widget)
+
+        # ✅ 叶子页面包屑隐藏，文件夹页交给 ConstructionDocsWidget
+        self.breadcrumb_bar.hide()
+
+    def _update_breadcrumb_bar(self):
+        # 清空并重建
+        self._clear_layout(self.breadcrumb_layout)
+
+        # 文件夹图标
+        lbl_folder_icon = QLabel(self.breadcrumb_bar)
+        lbl_folder_icon.setFixedSize(18, 18)
+        lbl_folder_icon.setScaledContents(True)
+        pix = self._load_folder_icon_pixmap()
+        if pix:
+            lbl_folder_icon.setPixmap(pix)
+        else:
+            lbl_folder_icon.setText("📁")
+            lbl_folder_icon.setAlignment(Qt.AlignCenter)
+
+        # “首页”
+        lbl_home = ClickableLabel("首页", self.breadcrumb_bar)
+        lbl_home.setObjectName("BreadcrumbHome")
+        lbl_home.setCursor(Qt.PointingHandCursor)
+        lbl_home.clicked.connect(self._go_home_from_breadcrumb)
+
+        self.breadcrumb_layout.addWidget(lbl_folder_icon, 0)
+        self.breadcrumb_layout.addWidget(lbl_home, 0)
+
+        # 逐级面包屑：首页 > A > B > C
+        prefix = []
+        for idx, name in enumerate(self.current_path):
+            # 分隔符 >
+            sep = QLabel(">", self.breadcrumb_bar)
+            self.breadcrumb_layout.addWidget(sep, 0)
+
+            # 每一级都可点（点到任意一级回退到该层）
+            crumb = ClickableLabel(name, self.breadcrumb_bar)
+            crumb.setObjectName("BreadcrumbCrumb")
+            crumb.setCursor(Qt.PointingHandCursor)
+
+            prefix.append(name)
+            crumb_prefix = list(prefix)  # 绑定当前 prefix 的副本
+            crumb.clicked.connect(lambda p=crumb_prefix: self._on_breadcrumb_clicked(p))
+
+            self.breadcrumb_layout.addWidget(crumb, 0)
+
+        self.breadcrumb_layout.addStretch(1)
+
+    # ------------------------------------------------------------------
     # 表格工具（来自旧代码）
     # ------------------------------------------------------------------
     def _init_table_common(self, table: QTableWidget):
@@ -230,51 +344,61 @@ class ModelFilesDocsWidget(QWidget):
         table.verticalHeader().setDefaultSectionSize(h)
 
     # ------------------------------------------------------------------
-    # UI 构建：stack = 文件夹(ConstructionDocsWidget) / 叶子表格
+    # UI 构建：叶子页才显示本文件蓝色面包屑；文件夹/首页完全交给 ConstructionDocsWidget
     # ------------------------------------------------------------------
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.content_stack = QStackedWidget(self)
-        layout.addWidget(self.content_stack, 1)
-
         # ============================================================
-        # 1) 文件夹页：严格复用 ConstructionDocsWidget 的文件夹UI
+        # 1) 文件夹页：直接使用 ConstructionDocsWidget（不要覆盖它的点击函数）
         # ============================================================
         self.docs_widget = ConstructionDocsWidget(parent=self)
 
-        # 用它画 folder_grid，但点击/面包屑行为走本类逻辑
-        # （避免改 ConstructionDocsWidget 源码）
-        self.docs_widget._on_folder_clicked = self._on_folder_clicked
-        self.docs_widget._on_breadcrumb_clicked = self._on_breadcrumb_clicked
+        # 用我们的 folder_tree 覆盖它自己的树
+        self.docs_widget.folder_tree = self.folder_tree
+        self.docs_widget.current_path = list(self.current_path)
 
-        # 初次刷新它的文件夹UI
-        self._refresh_folder_view()
-
-        self.content_stack.addWidget(self.docs_widget)
+        # ✅ 关键：不要再做这两句（会导致 PathBar 不更新）
+        # self.docs_widget._on_folder_clicked = self._on_folder_clicked
+        # self.docs_widget._on_breadcrumb_clicked = self._on_breadcrumb_clicked
 
         # ============================================================
-        # 2) 叶子：文件表格页（旧逻辑）
+        # 2) 叶子页：把 ConstructionDocsWidget 的 files_page 替换成我们自己的表格页
+        #    并劫持它的 _show_files_for_current_path 来走我们的“填表 + 上传/下载”逻辑
         # ============================================================
-        self.files_page = QWidget(self)
-        files_layout = QVBoxLayout(self.files_page)
+        self.custom_files_page = QWidget(self.docs_widget)
+        files_layout = QVBoxLayout(self.custom_files_page)
         files_layout.setContentsMargins(0, 0, 0, 0)
         files_layout.setSpacing(0)
 
-        self.table = QTableWidget(0, 7, self.files_page)
+        self.table = QTableWidget(0, 7, self.custom_files_page)
         self.table.setHorizontalHeaderLabels(
             ["序号", "文件类别", "文件格式", "修改时间", "上传", "下载", "备注"]
         )
         self._init_table_common(self.table)
         self.table.cellClicked.connect(self._on_table_cell_clicked)
-
         files_layout.addWidget(self.table)
-        self.content_stack.addWidget(self.files_page)
 
-        # 默认：首页文件夹视图
-        self.content_stack.setCurrentWidget(self.docs_widget)
+        # ✅ 把我们的页塞进它的 content_stack，并用它的 PathBar 管理“文件夹/叶子”切换
+        self.docs_widget.content_stack.addWidget(self.custom_files_page)
+        self.docs_widget.files_page = self.custom_files_page  # 让它切到叶子时显示我们的表格页
+
+        # ✅ 劫持：当它认为进入叶子时，调用我们自己的填表逻辑
+        def _show_files_proxy():
+            # 同步路径（ConstructionDocsWidget 自己维护 current_path）
+            self.current_path = list(self.docs_widget.current_path)
+            self._show_files_for_current_leaf()
+
+        self.docs_widget._show_files_for_current_path = _show_files_proxy
+
+        # 初次刷新 folder_grid（让首页/文件夹显示正确）
+        self.docs_widget._refresh_folder_view()
+        self.docs_widget.content_stack.setCurrentWidget(self.docs_widget.folder_page)
+
+        # 最终只把 docs_widget（含 PathBar + 卡片 + 内容区）放进本组件
+        layout.addWidget(self.docs_widget, 1)
 
     # ------------------------------------------------------------------
     # 文件夹视图刷新 / 点击 / 面包屑
@@ -301,9 +425,16 @@ class ModelFilesDocsWidget(QWidget):
         if node.get("type") == "folder":
             self._refresh_folder_view()
             self.content_stack.setCurrentWidget(self.docs_widget)
+
+            # ✅ 文件夹页：隐藏本文件蓝色面包屑，使用 ConstructionDocsWidget 自带 PathBar
+            self.breadcrumb_bar.hide()
         else:
             self._show_files_for_current_leaf()
             self.content_stack.setCurrentWidget(self.files_page)
+
+            # ✅ 叶子页：显示本文件蓝色面包屑（不影响你旧逻辑）
+            self._update_breadcrumb_bar()
+            self.breadcrumb_bar.show()
 
     def _on_folder_clicked(self, folder_name: str):
         node = self._get_node_by_path(self.current_path)
@@ -319,9 +450,16 @@ class ModelFilesDocsWidget(QWidget):
         if child.get("type") == "folder":
             self._refresh_folder_view()
             self.content_stack.setCurrentWidget(self.docs_widget)
+
+            # ✅ 文件夹页：隐藏本文件蓝色面包屑，使用 ConstructionDocsWidget 自带 PathBar
+            self.breadcrumb_bar.hide()
         else:
             self._show_files_for_current_leaf()
             self.content_stack.setCurrentWidget(self.files_page)
+
+            # ✅ 叶子页：显示本文件蓝色面包屑（不影响你旧逻辑）
+            self._update_breadcrumb_bar()
+            self.breadcrumb_bar.show()
 
     # ------------------------------------------------------------------
     # 叶子：文件表格（旧逻辑）
