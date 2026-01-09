@@ -41,6 +41,9 @@ from PyQt5.QtWidgets import (
 from base_page import BasePage
 from dropdown_bar import DropdownBar
 
+# ✅ 直接复用 ConstructionDocsWidget 的文件夹布局样式
+from pages.construction_docs_widget import ConstructionDocsWidget
+
 
 # ----------------------------------------------------------------------
 # 小工具：可点击的 QLabel，用于面包屑“首页”
@@ -52,6 +55,44 @@ class LinkLabel(QLabel):
         if event.button() == Qt.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
+
+
+# ----------------------------------------------------------------------
+# ✅ 首页文件夹入口：直接复用 ConstructionDocsWidget 的文件夹布局 UI
+# ----------------------------------------------------------------------
+class _HomeFoldersWidget(ConstructionDocsWidget):
+    folderSelected = pyqtSignal(str)
+
+    def _build_folder_tree(self) -> Dict:
+        """
+        首页
+        ├─ 完工检测
+        ├─ 第1次检测
+        ├─ 第N次检测
+        └─ 历史抽检记录
+
+        这里不进入 ConstructionDocsWidget 自带的 file_view，
+        只用于“文件夹入口”。点击后抛出 folderSelected 信号。
+        """
+        return {
+            "完工检测": {"type": "folder", "children": {}},
+            "第1次检测": {"type": "folder", "children": {}},
+            "第N次检测": {"type": "folder", "children": {}},
+            "历史抽检记录": {"type": "folder", "children": {}},
+        }
+
+    def _build_demo_file_records(self) -> Dict[str, List[Dict]]:
+        return {}
+
+    def _on_folder_clicked(self, folder_name: str):
+        # 直接发信号给外部页面处理（保持你原来的 _switch_to 逻辑）
+        name_to_key = {
+            "完工检测": "complete",
+            "第1次检测": "first",
+            "第N次检测": "nth",
+            "历史抽检记录": "history_sampling",
+        }
+        self.folderSelected.emit(name_to_key.get(folder_name, "home"))
 
 
 # ----------------------------------------------------------------------
@@ -72,7 +113,8 @@ class HistoryInspectionSummaryPage(BasePage):
     COL_REMARK = 6
 
     def __init__(self, parent=None):
-        super().__init__("历史检测及结论", parent)
+        # ✅ 删除 BasePage 顶部标题“历史检测及结论”：不给标题文本
+        super().__init__("", parent)
 
         # 当前所在“文件夹”
         self.current_folder_key = "home"
@@ -89,6 +131,20 @@ class HistoryInspectionSummaryPage(BasePage):
         self.folder_icon_path = os.path.join(project_root, "pict", "wenjian.png")
 
         self._build_ui()
+
+        # ✅ 兜底隐藏 BasePage 的标题控件（不同实现命名可能不同）
+        self._hide_basepage_title_if_any()
+
+    # ✅ 兜底：隐藏 BasePage 可能创建的标题控件，避免占高度
+    def _hide_basepage_title_if_any(self):
+        for attr in ("title_label", "lbl_title", "label_title", "page_title_label", "header_label"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    w.setVisible(False)
+                    w.setFixedHeight(0)
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # 数据定义
@@ -137,7 +193,9 @@ class HistoryInspectionSummaryPage(BasePage):
     # ------------------------------------------------------------------
     def _build_ui(self):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
-        self.main_layout.setSpacing(8)
+
+        # ✅ 顶格更贴近“文件管理”效果：把 spacing 从 8 改为 0（不改逻辑，仅 UI）
+        self.main_layout.setSpacing(0)
 
         # ---------- 顶部 DropdownBar ----------
         fields = [
@@ -255,25 +313,18 @@ class HistoryInspectionSummaryPage(BasePage):
     # 首页：四个文件夹
     # ------------------------------------------------------------------
     def _build_home_page(self) -> QWidget:
+        # ✅ 这里保持“首页是 stack 的一个 page”的结构不变
         page = QWidget(self.stack)
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 16, 0, 16)
+
+        # ✅ 让它更像 ConstructionDocsWidget 的首页：顶格、由其内部控制间距
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # 中间一行四个文件夹
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 40, 0, 0)
-        row.setSpacing(80)
-
-        row.addStretch(1)
-        row.addWidget(self._create_folder_button("完工检测", "complete"))
-        row.addWidget(self._create_folder_button("第1次检测", "first"))
-        row.addWidget(self._create_folder_button("第N次检测", "nth"))
-        row.addWidget(self._create_folder_button("历史抽检记录", "history_sampling"))
-        row.addStretch(1)
-
-        layout.addLayout(row)
-        layout.addStretch(1)
+        # ✅ 直接复用 ConstructionDocsWidget 的文件夹布局 UI
+        home_folders = _HomeFoldersWidget(page)
+        home_folders.folderSelected.connect(lambda k: self._switch_to(k))
+        layout.addWidget(home_folders)
 
         return page
 
@@ -509,7 +560,16 @@ class HistoryInspectionSummaryPage(BasePage):
         widget = self.pages.get(folder_key)
         if widget is not None:
             self.stack.setCurrentWidget(widget)
-        self._update_breadcrumb()
+
+        # ✅ 关键：首页用 ConstructionDocsWidget 自带的“首页条”，
+        # 所以把你原来的面包屑蓝条隐藏，避免出现两条“首页”
+        if folder_key == "home":
+            self.breadcrumb_bar.setVisible(False)
+            self.breadcrumb_bar.setFixedHeight(0)  # 防止仍占高度形成空白
+        else:
+            self.breadcrumb_bar.setVisible(True)
+            self.breadcrumb_bar.setFixedHeight(40)  # 还原高度（你原来是 40）
+            self._update_breadcrumb()
 
     def _apply_stylesheet(self):
         """统一样式，包含：

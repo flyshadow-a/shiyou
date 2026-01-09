@@ -23,6 +23,9 @@ from PyQt5.QtWidgets import (
 from base_page import BasePage
 from dropdown_bar import DropdownBar
 
+# ✅ 关键：直接引用 ConstructionDocsWidget 的“文件夹布局格式代码”
+from .construction_docs_widget import ConstructionDocsWidget
+
 
 # ======================================================================
 # 小工具类：可点击的 QLabel，用于面包屑“首页”
@@ -41,35 +44,83 @@ class ClickableLabel(QLabel):
 
 
 # ======================================================================
-# 小工具类：文件夹图标 + 文字
+# 小工具类：文件夹图标 + 文字（保留：不删除原逻辑与文字）
 # ======================================================================
 class FolderTile(QFrame):
     clicked = pyqtSignal()
+
+    # ✅ 这里三组值就是“文件夹大小格式”的核心：改成你在 ConstructionDocsWidget 里那套即可
+    TILE_W, TILE_H = 160, 140          # 文件夹卡片大小
+    ICON_W, ICON_H = 64, 56            # 文件夹图标显示大小（KeepAspectRatio）
+    PADDING = (12, 12, 12, 12)         # 内边距
+    SPACING = 8                        # 图标与文字间距
 
     def __init__(self, text: str, icon_path: str, parent=None):
         super().__init__(parent)
         self.setCursor(Qt.PointingHandCursor)
 
+        self.setObjectName("FolderTile")
+        self.setProperty("selected", False)
+        self.setFixedSize(self.TILE_W, self.TILE_H)
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(*self.PADDING)
+        layout.setSpacing(self.SPACING)
         layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
 
-        icon_label = QLabel(self)
+        self.icon_label = QLabel(self)
+        self.icon_label.setObjectName("FolderIcon")
         pix = QPixmap(icon_path)
         if not pix.isNull():
-            pix = pix.scaled(90, 72, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        icon_label.setPixmap(pix)
-        icon_label.setAlignment(Qt.AlignCenter)
+            pix = pix.scaled(self.ICON_W, self.ICON_H, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.icon_label.setPixmap(pix)
+        self.icon_label.setAlignment(Qt.AlignCenter)
 
-        text_label = QLabel(text, self)
-        font = text_label.font()
-        font.setPointSize(font.pointSize() + 1)
-        text_label.setFont(font)
-        text_label.setAlignment(Qt.AlignCenter)
+        self.text_label = QLabel(text, self)
+        self.text_label.setObjectName("FolderText")
+        f = self.text_label.font()
+        f.setPointSize(11)             # ✅ 文件夹名称字号（改成你那套）
+        f.setBold(False)
+        self.text_label.setFont(f)
+        self.text_label.setAlignment(Qt.AlignCenter)
 
-        layout.addWidget(icon_label)
-        layout.addWidget(text_label)
+        layout.addWidget(self.icon_label)
+        layout.addWidget(self.text_label)
+
+        # ✅ 默认 / 悬停 / 选中：文件夹卡片与文字样式
+        self.setStyleSheet("""
+            QFrame#FolderTile {
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 10px;
+            }
+            QFrame#FolderTile QLabel#FolderText {
+                color: #111827;
+            }
+
+            QFrame#FolderTile:hover {
+                background: #f3f4f6;
+                border: 1px solid #d1d5db;
+            }
+            QFrame#FolderTile:hover QLabel#FolderText {
+                color: #0074c9;
+            }
+
+            QFrame#FolderTile[selected="true"] {
+                background: #e6f3ff;
+                border: 1px solid #0074c9;
+            }
+            QFrame#FolderTile[selected="true"] QLabel#FolderText {
+                color: #e11d48;   /* 选中文字变红：如果你不想红就改回 #0074c9 或 #111827 */
+            }
+        """)
+
+    def set_selected(self, on: bool):
+        self.setProperty("selected", bool(on))
+        # 触发样式刷新
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -78,7 +129,33 @@ class FolderTile(QFrame):
 
 
 # ======================================================================
-# 详细页面：上表 + 中间描述 + 下表
+# ✅ 直接复用 ConstructionDocsWidget 的文件夹布局（QToolButton 那套）
+#    但把点击行为改为“发信号”，交给外部页面做 stack 切换
+# ======================================================================
+class HistoryEventsHomeDocsWidget(ConstructionDocsWidget):
+    folderSelected = pyqtSignal(str)
+
+    def _build_folder_tree(self):
+        # 首页三个文件夹：让 ConstructionDocsWidget 自己渲染文件夹布局
+        # 这里用 folder 类型即可（不进入 files_page），我们拦截点击发信号
+        return {
+            "历史改造信息": {"type": "folder", "children": {}},
+            "特检延寿": {"type": "folder", "children": {}},
+            "台风&损伤": {"type": "folder", "children": {}},
+        }
+
+    def _build_demo_file_records(self):
+        # 不需要文件表格数据（这里只做入口），保持空
+        return {}
+
+    def _on_folder_clicked(self, folder_name: str):
+        # ✅ 关键：不走 ConstructionDocsWidget 原有“进入下一层/进入表格页”的逻辑
+        # 直接把 folder_name 抛给外部页面处理（进入详情页）
+        self.folderSelected.emit(folder_name)
+
+
+# ======================================================================
+# 详细页面：上表 + 中间描述 + 下表（保留原逻辑与文字）
 # ======================================================================
 class ImportantHistoryDetailWidget(QWidget):
     def __init__(self, parent=None):
@@ -133,7 +210,9 @@ class ImportantHistoryDetailWidget(QWidget):
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(6)
+
+        # ✅ 顶格：不要让 header 和内容之间多出空白
+        main_layout.setSpacing(0)
 
         # 1) 顶部蓝色面包屑条
         header = QFrame(self)
@@ -257,7 +336,7 @@ class ImportantHistoryDetailWidget(QWidget):
                 (2, "xxx平台进行结构加固", "2006年"),
                 (3, "xxx油田开发工程项目依托改造", "2011年"),
                 (4, "xxx平台增加救生筏和逃生软梯安装甲板", "2016年"),
-                (5,"xxx平台A3井增加放空管线","2011年")
+                (5, "xxx平台A3井增加放空管线", "2011年")
             ]
             desc_text = (
                 "xxx平台于2006年安装并投产，平台原设计寿命15年，在投产后平台进行了"
@@ -327,10 +406,23 @@ class ImportantHistoryEventsPage(BasePage):
     """
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        # ✅ 顶格：避免 BasePage 顶部标题占位导致“多一条空白”
+        super().__init__("", parent)
         self._project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._folder_icon_path = os.path.join(self._project_root, "pict", "wenjian.png")
         self._build_ui()
+        self._hide_base_title_if_any()
+
+    def _hide_base_title_if_any(self):
+        """兜底：兼容不同 BasePage 实现，尽量把顶部标题 QLabel 隐藏掉"""
+        for attr in ("title_label", "lbl_title", "label_title", "page_title_label"):
+            w = getattr(self, attr, None)
+            if isinstance(w, QLabel):
+                w.hide()
+        for obj_name in ("PageTitle", "pageTitle", "titleLabel", "lblTitle"):
+            w = self.findChild(QLabel, obj_name)
+            if w:
+                w.hide()
 
     def _build_ui(self):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -348,29 +440,19 @@ class ImportantHistoryEventsPage(BasePage):
         self.detail_widget = ImportantHistoryDetailWidget(self)
         # 点击“首页”返回
         self.detail_widget.lbl_home.clicked.connect(self._go_home)
-
         self.stack.addWidget(self.detail_widget)
 
         # 默认显示首页
         self.stack.setCurrentIndex(0)
-
-        # 一点样式（卡片背景）
-        self.setStyleSheet("""
-            QFrame#HomeCard {
-                background-color: #f3f4f6;
-                border: none;
-            }
-            QFrame#HomeHeaderBar {
-                background-color: #0074c9;
-            }
-        """)
 
     # ---------- 首页：三个文件夹 ----------
     def _build_home_page(self) -> QWidget:
         page = QFrame(self)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+
+        # ✅ 顶格：去掉 DropdownBar 和下面内容之间的额外空白（原来是 8）
+        layout.setSpacing(0)
 
         # 顶部下拉条
         fields = [
@@ -387,69 +469,24 @@ class ImportantHistoryEventsPage(BasePage):
         self.dropdown_bar = DropdownBar(fields, parent=page)
         layout.addWidget(self.dropdown_bar, 0)
 
-        # 中间卡片区域
+        # =========================================================
+        # ✅ 直接引用 ConstructionDocsWidget 的“文件夹布局格式代码”
+        #    首页三个文件夹的排布/间距/样式/路径栏都由 ConstructionDocsWidget 管
+        # =========================================================
         card = QFrame(page)
         card.setObjectName("HomeCard")
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(12, 8, 12, 12)
-        card_layout.setSpacing(10)
+        card_layout.setContentsMargins(0, 0, 0, 0)
+        card_layout.setSpacing(0)
 
-        # 顶部“首页”蓝条
-        header = QFrame(card)
-        header.setObjectName("HomeHeaderBar")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(10, 3, 10, 3)
-        header_layout.setSpacing(6)
+        self.home_docs = HistoryEventsHomeDocsWidget(card)
+        # 点击任意文件夹 -> 进入你的详情页逻辑
+        self.home_docs.folderSelected.connect(self._enter_detail)
 
-        icon_label = QLabel(header)
-        pix = QPixmap(self._folder_icon_path)
-        if not pix.isNull():
-            pix = pix.scaled(20, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        icon_label.setPixmap(pix)
-        # 小图标底色改成深蓝色
-        icon_label.setStyleSheet("""
-            background-color: #004080;
-            border-radius: 2px;
-            padding: 2px;
-        """)
-
-        home_text = QLabel("首页", header)
-        f = home_text.font()
-        f.setPointSize(f.pointSize() + 1)
-        home_text.setFont(f)
-        home_text.setStyleSheet("color: white;")
-
-        header_layout.addWidget(icon_label)
-        header_layout.addSpacing(4)
-        header_layout.addWidget(home_text)
-        header_layout.addStretch()
-
-        card_layout.addWidget(header, 0)
-
-        # 三个文件夹图标区域
-        center = QFrame(card)
-        center_layout = QHBoxLayout(center)
-        center_layout.setContentsMargins(40, 40, 40, 40)
-        center_layout.setSpacing(120)
-        center_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-
-        tile_history = FolderTile("历史改造信息", self._folder_icon_path, center)
-        tile_ext = FolderTile("特检延寿", self._folder_icon_path, center)
-        tile_typhoon = FolderTile("台风&损伤", self._folder_icon_path, center)
-
-        center_layout.addWidget(tile_history)
-        center_layout.addWidget(tile_ext)
-        center_layout.addWidget(tile_typhoon)
-        center_layout.addStretch()
-
-        card_layout.addWidget(center, 1)
-
+        card_layout.addWidget(self.home_docs)
         layout.addWidget(card, 1)
-
-        # 点击事件：进入详细界面
-        tile_history.clicked.connect(lambda: self._enter_detail("历史改造信息"))
-        tile_ext.clicked.connect(lambda: self._enter_detail("特检延寿"))
-        tile_typhoon.clicked.connect(lambda: self._enter_detail("台风&损伤"))
 
         return page
 

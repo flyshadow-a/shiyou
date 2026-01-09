@@ -48,7 +48,7 @@ class MainWindow(QMainWindow):
         self.home_page: QWidget | None = None
 
         # 头部搜索框
-        self.search_edit: QLineEdit | None = None
+
 
         # 记录“菜单路径 -> 页面 widget”的映射
         self.page_tab_map: dict[str, QWidget] = {}
@@ -228,8 +228,7 @@ class MainWindow(QMainWindow):
         self.nav_tree.itemClicked.connect(self.on_nav_item_clicked)
         if self.nav_search is not None:
             self.nav_search.textChanged.connect(self.filter_nav_tree)
-        if self.search_edit is not None:
-            self.search_edit.textChanged.connect(self.filter_nav_tree)
+
 
         # 默认显示首页背景（不在 Tab 栏显示“首页”）
         self.open_home_tab()
@@ -277,10 +276,6 @@ class MainWindow(QMainWindow):
         title = QLabel("海上平台结构载荷管理系统")
         title.setStyleSheet("font-size:18px; font-weight:bold;")
 
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("菜单搜索：支持菜单名称、路径")
-        self.search_edit.setMaximumWidth(320)
-
         # 用户 + 登录按钮
         self.user_label = QLabel("未登录")
         self.btn_login = QPushButton("登录/注销")
@@ -293,7 +288,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(logo_label)
         layout.addWidget(title)
         layout.addStretch()
-        layout.addWidget(self.search_edit)
         layout.addStretch()
         layout.addWidget(self.user_label)
         layout.addWidget(self.btn_login)

@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
     QFrame,
     QVBoxLayout,
     QSizePolicy,
+    QLabel,
 )
 
 from base_page import BasePage
@@ -18,7 +19,7 @@ from .construction_docs_widget import ConstructionDocsWidget
 
 # ============================================================
 # 1) 复用 ConstructionDocsWidget，专门给“历史改造文件”用
-#    只改：文件夹结构 & 初始文件记录
+#    只改：文件夹结构 & 初始文件记录 & 上传路径
 # ============================================================
 class HistoryRebuildDocsWidget(ConstructionDocsWidget):
     """历史改造文件用的文件管理控件：只保留“改造1 / 改造2 / 改造N”三个文件夹。"""
@@ -45,14 +46,13 @@ class HistoryRebuildDocsWidget(ConstructionDocsWidget):
         """
         return {}
 
-    # 如果你希望历史改造文件和建设阶段用不同的物理存储位置，
-    # 可以把 _get_upload_root 也重写掉，例如：
-    #
     def _get_upload_root(self) -> str:
+        """
+        历史改造文件的物理存储位置：
+        <project_root>/uploads/history_rebuild
+        """
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         return os.path.join(project_root, "uploads", "history_rebuild")
-    #
-    # 不需要区分的话，就直接用父类的实现即可。
 
 
 # ============================================================
@@ -70,8 +70,26 @@ class HistoryRebuildFilesPage(BasePage):
     """
 
     def __init__(self, parent=None):
-        super().__init__("历史改造文件", parent)
+        # ✅ 不显示页面顶部标题（“历史改造文件”）
+        super().__init__("", parent)
         self._build_ui()
+        self._hide_base_title_if_any()
+
+    def _hide_base_title_if_any(self):
+        """
+        兜底：兼容不同 BasePage 实现，尽量把顶部标题控件隐藏掉
+        """
+        # 1) 常见：BasePage 内部直接暴露标题 QLabel 成员变量
+        for attr in ("title_label", "lbl_title", "label_title", "page_title_label"):
+            w = getattr(self, attr, None)
+            if isinstance(w, QLabel):
+                w.hide()
+
+        # 2) 兜底：如果 BasePage 给标题设置了 objectName，可通过 findChild 找到
+        for obj_name in ("PageTitle", "pageTitle", "titleLabel", "lblTitle"):
+            w = self.findChild(QLabel, obj_name)
+            if w:
+                w.hide()
 
     def _build_ui(self):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -107,7 +125,7 @@ class HistoryRebuildFilesPage(BasePage):
 
         self.main_layout.addWidget(card, 1)
 
-        # 可选：简单的背景样式（和你之前卡片风格保持一致）
+        # 可选：背景样式（与你之前卡片风格一致）
         self.setStyleSheet("""
             QFrame#HistoryRebuildCard {
                 background-color: #f3f4f6;

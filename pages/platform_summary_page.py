@@ -8,8 +8,8 @@ import datetime
 from typing import List
 
 
-from PyQt5.QtGui import QPixmap
-from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap, QResizeEvent
+from PyQt5.QtCore import Qt, QTimer, QEvent, QSize
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QPushButton, QLabel, QFileDialog, QMessageBox, QWidget,
@@ -40,7 +40,7 @@ class PlatformSummaryPage(BasePage):
     def __init__(self, parent: QWidget = None):
         super().__init__("平台汇总信息", parent)
 
-        # 列名定义，导入/导出也按这个顺序处理
+        # 列名定义
         self.columns: List[str] = [
             "分公司",
             "作业公司",
@@ -49,11 +49,14 @@ class PlatformSummaryPage(BasePage):
             "设施名称",
         ]
 
-        # 项目根目录 & 图片路径
+        # 1. 新增：用于保存原始的高清图片数据，避免反复缩放导致模糊
+        self._original_map_pixmap = None
+
         self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.map_image_path = os.path.join(self.project_root, "pict", "youtianfenbu.png")
 
         self._build_ui()
+        self._load_initial_data()
 
     # ------------------------------------------------------------------ #
     # UI 构建
@@ -189,28 +192,31 @@ class PlatformSummaryPage(BasePage):
         right_layout.addLayout(btn_bar)
 
         # 中间：油田分布图
-        map_frame = QFrame()
-        map_frame.setObjectName("MapFrame")
-        map_layout = QVBoxLayout(map_frame)
+        self.map_frame = QFrame()
+        self.map_frame.installEventFilter(self)
+
+        self.map_frame.setObjectName("MapFrame")
+        map_layout = QVBoxLayout(self.map_frame)
         map_layout.setContentsMargins(10, 10, 10, 10)
 
         self.map_label = QLabel()
         self.map_label.setAlignment(Qt.AlignCenter)
-
-        # 图片在 label 区域内自适应缩放
-        self.map_label.setScaledContents(True)
-
-        # 关键：忽略原始 sizeHint，避免按原图尺寸把右侧撑爆
+        # --- 修改重点开始 ---
+        # 2. 去掉 setScaledContents(True)，改为 False 或直接删除
+        self.map_label.setScaledContents(False)
         self.map_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
 
-        # 再给一个最大高度，防止窗口很大时图片无限变大
-        self.map_label.setMaximumHeight(500)   # 觉得还大就改小一点，比如 400
+        # 3. 设置最小尺寸，防止图片过大撑破布局，允许布局缩小
+        self.map_label.setMinimumSize(0, 0)
+        self.map_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        # --- 修改重点结束 ---
 
-
-        self._load_map_image()
 
         map_layout.addWidget(self.map_label)
-        right_layout.addWidget(map_frame, 1)
+        
+        # 布局完成后再加载图片，确保 label 大小已确定
+        QTimer.singleShot(100, self._load_map_image)
+        right_layout.addWidget(self.map_frame, 1)
 
         # 两侧加入根布局
         # 用滚动区域包住左侧表格面板
@@ -237,6 +243,11 @@ class PlatformSummaryPage(BasePage):
     # 地图加载
     # ------------------------------------------------------------------ #
 
+    def eventFilter(self, obj, event):
+        if obj is self.map_frame and event.type() == QEvent.Resize:
+            self._update_map_display()
+        return super().eventFilter(obj, event)
+
     def _get_upload_root(self) -> str:
         """
         Excel 上传文件的根目录：
@@ -254,10 +265,78 @@ class PlatformSummaryPage(BasePage):
         if os.path.exists(self.map_image_path):
             pix = QPixmap(self.map_image_path)
             if not pix.isNull():
-                # 给一个初始大小，后面会自动跟随布局拉伸
-                self.map_label.setPixmap(pix)
-        else:
-            self.map_label.setText("找不到图片：youtianfenbu.png")
+                self._original_map_pixmap = pix
+                self._update_map_display()
+                return
+        self.map_label.setText("找不到图片：youtianfenbu.png")
+
+    def resizeEvent(self, event: QResizeEvent):
+        """
+        5. 监听窗口大小变化事件
+        当窗口大小改变时，重新计算图片大小
+        """
+        super().resizeEvent(event)
+        self._update_map_display()
+
+    def _update_map_display(self):
+        if not self._original_map_pixmap:
+            return
+
+        target = self.map_label.size()
+        if target.width() <= 1 or target.height() <= 1:
+            return
+
+        scaled = self._original_map_pixmap.scaled(
+            target,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+        self.map_label.setPixmap(scaled)
+
+    # ------------------------------------------------------------------ #
+    # 初始数据
+    # ------------------------------------------------------------------ #
+    def _load_initial_data(self):
+        """加载初始数据到表格"""
+        initial_data = self._generate_initial_data()
+        for row_data in initial_data:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            for col, value in enumerate(row_data):
+                item = QTableWidgetItem(str(value))
+                self.table.setItem(row, col, item)
+    
+    def _generate_initial_data(self) -> List[List[str]]:
+        """根据图片描述生成初始数据（5列：分公司、作业公司、油气田、设施编号、设施名称）"""
+        initial_rows = [
+            ["湛江分公司", "文昌油田群作业公司", "文昌19-1油田", "WC19-1WHPB", "文昌19-1WHPB井口平台"],
+            ["湛江分公司", "涠洲作业公司", "涠洲6-12油田", "WZ6-12WHP", "涠洲6-12WHP井口平台"],
+            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-1WHPB", "涠洲12-1WHPB井口平台"],
+            ["湛江分公司", "洞洲作业公司", "洞洲11-4油田", "WZ11-4WHPC", "洞洲11-4WHPC井口平台"],
+            ["湛江分公司", "洞洲作业公司", "洞洲11-4油田", "WZ11-4CEPA", "洞洲11-4CEPA中心平台"],
+            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-2WHPB", "涠洲12-2WHPB井口平台"],
+            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-1WWHPA", "涠洲12-1WWHPA井口平台"],
+            ["湛江分公司", "涠洲作业公司", "涠洲11-2油田", "WZ11-2WHPB", "涠洲11-2WHPB井口平台"],
+            ["湛江分公司", "洞洲作业公司", "洞洲11-4油田", "WZ11-4DWHPA", "洞洲11-4DWHPA井口平台"],
+            ["湛江分公司", "洞洲作业公司", "洞洲11-4N油田", "WZ11-1NWHPA", "洞洲11-1NWHPA井口平台"],
+            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-1PUQBCEP", "涠洲12-1PUQBCEP中心平台"],
+            ["湛江分公司", "文昌油田群作业公司", "文昌19-1油田", "WC19-1WHPC", "文昌19-1WHPC井口平台"],
+            ["湛江分公司", "文昌油田群作业公司", "文昌8-3油田", "WC8-3WHPB", "文昌8-3WHPB井口平台"],
+            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-1WHPC", "涠洲12-1WHPC井口平台"],
+            ["湛江分公司", "涠洲作业公司", "涠洲11-1油田", "WZ11-1WHPA", "涠洲11-1WHPA井口平台"],
+            ["湛江分公司", "文昌油田群作业公司", "文昌14-3油田", "WC14-3WHPA", "文昌14-3WHPA井口平台"],
+            ["湛江分公司", "洞洲作业公司", "洞洲11-4油田", "WZ11-4WHPB", "洞洲11-4WHPB井口平台"],
+            ["湛江分公司", "文昌油田群作业公司", "文昌13-2油田", "WC13-2WHPA", "文昌13-2WHPA井口平台"],
+            ["湛江分公司", "涠洲作业公司", "涠洲11-2油田", "WZ11-2WHPC", "涠洲11-2WHPC井口平台"],
+            ["湛江分公司", "文昌油田群作业公司", "文昌13-6油田", "WC13-6WHPA", "文昌13-6WHPA井口平台"],
+            ["湛江分公司", "文昌油田群作业公司", "文昌23-5油田", "WS23-5WHPA", "文昌23-5WHPA井口平台"],
+            ["湛江分公司", "洞洲作业公司", "洞洲11-4N油田", "WZ11-4NWHPC", "洞洲11-4NWHPC井口平台"],
+            ["湛江分公司", "文昌油田群作业公司", "文昌9-2气田", "WC9-2/9-3CEP", "文昌9-2/9-3CEP中心平台"],
+            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-1CEPA", "涠洲12-1CEPA中心平台"],
+            ["湛江分公司", "涠洲作业公司", "涠洲11-1油田", "WZ11-1RP", "涠洲11-1RP立管平台"],
+            ["湛江分公司", "涠洲作业公司", "涠洲6-8油田", "WZ6-8WHPA", "涠洲6-8WHPA井口平台"],
+        ]
+        return initial_rows
 
     # ------------------------------------------------------------------ #
     # 表格增删行

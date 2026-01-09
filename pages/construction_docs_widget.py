@@ -384,6 +384,7 @@ class ConstructionDocsWidget(QWidget):
         self.folder_grid = QGridLayout()
         self.folder_grid.setHorizontalSpacing(32)
         self.folder_grid.setVerticalSpacing(26)
+        self.folder_grid.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         folder_layout.addLayout(self.folder_grid)
         folder_layout.addStretch()
 
@@ -538,7 +539,7 @@ class ConstructionDocsWidget(QWidget):
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda checked, n=name: self._on_folder_clicked(n))
 
-            self.folder_grid.addWidget(btn, row, col, Qt.AlignTop)
+            self.folder_grid.addWidget(btn, row, col, Qt.AlignLeft | Qt.AlignTop)  # ✅ 每个格子也靠左
             col += 1
             if col >= max_cols:
                 col = 0

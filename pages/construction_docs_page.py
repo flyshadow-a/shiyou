@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # pages/construction_docs_page.py
 
-from PyQt5.QtWidgets import QWidget
+from PyQt5.QtWidgets import QWidget, QLabel
 from base_page import BasePage
 from dropdown_bar import DropdownBar
 from pages.construction_docs_widget import ConstructionDocsWidget
@@ -15,11 +15,36 @@ class ConstructionDocsPage(BasePage):
     """
 
     def __init__(self, parent=None):
-        super().__init__("建设阶段完工文件", parent)
+        # ✅ 1) 传空标题：避免 BasePage 顶部显示“建设阶段完工文件”
+        super().__init__("", parent)
         self._build_ui()
 
+        # ✅ 2) 兜底：如果 BasePage 仍然有标题 QLabel，就把它隐藏
+        self._hide_base_title_if_any()
+
+    def _hide_base_title_if_any(self):
+        """
+        兼容不同 BasePage 写法：尽量把顶部标题控件隐藏掉
+        （不会影响其它控件）
+        """
+        # 常见写法：BasePage 里有某个 label 成员
+        for attr in ("title_label", "lbl_title", "label_title", "page_title_label"):
+            w = getattr(self, attr, None)
+            if isinstance(w, QLabel):
+                w.hide()
+
+        # 兜底：如果 BasePage 给标题设置了 objectName，也可能通过 findChild 找到
+        for obj_name in ("PageTitle", "pageTitle", "titleLabel", "lblTitle"):
+            w = self.findChild(QLabel, obj_name)
+            if w:
+                w.hide()
+
     def _build_ui(self):
-        # 1. 顶部筛选下拉条（可复用组件）
+        # 0) 页面整体间距（保持你原来的逻辑即可）
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(8)
+
+        # 1) 顶部筛选下拉条（可复用组件）
         fields = [
             {"key": "division",      "label": "分公司",   "options": ["渤江分公司"]},
             {"key": "company",       "label": "作业公司", "options": ["文昌油田群作业公司"]},
@@ -33,20 +58,17 @@ class ConstructionDocsPage(BasePage):
         ]
 
         self.dropdown_bar = DropdownBar(fields, self)
-        self.main_layout.addWidget(self.dropdown_bar)
+        self.main_layout.addWidget(self.dropdown_bar, 0)
 
-        # 2. 下方文件夹 + 上传 + 返回等界面（ConstructionDocsWidget）
+        # ✅ 2) 关键：不要再额外包一层 HomeCard/HomeHeaderBar
+        #    直接使用 ConstructionDocsWidget 自己那套“首页 + 文件夹UI”
         self.docs_widget = ConstructionDocsWidget(self)
-        self.main_layout.addWidget(self.docs_widget)
+        self.main_layout.addWidget(self.docs_widget, 1)
 
-        # 3. 可选：监听筛选条件变化，后面如果要联动 docs_widget 可以在这里写
+        # 3) 监听筛选条件变化（保留）
         self.dropdown_bar.valueChanged.connect(self.on_filter_changed)
 
     def on_filter_changed(self, key: str, value: str):
-        """
-        任意下拉条件改变时的回调。
-        目前先简单打印，后续你可以在这里调用 self.docs_widget 的方法做过滤。
-        """
         print(f"[ConstructionDocsPage] 条件变化：{key} -> {value}")
-        # 例如后续可以设计：
+        # 后续联动过滤：例如
         # self.docs_widget.reload_by_filters(self.dropdown_bar.get_all_values())

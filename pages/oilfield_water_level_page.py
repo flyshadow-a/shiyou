@@ -4,7 +4,7 @@
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout,
     QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
-    QStackedWidget, QWidget, QLabel, QHeaderView, QAbstractItemView
+    QStackedWidget, QWidget, QLabel, QHeaderView, QAbstractItemView,QSizePolicy
 )
 from PyQt5.QtCore import Qt
 from base_page import BasePage
@@ -119,7 +119,7 @@ class OilfieldWaterLevelPage(BasePage):
 
     def _finalize_table_style(self, table: QTableWidget):
         table.verticalHeader().setVisible(False)
-        table.horizontalHeader().setVisible(False)  # ✅ 关键：去掉顶部 1..n
+        table.horizontalHeader().setVisible(False)  # ✅ 去掉顶部 1..n
         table.setCornerButtonEnabled(False)
 
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -136,7 +136,8 @@ class OilfieldWaterLevelPage(BasePage):
             }
             QTableWidget::item {
                 border: 1px solid #ffffff;
-        }
+                padding: 6px 10px;         /* ✅ 新增：让文字更舒适，不挤 */
+            }
         """)
         table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -148,24 +149,70 @@ class OilfieldWaterLevelPage(BasePage):
             total_h += table.rowHeight(r)
         table.setFixedHeight(total_h)
 
+    def _fit_table_width_to_columns(self, table: QTableWidget, extra: int = 140, col_extra: int = 0):
+        """
+        让整个表格宽度 = 所有列宽之和 + extra（并可选给每列再加一点宽度）。
+        - extra: 表格整体额外留白（默认给大一点，避免“太窄”）
+        - col_extra: 可选，每列额外增加的宽度（比如 20/40/60），不需要可设为 0
+        """
+        # 可选：给每列加一点“呼吸空间”
+        if col_extra > 0:
+            for c in range(table.columnCount()):
+                table.setColumnWidth(c, table.columnWidth(c) + col_extra)
+
+        total_w = table.frameWidth() * 2
+        for c in range(table.columnCount()):
+            total_w += table.columnWidth(c)
+        total_w += extra
+
+        table.setFixedWidth(total_w)
+        table.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+    def _apply_table_width_scheme_a(
+            self,
+            table: QTableWidget,
+            group_col_w: int = 190,  # 第0列：分组（主极值/xxx条件下极值）
+            elem_col_w: int = 320,  # 第1列：元素（表层/中层/有义波高...）
+            num_min_w: int = 76  # 数值列最小宽度（窗口很窄时防止太挤）
+    ):
+        """
+        方案A：固定左两列宽度，数值列均分填满（适用于 7 列结构：0=组别, 1=元素, 2~6=数值列）
+        """
+        header = table.horizontalHeader()
+
+        # 0、1列固定：避免被内容撑歪
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
+        table.setColumnWidth(0, group_col_w)
+        table.setColumnWidth(1, elem_col_w)
+
+        # 2~6列均分铺满剩余宽度
+        for c in range(2, 7):
+            header.setSectionResizeMode(c, QHeaderView.Stretch)
+
+        # 给数值列一个最小宽度（可选）
+        for c in range(2, 7):
+            if table.columnWidth(c) < num_min_w:
+                table.setColumnWidth(c, num_min_w)
+
     # ----------------- 子页构建 ----------------- #
     def build_water_level_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.setAlignment(Qt.AlignTop)  # ✅ 顶对齐，避免上方留空
-
-        frame = QFrame()
-        frame.setStyleSheet("QFrame { border: 1px solid #cfd8e3; }")
-        frame_layout = QVBoxLayout(frame)
-        frame_layout.setContentsMargins(0, 0, 0, 0)
-        frame_layout.setSpacing(0)
-        frame_layout.setAlignment(Qt.AlignTop)  # ✅ 顶对齐
+        layout.setAlignment(Qt.AlignTop)  # 顶对齐
 
         # 2行表头 + 12行数据 = 14行，3列：分组 | 元素 | 值
-        table = QTableWidget(14, 3, frame)
+        table = QTableWidget(14, 3, page)
         self._finalize_table_style(table)
+
+        # 外框直接给 table 自己加（不要用 frame 扩张）
+        table.setStyleSheet(table.styleSheet() + """
+            QTableWidget {
+                border: 1px solid #cfd8e3;
+            }
+        """)
 
         # 行高
         for r in range(table.rowCount()):
@@ -174,11 +221,9 @@ class OilfieldWaterLevelPage(BasePage):
         table.setRowHeight(1, 36)
 
         # ===== 表头（合并）=====
-        # 左侧“元素”跨2行2列（0-1行，0-1列）
         table.setSpan(0, 0, 2, 2)
         self._set_item(table, 0, 0, "元素", bold=True)
 
-        # 右侧表头：相对海图基准面 + 单位m
         self._set_item(table, 0, 2, "相对海图基准面", bold=True)
         self._set_item(table, 1, 2, "m", bold=True)
 
@@ -192,9 +237,10 @@ class OilfieldWaterLevelPage(BasePage):
         start = 2
         for i, (elem, val) in enumerate(base_rows):
             rr = start + i
-            self._set_item(table, rr, 0, "")  # 分组列留空
-            self._set_item(table, rr, 1, elem, align=Qt.AlignCenter)
+            table.setSpan(rr, 0, 1, 2)
+            self._set_item(table, rr, 0, elem, align=Qt.AlignCenter)
             self._set_item(table, rr, 2, val)
+            self._set_item(table, rr, 1, "")
 
         # ===== 最高水位（行6~9）=====
         table.setSpan(6, 0, 4, 1)
@@ -226,20 +272,27 @@ class OilfieldWaterLevelPage(BasePage):
             self._set_item(table, rr, 1, elem)
             self._set_item(table, rr, 2, val)
 
-        # 列宽：分组列适中，元素列拉伸，值列固定
+        # ===== 列宽：按内容收缩 + 适度加宽 =====
         header = table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Fixed)
-        table.setColumnWidth(0, 160)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.Fixed)
-        table.setColumnWidth(2, 220)
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
 
-        # 固定表格高度避免滚动
+        table.resizeColumnsToContents()
+
+        # 你觉得偏窄：每列加一点“呼吸空间”
+        for c in range(table.columnCount()):
+            table.setColumnWidth(c, table.columnWidth(c) + 60)
+
+        # 固定高度（避免滚动条）
         self._fit_table_height(table)
 
-        # ✅ 强制顶贴
-        frame_layout.addWidget(table, 0, Qt.AlignTop)
-        layout.addWidget(frame, 0, Qt.AlignTop)
+        # ✅ 关键：不要再给 table 额外加 140px 空白宽度
+        #    0~18 都可以；想更宽，用“列宽+xx”来变宽，而不是 extra 造空白
+        self._fit_table_width_to_columns(table, extra=0)
+
+        layout.addWidget(table, 0, Qt.AlignTop | Qt.AlignLeft)
         return page
 
     def build_wind_param_page(self) -> QWidget:
@@ -253,6 +306,9 @@ class OilfieldWaterLevelPage(BasePage):
 
         frame = QFrame()
         frame.setStyleSheet("QFrame { border: 1px solid #888; }")
+        frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
         frame_layout = QVBoxLayout(frame)
         frame_layout.setContentsMargins(0, 0, 0, 0)
         frame_layout.setSpacing(0)
@@ -319,13 +375,8 @@ class OilfieldWaterLevelPage(BasePage):
             r0 += len(rows)
 
         # 列宽策略
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # 左侧“主极值/条件极值”
-        header.setSectionResizeMode(1, QHeaderView.Fixed)  # ✅ 元素列别拉太宽
-        table.setColumnWidth(1, 260)  # ✅ 这里调元素列宽度(240~320都行)
-
-        for c in range(2, 7):
-            header.setSectionResizeMode(c, QHeaderView.Stretch)  # ✅ 数值列均分填满
+        # 方案A：固定左两列 + 数值列均分铺满
+        self._apply_table_width_scheme_a(table, group_col_w=190, elem_col_w=260, num_min_w=76)
 
         self._fit_table_height(table)
 
@@ -420,8 +471,9 @@ class OilfieldWaterLevelPage(BasePage):
             r0 += len(rows)
 
         header = table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # 左侧分组
-        header.setSectionResizeMode(1, QHeaderView.Fixed)  # ✅ “表层/中层/底层/+1m@ASB”列固定
+        # 方案A：固定左两列 + 数值列均分铺满
+        self._apply_table_width_scheme_a(table, group_col_w=200, elem_col_w=320, num_min_w=76)
+
         table.setColumnWidth(1, 260)  # ✅ 这里调分层列宽度
 
         for c in range(2, 7):
@@ -507,11 +559,8 @@ class OilfieldWaterLevelPage(BasePage):
                     self._set_item(table, rr, 2 + j, v)
             r0 += len(rows)
 
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        for c in range(2, 7):
-            header.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        # 方案A：固定左两列 + 数值列均分铺满
+        self._apply_table_width_scheme_a(table, group_col_w=210, elem_col_w=320, num_min_w=76)
 
         self._fit_table_height(table)
 
@@ -522,6 +571,32 @@ class OilfieldWaterLevelPage(BasePage):
         layout.addWidget(frame, 0, Qt.AlignTop)
 
         return page
+
+    def _beautify_table_width_7cols(
+            self,
+            table: QTableWidget,
+            group_col_w: int = 180,  # 第0列：组别
+            elem_col_w: int = 320,  # 第1列：元素/分层
+            min_num_col_w: int = 72  # 数值列最小宽度（防止太挤）
+    ):
+        header = table.horizontalHeader()
+
+        # 0、1列固定宽度：视觉更稳
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
+        table.setColumnWidth(0, group_col_w)
+        table.setColumnWidth(1, elem_col_w)
+
+        # 2~6 数值列：均分填满
+        for c in range(2, 7):
+            header.setSectionResizeMode(c, QHeaderView.Stretch)
+
+        # 可选：保证数值列不会小到难看
+        table.setStyleSheet(table.styleSheet() + f"""
+            QTableWidget::item {{ padding: 6px 10px; }}
+        """)
+        for c in range(2, 7):
+            table.setColumnWidth(c, max(table.columnWidth(c), min_num_col_w))
 
     # ----------------- 选项卡切换逻辑 ----------------- #
     def switch_tab(self, index: int):
