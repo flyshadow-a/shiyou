@@ -72,12 +72,43 @@ NAV_CONFIG = [
     {
         "text": "文件管理",
         "children": [
-            {"text": "建设阶段完工文件","page":ConstructionDocsPage },
-            {"text": "历史改造文件", "page":HistoryRebuildFilesPage},
-            {"text": "模型文件","page":ModelFilesPage},
-            {"text": "重要历史事件记录", "page":ImportantHistoryEventsPage},
-            {"text": "历史检测及结论", "page":HistoryInspectionSummaryPage},
+            {
+                "text": "建设阶段完工文件",
+                "page": ConstructionDocsPage,
+                "children": [
+                    {
+                        "text": "湛江分公司",
+                        "children": [
+                            {
+                                "text": "1.润洲作业公司",
+                                "children": [
+                                    {
+                                        "text": "1.2 作业公司",
+                                        "children": [
+                                            {"text": "1.2.1 WC19-1DPA"},
+                                            {"text": "1.2.2 WC19-1WHPC"},
+                                            {"text": "1.2.3 WC9-7DPP"},
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                "text": "1.3 乌石作业公司",
+                            },
+                        ],
+                    },
+                    {"text": "天津分公司"},
+                    {"text": "上海分公司"},
+                    {"text": "深圳分公司"},
+                    {"text": "海南分公司"},
+                ],
+            },
+            {"text": "历史改造文件", "page": HistoryRebuildFilesPage},
+            {"text": "模型文件", "page": ModelFilesPage},
+            {"text": "重要历史事件记录", "page": ImportantHistoryEventsPage},
+            {"text": "历史检测及结论", "page": HistoryInspectionSummaryPage},
         ],
-    },
+    }
+
     # 还可以继续增加「文件管理」等大类
 ]

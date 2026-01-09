@@ -426,7 +426,7 @@ class ImportantHistoryEventsPage(BasePage):
 
     def _build_ui(self):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
-        self.main_layout.setSpacing(0)
+        self.main_layout.setSpacing(8)
 
         # 整个页面用一个堆叠：0 = 三个文件夹首页；1 = 详细界面
         self.stack = QStackedWidget(self)
@@ -452,7 +452,7 @@ class ImportantHistoryEventsPage(BasePage):
         layout.setContentsMargins(0, 0, 0, 0)
 
         # ✅ 顶格：去掉 DropdownBar 和下面内容之间的额外空白（原来是 8）
-        layout.setSpacing(0)
+        layout.setSpacing(8)
 
         # 顶部下拉条
         fields = [

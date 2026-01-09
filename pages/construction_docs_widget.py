@@ -524,7 +524,7 @@ class ConstructionDocsWidget(QWidget):
         node = self._get_node_by_path(self.current_path)
         children = node.get("children", {}) if node else {}
 
-        max_cols = 4
+        max_cols = 10
         row, col = 0, 0
         icon = QIcon(self.folder_icon_path) if os.path.exists(self.folder_icon_path) else None
 

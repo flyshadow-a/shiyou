@@ -195,7 +195,7 @@ class HistoryInspectionSummaryPage(BasePage):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
 
         # ✅ 顶格更贴近“文件管理”效果：把 spacing 从 8 改为 0（不改逻辑，仅 UI）
-        self.main_layout.setSpacing(0)
+        self.main_layout.setSpacing(8)
 
         # ---------- 顶部 DropdownBar ----------
         fields = [
