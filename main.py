@@ -27,8 +27,6 @@ from PyQt5.QtWidgets import QStatusBar
 
 
 
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -512,7 +510,7 @@ class MainWindow(QMainWindow):
         tab_title = f"{facility_code} - 特检策略"
         page = NewSpecialInspectionPage(facility_code, self)
         index = self.tab_widget.addTab(page, tab_title)
-        self.tab_widget.setTabIcon(index, QIcon('./pict/logo.png'))
+        # self.tab_widget.setTabIcon(index, QIcon('./pict/logo.png'))
         self.tab_widget.setCurrentIndex(index)
 
     # ================== 业务：风险更新结果 ================== #
