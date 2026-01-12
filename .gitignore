@@ -1,23 +1,29 @@
-# Python
+# ---- Python ----
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 
-# Virtual env
+# ---- Virtual environments ----
 .venv/
 venv/
 env/
 
-# Logs / cache
+# ---- Test / type / tooling caches ----
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 .cache/
+.coverage
+htmlcov/
 
-# PyCharm / IntelliJ（推荐忽略大部分）
-.idea/
-*.iml
+# ---- Logs / temp ----
+*.log
+*.tmp
 
-# OS
+# ---- OS ----
 .DS_Store
 Thumbs.db
+
+# ---- JetBrains / PyCharm ----
+.idea/
+*.iml
