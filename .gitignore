@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Logs / cache
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+# PyCharm / IntelliJ（推荐忽略大部分）
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
