@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 # pages/summary_information_table_page.py
-
-import os
 import csv
-import random
-from typing import List
+import os
+from typing import List, Dict, Any
+
+import pandas as pd
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -14,48 +14,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtGui import QColor, QFontMetrics
 
+from pages.hover_tip_table import HoverTipTable
 from base_page import BasePage
 
-
-class HoverTipTable(QTableWidget):
-    """
-    只在“内容显示不全（被截断）”时显示 Tooltip 的表格。
-    - 对每个单元格，比较文本宽度与单元格可用宽度
-    - 只有超出才弹出 Tooltip（满足你的要求：所有显示不全的内容悬停可看全称）
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.setMouseTracking(True)
-
-    def viewportEvent(self, event):
-        if event.type() == QEvent.ToolTip:
-            pos = event.pos()
-            item = self.itemAt(pos)
-            if item is None:
-                QToolTip.hideText()
-                return True
-
-            text = item.text()
-            if not text:
-                QToolTip.hideText()
-                return True
-
-            rect = self.visualItemRect(item)
-            # 估算单元格可用宽度（减去一点 padding）
-            avail = max(0, rect.width() - 10)
-
-            fm = QFontMetrics(item.font())
-            lines = text.splitlines() or [text]
-            text_w = max(fm.horizontalAdvance(line) for line in lines)
-
-            # ✅仅当文本宽度超过可用宽度时显示 Tooltip
-            if text_w > avail:
-                QToolTip.showText(event.globalPos(), text, self)
-            else:
-                QToolTip.hideText()
-            return True
-
-        return super().viewportEvent(event)
 
 
 class SummaryInformationTablePage(BasePage):
@@ -72,15 +33,14 @@ class SummaryInformationTablePage(BasePage):
         * 行数 > 50：表格保持合理高度（表格内部滚动更流畅）
     """
 
-    DEMO_CSV_NAME = "summary_information_table_demo.csv"
+    EXCEL_NAME = "平台汇总信息样表.xls"
     MAX_EXPAND_ROWS = 50
 
     def __init__(self, parent=None):
         super().__init__("", parent)
         self.data_dir = os.path.join(os.getcwd(), "data")
         self._build_ui()
-        self._ensure_demo_csv()
-        self.load_from_csv(os.path.join(self.data_dir, self.DEMO_CSV_NAME))
+        self.load_from_excel(self._default_excel_path())
 
     def _build_ui(self):
         # 更贴近示例图：浅蓝灰底、细边框、表头同色
@@ -141,7 +101,7 @@ class SummaryInformationTablePage(BasePage):
             "填表说明\n"
             "1、变化总重=变化量×重心；变化率、重心、桩基承载力安全系数、是否整体评估：每年更新一次，填写最新数据。\n"
             "2、变化量=变化总重/建造总操作重量。\n"
-            f"（示例数据文件：data/{self.DEMO_CSV_NAME}，可自行替换为真实数据）"
+            f"（数据来源：平台汇总信息样表.xls；本页从样表筛选字段并映射到当前表格列）"
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#111827; font-size:12px; padding:6px;")
@@ -187,7 +147,7 @@ class SummaryInformationTablePage(BasePage):
             "重心,m",
             "重心不可超载半径,m",
             "桩基承载力安全系数(最小)-操作",
-            "桩基承载力安全系数(最小)-校验",
+            "桩基承载力安全系数(最小)-极端",
             "整体评估次数",
         ]
 
@@ -228,7 +188,7 @@ class SummaryInformationTablePage(BasePage):
         table.setSpan(0, 13, 1, 2)
         table.setItem(0, 13, self._mk_item("桩基承载力\n安全系数\n（最小）", bold=True, bg=bg_group))
         table.setItem(1, 13, self._mk_item("操作", bold=True, bg=bg_header))
-        table.setItem(1, 14, self._mk_item("校验", bold=True, bg=bg_header))
+        table.setItem(1, 14, self._mk_item("极端", bold=True, bg=bg_header))
 
         # ✅ 补齐表头两行背景（样式完全一致）
         self._fill_bg_for_row(table, 0, bg_group)
@@ -257,31 +217,89 @@ class SummaryInformationTablePage(BasePage):
         return labels.get(c, "")
 
     # ---------- data import ----------
-    def load_from_csv(self, csv_path: str):
+    def _default_excel_path(self) -> str:
+        """默认从 data/平台汇总信息样表.xls 读取；若不存在，尝试从当前工作目录读取同名文件。"""
+        p1 = os.path.join(self.data_dir, self.EXCEL_NAME)
+        if os.path.exists(p1):
+            return p1
+        p2 = os.path.join(os.getcwd(), self.EXCEL_NAME)
+        if os.path.exists(p2):
+            return p2
+        return p1  # 默认返回 data 路径（用于报错提示）
+
+    def load_from_excel(self, excel_path: str):
         """
-        从 CSV 导入数据。CSV 需包含 16 列（允许有表头）。
+        从“平台汇总信息样表.xls”导入数据，并筛选/映射到当前表格 16 列（表格设计不变）。
+        - 样表字段很多：这里只取少量字段填入；其余列留空，后续可按真实口径继续补齐映射/计算逻辑。
         """
-        if not os.path.exists(csv_path):
-            QMessageBox.warning(self, "提示", f"未找到数据文件：{csv_path}")
+        if not os.path.exists(excel_path):
+            QMessageBox.warning(self, "提示", f"未找到数据文件：{excel_path}")
             return
 
+        # 读取 Excel：
+        # - .xls 通常需要 xlrd 引擎（pip install xlrd==2.0.1）
+        # - 有些文件虽然扩展名是 .xls，但实际上是 xlsx，这里也做兼容尝试
+        df = None
+        last_err = None
+
+        # 先按 .xls 方式读
+        try:
+            df = pd.read_excel(excel_path, header=1, engine="xlrd")
+        except Exception as e:
+            last_err = e
+
+        # 再尝试不指定 engine（让 pandas 自动推断）
+        if df is None:
+            try:
+                df = pd.read_excel(excel_path, header=1)
+                last_err = None
+            except Exception as e:
+                last_err = e
+
+        if df is None:
+            msg = str(last_err) if last_err else "未知错误"
+            QMessageBox.critical(self, "读取失败","读取 Excel 失败。如果是 .xls 文件，请先安装：xlrd==2.0.1 命令：pip install xlrd==2.0.1"f"错误详情：{msg}")
+            return
+
+        # 清理列名空格
+        df.columns = [str(c).strip() for c in df.columns]
+
+        # 样表可能存在空行/备注行：以“设施名称”非空为准过滤
+        if "设施名称" in df.columns:
+            df = df[df["设施名称"].notna()]
+        df = df.copy()
+
+        # 映射：当前表格 16 列 -> 样表字段（能找到就填，找不到留空）
+        col_map = {
+            "分公司": "分公司",
+            "作业单元": "作业公司",
+            "设施名称": "设施名称",
+            "投产时间": "投产时间",
+            "设计年限": "设计年限",
+            "建造总操作重量,MT": "上部组块操作重量(t)",
+            # 其余列暂留空：后续你给我口径/字段名再补齐
+        }
+
+        def fmt(v) -> str:
+            if v is None or (isinstance(v, float) and pd.isna(v)) or pd.isna(v):
+                return ""
+            # 时间
+            if hasattr(v, "strftime"):
+                return v.strftime("%Y-%m-%d")
+            return str(v)
+
+        out_cols = self._columns()
         rows: List[List[str]] = []
-        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.reader(f)
-            all_rows = list(reader)
-
-        if not all_rows:
-            return
-
-        start_idx = 0
-        if all_rows[0] and "序号" in all_rows[0][0]:
-            start_idx = 1
-
-        for r in all_rows[start_idx:]:
-            if not r:
-                continue
-            r = (r + [""] * 16)[:16]
-            rows.append([str(x) for x in r])
+        for i, (_, r) in enumerate(df.iterrows(), start=1):
+            rd: Dict[str, Any] = r.to_dict()
+            out_row = []
+            for out_col in out_cols:
+                if out_col == "序号":
+                    out_row.append(str(i))
+                    continue
+                src = col_map.get(out_col)
+                out_row.append(fmt(rd.get(src)) if src else "")
+            rows.append(out_row)
 
         self._apply_data(rows)
 
@@ -327,74 +345,6 @@ class SummaryInformationTablePage(BasePage):
         data_rows_show = 12
         data_h = data_rows_show * 48
         self.table.setMinimumHeight(header_h + data_h + 20)
-
-    # ---------- demo data ----------
-    def _ensure_demo_csv(self):
-        os.makedirs(self.data_dir, exist_ok=True)
-        demo_path = os.path.join(self.data_dir, self.DEMO_CSV_NAME)
-        if os.path.exists(demo_path):
-            return
-
-        rows = self._generate_mock_rows(n=30, seed=202501)
-        header = self._columns()
-
-        with open(demo_path, "w", encoding="utf-8-sig", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(header)
-            w.writerows(rows)
-
-    def _generate_mock_rows(self, n: int = 30, seed: int = 0) -> List[List[str]]:
-        rnd = random.Random(seed)
-
-        companies = ["湛江分公司", "深圳分公司", "上海分公司", "海南分公司", "天津分公司"]
-        units = ["涠洲作业公司", "文昌作业公司", "珠江作业公司", "渤海作业公司"]
-        facilities = ["WC19-1WHPC", "WC19-2WHPC", "WC19-3WHPC", "WC9-7DPP", "WC19-1DPPA"]
-
-        rows: List[List[str]] = []
-        for i in range(1, n + 1):
-            comp = rnd.choice(companies)
-            unit = rnd.choice(units)
-            fac = rnd.choice(facilities)
-            # 故意做长一点，方便你验证“悬停显示全称”
-            fac_name = f"{fac}井口平台-上部组块载荷汇总信息示例（第{i}条）"
-
-            year = rnd.randint(2004, 2016)
-            month = rnd.randint(1, 12)
-            day = rnd.randint(1, 28)
-            start_date = f"{year:04d}-{month:02d}-{day:02d}"
-            design_life = rnd.choice([15, 20, 25, 30])
-
-            base_weight = rnd.randint(5500, 18000)  # MT
-            cog = rnd.uniform(8.0, 26.0)  # m
-            change_weight = rnd.uniform(30, 260)  # MT
-            change_cog = change_weight * cog  # MT·m
-            change_rate = (change_weight / base_weight) * 100.0
-
-            no_over = base_weight * rnd.uniform(0.80, 0.95)
-            radius = rnd.uniform(6.0, 18.0)
-            sf_op = rnd.uniform(1.10, 2.60)
-            sf_chk = rnd.uniform(1.10, 2.60)
-            eval_cnt = rnd.randint(0, 5)
-
-            rows.append([
-                str(i),
-                comp,
-                unit,
-                fac_name,
-                start_date,
-                str(design_life),
-                f"{base_weight:.0f}",
-                f"{change_cog:.2f}",
-                f"{change_rate:.2f}",
-                f"{change_weight:.2f}",
-                f"{no_over:.2f}",
-                f"{cog:.2f}",
-                f"{radius:.2f}",
-                f"{sf_op:.2f}",
-                f"{sf_chk:.2f}",
-                str(eval_cnt),
-            ])
-        return rows
 
     # ---------- actions ----------
     def _on_save(self):
