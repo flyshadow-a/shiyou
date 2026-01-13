@@ -17,6 +17,7 @@
 import os
 import csv
 import random
+import openpyxl
 from typing import List, Tuple, Dict, Optional
 
 from PyQt5.QtWidgets import (
@@ -29,6 +30,17 @@ from PyQt5.QtGui import QColor, QFontMetrics
 
 from base_page import BasePage
 from dropdown_bar import DropdownBar  # 复用平台基本信息页的顶部下拉条样式
+# 从样表提取下拉选项（兼容：pages 包内相对导入 / 直接运行）
+from pages.read_table_xls import ReadTableXls
+from pages.hover_tip_table import HoverTipTable
+
+# 上部组块分项目计算表页面（点击重量/重心单元格跳转编辑）
+try:
+    from upper_block_subproject_calculation_table_page import UpperBlockSubprojectCalculationTablePage
+except Exception:
+    # 兼容 pages 包内运行
+    from pages.upper_block_subproject_calculation_table_page import UpperBlockSubprojectCalculationTablePage
+
 
 # matplotlib 嵌入
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -62,38 +74,6 @@ def _setup_chinese_matplotlib_font():
     # 若找不到中文字体，则至少保证负号显示正常
     mpl.rcParams['axes.unicode_minus'] = False
 
-class HoverTipTable(QTableWidget):
-    """仅当单元格文本显示不全（被截断）时，悬停显示 tooltip。"""
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.setMouseTracking(True)
-
-    def viewportEvent(self, event):
-        if event.type() == QEvent.ToolTip:
-            pos = event.pos()
-            item = self.itemAt(pos)
-            if item is None:
-                QToolTip.hideText()
-                return True
-            text = item.text()
-            if not text:
-                QToolTip.hideText()
-                return True
-
-            rect = self.visualItemRect(item)
-            avail_w = max(0, rect.width() - 10)
-
-            fm = QFontMetrics(item.font())
-            lines = text.splitlines() or [text]
-            text_w = max(fm.horizontalAdvance(line) for line in lines)
-
-            if text_w > avail_w:
-                QToolTip.showText(event.globalPos(), text, self)
-            else:
-                QToolTip.hideText()
-            return True
-
-        return super().viewportEvent(event)
 
 
 class SimpleLineChart(FigureCanvas):
@@ -212,6 +192,21 @@ class PlatformLoadInformationPage(BasePage):
     def __init__(self, parent=None):
         super().__init__("", parent)
         self.data_dir = os.path.join(os.getcwd(), "data")
+
+        # === 红色字段 Excel 导入（仅当前行）===
+        self.result_excel_path: Optional[str] = None
+        self.red_field_mode: str = 'manual'  # 'manual' or 'excel'
+        # 从《平台汇总信息样表.xls》加载下拉选项（失败则回退到原 mock 逻辑）
+        self._excel_provider = ReadTableXls()
+        self._excel_loaded = False
+        try:
+            self._excel_provider.load()  # 默认路径：data/平台汇总信息样表.xls
+            self._excel_loaded = True
+        except Exception:
+            self._excel_loaded = False
+
+
+
         self._build_ui()
         self._ensure_demo_files()
         self.load_from_csv(os.path.join(self.data_dir, self.DEMO_MAIN_CSV))
@@ -254,17 +249,30 @@ class PlatformLoadInformationPage(BasePage):
 
         top_layout.setAlignment(Qt.AlignTop)
         # 顶部下拉条（样式与“平台基本信息”一致：DropdownBar）
-        fields = [
-            {"key": "branch",        "label": "分公司",   "options": self._mock_top_options("分公司", "湛江分公司"),               "default": "湛江分公司"},
-            {"key": "op_company",    "label": "作业公司", "options": self._mock_top_options("作业公司", "文昌油田群作业公司"),       "default": "文昌油田群作业公司"},
-            {"key": "oilfield",      "label": "油气田",   "options": self._mock_top_options("油气田", "文昌19-1油田"),             "default": "文昌19-1油田"},
-            {"key": "facility_code", "label": "设施编码", "options": self._mock_top_options("设施编码", "WC19-1WHPC"),              "default": "WC19-1WHPC"},
-            {"key": "facility_name", "label": "设施名称", "options": self._mock_top_options("设施名称", "文昌19-1WHPC井口平台"),    "default": "文昌19-1WHPC井口平台"},
-            {"key": "facility_type", "label": "设施类型", "options": self._mock_top_options("设施类型", "平台"),                   "default": "平台"},
-            {"key": "category",      "label": "分类",     "options": self._mock_top_options("分类", "井口平台"),                   "default": "井口平台"},
-            {"key": "start_time",    "label": "投产时间", "options": self._mock_top_options("投产时间", "2013-07-15"),             "default": "2013-07-15"},
-            {"key": "design_life",   "label": "设计年限", "options": self._mock_top_options("设计年限", "15"),                     "default": "15"},
-        ]
+                # 顶部下拉条：选项从《平台汇总信息样表.xls》提取（若读取失败则用内置 mock）
+        def _opts(field_cn: str, fallback_default: str):
+            if getattr(self, "_excel_loaded", False):
+                opts = self._excel_provider.options_for(field_cn)
+                if opts:
+                    return opts, self._excel_provider.default_for(field_cn, fallback_default)
+            # fallback
+            return self._mock_top_options(field_cn, fallback_default), fallback_default
+
+        fields = []
+        for key, label, fallback in [
+            ("branch",        "分公司",   "湛江分公司"),
+            ("op_company",    "作业公司", "文昌油田群作业公司"),
+            ("oilfield",      "油气田",   "文昌19-1油田"),
+            ("facility_code", "设施编码", "WC19-1WHPC"),
+            ("facility_name", "设施名称", "文昌19-1WHPC井口平台"),
+            ("facility_type", "设施类型", "平台"),
+            ("category",      "分类",     "井口平台"),
+            ("start_time",    "投产时间", "2013-07-15"),
+            ("design_life",   "设计年限", "15"),
+        ]:
+            opts, default = _opts(label, fallback)
+            fields.append({"key": key, "label": label, "options": opts, "default": default})
+
         self.dropdown_bar = DropdownBar(fields, parent=self)
         self.dropdown_bar.valueChanged.connect(self._on_top_key_changed)
         top_layout.addWidget(self.dropdown_bar, 1)
@@ -278,6 +286,19 @@ class PlatformLoadInformationPage(BasePage):
         self.btn_save = QPushButton("保存")
         self.btn_export = QPushButton("导出数据")
         self.btn_import_result = QPushButton("读取结果文件")
+        # 红色字段：手动输入 / Excel导入（不影响原有CSV读取结果文件功能）
+        self.red_field_mode_combo = QComboBox()
+        self.red_field_mode_combo.addItems(['红色字段：手动输入', '红色字段：Excel导入'])
+        self.red_field_mode_combo.setMinimumHeight(32)
+        self.red_field_mode_combo.setToolTip('仅控制红色字段(Fx~Mz、操作工况、极端工况)的数据来源：手动输入或从Excel导入到当前行')
+
+        self.btn_pick_excel_result = QPushButton('选择结果Excel')
+        self.btn_pick_excel_result.setMinimumWidth(150)
+        self.btn_pick_excel_result.setMinimumHeight(32)
+
+        self.btn_import_excel_result = QPushButton('导入Excel到当前行')
+        self.btn_import_excel_result.setMinimumWidth(150)
+        self.btn_import_excel_result.setMinimumHeight(32)
         self.btn_curve = QPushButton("重量中心变化曲线")
 
         for b in (self.btn_save, self.btn_export, self.btn_import_result, self.btn_curve):
@@ -291,6 +312,9 @@ class PlatformLoadInformationPage(BasePage):
         self.btn_save.clicked.connect(self._on_save)
         self.btn_export.clicked.connect(self._on_export)
         self.btn_import_result.clicked.connect(self._on_import_result)
+        self.red_field_mode_combo.currentIndexChanged.connect(self._on_red_field_mode_changed)
+        self.btn_pick_excel_result.clicked.connect(self._pick_result_excel)
+        self.btn_import_excel_result.clicked.connect(self._import_excel_to_current_row)
         self.btn_curve.clicked.connect(self._open_curve_page)
 
         btn_col.addWidget(self.btn_save)
@@ -315,6 +339,9 @@ class PlatformLoadInformationPage(BasePage):
 
         # 主表允许编辑（但我们会用 item flags 精细控制哪些格可编辑）
         self.table.setEditTriggers(QTableWidget.DoubleClicked | QTableWidget.SelectedClicked | QTableWidget.EditKeyPressed)
+
+        # 点击“上部组块总操作重量/重心”单元格：跳转到分项目计算表编辑并回填
+        self.table.cellClicked.connect(self._on_main_cell_clicked)
 
         root.addWidget(self.table, 1)
 
@@ -416,14 +443,14 @@ class PlatformLoadInformationPage(BasePage):
     def _columns(self) -> List[str]:
         return [
             "序号",
-            "改扩建类型名称",
+            "改扩建项目名称",
             "改扩建时间",
             "改扩建内容",
             "上部组块总\n操作重量\nMT",
-            "上部组块总\n重心到超载\n重量,MT",
+            "上部组块不\n可超越\n重量,MT",
             "重量变化\nMT",
-            "上部组块\n变化总\n重心 x,y,z\nm",
-            "上部组块变化后\n不可超载半径\nm",
+            "上部组块\n重心(x,y,z)\nm",
+            "上部组块重心\n不可超越半径\nm",
             "Fx,KN",
             "Fy,KN",
             "Fz,KN",
@@ -519,11 +546,11 @@ class PlatformLoadInformationPage(BasePage):
         table.setSpan(2, 0, 2, 1)
         table.setItem(2, 0, self._mk_item("序号", bold=True, bg=bg))
 
-        table.setSpan(2, 1, 1, 3)
-        table.setItem(2, 1, self._mk_item("改扩建", bold=True, bg=bg))
+        # table.setSpan(2, 1, 1, 3)
+        # table.setItem(2, 1, self._mk_item("改扩建", bold=True, bg=bg))
 
-        table.setSpan(2, 4, 1, 5)
-        table.setItem(2, 4, self._mk_item("上部组块重控", bold=True, bg=bg))
+        # table.setSpan(2, 4, 1, 5)
+        # table.setItem(2, 4, self._mk_item("上部组块重控", bold=True, bg=bg))
 
         table.setSpan(2, 9, 1, 6)
         table.setItem(2, 9, self._mk_item("极端工况最大载荷", bold=True, bg=bg))
@@ -537,15 +564,17 @@ class PlatformLoadInformationPage(BasePage):
         table.setItem(2, 18, self._mk_item("评估机构", bold=True, bg=bg))
 
         # ===== 子表头（row3）=====
-        table.setItem(3, 1, self._mk_item("改扩建类\n型名称", bold=True, bg=bg))
-        table.setItem(3, 2, self._mk_item("改扩建时\n间", bold=True, bg=bg))
-        table.setItem(3, 3, self._mk_item("改扩建内\n容", bold=True, bg=bg))
+        for i in range(1,9):
+            table.setSpan(2, i, 2, 1)
+        table.setItem(2, 1, self._mk_item("改扩建项\n目名称", bold=True, bg=bg))
+        table.setItem(2, 2, self._mk_item("改扩建时\n间", bold=True, bg=bg))
+        table.setItem(2, 3, self._mk_item("改扩建内\n容", bold=True, bg=bg))
 
-        table.setItem(3, 4, self._mk_item("上部组块\n总操作\n重量,MT", bold=True, bg=bg))
-        table.setItem(3, 5, self._mk_item("上部组块\n总重心到\n超载重量,MT", bold=True, bg=bg))
-        table.setItem(3, 6, self._mk_item("重量变化,\nMT", bold=True, bg=bg))
-        table.setItem(3, 7, self._mk_item("上部组块\n变化总\n重心 x,y,z,\nm", bold=True, bg=bg))
-        table.setItem(3, 8, self._mk_item("上部组块变化后\n不可超载\n半径,m", bold=True, bg=bg))
+        table.setItem(2, 4, self._mk_item("上部组块\n总操作\n重量,MT", bold=True, bg=bg))
+        table.setItem(2, 5, self._mk_item("上部组块\n不可\n超越重量,MT", bold=True, bg=bg))
+        table.setItem(2, 6, self._mk_item("重量变化,\nMT", bold=True, bg=bg))
+        table.setItem(2, 7, self._mk_item("上部组块\n重心 x,y,z,\nm", bold=True, bg=bg))
+        table.setItem(2, 8, self._mk_item("上部组块重心\n不可超越\n半径,m", bold=True, bg=bg))
 
         # 红色字段（严格：Mz 纵向显示）
         fx_headers = [
@@ -649,7 +678,9 @@ class PlatformLoadInformationPage(BasePage):
             rr = base_rows + i
             for c, val in enumerate(row):
                 # 数据区：允许编辑
-                it = self._mk_item(val, editable=True)
+                # 主表中“上部组块总操作重量/重心”不允许直接编辑，需跳转到分项目计算表
+                editable = (c not in (4, 7))
+                it = self._mk_item(val, editable=editable)
 
                 # 示例：第0/1行的提示用绿/红区分（但依然可编辑）
                 if i in (0, 1) and val:
@@ -674,20 +705,144 @@ class PlatformLoadInformationPage(BasePage):
         for r in range(0, self.table.rowCount()):
             for c in range(self.table.columnCount()):
                 if self.table.item(r, c) is None and self.table.cellWidget(r, c) is None:
-                    editable = (base_rows <= r < data_end)
+                    editable = (base_rows <= r < data_end) and (c not in (4, 7))
                     self.table.setItem(r, c, self._mk_item("", bg=bg, editable=editable))
 
     # ---------------- 结果文件读取接口 ----------------
+    # === 红色字段 Excel 导入模式（仅当前行）===
+    def _on_red_field_mode_changed(self, idx: int):
+        # 0=手动输入, 1=Excel导入
+        self.red_field_mode = 'manual' if idx == 0 else 'excel'
+        # Excel模式下：导入按钮可用；手动模式下：禁用导入
+        self.btn_pick_excel_result.setEnabled(self.red_field_mode == 'excel')
+        self.btn_import_excel_result.setEnabled(self.red_field_mode == 'excel')
+        self._apply_red_fields_editability()
+
+    def _apply_red_fields_editability(self):
+        # 红色字段列：9..14 Fx~Mz, 15 操作工况, 16 极端工况（与你表头绘制保持一致）
+        red_cols = list(range(9, 17))
+        base_rows = 4
+        data_end = self._find_data_end_row()
+        for r in range(base_rows, data_end):
+            for c in red_cols:
+                it = self.table.item(r, c)
+                if it is None:
+                    it = self._mk_item('', editable=True)
+                    self.table.setItem(r, c, it)
+                flags = it.flags()
+                if self.red_field_mode == 'manual':
+                    it.setFlags(flags | Qt.ItemIsEditable)
+                    it.setBackground(QColor('white'))
+                else:
+                    it.setFlags(flags & ~Qt.ItemIsEditable)
+                    it.setBackground(QColor('#f2f2f2'))
+
+    def _pick_result_excel(self):
+        default_path = self.result_excel_path or self.data_dir
+        path, _ = QFileDialog.getOpenFileName(self, '选择结果文件（Excel）', default_path, 'Excel Files (*.xlsx *.xlsm);;All Files (*)')
+        if path:
+            self.result_excel_path = path
+
+    def _import_excel_to_current_row(self):
+        if self.red_field_mode != 'excel':
+            QMessageBox.information(self, '提示', '请先将“红色字段模式”切换为 Excel导入。')
+            return
+        if not self.result_excel_path:
+            QMessageBox.information(self, '提示', '请先点击“选择结果Excel”。')
+            return
+        row = self.table.currentRow()
+        base_rows = 4
+        data_end = self._find_data_end_row()
+        if row < base_rows or row >= data_end:
+            QMessageBox.information(self, '提示', '请先在主表数据区选中一行（非表头/说明区）。')
+            return
+        try:
+            values = self._read_result_excel_generic(self.result_excel_path)
+            if not values:
+                QMessageBox.warning(self, '导入失败', '未在Excel中解析到 Fx/Fy/Fz/Mx/My/Mz/操作工况/极端工况 字段。')
+                return
+            self._apply_excel_values_to_row(row, values)
+            QMessageBox.information(self, '完成', '已导入Excel数据到当前行（红色字段）。')
+        except Exception as e:
+            QMessageBox.warning(self, '导入失败', str(e))
+
+    def _apply_excel_values_to_row(self, row: int, values: Dict[str, object]):
+        keys = ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz', '操作工况', '极端工况']
+        cols = [9, 10, 11, 12, 13, 14, 15, 16]
+        for k, c in zip(keys, cols):
+            v = values.get(k, '')
+            it = self.table.item(row, c)
+            if it is None:
+                it = self._mk_item('', editable=False)
+                self.table.setItem(row, c, it)
+            it.setText('' if v is None else str(v))
+
+    def _read_result_excel_generic(self, path: str) -> Dict[str, object]:
+        """通用Excel解析（没有样例文件前的兼容方案）：
+        A) 第一行含字段名(Fx/Fy/.../操作工况/极端工况)，取第二行值；
+        B) 表内出现字段名单元格，取右侧(优先)或下方。
+        """
+        wb = openpyxl.load_workbook(path, data_only=True)
+        ws = wb.active
+        keys = ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz', '操作工况', '极端工况']
+        result: Dict[str, object] = {}
+        headers: Dict[str, int] = {}
+        for c in range(1, ws.max_column + 1):
+            v = ws.cell(1, c).value
+            if isinstance(v, str):
+                v = v.strip()
+                if v in keys:
+                    headers[v] = c
+        if headers:
+            for k, c in headers.items():
+                result[k] = ws.cell(2, c).value
+            return result
+        for r in range(1, ws.max_row + 1):
+            for c in range(1, ws.max_column + 1):
+                v = ws.cell(r, c).value
+                if isinstance(v, str):
+                    v = v.strip()
+                    if v in keys:
+                        right = ws.cell(r, c + 1).value if c + 1 <= ws.max_column else None
+                        down = ws.cell(r + 1, c).value if r + 1 <= ws.max_row else None
+                        result[v] = right if right is not None else down
+        return result
+
     def _on_import_result(self):
+        """读取结果文件：
+        - 如果选择的是 Excel（.xlsx/.xlsm），则按“导入当前行”的方式只写入当前选中行的红色字段；
+        - 如果选择的是 CSV，则沿用你原有的“按序号匹配多行回填”的逻辑（不改原功能）。
+        """
         default_path = os.path.join(self.data_dir, self.DEMO_RESULT_CSV)
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择结果文件（CSV）", default_path, "CSV Files (*.csv);;All Files (*)"
+            self,
+            "选择结果文件（CSV/Excel）",
+            default_path,
+            "CSV Files (*.csv);;Excel Files (*.xlsx *.xlsm);;All Files (*)"
         )
         if not path:
             return
+
+        ext = os.path.splitext(path)[1].lower()
         try:
-            self._apply_result_file(path)
-            QMessageBox.information(self, "读取结果文件", "结果文件已回填到红色字段列。")
+            if ext in [".xlsx", ".xlsm", ".xls"]:
+                # Excel：只导入当前行（红色字段）
+                row = self.table.currentRow()
+                base_rows = 4
+                data_end = self._find_data_end_row()
+                if row < base_rows or row >= data_end:
+                    QMessageBox.information(self, "提示", "请先在主表数据区选中一行（非表头/说明区）。")
+                    return
+                values = self._read_result_excel_generic(path)
+                if not values:
+                    QMessageBox.warning(self, "读取失败", "未在Excel中解析到 Fx/Fy/Fz/Mx/My/Mz/操作工况/极端工况 字段。")
+                    return
+                self._apply_excel_values_to_row(row, values)
+                QMessageBox.information(self, "读取结果文件", "已从Excel导入并写入当前行（红色字段）。")
+            else:
+                # CSV：保留原逻辑（按序号匹配全表回填）
+                self._apply_result_file(path)
+                QMessageBox.information(self, "读取结果文件", "结果文件已回填到红色字段列。")
         except Exception as e:
             QMessageBox.warning(self, "读取失败", f"读取或解析失败：{e}")
 
@@ -802,6 +957,110 @@ class PlatformLoadInformationPage(BasePage):
     def _cell_text(self, row: int, col: int) -> str:
         it = self.table.item(row, col)
         return it.text() if it else ""
+
+    # ---------------- 点击重量/重心：跳转到分项目计算表并回填 ----------------
+    def _on_main_cell_clicked(self, row: int, col: int):
+        base_rows = 4
+        data_end = self._find_data_end_row()
+
+        # 仅数据区有效
+        if not (base_rows <= row < data_end):
+            return
+
+        # 仅“上部组块总操作重量/重心”两列触发跳转（与示意图一致）
+        if col not in (4, 7):
+            return
+
+        self._open_upper_block_subproject_page(src_row=row)
+
+    def _open_upper_block_subproject_page(self, src_row: int):
+        mw = self.window()
+        if not hasattr(mw, "tab_widget"):
+            QMessageBox.information(self, "提示", "未检测到主窗口Tab组件，无法打开分项目计算表页面。")
+            return
+
+        # 去重：同一行只开一个
+        key = f"uppercalc::{src_row}"
+        if hasattr(mw, "page_tab_map") and key in mw.page_tab_map:
+            w = mw.page_tab_map[key]
+            idx = mw.tab_widget.indexOf(w)
+            if idx != -1:
+                mw.tab_widget.setCurrentIndex(idx)
+                return
+
+        # 行上下文：用于回填到主表的定位
+        row_data = {c: (self.table.item(src_row, c).text() if self.table.item(src_row, c) else "")
+                    for c in range(self.table.columnCount())}
+
+        page = UpperBlockSubprojectCalculationTablePage(main_window=mw, parent=mw)
+        page.set_context(source_row=src_row, source_row_data=row_data)
+        page.saved.connect(self._on_upper_page_saved)
+
+        # tab 标题：优先展示改扩建项目名称
+        proj = row_data.get(1, "") or f"序号{row_data.get(0, src_row)}"
+        title = f"{proj}-上部组块分项目计算表"
+
+        idx = mw.tab_widget.addTab(page, title)
+        mw.tab_widget.setCurrentIndex(idx)
+        if hasattr(mw, "page_tab_map"):
+            mw.page_tab_map[key] = page
+
+    def _on_upper_page_saved(self, payload: dict):
+        """子页面保存后回填主表。
+
+        兼容两种 payload：
+        1) 新版（推荐）：{"source_row": int, "write_back": {4: w, 7: "x,y,z", ...}}
+        2) 旧版：{"source_row": int, "op_total_w": ..., "op_cg": ...}
+        """
+        src_row = payload.get("source_row")
+        if src_row is None:
+            return
+
+        def _fmt_num(v):
+            try:
+                fv = float(v)
+                return f"{fv:.6f}".rstrip("0").rstrip(".")
+            except Exception:
+                return str(v) if v is not None else ""
+
+        # ---------- 1) 新版 write_back ----------
+        wb = payload.get("write_back")
+        if isinstance(wb, dict) and wb:
+            for col, val in wb.items():
+                try:
+                    c = int(col)
+                except Exception:
+                    continue
+                it = self.table.item(src_row, c)
+                if it is None:
+                    # 由分项目计算表回填的列默认只读
+                    it = self._mk_item("", editable=False)
+                    self.table.setItem(src_row, c, it)
+                it.setText(str(val) if val is not None else "")
+            return
+
+        # ---------- 2) 旧版字段 ----------
+        op_w = payload.get("op_total_w", "")
+        op_cg = payload.get("op_cg", "")
+
+        if isinstance(op_cg, (list, tuple)) and len(op_cg) == 3:
+            cg_txt = ",".join(_fmt_num(x) for x in op_cg)
+        else:
+            cg_txt = str(op_cg) if op_cg is not None else ""
+
+        it_w = self.table.item(src_row, 4)
+        if it_w is None:
+            it_w = self._mk_item("", editable=False)
+            self.table.setItem(src_row, 4, it_w)
+        it_w.setText(_fmt_num(op_w))
+
+        it_cg = self.table.item(src_row, 7)
+        if it_cg is None:
+            it_cg = self._mk_item("", editable=False)
+            self.table.setItem(src_row, 7, it_cg)
+        it_cg.setText(cg_txt)
+
+
 
     def _open_curve_page(self):
         facility_code = self._get_top_value("设施编码") or "XXXX"
