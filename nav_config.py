@@ -52,11 +52,7 @@ NAV_CONFIG = [
             {"text": "载荷信息",
              "children":[
                  {"text":"汇总信息表","page":SummaryInformationTablePage},
-                 {"text":"平台载荷信息表",
-                  "children":[
-                      {"text":"平台载荷信息","page":PlatformLoadInformationPage},
-                      {"text":"xxx平台上部组块分项目计算表","page":UpperBlockSubprojectCalculationTablePage},
-                  ]}
+                 {"text":"平台载荷信息表","page":PlatformLoadInformationPage}
              ]},
             {"text": "状态检测（结构和腐蚀性检测）",},
             {"text": "结构强度/改造可行性评估",
