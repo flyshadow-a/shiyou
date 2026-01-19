@@ -216,7 +216,7 @@ class ImportantHistoryDetailWidget(QWidget):
 
         # 1) 顶部蓝色面包屑条
         header = QFrame(self)
-        header.setObjectName("HistoryHeaderBar")
+        header.setObjectName("PathBar")
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(10, 3, 10, 3)
         header_layout.setSpacing(6)
@@ -226,22 +226,17 @@ class ImportantHistoryDetailWidget(QWidget):
         if not pix.isNull():
             pix = pix.scaled(20, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         icon_label.setPixmap(pix)
+        icon_label.setObjectName("PathIcon")
 
         self.lbl_home = ClickableLabel("首页", header)
-        font_home = self.lbl_home.font()
-        font_home.setPointSize(font_home.pointSize() + 1)
-        self.lbl_home.setFont(font_home)
-        self.lbl_home.setStyleSheet("color: white;")
+        self.lbl_home.setObjectName("Breadcrumb")
 
         sep1 = QLabel(">", header)
-        sep1.setStyleSheet("color: white;")
+        sep1.setObjectName("BreadcrumbArrow")
         sep1.setContentsMargins(4, 0, 4, 0)
 
         self.lbl_folder = QLabel("历史改造信息", header)
-        font_folder = self.lbl_folder.font()
-        font_folder.setPointSize(font_folder.pointSize() + 1)
-        self.lbl_folder.setFont(font_folder)
-        self.lbl_folder.setStyleSheet("color: white;")
+        self.lbl_folder.setObjectName("BreadcrumbCurrent")
 
         header_layout.addWidget(icon_label)
         header_layout.addSpacing(4)
@@ -311,8 +306,31 @@ class ImportantHistoryDetailWidget(QWidget):
 
         # 整体样式
         self.setStyleSheet("""
-            QFrame#HistoryHeaderBar {
-                background-color: #0074c9;
+            QFrame#PathBar {
+                background-color: #006bb3;
+            }
+            QLabel#PathIcon {
+                background-color: #004a87;
+                border-radius: 3px;
+            }
+            QLabel#Breadcrumb {
+                font-size: 12px;
+                color: #ffffff;
+                background-color: transparent;
+            }
+            QLabel#Breadcrumb:hover {
+                text-decoration: underline;
+            }
+            QLabel#BreadcrumbCurrent {
+                font-weight: bold;
+                font-size: 12px;
+                color: #ffffff;
+                background-color: transparent;
+            }
+            QLabel#BreadcrumbArrow {
+                font-size: 12px;
+                color: #ffffff;
+                background-color: transparent;
             }
             QFrame#HistoryDescFrame {
                 background-color: #0074c9;

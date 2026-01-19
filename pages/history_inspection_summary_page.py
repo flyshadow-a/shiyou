@@ -253,7 +253,7 @@ class HistoryInspectionSummaryPage(BasePage):
     # ------------------------------------------------------------------
     def _create_breadcrumb_bar(self, parent: QWidget) -> QFrame:
         bar = QFrame(parent)
-        bar.setObjectName("BreadcrumbBar")
+        bar.setObjectName("PathBar")
         bar.setFixedHeight(40)
 
         layout = QHBoxLayout(bar)
@@ -264,7 +264,7 @@ class HistoryInspectionSummaryPage(BasePage):
         self.path_icon_label = QLabel(bar)
         self.path_icon_label.setFixedSize(24, 24)
         self.path_icon_label.setAlignment(Qt.AlignCenter)
-        self.path_icon_label.setObjectName("BreadcrumbIcon")
+        self.path_icon_label.setObjectName("PathIcon")
 
         pix = QPixmap(self.folder_icon_path)
         if not pix.isNull():
@@ -275,18 +275,18 @@ class HistoryInspectionSummaryPage(BasePage):
 
         # “首页”
         self.lbl_home_link = LinkLabel("首页", bar)
-        self.lbl_home_link.setObjectName("BreadcrumbHome")
+        self.lbl_home_link.setObjectName("Breadcrumb")
         self.lbl_home_link.clicked.connect(lambda: self._switch_to("home"))
         layout.addWidget(self.lbl_home_link)
 
         # 分隔符 >
         self.lbl_sep = QLabel(" >", bar)
-        self.lbl_sep.setObjectName("BreadcrumbSep")
+        self.lbl_sep.setObjectName("BreadcrumbArrow")
         layout.addWidget(self.lbl_sep)
 
         # 第二级标题：完工检测 / 第1次检测 / 第N次检测 / 历史抽检记录
         self.lbl_second = QLabel("", bar)
-        self.lbl_second.setObjectName("BreadcrumbSecond")
+        self.lbl_second.setObjectName("BreadcrumbCurrent")
         layout.addWidget(self.lbl_second)
 
         layout.addStretch(1)
@@ -586,23 +586,32 @@ class HistoryInspectionSummaryPage(BasePage):
                 border: none;
             }
 
-            /* 面包屑上方蓝条 */
-            QFrame#BreadcrumbBar {
-                background-color: #0069b4;
+            /* 面包屑样式与 ConstructionDocsWidget 保持一致 */
+            QFrame#PathBar {
+                background-color: #006bb3;
             }
-            QLabel#BreadcrumbIcon {
+            QLabel#PathIcon {
                 background-color: #004a87;
                 border-radius: 3px;
             }
-            QLabel#BreadcrumbHome,
-            QLabel#BreadcrumbSep,
-            QLabel#BreadcrumbSecond {
-                color: white;
-                font-size: 14px;
+            QLabel#Breadcrumb {
+                font-size: 12px;
+                color: #ffffff;
+                background-color: transparent;
             }
-            QLabel#BreadcrumbHome {
-                padding-left: 6px;
-                padding-right: 2px;
+            QLabel#Breadcrumb:hover {
+                text-decoration: underline;
+            }
+            QLabel#BreadcrumbCurrent {
+                font-weight: bold;
+                font-size: 12px;
+                color: #ffffff;
+                background-color: transparent;
+            }
+            QLabel#BreadcrumbArrow {
+                font-size: 12px;
+                color: #ffffff;
+                background-color: transparent;
             }
 
             /* 文件夹按钮 */

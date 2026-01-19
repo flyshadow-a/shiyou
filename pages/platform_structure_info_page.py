@@ -270,23 +270,6 @@ class PlatformStructureInfoPage(BasePage):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(8)
 
-        # ========= 1. 相关文件 =========
-        group_files = QGroupBox("相关文件")
-        group_files_layout = QVBoxLayout(group_files)
-        group_files_layout.setContentsMargins(8, 6, 8, 8)
-        group_files_layout.setSpacing(4)
-
-        table_files = QTableWidget(3, 5, group_files)
-        table_files.setHorizontalHeaderLabels(
-            ["序号", "类别", "文件格式", "文件路径", "备注"]
-        )
-        self._init_table_common(table_files)
-        self._fill_phase_files_table(phase_name, table_files)
-
-        group_files_layout.addWidget(table_files)
-        layout.addWidget(group_files)
-
-        # ========= 2. 载荷信息及评估结果（包含最后一行“改造概述”） =========
         group_result = QGroupBox("载荷信息及评估结果")
         group_layout = QVBoxLayout(group_result)
         group_layout.setContentsMargins(8, 6, 8, 8)
@@ -305,7 +288,6 @@ class PlatformStructureInfoPage(BasePage):
 
         # 保存引用，后续如果要更新数据可以用
         self.phase_tables[phase_name] = {
-            "files": table_files,
             "load": table_load,
         }
 
@@ -315,46 +297,7 @@ class PlatformStructureInfoPage(BasePage):
     # ------------------------------------------------------------------
     # 阶段数据填充（目前写死示例，后续可改为外部传入）
     # ------------------------------------------------------------------
-    def _get_phase_files_demo_data(self, phase_name: str):
-        """
-        相关文件示例数据（之后可以替换为真实数据来源）。
-        """
-        return [
-            {
-                "index": 1,
-                "category": "结构设计(改造)文件",
-                "fmt": "rar/zip",
-                "path": "下载",
-                "remark": "",
-            },
-            {
-                "index": 2,
-                "category": "结构模型文件",
-                "fmt": "sacinp",
-                "path": "下载",
-                "remark": "",
-            },
-            {
-                "index": 3,
-                "category": "强度校核报告",
-                "fmt": "pdf/word",
-                "path": "下载",
-                "remark": "",
-            },
-        ]
 
-    def _fill_phase_files_table(self, phase_name: str, table: QTableWidget):
-        records = self._get_phase_files_demo_data(phase_name)
-        table.setRowCount(len(records))
-        for row, rec in enumerate(records):
-            self._set_center_item(table, row, 0, rec["index"])
-            self._set_center_item(table, row, 1, rec["category"])
-            self._set_center_item(table, row, 2, rec["fmt"])
-            self._set_center_item(table, row, 3, rec["path"])
-            self._set_center_item(table, row, 4, rec["remark"])
-
-        self._auto_fit_columns_with_padding(table, padding=32)
-        self._auto_fit_row_height(table, padding=12)
 
     def _get_phase_load_demo_data(self, phase_name: str):
         """

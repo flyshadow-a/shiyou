@@ -23,8 +23,7 @@ from pages.feasibility_assessment_page import FeasibilityAssessmentPage
 from pages.feasibility_assessment_results_page import FeasibilityAssessmentResultsPage
 from pages.model_files_page import ModelFilesPage
 from pages.history_rebuild_files_page import HistoryRebuildFilesPage
-from pages.important_history_rebuild_info_page import ImportantHistoryEventsPage
-from pages.history_inspection_summary_page import HistoryInspectionSummaryPage
+from pages.history_events_inspection_page import HistoryEventsInspectionPage
 from pages.personal_center_page import PersonalCenterPage
 
 NAV_CONFIG = [
@@ -37,16 +36,16 @@ NAV_CONFIG = [
             {
                 "text": "平台信息",
                 "children": [
-                    {"text": "汇总信息","page":PlatformSummaryPage},
+                    
                     {"text": "油气田信息", "page": OilfieldWaterLevelPage},
                     {
-                        "text": "平台基本信息",
-                        "children":[
-                            {"text":"基本信息","page":PlatformBasicInfoPage},
-                            {"text":"结构信息","page":PlatformStructureInfoPage},
+                        "text": "平台基本结构信息","page":PlatformStructureInfoPage}
+                        
+                            #{"text":"基本信息","page":PlatformBasicInfoPage},
+                            
 
-                        ]
-                     },
+                        
+                     
                 ],
             },
             {"text": "载荷信息",
@@ -68,41 +67,14 @@ NAV_CONFIG = [
     {
         "text": "文件管理",
         "children": [
+            {"text": "汇总信息","page":PlatformSummaryPage},
             {
                 "text": "建设阶段完工文件",
                 "page": ConstructionDocsPage,
-                "children": [
-                    {
-                        "text": "湛江分公司",
-                        "children": [
-                            {
-                                "text": "1.润洲作业公司",
-                                "children": [
-                                    {
-                                        "text": "1.2 作业公司",
-                                        "children": [
-                                            {"text": "1.2.1 WC19-1DPA"},
-                                            {"text": "1.2.2 WC19-1WHPC"},
-                                            {"text": "1.2.3 WC9-7DPP"},
-                                        ],
-                                    },
-                                ],
-                            },
-                            {
-                                "text": "1.3 乌石作业公司",
-                            },
-                        ],
-                    },
-                    {"text": "天津分公司"},
-                    {"text": "上海分公司"},
-                    {"text": "深圳分公司"},
-                    {"text": "海南分公司"},
-                ],
             },
             {"text": "历史改造文件", "page": HistoryRebuildFilesPage},
+            {"text": "\u5386\u53f2\u4e8b\u4ef6\u53ca\u68c0\u6d4b", "page": HistoryEventsInspectionPage},
             {"text": "模型文件", "page": ModelFilesPage},
-            {"text": "重要历史事件记录", "page": ImportantHistoryEventsPage},
-            {"text": "历史检测及结论", "page": HistoryInspectionSummaryPage},
         ],
     }
 
