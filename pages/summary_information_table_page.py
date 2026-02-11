@@ -140,9 +140,8 @@ class SummaryInformationTablePage(BasePage):
             "投产时间",
             "设计年限",
             "建造总操作重量,MT",
-            "变化总重重心,MT·m",
+            "变化总重量,MT",
             "变化率,%",
-            "变化总重,MT",
             "不可超载重量,MT",
             "重心,m",
             "重心不可超载半径,m",
@@ -176,20 +175,22 @@ class SummaryInformationTablePage(BasePage):
             table.setSpan(0, c, 2, 1)
             table.setItem(0, c, self._mk_item(self._header_label_for_col(c), bold=True, bg=bg_header))
 
-        # ---- 横向合并：上部组块重控（6~12）----
-        table.setSpan(0, 6, 1, 7)
+        # ---- 横向合并：上部组块重控（6~11）----
+        table.setSpan(0, 6, 1, 6)
         table.setItem(0, 6, self._mk_item("上部组块重控", bold=True, bg=bg_group))
 
         # 子表头（6~12）
-        for c in range(6, 13):
+        for c in range(6, 12):
             table.setItem(1, c, self._mk_item(self._header_label_for_col(c), bold=True, bg=bg_header))
 
-        # ---- 横向合并：桩基承载力安全系数（最小）（13~14）----
-        table.setSpan(0, 13, 1, 2)
-        table.setItem(0, 13, self._mk_item("桩基承载力\n安全系数\n（最小）", bold=True, bg=bg_group))
-        table.setItem(1, 13, self._mk_item("操作", bold=True, bg=bg_header))
-        table.setItem(1, 14, self._mk_item("极端", bold=True, bg=bg_header))
+        # ---- 横向合并：桩基承载力安全系数（最小）（12~13）----
+        table.setSpan(0, 12, 1, 2)
+        table.setItem(0, 12, self._mk_item("桩基承载力\n安全系数\n（最小）", bold=True, bg=bg_group))
+        table.setItem(1, 12, self._mk_item("操作", bold=True, bg=bg_header))
+        table.setItem(1, 13, self._mk_item("极端", bold=True, bg=bg_header))
 
+        table.setSpan(0,14,2,1)
+        table.setItem(0,14,self._mk_item("整体评估次数", bold=True, bg=bg_header))
         # ✅ 补齐表头两行背景（样式完全一致）
         self._fill_bg_for_row(table, 0, bg_group)
         self._fill_bg_for_row(table, 1, bg_header)
@@ -206,13 +207,12 @@ class SummaryInformationTablePage(BasePage):
             4: "投产时间",
             5: "设计年限",
             6: "建造总操作\n重量,MT",
-            7: "变化总重\n重心,MT·m",
+            7: "变化总重\n量,MT·m",
             8: "变化率,%",
-            9: "变化总\n重,MT",
-            10: "不可超载\n重量,MT",
-            11: "重心,m",
-            12: "重心不可超\n载半径,m",
-            15: "整体评估\n次数",
+            9: "不可超载\n重量,MT",
+            10: "重心,m",
+            11: "重心不可超\n载半径,m",
+            14: "整体评估\n次数",
         }
         return labels.get(c, "")
 
@@ -269,7 +269,7 @@ class SummaryInformationTablePage(BasePage):
             df = df[df["设施名称"].notna()]
         df = df.copy()
 
-        # 映射：当前表格 16 列 -> 样表字段（能找到就填，找不到留空）
+        # 映射：当前表格 15 列 -> 样表字段（能找到就填，找不到留空）
         col_map = {
             "分公司": "分公司",
             "作业单元": "作业公司",
