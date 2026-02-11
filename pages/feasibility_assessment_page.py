@@ -38,6 +38,7 @@ from PyQt5.QtGui import QDesktopServices
 
 from base_page import BasePage
 from dropdown_bar import DropdownBar
+from pages.feasibility_assessment_results_page import FeasibilityAssessmentResultsPage
 
 
 class FeasibilityAssessmentPage(BasePage):
@@ -53,10 +54,11 @@ class FeasibilityAssessmentPage(BasePage):
     SUBHDR_BG = QColor("#cfe4b5")   # 同色（原型里基本一致）
     DATA_BG   = QColor("#ffffff")   # 白
 
-    def __init__(self, main_window, parent=None):
+    def __init__(self, main_window,facility_code, parent=None):
         if parent is None:
             parent = main_window
         super().__init__("", parent)
+        self.facility_code = facility_code
         self.main_window = main_window
         self._build_ui()
 
@@ -65,20 +67,20 @@ class FeasibilityAssessmentPage(BasePage):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(8)
 
-        # 顶部 DropdownBar（同平台基本信息）
-        fields = [
-            {"key": "branch", "label": "分公司", "options": ["湛江分公司"], "default": "湛江分公司"},
-            {"key": "op_company", "label": "作业公司", "options": ["文昌油田群作业公司"], "default": "文昌油田群作业公司"},
-            {"key": "oilfield", "label": "油气田", "options": ["文昌19-1油田"], "default": "文昌19-1油田"},
-            {"key": "facility_code", "label": "设施编号", "options": ["WC19-1DPPA"], "default": "WC19-1DPPA"},
-            {"key": "facility_name", "label": "设施名称", "options": ["WC19-1DPPA井口平台"], "default": "WC19-1DPPA井口平台"},
-            {"key": "facility_type", "label": "设施类型", "options": ["平台"], "default": "平台"},
-            {"key": "category", "label": "分类", "options": ["井口平台"], "default": "井口平台"},
-            {"key": "start_time", "label": "投产时间", "options": ["2008-06-26"], "default": "2008-06-26"},
-            {"key": "design_life", "label": "设计年限", "options": ["15"], "default": "15"},
-        ]
-        self.dropdown_bar = DropdownBar(fields, parent=self)
-        self.main_layout.addWidget(self.dropdown_bar, 0)
+        # # 顶部 DropdownBar（同平台基本信息）
+        # fields = [
+        #     {"key": "branch", "label": "分公司", "options": ["湛江分公司"], "default": "湛江分公司"},
+        #     {"key": "op_company", "label": "作业公司", "options": ["文昌油田群作业公司"], "default": "文昌油田群作业公司"},
+        #     {"key": "oilfield", "label": "油气田", "options": ["文昌19-1油田"], "default": "文昌19-1油田"},
+        #     {"key": "facility_code", "label": "设施编号", "options": ["WC19-1DPPA"], "default": "WC19-1DPPA"},
+        #     {"key": "facility_name", "label": "设施名称", "options": ["WC19-1DPPA井口平台"], "default": "WC19-1DPPA井口平台"},
+        #     {"key": "facility_type", "label": "设施类型", "options": ["平台"], "default": "平台"},
+        #     {"key": "category", "label": "分类", "options": ["井口平台"], "default": "井口平台"},
+        #     {"key": "start_time", "label": "投产时间", "options": ["2008-06-26"], "default": "2008-06-26"},
+        #     {"key": "design_life", "label": "设计年限", "options": ["15"], "default": "15"},
+        # ]
+        # self.dropdown_bar = DropdownBar(fields, parent=self)
+        # self.main_layout.addWidget(self.dropdown_bar, 0)
 
         # 页面主体（滚动）
         scroll = QScrollArea()
@@ -301,7 +303,7 @@ class FeasibilityAssessmentPage(BasePage):
         lay.setContentsMargins(10, 8, 10, 10)
         lay.setSpacing(6)
 
-        lay.addWidget(self._make_group_header("立管/电缆信息", self._on_save_table2), 0)
+        lay.addWidget(self._make_group_header("新增立管/电缆信息", self._on_save_table2), 0)
 
         header_rows = 2
         data_rows = 3
@@ -588,20 +590,38 @@ class FeasibilityAssessmentPage(BasePage):
         except Exception as e:
             QMessageBox.critical(self, "运行失败", f"调用 engineanalysis 失败：\n{e}")
 
-    def _on_view_result(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择分析结果文件（psilst）", "", "All Files (*)")
-        if not path:
-            return
+    # def _on_view_result(self):
+    #     path, _ = QFileDialog.getOpenFileName(self, "选择分析结果文件（psilst）", "", "All Files (*)")
+    #     if not path:
+    #         return
+    #
+    #     try:
+    #         with open(path, "r", encoding="utf-8", errors="ignore") as f:
+    #             content = f.read()
+    #         head = content[:8000]
+    #         tail = content[-8000:] if len(content) > 16000 else ""
+    #         show = head + ("\n\n...（中间省略）...\n\n" + tail if tail else "")
+    #         self._show_text_dialog("查看结果（预览）", show, extra_open_path=path)
+    #     except Exception as e:
+    #         QMessageBox.critical(self, "读取失败", f"读取结果文件失败：\n{e}")
 
-        try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-            head = content[:8000]
-            tail = content[-8000:] if len(content) > 16000 else ""
-            show = head + ("\n\n...（中间省略）...\n\n" + tail if tail else "")
-            self._show_text_dialog("查看结果（预览）", show, extra_open_path=path)
-        except Exception as e:
-            QMessageBox.critical(self, "读取失败", f"读取结果文件失败：\n{e}")
+    # 点击“查看结果”按钮，页面跳转到评估结果页面，目前不确定这个按钮到底是什么逻辑。暂时这么设计
+    def _on_view_result(self):
+        """查看结果 - 跳转到可行性评估结果页面"""
+        title = f"{self.facility_code}平台强度/改造可行性评估结果"
+
+        mw = self.window()
+        if hasattr(mw, "tab_widget"):
+            # 去重：同一个设施编码只开一个
+            key = f"platform::{self.facility_code}"
+
+            page = FeasibilityAssessmentResultsPage(mw, self.facility_code)
+            idx = mw.tab_widget.addTab(page, title)
+            mw.tab_widget.setCurrentIndex(idx)
+            if hasattr(mw, "page_tab_map"):
+                mw.page_tab_map[key] = page
+        else:
+            QMessageBox.information(self, "提示", "未检测到主窗口Tab组件，无法打开页面。")
 
     def _show_text_dialog(self, title: str, text: str, extra_open_path: Optional[str] = None):
         dlg = QDialog(self)
