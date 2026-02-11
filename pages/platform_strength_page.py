@@ -20,11 +20,12 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QGraphicsView,
-    QGraphicsScene,
+    QGraphicsScene, QMessageBox, QGridLayout, QPushButton, QComboBox,
 )
 
 from base_page import BasePage
 from dropdown_bar import DropdownBar
+from pages.feasibility_assessment_page import FeasibilityAssessmentPage
 
 
 class InpWireframeView(QGraphicsView):
@@ -214,6 +215,21 @@ class PlatformStrengthPage(BasePage):
     2) “是否水平”行：点击单元格在 ✓/× 之间切换（避免用户输入）
     """
 
+    # ---------- 顶部下拉条（同平台基本信息） ----------
+    fields = [
+        {"key": "branch", "label": "分公司", "options": ["湛江分公司"], "default": "湛江分公司"},
+        {"key": "op_company", "label": "作业公司", "options": ["文昌油田群作业公司"],
+         "default": "文昌油田群作业公司"},
+        {"key": "oilfield", "label": "油气田", "options": ["文昌19-1油田"], "default": "文昌19-1油田"},
+        {"key": "facility_code", "label": "设施编号", "options": ["WC19-1WHPC"], "default": "WC19-1WHPC"},
+        {"key": "facility_name", "label": "设施名称", "options": ["文昌19-1WHPC井口平台"],
+         "default": "文昌19-1WHPC井口平台"},
+        {"key": "basic_model", "label": "基础模型", "options": ["竣工/第1次改造"], "default": "竣工/第1次改造"},
+        {"key": "rebuild_time", "label": "改建时间", "options": ["2008-06-26"], "default": "2008-06-26"},
+        # 操作列只作为占位，实际会在下面替换为按钮
+        {"key": "operation", "label": "操作", "options": [""], "default": ""},
+    ]
+
     def __init__(self, main_window, parent=None):
         if parent is None:
             parent = main_window
@@ -223,25 +239,18 @@ class PlatformStrengthPage(BasePage):
         self._build_ui()
         self._autoload_inp_to_view()
 
+
     # ---------------- UI ----------------
     def _build_ui(self):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(8)
 
-        # ---------- 顶部下拉条（同平台基本信息） ----------
-        fields = [
-            {"key": "branch", "label": "分公司", "options": ["湛江分公司"], "default": "湛江分公司"},
-            {"key": "op_company", "label": "作业公司", "options": ["文昌油田群作业公司"], "default": "文昌油田群作业公司"},
-            {"key": "oilfield", "label": "油气田", "options": ["文昌19-1油田"], "default": "文昌19-1油田"},
-            {"key": "facility_code", "label": "设施编号", "options": ["WC19-1WHPC"], "default": "WC19-1WHPC"},
-            {"key": "facility_name", "label": "设施名称", "options": ["文昌19-1WHPC井口平台"], "default": "文昌19-1WHPC井口平台"},
-            {"key": "facility_type", "label": "设施类型", "options": ["平台"], "default": "平台"},
-            {"key": "category", "label": "分类", "options": ["井口平台"], "default": "井口平台"},
-            {"key": "start_time", "label": "投产时间", "options": ["2013-07-15"], "default": "2013-07-15"},
-            {"key": "design_life", "label": "设计年限", "options": ["15"], "default": "15"},
-        ]
-        self.dropdown_bar = DropdownBar(fields, parent=self)
+
+        self.dropdown_bar = DropdownBar(self.fields, parent=self)
         self.main_layout.addWidget(self.dropdown_bar, 0)
+
+        # 获取dropdown_bar中的布局，替换最后一列
+        self._replace_operation_with_button()
 
         # ---------- 中部：左右分栏 ----------
         center = QWidget()
@@ -269,6 +278,180 @@ class PlatformStrengthPage(BasePage):
         # 右侧：INP 线框视图（自动加载）
         right = self._build_inp_view_panel()
         center_layout.addWidget(right, 4)
+
+    # 找到顶部表格最后一列，改为按钮
+    def _replace_operation_with_button(self):
+        """找到下拉条中的操作列下拉框，替换为按钮"""
+        # 方法1：直接查找并替换最后一个QComboBox
+        self._find_and_replace_combo()
+
+        # 方法2：如果方法1失败，使用备用方法
+        if not hasattr(self, 'evaluate_btn') or self.evaluate_btn is None:
+            self._add_button_after_dropdown()
+
+    def _find_and_replace_combo(self):
+        """在dropdown_bar中查找并替换最后一个下拉框"""
+        try:
+            # 获取dropdown_bar的布局
+            outer_layout = self.dropdown_bar.layout()
+            if outer_layout is None:
+                return
+
+            # 查找GridLayout（通常在第0个位置）
+            for i in range(outer_layout.count()):
+                item = outer_layout.itemAt(i)
+                if isinstance(item, QGridLayout):
+                    grid_layout = item
+                    break
+            else:
+                return  # 没找到GridLayout
+
+            # 查找最后一列（第7列）的第1行（控件行）的widget
+            # 总列数等于fields的数量（8列）
+            last_col = 7  # 从0开始计数，最后一列是第7列
+
+            # 获取第1行最后一列的下拉框
+            combo_item = grid_layout.itemAtPosition(1, last_col)
+            if combo_item and combo_item.widget():
+                combo_widget = combo_item.widget()
+
+                if isinstance(combo_widget, QComboBox):
+                    # 创建按钮
+                    self.evaluate_btn = QPushButton("快速评估")
+                    self.evaluate_btn.setFixedSize(100, 26)  # 匹配下拉框高度
+                    self.evaluate_btn.setStyleSheet("""
+                        QPushButton {
+                            background-color: #efefef;
+                            color: black;
+                            border: none;
+                            border-radius: 3px;
+                            font-weight: bold;
+                            font-size: 12px;
+                            padding: 4px 8px;
+                            margin: 1px 2px;
+                        }
+                        QPushButton:hover {
+                            background-color: #40a9ff;
+                        }
+                        QPushButton:pressed {
+                            background-color: #096dd9;
+                        }
+                    """)
+
+                    # 连接点击事件
+                    self.evaluate_btn.clicked.connect(self.on_quick_evaluate)
+
+                    # 从布局中移除原下拉框
+                    grid_layout.removeWidget(combo_widget)
+                    combo_widget.deleteLater()
+
+                    # 添加按钮到相同位置
+                    grid_layout.addWidget(self.evaluate_btn, 1, last_col)
+
+                    print("成功将最后一列替换为按钮")
+                    return
+
+        except Exception as e:
+            print(f"替换下拉框为按钮时出错: {e}")
+
+    def _add_button_after_dropdown(self):
+        """备用方法：在dropdown_bar后面添加按钮"""
+        # 创建水平布局容器
+        container = QWidget()
+        container_layout = QHBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+
+        # 将原dropdown_bar添加到容器
+        container_layout.addWidget(self.dropdown_bar)
+
+        # 创建并添加按钮
+        self.evaluate_btn = QPushButton("快速评估")
+        self.evaluate_btn.setFixedSize(120, 30)
+        self.evaluate_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1890ff;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 5px 10px;
+                margin-left: 10px;
+            }
+            QPushButton:hover {
+                background-color: #40a9ff;
+            }
+            QPushButton:pressed {
+                background-color: #096dd9;
+            }
+        """)
+        self.evaluate_btn.clicked.connect(self.on_quick_evaluate)
+        container_layout.addWidget(self.evaluate_btn)
+
+        # 从主布局中移除原dropdown_bar
+        self.main_layout.removeWidget(self.dropdown_bar)
+
+        # 添加容器到主布局
+        self.main_layout.insertWidget(0, container)
+
+    def _get_dropdown_value(self, key: str) -> str:
+        """兼容不同 DropdownBar 实现的取值方式。"""
+        if not hasattr(self, "dropdown_bar"):
+            return ""
+        bar = self.dropdown_bar
+        if hasattr(bar, "get_value"):
+            try:
+                v = bar.get_value(key)
+                return (v or "").strip()
+            except Exception:
+                pass
+        if hasattr(bar, "values") and isinstance(bar.values, dict):
+            return (bar.values.get(key, "") or "").strip()
+        # 兜底：尝试在 bar 内部找同名 combobox
+        for attr in ("combos", "combo_boxes", "widgets"):
+            d = getattr(bar, attr, None)
+            if isinstance(d, dict) and key in d and isinstance(d[key], QComboBox):
+                return d[key].currentText().strip()
+        return ""
+
+    def on_quick_evaluate(self):
+        """快速评估 - 跳转到可行性评估页面"""
+
+        facility_code = self._get_top_value("facility_code") or "XXXX"
+        title = f"{facility_code}平台强度/改造可行性评估"
+
+        mw = self.window()
+        if hasattr(mw, "tab_widget"):
+            # 去重：同一个设施编码只开一个
+            key = f"platform::{facility_code}"
+            if hasattr(mw, "page_tab_map") and key in mw.page_tab_map:
+                w = mw.page_tab_map[key]
+                idx = mw.tab_widget.indexOf(w)
+                if idx != -1:
+                    mw.tab_widget.setCurrentIndex(idx)
+                    return
+
+            page = FeasibilityAssessmentPage(mw, facility_code)
+            idx = mw.tab_widget.addTab(page, title)
+            mw.tab_widget.setCurrentIndex(idx)
+            if hasattr(mw, "page_tab_map"):
+                mw.page_tab_map[key] = page
+        else:
+            QMessageBox.information(self, "提示", "未检测到主窗口Tab组件，无法打开页面。")
+
+
+    def _get_top_value(self, field: str) -> str:
+        """获取顶部 DropdownBar 当前值（field 为中文表头名，如“设施编码”）。"""
+        """获取用户当前选择的设施名称"""
+        try:
+            if hasattr(self, 'dropdown_bar'):
+                # 方法1: 直接使用get_value方法
+                facility_code = self.dropdown_bar.get_value(field)
+                if facility_code:
+                    return facility_code
+        except Exception as e:
+            print(f"通过key获取设施名称失败: {e}")
 
     # ---------------- 右侧 INP 视图 ----------------
     def _build_inp_view_panel(self) -> QWidget:
@@ -321,39 +504,71 @@ class PlatformStrengthPage(BasePage):
             self.inp_view.clear_view(f"INP 加载失败：\n{e}")
 
     # ---------------- 结构模型信息（含表格✓/×点击切换） ----------------
+    def _build_structure_model_kv_table(self) -> QTableWidget:
+        tbl = QTableWidget(2, 3)
+
+        tbl.setFocusPolicy(Qt.NoFocus)
+
+        # 复用你现有的统一表格风格（保证和下面大表格一致）
+        self._init_table_common(tbl, show_vertical_header=False)
+
+        # 列宽更像“表单表格”
+        tbl.setColumnWidth(0, 200)
+        tbl.setColumnWidth(1, 160)
+        tbl.setColumnWidth(2, 60)
+
+        # 第0行：泥面高度
+        item0 = QTableWidgetItem("泥面高度")
+        item0.setTextAlignment(Qt.AlignCenter)
+        item0.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        tbl.setItem(0, 0, item0)
+
+        self.edt_mud_level = QLineEdit()
+        self.edt_mud_level.setText("-122.4")
+        self.edt_mud_level.setMaximumWidth(140)
+        tbl.setCellWidget(0, 1, self.edt_mud_level)
+
+        unit0 = QTableWidgetItem("m")  # ✅补单位
+        unit0.setTextAlignment(Qt.AlignCenter)
+        unit0.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        tbl.setItem(0, 2, unit0)
+
+        # 第1行：水平台层节点数量限制
+        item1 = QTableWidgetItem("水平层高层节点数量限制")
+        item1.setTextAlignment(Qt.AlignCenter)
+        item1.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        tbl.setItem(1, 0, item1)
+
+        self.edt_node_limit = QLineEdit()
+        self.edt_node_limit.setText("40")
+        self.edt_node_limit.setMaximumWidth(140)
+        tbl.setCellWidget(1, 1, self.edt_node_limit)
+
+        unit1 = QTableWidgetItem("")  # 这里不需要单位就留空
+        unit1.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        tbl.setItem(1, 2, unit1)
+
+        # 行高更像表单
+        tbl.setRowHeight(0, 28)
+        tbl.setRowHeight(1, 28)
+
+        tbl.horizontalHeader().setVisible(False)  # 隐藏列头（“1”“2”…）
+        tbl.verticalHeader().setVisible(False)  # 隐藏行头（左侧行号）
+
+        return tbl
+
     def _build_structure_model_box(self, left_layout: QVBoxLayout):
         box = QGroupBox("结构模型信息")
         box_layout = QVBoxLayout(box)
         box_layout.setContentsMargins(10, 8, 10, 10)
         box_layout.setSpacing(8)
 
-        row1 = QHBoxLayout()
-        row1.setSpacing(8)
-        lab_mud = QLabel("泥面高度")
-        lab_mud.setFixedWidth(90)
-        self.edt_mud_level = QLineEdit()
-        self.edt_mud_level.setText("-122.4")
-        self.edt_mud_level.setMaximumWidth(140)
-        row1.addWidget(lab_mud)
-        row1.addWidget(self.edt_mud_level)
-        row1.addStretch(1)
-        box_layout.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        row2.setSpacing(8)
-        lab_limit = QLabel("水平台层节点数量限制")
-        lab_limit.setFixedWidth(140)
-        self.edt_node_limit = QLineEdit()
-        self.edt_node_limit.setText("40")
-        self.edt_node_limit.setMaximumWidth(140)
-        row2.addWidget(lab_limit)
-        row2.addWidget(self.edt_node_limit)
-        row2.addStretch(1)
-        box_layout.addLayout(row2)
+        kv_tbl = self._build_structure_model_kv_table()
+        box_layout.addWidget(kv_tbl)
 
         row3 = QHBoxLayout()
         row3.setSpacing(8)
-        lab_layers = QLabel("水平台层高程")
+        lab_layers = QLabel("水平层高程")
         lab_layers.setFixedWidth(90)
         row3.addWidget(lab_layers)
         row3.addStretch(1)
