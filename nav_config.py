@@ -54,11 +54,7 @@ NAV_CONFIG = [
                  {"text":"平台载荷信息表","page":PlatformLoadInformationPage}
              ]},
             {"text": "状态检测（结构和腐蚀性检测）",},
-            {"text": "结构强度/改造可行性评估",
-             "children":[{"text":"平台强度/改造可行性评估","page":PlatformStrengthPage},
-                         {"text":"WC19-1DPPA平台强度/改造可行性评估","page":FeasibilityAssessmentPage},
-                         {"text": "WC19-1DPPA平台强度/改造可行性评估评估结果", "page": FeasibilityAssessmentResultsPage},
-                         ]},
+            {"text": "结构强度/改造可行性评估","page":PlatformStrengthPage},
 
             {"text": "特检策略","page": SpecialInspectionStrategy},
             # 后续可以在这里继续增加其他功能菜单
