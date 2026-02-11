@@ -18,7 +18,7 @@ class NewSpecialInspectionPage(BasePage):
     """
     新增检测策略打开的页面：
     - 右侧：黑底模型图（仅一个，不重复创建）
-    - 左侧：上半（结构模型信息 + 场分析结果文件）
+    - 左侧：上半（结构模型信息 + 设置倒塌分析结果文件）
            下半（用户设置：风险等级参数 + 按钮）
     - 整体支持滚轮滚动（ScrollArea）
     """
@@ -201,7 +201,7 @@ class NewSpecialInspectionPage(BasePage):
         block_lay.setSpacing(6)
 
         title_row = QHBoxLayout()
-        title = QLabel("场分析结果文件")
+        title = QLabel("设置倒塌分析结果文件")
         title.setObjectName("SectionTitle")
 
         btn_extract = QPushButton("提取分析")
