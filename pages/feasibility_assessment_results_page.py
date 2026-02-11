@@ -192,12 +192,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
     TITLE_BG = QColor("#e9edf5")
     INDEX_BG = QColor("#e9eef5")
 
-    def __init__(self, main_window, parent=None):
+    def __init__(self, main_window,facility_code, parent=None):
         if parent is None:
             parent = main_window
         super().__init__("", parent)
         self.main_window = main_window
-
+        self.facility_code = facility_code
         self.current_tab = "构件"
 
         self._build_ui()
@@ -352,11 +352,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
         items = [
             "构件",
             "节点冲剪",
-            "应力",
-            "承载力操作抗压",
-            "承载力操作抗拔",
-            "承载能力极端抗压",
-            "承载能力极端抗拔"
+            "桩应力",
+            "桩承载力操作抗压",
+            "桩承载力操作抗拔",
+            "桩承载能力极端抗压",
+            "桩承载能力极端抗拔"
         ]
         for i, name in enumerate(items):
             r = 2 + i
