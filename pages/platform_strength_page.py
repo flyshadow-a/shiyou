@@ -477,8 +477,8 @@ class PlatformStrengthPage(BasePage):
         """
         自动加载示例/默认 INP。
         你只需要把文件放到项目目录的以下任一位置（优先级从高到低）：
-        1) upload/demo_platform_jacket.inp
-        2) pict/demo_platform_jacket.inp
+        1) data/demo_platform_jacket.inp
+        2) upload/demo_platform_jacket.inp
         3) pages/../upload/demo_platform_jacket.inp
         4) pages/../pict/demo_platform_jacket.inp
         5) 当前运行目录下的 demo_platform_jacket.inp
@@ -486,8 +486,8 @@ class PlatformStrengthPage(BasePage):
         here = os.path.dirname(os.path.abspath(__file__))
 
         candidates = [
+            os.path.join(os.getcwd(), "data", "demo_platform_jacket.inp"),
             os.path.join(os.getcwd(), "upload", "demo_platform_jacket.inp"),
-            os.path.join(os.getcwd(), "pict", "demo_platform_jacket.inp"),
             os.path.normpath(os.path.join(here, "..", "upload", "demo_platform_jacket.inp")),
             os.path.normpath(os.path.join(here, "..", "pict", "demo_platform_jacket.inp")),
             os.path.join(os.getcwd(), "demo_platform_jacket.inp"),
@@ -495,7 +495,7 @@ class PlatformStrengthPage(BasePage):
 
         path = next((p for p in candidates if os.path.exists(p)), "")
         if not path:
-            self.inp_view.clear_view("未找到 INP：demo_platform_jacket.inp\n请放到 upload/ 或 pict/ 目录")
+            self.inp_view.clear_view("未找到 INP：demo_platform_jacket.inp\n请放到 data/ 或 upload/ 目录")
             return
 
         try:
