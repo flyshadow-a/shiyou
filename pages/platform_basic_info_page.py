@@ -31,7 +31,7 @@ class PlatformBasicInfoPage(BasePage):
     """
 
     def __init__(self, parent=None):
-        super().__init__("平台基本信息", parent)
+        super().__init__("", parent)
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -134,7 +134,7 @@ class PlatformBasicInfoPage(BasePage):
             {"key": "branch", "label": "分公司", "options": ["渤江分公司"], "default": "渤江分公司"},
             {"key": "op_company", "label": "作业公司", "options": ["文昌油田群作业公司"], "default": "文昌油田群作业公司"},
             {"key": "oilfield", "label": "油气田", "options": ["文昌19-1油田"], "default": "文昌19-1油田"},
-            {"key": "facility_code", "label": "设施编号", "options": ["WC19-1WHPC"], "default": "WC19-1WHPC"},
+            {"key": "facility_code", "label": "设施编码", "options": ["WC19-1WHPC"], "default": "WC19-1WHPC"},
             {"key": "facility_name", "label": "设施名称", "options": ["文昌19-1WHPC井口平台"], "default": "文昌19-1WHPC井口平台"},
             {"key": "facility_type", "label": "设施类型", "options": ["平台"], "default": "平台"},
             {"key": "category", "label": "分类", "options": ["井口平台"], "default": "井口平台"},
