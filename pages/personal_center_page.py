@@ -19,14 +19,14 @@ class PersonalCenterPage(BasePage):
     """
 
     def __init__(self, parent=None):
-        super().__init__("个人中心", parent)
+        super().__init__("用户基本信息", parent)
         self._build_ui()
 
     def _build_ui(self):
         self.main_layout.setContentsMargins(40, 30, 40, 30)
         self.main_layout.setSpacing(20)
 
-        field_names = ["用户名", "姓名", "工号", "部门", "作业公司", "电话", "邮箱"]
+        field_names = ["用户名", "密码", "姓名", "工号", "分公司", "作业公司", "电话", "邮箱"]
 
         self.table = QTableWidget(len(field_names), 2, self)
         self.table.horizontalHeader().setVisible(False)
