@@ -30,7 +30,7 @@ class PlatformSummaryPage(BasePage):
     平台信息 - 汇总信息页面
 
     左侧：平台列表（可编辑、增删行）
-        列包含：分公司、作业公司、油气田、设施编号、设施名称、设施类型、投产时间、设计年限
+        列包含：分公司、作业公司、油气田、设施编码、设施名称、设施类型、投产时间、设计年限
 
     右侧：
         顶部按钮：保存、导入Excel、导出Excel、导出模板
@@ -45,7 +45,7 @@ class PlatformSummaryPage(BasePage):
             "分公司",
             "作业公司",
             "油气田",
-            "设施编号",
+            "设施编码",
             "设施名称",
         ]
 
@@ -173,9 +173,9 @@ class PlatformSummaryPage(BasePage):
         self.btn_save.setProperty("class", "PrimaryButton")
         self.btn_save.setObjectName("")
 
-        self.btn_import = QPushButton("导入Excel")
-        self.btn_export = QPushButton("导出Excel")
-        self.btn_export_tpl = QPushButton("导出模板")
+        self.btn_import = QPushButton("导入模版")
+        self.btn_export = QPushButton("导出模版")
+        self.btn_export_tpl = QPushButton("导出数据")
 
         self.btn_save.clicked.connect(self.on_save_clicked)
         self.btn_import.clicked.connect(self.on_import_clicked)
@@ -307,7 +307,7 @@ class PlatformSummaryPage(BasePage):
                 self.table.setItem(row, col, item)
     
     def _generate_initial_data(self) -> List[List[str]]:
-        """根据图片描述生成初始数据（5列：分公司、作业公司、油气田、设施编号、设施名称）"""
+        """根据图片描述生成初始数据（5列：分公司、作业公司、油气田码、设施名称）"""
         initial_rows = [
             ["湛江分公司", "文昌油田群作业公司", "文昌19-1油田", "WC19-1WHPB", "文昌19-1WHPB井口平台"],
             ["湛江分公司", "涠洲作业公司", "涠洲6-12油田", "WZ6-12WHP", "涠洲6-12WHP井口平台"],
