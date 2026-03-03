@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 # pages/oilfield_water_level_page.py
-
+from PyQt5.QtGui import QFontMetrics
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout,
     QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
-    QStackedWidget, QWidget, QLabel, QHeaderView, QAbstractItemView,QSizePolicy
+    QStackedWidget, QWidget, QLabel, QHeaderView, QAbstractItemView, QSizePolicy, QMessageBox
 )
 from PyQt5.QtCore import Qt
 from base_page import BasePage
+from dropdown_bar import DropdownBar
 
 
 class OilfieldWaterLevelPage(BasePage):
@@ -18,36 +19,80 @@ class OilfieldWaterLevelPage(BasePage):
             用按钮模拟选项卡 + 内部 QStackedWidget 切换
     """
     def __init__(self, parent=None):
-        super().__init__("油气田信息", parent)
+        super().__init__("", parent)
         self.tab_buttons = []
         self.tab_pages = None
         self.build_ui()
 
     def build_ui(self):
-        # 顶部筛选条
-        top_bar = QFrame()
-        top_bar_layout = QHBoxLayout(top_bar)
-        top_bar_layout.setContentsMargins(0, 0, 0, 0)
-        top_bar_layout.setSpacing(10)
+        self.setStyleSheet("""
+                    /* 顶部按钮（保持原样） */
+                    QPushButton#TopActionBtn {
+                        background: #f6a24a;
+                        border: 1px solid #2f3a4a;
+                        border-radius: 3px;
+                        padding: 6px 16px;
+                        font-weight: bold;
+                    }
+                    QPushButton#TopActionBtn:hover { background: #ffb86b; }
+                """)
+        # # 顶部筛选条
+        # top_bar = QFrame()
+        # top_bar_layout = QHBoxLayout(top_bar)
+        # top_bar_layout.setContentsMargins(0, 0, 0, 0)
+        # top_bar_layout.setSpacing(10)
+        #
+        # cb_division = QComboBox()
+        # cb_division.addItems(["渤江分公司", "南海分公司", "东海分公司"])
+        #
+        # cb_company = QComboBox()
+        # cb_company.addItems(["文昌油田群作业公司", "测试作业公司"])
+        #
+        # cb_field = QComboBox()
+        # cb_field.addItems(["文昌19-1油田", "文昌X油田"])
+        #
+        # btn_save = QPushButton("保存")
+        #
+        # top_bar_layout.addWidget(cb_division)
+        # top_bar_layout.addWidget(cb_company)
+        # top_bar_layout.addWidget(cb_field)
+        # top_bar_layout.addStretch()
+        # top_bar_layout.addWidget(btn_save)
+        #
+        # self.main_layout.addWidget(btn_save)
 
-        cb_division = QComboBox()
-        cb_division.addItems(["渤江分公司", "南海分公司", "东海分公司"])
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(8)
 
-        cb_company = QComboBox()
-        cb_company.addItems(["文昌油田群作业公司", "测试作业公司"])
+        # 顶部表格+按钮布局（横向布局）
+        top_wrap = QWidget()
+        top_layout = QHBoxLayout(top_wrap)
+        top_layout.setContentsMargins(10, 10, 10, 0)
+        top_layout.setSpacing(10)
+        # ---------- 顶部下拉条 ----------
+        fields = [
+            {"key": "branch", "label": "分公司", "options": ["渤江分公司", "南海分公司", "东海分公司"], "default": "渤江分公司"},
+            {"key": "op_company", "label": "作业公司", "options": ["文昌油田群作业公司", "测试作业公司"],
+             "default": "文昌油田群作业公司"},
+            {"key": "oilfield", "label": "油气田", "options": ["文昌19-1油田", "文昌X油田"], "default": "文昌19-1油田"},
+        ]
+        self.dropdown_bar = DropdownBar(fields, parent=self)
+        top_layout.addWidget(self.dropdown_bar, 0)
 
-        cb_field = QComboBox()
-        cb_field.addItems(["文昌19-1油田", "文昌X油田"])
+        # “保存”按钮布局设计
+        btn_widget = QWidget()
+        btn_widget.setFixedWidth(180)
+        btn_col = QVBoxLayout(btn_widget)
+        btn_col.setContentsMargins(0, 0, 0, 0)
+        btn_col.setSpacing(6)
 
-        btn_save = QPushButton("保存")
+        self.btn_save = QPushButton("保存")
+        self.btn_save.clicked.connect(self._on_save)
 
-        top_bar_layout.addWidget(cb_division)
-        top_bar_layout.addWidget(cb_company)
-        top_bar_layout.addWidget(cb_field)
-        top_bar_layout.addStretch()
-        top_bar_layout.addWidget(btn_save)
+        btn_col.addWidget(self.btn_save)
+        top_layout.addWidget(btn_widget)
 
-        self.main_layout.addWidget(top_bar)
+        self.main_layout.addWidget(top_wrap)
 
         # 选项卡按钮条
         tab_bar = QFrame()
@@ -606,3 +651,7 @@ class OilfieldWaterLevelPage(BasePage):
         for i, btn in enumerate(self.tab_buttons):
             btn.setChecked(i == index)
         self.tab_pages.setCurrentIndex(index)
+
+    # ----------------- “保存”按钮逻辑 ----------------- #
+    def _on_save(self):
+        QMessageBox.information(self, "保存", "示例：保存（后续接真实存储逻辑）。")
