@@ -131,7 +131,7 @@ class PlatformSummaryPage(BasePage):
         # 表格
         self.table = QTableWidget(0, len(self.columns))
         self.table.setHorizontalHeaderLabels(self.columns)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        #self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(
@@ -305,6 +305,24 @@ class PlatformSummaryPage(BasePage):
             for col, value in enumerate(row_data):
                 item = QTableWidgetItem(str(value))
                 self.table.setItem(row, col, item)
+
+        # ====== 核心修复：列宽自适应与横向滚动条 ======
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # 数据加载完后，让 Qt 引擎根据真实的文字内容（如"文昌19-1WHPB井口平台"）计算所需宽度
+        self.table.resizeColumnsToContents()
+
+        header = self.table.horizontalHeader()
+        for c in range(len(self.columns)):
+            # 设为交互模式，允许滚动条生效，也允许用户手动拖拉列宽
+            header.setSectionResizeMode(c, QHeaderView.Interactive)
+            ideal_width = self.table.columnWidth(c)
+            # 给定 100 像素的保底宽度，并为长文字增加 20 像素的留白
+            self.table.setColumnWidth(c, max(100, ideal_width + 20))
+
+        # 最后一列“设施名称”自动拉伸，填补窗口拉大时的右侧空白
+        header.setStretchLastSection(True)
+        # ============================================
     
     def _generate_initial_data(self) -> List[List[str]]:
         """根据图片描述生成初始数据（5列：分公司、作业公司、油气田码、设施名称）"""
@@ -461,6 +479,7 @@ class PlatformSummaryPage(BasePage):
         if saved_path:
             msg += f"\n\n源文件已保存到：\n{saved_path}"
 
+        self.table.resizeColumnsToContents()
         QMessageBox.information(self, "导入完成", msg)
 
 
