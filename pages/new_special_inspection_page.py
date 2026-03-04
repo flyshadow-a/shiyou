@@ -5,9 +5,10 @@ import os
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QWidget,
-    QLineEdit, QFileDialog, QMessageBox, QScrollArea
+    QLineEdit, QFileDialog, QMessageBox, QScrollArea,
+    QAbstractItemView
 )
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QPixmap, QColor, QBrush
 from PyQt5.QtCore import Qt
 
 from base_page import BasePage
@@ -193,15 +194,16 @@ class NewSpecialInspectionPage(BasePage):
         block_lay.addWidget(coord_table)
         return block
 
-    # ---------------- 上半：场分析结果文件 ----------------
+    # ---------------- 上半：倒塌分析结果文件 ----------------
     def _build_analysis_files_block(self) -> QFrame:
         block = QFrame()
         block_lay = QVBoxLayout(block)
         block_lay.setContentsMargins(0, 0, 0, 0)
         block_lay.setSpacing(6)
 
+        # 1. 区块主标题与“提取分析”按钮
         title_row = QHBoxLayout()
-        title = QLabel("设置倒塌分析结果文件")
+        title = QLabel("设置分析结果文件")
         title.setObjectName("SectionTitle")
 
         btn_extract = QPushButton("提取分析")
@@ -213,46 +215,33 @@ class NewSpecialInspectionPage(BasePage):
         title_row.addWidget(btn_extract)
         block_lay.addLayout(title_row)
 
-        self.files_table = QTableWidget(8, 2)
-        self.files_table.setHorizontalHeaderLabels(["序号", "路径"])
-        self.files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        # 2. 初始化核心单表
+        self.files_table = QTableWidget(0, 2)
+        self.files_table.horizontalHeader().setVisible(False)
         self.files_table.verticalHeader().setVisible(False)
-        self.files_table.setMinimumHeight(260)
 
-        demo_paths = [
-            r"D:\SACS\Strategy\test file\1\clplog",
-            r"D:\SACS\Strategy\test file\2\clplog",
-            r"D:\SACS\Strategy\test file\3\clplog",
-            r"D:\SACS\Strategy\test file\4\clplog",
-            r"D:\SACS\Strategy\test file\5\clplog",
-            r"D:\SACS\Strategy\test file\6\clplog",
-            r"D:\SACS\Strategy\test file\7\clplog",
-            r"D:\SACS\Strategy\test file\8\clplog",
-        ]
-        for i in range(8):
-            idx = QTableWidgetItem(str(i + 1))
-            path = QTableWidgetItem(demo_paths[i])
-            idx.setTextAlignment(Qt.AlignCenter)
-            path.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-            self.files_table.setItem(i, 0, idx)
-            self.files_table.setItem(i, 1, path)
+        # 将第 0 列（序号列）设为固定模式，并指定宽度为 60 像素
+        self.files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.files_table.setColumnWidth(0, 60)
+
+        # 第 1 列（路径列）继续保持拉伸，填满剩余空间
+        self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.files_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.files_table.setMinimumHeight(300)
 
         block_lay.addWidget(self.files_table, 1)
 
-        # 疲劳分析结果文件选择
-        bottom_row = QHBoxLayout()
-        bottom_row.addWidget(QLabel("设置疲劳分析结果文件："))
+        # 3. 初始化数据状态变量
+        self.collapse_files = [
+            r"D:\SACSW\Strategy\test file\1\clplog",
+            r"D:\SACSW\Strategy\test file\2\clplog",
+            r"D:\SACSW\Strategy\test file\3\clplog"
+        ]
+        self.fatigue_file = r"D:\SACSW\Strategy\test file\ftglst.wjt"
 
-        self.result_path_edit = QLineEdit()
-        self.result_path_edit.setPlaceholderText("请选择 *.wit 或其它结果文件")
-        bottom_row.addWidget(self.result_path_edit, 1)
+        # 初次渲染表格
+        self._refresh_files_table()
 
-        btn_browse = QPushButton("选择文件")
-        btn_browse.clicked.connect(self._browse_result_file)
-        bottom_row.addWidget(btn_browse)
-
-        block_lay.addLayout(bottom_row)
         return block
 
     # ---------------- 下半：风险等级参数（新增） ----------------
@@ -406,3 +395,161 @@ class NewSpecialInspectionPage(BasePage):
 
         QMessageBox.warning(self, "错误", "未找到 MainWindow/tab_widget，无法打开结果页。")
 
+    # ---------------- 文件动态表格刷新与事件 ----------------
+    def _refresh_files_table(self):
+        """根据自身的数据列表，重绘整个表格，将按钮嵌入到相应的标题行中"""
+        self.files_table.clearContents()
+        self.files_table.setRowCount(0)
+
+        # --- 倒塌分析部分 ---
+        self.files_table.insertRow(0)
+        self.files_table.setSpan(0, 0, 1, 2)
+
+        # 定义倒塌标题行需要的按钮和事件
+        col_buttons = [
+            ("本地导入", self._on_add_collapse_local),
+            ("系统导入", self._on_add_collapse_sys),
+            ("删除选中行", self._on_del_collapse)
+        ]
+        # 设置带有按钮的自定义组件
+        col_title_widget = self._create_title_row_widget("设置倒塌分析结果文件", col_buttons)
+        self.files_table.setCellWidget(0, 0, col_title_widget)
+        self.files_table.setRowHeight(0, 36) # 稍微加高以容纳按钮
+
+        # 插入倒塌文件数据行
+        for i, path in enumerate(self.collapse_files):
+            row = i + 1
+            self.files_table.insertRow(row)
+
+            idx_item = QTableWidgetItem(str(i + 1))
+            idx_item.setTextAlignment(Qt.AlignCenter)
+            idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+
+            path_item = QTableWidgetItem(path)
+            path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+
+            self.files_table.setItem(row, 0, idx_item)
+            self.files_table.setItem(row, 1, path_item)
+
+        # --- 疲劳分析部分 ---
+        r_fatigue_hdr = len(self.collapse_files) + 1
+        self.files_table.insertRow(r_fatigue_hdr)
+        self.files_table.setSpan(r_fatigue_hdr, 0, 1, 2)
+
+        # 定义疲劳标题行需要的按钮和事件
+        fat_buttons = [
+            ("本地导入", self._on_set_fatigue_local),
+            ("系统导入", self._on_set_fatigue_sys)
+        ]
+        fat_title_widget = self._create_title_row_widget("设置疲劳分析结果文件", fat_buttons)
+        self.files_table.setCellWidget(r_fatigue_hdr, 0, fat_title_widget)
+        self.files_table.setRowHeight(r_fatigue_hdr, 36)
+
+        # 插入疲劳数据行
+        r_fatigue_val = r_fatigue_hdr + 1
+        self.files_table.insertRow(r_fatigue_val)
+
+        # 【关键修改】：将疲劳数据行的两列也合并，彻底跳出序号列宽度的魔咒
+        self.files_table.setSpan(r_fatigue_val, 0, 1, 2)
+
+        # 创建一个内置小容器，左边放“标签文字”，右边放“文件路径”
+        val_widget = QWidget()
+        val_lay = QHBoxLayout(val_widget)
+        # 左侧留出 10 像素边距，使其不会紧贴边框
+        val_lay.setContentsMargins(10, 0, 10, 0)
+        val_lay.setSpacing(10)
+
+        lbl = QLabel("疲劳结果文件:")
+        lbl.setStyleSheet("color: #333; font-weight: normal;")
+
+        path_text = self.fatigue_file if self.fatigue_file else "暂未选择..."
+        val = QLabel(path_text)
+        val.setStyleSheet("color: #333;")
+
+        # 将标签和路径加入布局
+        val_lay.addWidget(lbl, 0)  # 0 代表不拉伸，根据文字长度自适应
+        val_lay.addWidget(val, 1)  # 1 代表占满剩余所有拉伸空间
+
+        # 把这个组合好的容器塞进合并后的单元格里
+        self.files_table.setCellWidget(r_fatigue_val, 0, val_widget)
+        self.files_table.setRowHeight(r_fatigue_val, 30)
+
+    def _on_add_collapse_local(self):
+        fp, _ = QFileDialog.getOpenFileName(self, "选择倒塌分析结果文件", "", "所有文件 (*.*)")
+        if fp:
+            self.collapse_files.append(fp)
+            self._refresh_files_table()
+
+    def _on_add_collapse_sys(self):
+        # 此处供后续对接“文件管理”接口：弹出你们系统的文件树或列表，返回选中的文件名
+        QMessageBox.information(self, "系统导入",
+                                "这里可弹出系统『文件管理』的选择框。\n作为演示，现自动添加一条虚拟的系统文件。")
+        self.collapse_files.append(f"System_Doc_CLP_{len(self.collapse_files) + 1}.clplog")
+        self._refresh_files_table()
+
+    def _on_del_collapse(self):
+        selected = self.files_table.selectionModel().selectedRows()
+        if not selected:
+            QMessageBox.warning(self, "提示", "请先在表格中点击选中要删除的倒塌文件行。")
+            return
+
+        # 获取要删除的真实行号并降序排列，避免因删除导致后续索引错乱
+        rows_to_delete = sorted([idx.row() for idx in selected], reverse=True)
+
+        # 表格结构是：0 是标题，1 ~ N 是倒塌文件
+        for r in rows_to_delete:
+            if 1 <= r <= len(self.collapse_files):
+                del self.collapse_files[r - 1]
+
+        self._refresh_files_table()
+
+    def _on_set_fatigue_local(self):
+        fp, _ = QFileDialog.getOpenFileName(self, "选择疲劳分析结果文件", "",
+                                            "结果文件 (*.wit *.csv *.txt);;所有文件 (*.*)")
+        if fp:
+            self.fatigue_file = fp
+            self._refresh_files_table()
+
+    def _on_set_fatigue_sys(self):
+        QMessageBox.information(self, "系统导入",
+                                "这里可弹出系统『文件管理』的选择框。\n作为演示，现自动设置一条虚拟的系统文件。")
+        self.fatigue_file = "System_Doc_Fatigue.wjt"
+        self._refresh_files_table()
+
+    def _create_title_row_widget(self, title_text: str, buttons_info: list) -> QWidget:
+        """创建一个内嵌于表格标题行的自定义 Widget，包含标题文字和对应按钮"""
+        w = QWidget()
+        # 背景色与之前的标题行保持一致
+        w.setStyleSheet("background-color: #e9edf5;")
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(10, 2, 10, 2)
+        lay.setSpacing(8)
+
+        # 左侧标题文本
+        lbl = QLabel(title_text)
+        lbl.setStyleSheet("font-weight: bold; color: #333; border: none;")
+        lay.addWidget(lbl)
+
+        # 弹簧，将按钮挤到最右侧
+        lay.addStretch(1)
+
+        # 动态添加右侧的按钮
+        for btn_text, callback in buttons_info:
+            btn = QPushButton(btn_text)
+            btn.setFixedHeight(26)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background: #ffffff; 
+                    border: 1px solid #b9c6d6; 
+                    border-radius: 3px; 
+                    padding: 0 12px; 
+                    color: #1b2a3a; 
+                    font-weight: normal;
+                }
+                QPushButton:hover { background: #d9e6f5; }
+            """)
+            btn.clicked.connect(callback)
+            lay.addWidget(btn)
+
+        return w

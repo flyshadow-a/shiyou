@@ -125,12 +125,27 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setWordWrap(True)
 
         root.addWidget(self.table, 1)
 
         self._fill_skeleton()
+
+        # ====== 核心修复：列宽自适应与横向滚动条 ======
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # 必须在 _fill_skeleton() 填完中文字符后调用，Qt 才能量出真实的文字宽度
+        self.table.resizeColumnsToContents()
+
+        header = self.table.horizontalHeader()
+        for c in range(11):
+            header.setSectionResizeMode(c, QHeaderView.Interactive)
+            ideal_width = self.table.columnWidth(c)
+            # 根据内部文字大小自动调整，提供 80 的保底宽度，并加上 20 像素的呼吸空间
+            self.table.setColumnWidth(c, max(80, ideal_width + 20))
+
+        header.setStretchLastSection(True)
+        # ============================================
 
         self.table.itemChanged.connect(self._on_item_changed)
         self._recalc_all()

@@ -11,7 +11,7 @@
 import os
 import shutil
 import subprocess
-from typing import Optional
+from typing import Optional,List
 
 from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtGui import QFontMetrics, QColor, QBrush
@@ -45,7 +45,6 @@ class FeasibilityAssessmentPage(BasePage):
     """
     WC19-1DPPA平台强度/改造可行性评估（feasibility_assessment_page）
     """
-
     CONNECT_OPTIONS = ["焊接", "无连接", "导向连接"]
     ELEVATIONS = [27, 23, 18, 7, -12, -34, -58]
 
@@ -127,7 +126,7 @@ class FeasibilityAssessmentPage(BasePage):
         table.verticalHeader().setVisible(False)
 
         table.horizontalHeader().setStretchLastSection(False)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        #table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed) 移除这一行，让列宽变得可调整
         table.verticalHeader().setDefaultSectionSize(26)
 
     def _set_cell(self, table: QTableWidget, r: int, c: int, text: str, *,
@@ -160,20 +159,64 @@ class FeasibilityAssessmentPage(BasePage):
         """)
         table.setCellWidget(row, col, combo)
 
-    def _auto_fit_columns(self, table: QTableWidget, padding: int = 18):
-        """考虑 item + combo 的内容宽度，避免下拉框只显示一个字。"""
+    def _auto_fit_columns(self, table: QTableWidget, padding: int = 18, equal_width_groups: Optional[List[List[int]]] = None):
         fm = QFontMetrics(table.font())
-        for c in range(table.columnCount()):
+        col_count = table.columnCount()
+        col_widths = [38] * col_count
+
+        print(f"\n=== 开始计算表格 {id(table)} 列宽 ===")
+        for c in range(col_count):
             max_w = 38
             for r in range(table.rowCount()):
+                # 处理单元格文本
                 it = table.item(r, c)
                 if it is not None and it.text():
-                    max_w = max(max_w, fm.horizontalAdvance(it.text().replace("\n", " ")) + padding)
+                    text = it.text()
+                    # 使用加粗字体测量（如果单元格是加粗的）
+                    font = it.font() if it.font().bold() else table.font()
+                    fm_cell = QFontMetrics(font)
+                    lines = text.split('\n')
+                    line_widths = [fm_cell.horizontalAdvance(line) for line in lines]
+                    cell_width = max(line_widths) if line_widths else 0
+                    # 打印详细信息（针对OD/WT列）
+                    if r in (0, 1) and c in (3, 4, 5, 6):
+                        print(
+                            f"  调试: 表格 {id(table)} 行{r} 列{c} 文本='{text}' 使用字体加粗={font.bold()} 分割={lines} 行宽={line_widths} → 最大行宽={cell_width}")
+                    max_w = max(max_w, cell_width + padding)
+
+                # 处理QComboBox
                 w = table.cellWidget(r, c)
                 if isinstance(w, QComboBox):
                     txt = w.currentText() or ""
-                    max_w = max(max_w, fm.horizontalAdvance(txt) + padding + 24)
+                    combo_width = fm.horizontalAdvance(txt) + padding + 24
+                    max_w = max(max_w, combo_width)
+
             table.setColumnWidth(c, max_w)
+            col_widths[c] = max_w
+            print(f"  列 {c} 最终宽度 = {max_w}")
+
+        # 等宽分组
+        if equal_width_groups:
+            for group in equal_width_groups:
+                valid_group = [c for c in group if 0 <= c < col_count]
+                if valid_group:
+                    max_group_width = max(col_widths[c] for c in valid_group)
+                    for c in valid_group:
+                        table.setColumnWidth(c, max_group_width)
+                    print(f"  分组 {group} 最大宽度 = {max_group_width}，应用于列 {valid_group}")
+
+        # 对表1的OD/WT列额外增加宽度
+        if hasattr(self, 'tbl1') and table is self.tbl1:
+            extra = 20
+            for col in (3, 4, 5, 6):
+                new_width = table.columnWidth(col) + extra
+                table.setColumnWidth(col, new_width)
+                print(f"  额外增加宽度: 列 {col} 现在 = {new_width}")
+
+        total_width = sum(table.columnWidth(c) for c in range(col_count))
+        table.setMinimumWidth(total_width)
+        print(f"表格 {id(table)} 总宽度 = {total_width}")
+        print("=== 列宽计算完成 ===\n")
 
     def _make_save_button(self) -> QPushButton:
         btn = QPushButton("保存")
@@ -258,8 +301,8 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl1, 1, c, "X(m)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
         self._set_cell(self.tbl1, 1, c, "Y(m)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
 
-        self._set_cell(self.tbl1, 1, c, "OD(m)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
-        self._set_cell(self.tbl1, 1, c, "WT(m)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
+        self._set_cell(self.tbl1, 1, c, "OD(mm)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
+        self._set_cell(self.tbl1, 1, c, "WT(mm)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
 
         self._set_cell(self.tbl1, 1, c, "OD(mm)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
         self._set_cell(self.tbl1, 1, c, "WT(mm)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
@@ -291,8 +334,26 @@ class FeasibilityAssessmentPage(BasePage):
                 default = "焊接" if e in (27, 23, 18) else "无连接"
                 self._set_combo_cell(self.tbl1, rr, col, default=default)
 
-        self._auto_fit_columns(self.tbl1, padding=18)
-        lay.addWidget(self.tbl1, 1)
+        # 在 _build_table_1 中，调用 _auto_fit_columns 之前定义分组
+        groups_tbl1 = [
+            [1, 2],  # X, Y
+            [3, 4],  # 井槽尺寸 OD, WT
+            [5, 6],  # 支撑结构 OD, WT
+            list(range(8, 8 + len(self.ELEVATIONS)))  # 高程列（可选，使所有高程列等宽）
+        ]
+        self._auto_fit_columns(self.tbl1, padding=18, equal_width_groups=groups_tbl1)
+
+        # 创建表格的滚动区域
+        table_scroll = QScrollArea()
+        table_scroll.setWidgetResizable(False)  # 让表格自身决定宽度
+        table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        table_scroll.setWidget(self.tbl1)
+
+        # 将滚动区域添加到 QGroupBox 布局
+        lay.addWidget(table_scroll, 1)  # 原来 lay.addWidget(self.tbl1, 1) 替换为滚动区域
+
+        #lay.addWidget(self.tbl1, 1)
         return box
 
     # ---------------- 表2：立管/电缆信息（合并表头） ----------------
@@ -308,8 +369,8 @@ class FeasibilityAssessmentPage(BasePage):
         header_rows = 2
         data_rows = 3
 
-        # 编号 | 工作平面坐标(2) | 立管/电缆尺寸(2) | 方向(2) | 倾斜度(1) | 高程及连接形式(7)
-        base_cols = 1 + 2 + 2 + 2 + 1
+        # 编号 | 工作平面坐标(2) | 立管/电缆尺寸(2) | 倾斜度(2) | 高程及连接形式(7)
+        base_cols = 1 + 2 + 2 + 2
         cols = base_cols + len(self.ELEVATIONS)
 
         self.tbl2 = QTableWidget(header_rows + data_rows, cols, box)
@@ -329,11 +390,11 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl2, 0, c+1, "", bg=self.HEADER_BG, editable=False); c += 2
 
         self.tbl2.setSpan(0, c, 1, 2)
-        self._set_cell(self.tbl2, 0, c, "方向", bg=self.HEADER_BG, bold=True, editable=False)
+        self._set_cell(self.tbl2, 0, c, "倾斜度", bg=self.HEADER_BG, bold=True, editable=False)
         self._set_cell(self.tbl2, 0, c+1, "", bg=self.HEADER_BG, editable=False); c += 2
 
-        self.tbl2.setSpan(0, c, 2, 1)
-        self._set_cell(self.tbl2, 0, c, "倾斜度", bg=self.HEADER_BG, bold=True, editable=False); c += 1
+        # self.tbl2.setSpan(0, c, 2, 1)
+        # self._set_cell(self.tbl2, 0, c, "倾斜度", bg=self.HEADER_BG, bold=True, editable=False); c += 1
 
         self.tbl2.setSpan(0, c, 1, len(self.ELEVATIONS))
         self._set_cell(self.tbl2, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
@@ -378,8 +439,23 @@ class FeasibilityAssessmentPage(BasePage):
                 default = "焊接" if e in (27, 23) else "无连接"
                 self._set_combo_cell(self.tbl2, rr, col, default=default)
 
-        self._auto_fit_columns(self.tbl2, padding=18)
-        lay.addWidget(self.tbl2, 1)
+
+        groups_tbl2 = [
+            [1, 2],  # X, Y
+            [3, 4],  # 立管/电缆尺寸 OD, WT
+            [5, 6],  # 方向 X方向, Y方向
+            list(range(7, 7 + len(self.ELEVATIONS)))  # 高程列
+        ]
+        self._auto_fit_columns(self.tbl2, padding=18, equal_width_groups=groups_tbl2)
+
+        # 创建滚动区域容纳表格
+        table_scroll = QScrollArea()
+        table_scroll.setWidgetResizable(False)
+        table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        table_scroll.setWidget(self.tbl2)
+        lay.addWidget(table_scroll, 1)
+        #lay.addWidget(self.tbl2, 1)
         return box
 
     # ---------------- 表3：新增组块载荷信息（合并表头） ----------------
@@ -409,7 +485,7 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl3, 0, 2, "", bg=self.HEADER_BG, editable=False)
         self._set_cell(self.tbl3, 0, 3, "", bg=self.HEADER_BG, editable=False)
 
-        self.tbl3.setSpan(0, 4, 2, 1)
+        self.tbl3.setSpan(0, 4, 1, 1)
         self._set_cell(self.tbl3, 0, 4, "重量", bg=self.HEADER_BG, bold=True, editable=False)
 
         # 第1行子表头
@@ -434,7 +510,18 @@ class FeasibilityAssessmentPage(BasePage):
             self._set_cell(self.tbl3, rr, 3, demo[r][3], bg=self.DATA_BG, editable=True)
             self._set_cell(self.tbl3, rr, 4, demo[r][4], bg=self.DATA_BG, editable=True)
 
-        self._auto_fit_columns(self.tbl3, padding=18)
+        groups_tbl3 = [
+            [1, 2, 3]  # X, Y, Z
+        ]
+        self._auto_fit_columns(self.tbl3, padding=18, equal_width_groups=groups_tbl3)
+
+        table_scroll = QScrollArea()
+        table_scroll.setWidgetResizable(False)
+        table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        table_scroll.setWidget(self.tbl3)
+        lay.addWidget(table_scroll, 1)
+
         lay.addWidget(self.tbl3, 1)
         return box
 

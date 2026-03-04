@@ -221,7 +221,7 @@ class PlatformStrengthPage(BasePage):
         {"key": "op_company", "label": "作业公司", "options": ["文昌油田群作业公司"],
          "default": "文昌油田群作业公司"},
         {"key": "oilfield", "label": "油气田", "options": ["文昌19-1油田"], "default": "文昌19-1油田"},
-        {"key": "facility_code", "label": "设施编号", "options": ["WC19-1WHPC"], "default": "WC19-1WHPC"},
+        {"key": "facility_code", "label": "设施编码", "options": ["WC19-1WHPC"], "default": "WC19-1WHPC"},
         {"key": "facility_name", "label": "设施名称", "options": ["文昌19-1WHPC井口平台"],
          "default": "文昌19-1WHPC井口平台"},
         {"key": "basic_model", "label": "基础模型", "options": ["竣工/第1次改造"], "default": "竣工/第1次改造"},
@@ -579,15 +579,15 @@ class PlatformStrengthPage(BasePage):
         self.tbl_layers.setHorizontalHeaderLabels(["编号"] + [str(i) for i in range(1, 10)])
         self._init_table_common(self.tbl_layers, show_vertical_header=False)
         self.tbl_layers.setRowCount(3)
-        self.tbl_layers.setVerticalHeaderLabels(["Z(m)", "节点数量", "是否水平"])
+        self.tbl_layers.setVerticalHeaderLabels(["Z(m)", "节点数量", "是否水平层"])
 
         self._set_center_item(self.tbl_layers, 0, 0, "Z(m)")
         self._set_center_item(self.tbl_layers, 1, 0, "节点数量")
-        self._set_center_item(self.tbl_layers, 2, 0, "是否水平")
+        self._set_center_item(self.tbl_layers, 2, 0, "是否水平层")
 
-        demo_z = ["36", "31", "27", "23", "18", "7", "", "", ""]
-        demo_n = ["1", "412", "191", "456", "289", "85", "74", "62", ""]
-        demo_h = ["✓", "✓", "✓", "✓", "✓", "✓", "✓", "✓", ""]
+        demo_z = ["36", "31", "27", "23", "18", "7", "10", "15", "20"]
+        demo_n = ["1", "412", "191", "456", "289", "85", "74", "62", "87"]
+        demo_h = ["✓", "✓", "✓", "✓", "✓", "✓", "✓", "✓", "✓"]
         for i in range(9):
             self._set_center_item(self.tbl_layers, 0, i + 1, demo_z[i])
             self._set_center_item(self.tbl_layers, 1, i + 1, demo_n[i])
@@ -604,7 +604,12 @@ class PlatformStrengthPage(BasePage):
 
         self.tbl_layers.cellClicked.connect(self._on_layers_cell_clicked)
 
-        self._auto_fit_columns_with_padding(self.tbl_layers, padding=28)
+        #self._auto_fit_columns_with_padding(self.tbl_layers, padding=28)替换为：
+        self.tbl_layers.resizeColumnsToContents()
+        total_width = sum(self.tbl_layers.columnWidth(c) for c in range(self.tbl_layers.columnCount()))
+        self.tbl_layers.setMinimumWidth(total_width)
+        self.tbl_layers.horizontalHeader().setStretchLastSection(False)
+
         box_layout.addWidget(self.tbl_layers, 0)
 
         left_layout.addWidget(box)
@@ -646,7 +651,7 @@ class PlatformStrengthPage(BasePage):
 
         table.verticalHeader().setVisible(bool(show_vertical_header))
         table.horizontalHeader().setVisible(True)
-        table.horizontalHeader().setStretchLastSection(True)
+        # table.horizontalHeader().setStretchLastSection(True) 移除最后一列拉伸
         table.verticalHeader().setDefaultSectionSize(28)
 
     def _set_center_item(self, table: QTableWidget, row: int, col: int, text: str):
@@ -684,6 +689,12 @@ class PlatformStrengthPage(BasePage):
         self._set_center_item(tbl_splash, 0, 0, "8.54")
         self._set_center_item(tbl_splash, 0, 1, "3.75")
         self._set_center_item(tbl_splash, 0, 2, "7.5")
+
+        tbl_splash.resizeColumnsToContents()
+        total_width = sum(tbl_splash.columnWidth(c) for c in range(tbl_splash.columnCount()))
+        tbl_splash.setMinimumWidth(total_width)
+        tbl_splash.horizontalHeader().setStretchLastSection(False)
+
         splash_layout.addWidget(tbl_splash)
         left_layout.addWidget(splash_box)
 
@@ -697,6 +708,12 @@ class PlatformStrengthPage(BasePage):
         self._init_table_common(tbl_pile, show_vertical_header=False)
         for c in range(4):
             self._set_center_item(tbl_pile, 0, c, "")
+
+        tbl_pile.resizeColumnsToContents()
+        total_width = sum(tbl_pile.columnWidth(c) for c in range(tbl_pile.columnCount()))
+        tbl_pile.setMinimumWidth(total_width)
+        tbl_pile.horizontalHeader().setStretchLastSection(False)
+
         pile_layout.addWidget(tbl_pile)
         left_layout.addWidget(pile_box)
 
@@ -742,6 +759,11 @@ class PlatformStrengthPage(BasePage):
         tbl_marine.setSpan(4, 3, 1, 9)
         self._set_center_item(tbl_marine, 4, 0, "海生物密度（t/m^2）")
         self._set_center_item(tbl_marine, 4, 3, "1.4")
+
+        tbl_marine.resizeColumnsToContents()
+        total_width = sum(tbl_marine.columnWidth(c) for c in range(tbl_marine.columnCount()))
+        tbl_marine.setMinimumWidth(total_width)
+        tbl_marine.horizontalHeader().setStretchLastSection(False)
 
         marine_layout.addWidget(tbl_marine)
         left_layout.addWidget(marine_box)

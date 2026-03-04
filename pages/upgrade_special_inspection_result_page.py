@@ -203,13 +203,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             # 4 + 6 + 1 = 11 列
             sub_headers = [
                 "A", "B", "MemberType", "失效后果等级",
-                "A", "B", "倒塌分析载荷系数Rn", "Vr", "Pf", "失效概率等级",
+                "A", "B", "倒塌分析载荷系数Rm", "VR", "Pf", "失效概率等级",
                 "构件风险等级",
             ]
         else:
             sub_headers = [
                 "JointA", "JointB", "WeldType", "失效后果等级",
-                "A", "B", "倒塌分析载荷系数Rn", "Vr", "Pf", "失效概率等级",
+                "A", "B", "倒塌分析载荷系数Rm", "VR", "Pf", "失效概率等级",
                 "节点风险等级",
             ]
 
@@ -225,7 +225,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         t.setSelectionMode(QTableWidget.SingleSelection)
 
         # 列宽：用 Stretch（和你现有实现一致）
-        t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        #t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
         # ---- row 0: group headers ----
         hdr_bg = QColor("#d9e6f5")
@@ -248,6 +248,24 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         # ---- row 1: sub headers ----
         for c, name in enumerate(sub_headers):
             self._set_cell(t, 1, c, name, hdr_bg, True)
+
+        # ====== 核心修复：列宽自适应与横向滚动条 ======
+        t.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # 让 Qt 根据刚填入的 0 行和 1 行（表头文字）自动计算所需宽度
+        t.resizeColumnsToContents()
+
+        header = t.horizontalHeader()
+        for c in range(cols):
+            # 设置为 Interactive，允许生成滚动条且允许用户拖拽列宽
+            header.setSectionResizeMode(c, QHeaderView.Interactive)
+            ideal_width = t.columnWidth(c)
+            # 给出 80 的保底宽度，并为长文字加上 25 像素的舒适留白
+            t.setColumnWidth(c, max(80, ideal_width + 25))
+
+        # 最后一列“风险等级”自动拉伸填满右侧空白
+        header.setStretchLastSection(True)
+        # ============================================
 
         # row heights
         t.setRowHeight(0, 26)

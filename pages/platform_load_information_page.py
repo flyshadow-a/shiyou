@@ -126,15 +126,15 @@ class PlatformWeightCenterCurvePage(BasePage):
         x = list(range(len(self.series.get("idx", []))))
         # 9张图（3×3）
         charts = [
-            ("上部组块总重量T", "weight", "t"),
-            ("上部组块重心x(m)", "cgx", "m"),
-            ("上部组块重心y(m)", "cgy", "m"),
-            ("极端工况最大载荷Fx(KN)", "fx", "KN"),
-            ("极端工况最大载荷Fy(KN)", "fy", "KN"),
-            ("极端工况最大载荷Fz(KN)", "fz", "KN"),
-            ("极端工况最大载荷Mx(KN·m)", "mx", "KN·m"),
-            ("极端工况最大载荷My(KN·m)", "my", "KN·m"),
-            ("极端工况最大载荷Mz(KN·m)", "mz", "KN·m"),
+            ("上部组块重量t", "weight", "上部组块重量t"),
+            ("上部组块重心x(m)", "cgx", "上部组块重心x(m)"),
+            ("上部组块重心y(m)", "cgy", "上部组块重心y(m)"),
+            ("极端工况最大载荷Fx(KN)", "fx", "极端工况最大载荷Fx(KN)"),
+            ("极端工况最大载荷Fy(KN)", "fy", "极端工况最大载荷Fy(KN)"),
+            ("极端工况最大载荷Fz(KN)", "fz", "极端工况最大载荷Fz(KN)"),
+            ("极端工况最大载荷Mx(KN·m)", "mx", "极端工况最大载荷Mx(KN·m)"),
+            ("极端工况最大载荷My(KN·m)", "my", "极端工况最大载荷My(KN·m)"),
+            ("极端工况最大载荷Mz(KN·m)", "mz", "极端工况最大载荷Mz(KN·m)"),
         ]
 
         for i, (title, key, unit) in enumerate(charts):
@@ -142,7 +142,7 @@ class PlatformWeightCenterCurvePage(BasePage):
             # 长度对齐
             if len(y) != len(x):
                 y = (y + [0.0] * len(x))[:len(x)]
-            canvas = SimpleLineChart(title, x, y, xlabel="改建次数", ylabel=unit)
+            canvas = SimpleLineChart(title, x, y, xlabel="改建次序", ylabel=unit)
             # 外框
             holder = QWidget()
             holder.setStyleSheet("background:#dfe9f6; border:1px solid #b6c2d6;")
@@ -157,7 +157,7 @@ class PlatformWeightCenterCurvePage(BasePage):
 
 class PlatformLoadInformationPage(BasePage):
     """平台载荷信息页面（严格表格结构 + 顶部/所属信息联动 + 结果文件读取 + 曲线页面）。"""
-
+    MAX_EXPAND_ROWS = 55  # 与 summary_information_table_page 保持一致
     DEMO_MAIN_CSV = "platform_load_information_demo_strict.csv"
     DEMO_RESULT_CSV = "platform_load_result_demo.csv"
 
@@ -324,12 +324,18 @@ class PlatformLoadInformationPage(BasePage):
         self.main_layout.addWidget(top_wrap, 0)
 
         # 滚动区：主表
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        self.main_layout.addWidget(scroll, 1)
+        # scroll = QScrollArea(self)
+        # scroll.setWidgetResizable(True)
+        # self.main_layout.addWidget(scroll, 1)
+
+        # 外层滚动区域（用于整体垂直滚动）
+        outer_scroll = QScrollArea(self)
+        outer_scroll.setWidgetResizable(True)
+        outer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 禁用外层水平滚动
+        self.main_layout.addWidget(outer_scroll, 1)
 
         container = QWidget()
-        scroll.setWidget(container)
+        outer_scroll.setWidget(container)
         root = QVBoxLayout(container)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
@@ -343,7 +349,15 @@ class PlatformLoadInformationPage(BasePage):
         # 点击“上部组块总操作重量/重心”单元格：跳转到分项目计算表编辑并回填
         self.table.cellClicked.connect(self._on_main_cell_clicked)
 
-        root.addWidget(self.table, 1)
+        # 创建内部滚动区域，用于表格的水平/垂直滚动
+        self.table_scroll = QScrollArea()
+        self.table_scroll.setWidgetResizable(False)  # 不自动调整内部部件大小
+        self.table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # 临时，后面会动态调整
+        self.table_scroll.setWidget(self.table)
+
+        # 将内部滚动区域添加到主布局，并设置拉伸因子
+        root.addWidget(self.table_scroll, 1)
 
         # 右下角按钮：放在主表格下方右侧两行（读取结果文件 / 重量中心变化曲线）
         bottom_btn_wrap = QWidget()
@@ -511,7 +525,7 @@ class PlatformLoadInformationPage(BasePage):
         table = HoverTipTable(base_rows, col_count)
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setVisible(False)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        # table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
         bg = QColor("#eef2ff")
         red = QColor("#cc0000")
@@ -527,15 +541,15 @@ class PlatformLoadInformationPage(BasePage):
         # ===== 所属信息两行（无绿色提示）=====
         # 每行 3 块：7 + 6 + 6 = 19
         # row0：所属分公司 / 所属作业单元 / 所属油气田(田)
-        self._set_meta_double(table, 0, 0, total_span=7, label_span=2,
+        self._set_meta_double(table, 0, 0, total_span=7, label_span=3,
                               label="所属分公司", value=top_defaults.get("分公司", ""), field_key="分公司", bg=bg)
         self._set_meta_double(table, 0, 7, total_span=6, label_span=2,
                               label="所属作业单元", value=top_defaults.get("作业公司", ""), field_key="作业公司", bg=bg)
         self._set_meta_double(table, 0, 13, total_span=6, label_span=2,
-                              label="所属油气田\n(田)", value=top_defaults.get("油气田", ""), field_key="油气田", bg=bg)
+                              label="所属油（气）田", value=top_defaults.get("油气田", ""), field_key="油气田", bg=bg)
 
         # row1：设施名称 / 投产时间 / 设计年限
-        self._set_meta_double(table, 1, 0, total_span=7, label_span=2,
+        self._set_meta_double(table, 1, 0, total_span=7, label_span=3,
                               label="设施名称", value=top_defaults.get("设施名称", ""), field_key="设施名称", bg=bg)
         self._set_meta_double(table, 1, 7, total_span=6, label_span=2,
                               label="投产时间", value=top_defaults.get("投产时间", ""), field_key="投产时间", bg=bg)
@@ -556,7 +570,7 @@ class PlatformLoadInformationPage(BasePage):
         table.setItem(2, 9, self._mk_item("极端工况最大载荷", bold=True, bg=bg))
 
         table.setSpan(2, 15, 1, 2)
-        table.setItem(2, 15, self._mk_item("桩基承载力安全\n系数（最小）", bold=True, bg=bg))
+        table.setItem(2, 15, self._mk_item("桩基承载力安全系数（最小）", bold=True, bg=bg))
 
         table.setSpan(2, 17, 2, 1)
         table.setItem(2, 17, self._mk_item("是否整体\n评估", bold=True, bg=bg))
@@ -566,14 +580,14 @@ class PlatformLoadInformationPage(BasePage):
         # ===== 子表头（row3）=====
         for i in range(1,9):
             table.setSpan(2, i, 2, 1)
-        table.setItem(2, 1, self._mk_item("改扩建项\n目名称", bold=True, bg=bg))
-        table.setItem(2, 2, self._mk_item("改扩建时\n间", bold=True, bg=bg))
-        table.setItem(2, 3, self._mk_item("改扩建内\n容", bold=True, bg=bg))
+        table.setItem(2, 1, self._mk_item("改扩建项目名称", bold=True, bg=bg))
+        table.setItem(2, 2, self._mk_item("改扩建时间", bold=True, bg=bg))
+        table.setItem(2, 3, self._mk_item("改扩建内容", bold=True, bg=bg))
 
-        table.setItem(2, 4, self._mk_item("上部组块\n总操作\n重量,MT", bold=True, bg=bg))
-        table.setItem(2, 5, self._mk_item("上部组块\n不可\n超越重量,MT", bold=True, bg=bg))
-        table.setItem(2, 6, self._mk_item("重量变化,\nMT", bold=True, bg=bg))
-        table.setItem(2, 7, self._mk_item("上部组块\n重心 x,y,z,\nm", bold=True, bg=bg))
+        table.setItem(2, 4, self._mk_item("上部组块总操作重量,MT", bold=True, bg=bg))
+        table.setItem(2, 5, self._mk_item("上部组块不可超越重量,MT", bold=True, bg=bg))
+        table.setItem(2, 6, self._mk_item("重量变化,MT", bold=True, bg=bg))
+        table.setItem(2, 7, self._mk_item("上部组块重心 x,y,z,\nm", bold=True, bg=bg))
         table.setItem(2, 8, self._mk_item("上部组块重心\n不可超越\n半径,m", bold=True, bg=bg))
 
         # 红色字段（严格：Mz 纵向显示）
@@ -583,7 +597,7 @@ class PlatformLoadInformationPage(BasePage):
             ("Fz,KN", "Fz,KN"),
             ("Mx,KN·m", "Mx,KN·m"),
             ("My,KN·m", "My,KN·m"),
-            ("Mz,KN·m", "M\nz\n,\nK\nN\n·\nm"),
+            ("Mz,KN·m", "Mz,KN·m"),
         ]
         red_cols = list(range(9, 15))
         for (src, shown), c in zip(fx_headers, red_cols):
@@ -708,6 +722,59 @@ class PlatformLoadInformationPage(BasePage):
                     editable = (base_rows <= r < data_end) and (c not in (4, 7))
                     self.table.setItem(r, c, self._mk_item("", bg=bg, editable=editable))
 
+            # ========== 新增：确保序号连续 ==========
+        data_start = base_rows
+        data_end = self._find_data_end_row()
+        for idx, row_idx in enumerate(range(data_start, data_end)):
+            seq_item = self.table.item(row_idx, 0)
+            if seq_item is not None:
+                seq_item.setText(str(idx))  # 从0开始连续编号
+
+        data_n = len(rows)
+
+        # 动态设置垂直滚动策略和表格高度
+        if data_n <= self.MAX_EXPAND_ROWS:  # 需要定义 MAX_EXPAND_ROWS = 50（可在类属性中添加）
+            self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            total_height = 0
+            for r in range(total):  # 计算所有行总高度（包括表头、数据、说明）
+                total_height += self.table.rowHeight(r)
+            self.table.setFixedHeight(total_height + 2)
+        else:
+            self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.table.setFixedHeight(-1)  # 取消固定高度
+            self.table.setMinimumHeight(300)  # 设置一个合理的最小高度
+
+        # 自适应列宽（基于所有单元格内容）
+        self.table.resizeColumnsToContents()
+
+        # ========== 新增：前三列等宽 ==========
+        col0_width = self.table.columnWidth(0)
+        col1_width = self.table.columnWidth(1)
+        col2_width = self.table.columnWidth(2)
+        min_width = min(col0_width, col1_width, col2_width)
+        if min_width > 0:
+            self.table.setColumnWidth(0, min_width)
+            self.table.setColumnWidth(1, min_width)
+            self.table.setColumnWidth(2, min_width)
+
+        # 特殊列等宽处理：
+        # 1. 红色字段列 Fx~Mz (9~14) 加上 操作工况(15) 和 极端工况(16) 共8列
+        #    取这些列的最大宽度统一设置，使它们等宽
+        red_cols = list(range(9, 17))  # 9..16
+        max_red_width = max(self.table.columnWidth(c) for c in red_cols)
+        for c in red_cols:
+            self.table.setColumnWidth(c, max_red_width)
+
+        # 2. 如果还有其他需要等宽的组，可按需添加，例如：
+        #    - 上部组块重控下的列 4~8 等宽
+        #    - 但可能不需要，先不做
+
+        # 更新表格最小宽度为所有列宽之和，确保水平滚动条出现
+        total_width = sum(self.table.columnWidth(c) for c in range(self.table.columnCount()))
+        self.table.setMinimumWidth(total_width)
+
+        # 确保水平滚动条策略正确（默认即为 AsNeeded，但可显式设置）
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     # ---------------- 结果文件读取接口 ----------------
     # === 红色字段 Excel 导入模式（仅当前行）===
     def _on_red_field_mode_changed(self, idx: int):

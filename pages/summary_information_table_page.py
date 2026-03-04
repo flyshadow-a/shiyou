@@ -69,12 +69,24 @@ class SummaryInformationTablePage(BasePage):
             QTableWidget::item:focus { outline: none; }
         """)
 
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        self.main_layout.addWidget(scroll, 1)
+        # scroll = QScrollArea(self)
+        # scroll.setWidgetResizable(True)
+        # self.main_layout.addWidget(scroll, 1)
+        #
+        # container = QWidget()
+        # scroll.setWidget(container)
+        # root = QVBoxLayout(container)
+        # root.setContentsMargins(10, 10, 10, 10)
+        # root.setSpacing(10)
+
+        # 外层滚动区域（用于整体垂直滚动）
+        outer_scroll = QScrollArea(self)
+        outer_scroll.setWidgetResizable(True)
+        outer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 禁用外层水平滚动
+        self.main_layout.addWidget(outer_scroll, 1)
 
         container = QWidget()
-        scroll.setWidget(container)
+        outer_scroll.setWidget(container)
         root = QVBoxLayout(container)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
@@ -91,10 +103,30 @@ class SummaryInformationTablePage(BasePage):
         top_bar.addWidget(self.btn_save)
         top_bar.addWidget(self.btn_export)
         root.addLayout(top_bar)
+        """
+            109-113为旧版自适应窗口大小版本的代码
+        """
+        # # 主表格（先只建表头；数据通过 load_from_csv 导入）
+        # self.table = self._build_table_skeleton()
+        # self._auto_fit_columns_by_cells(self.table)
+        # self._auto_fit_row_height(self.table)
+        # root.addWidget(self.table, 1)
 
-        # 主表格（先只建表头；数据通过 load_from_csv 导入）
+        """
+            116-129为对应修改109-113
+        """
+        # 创建表格（表头结构不变）
         self.table = self._build_table_skeleton()
-        root.addWidget(self.table, 1)
+
+        # 创建内部滚动区域，用于表格的水平/垂直滚动
+        self.table_scroll = QScrollArea()
+        self.table_scroll.setWidgetResizable(False)  # 不自动调整内部部件大小
+        self.table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # 临时，后面会动态调整
+        self.table_scroll.setWidget(self.table)
+
+        # 将内部滚动区域添加到主布局，并设置拉伸因子
+        root.addWidget(self.table_scroll, 1)
 
         # 填表说明
         note = QLabel(
@@ -159,8 +191,8 @@ class SummaryInformationTablePage(BasePage):
         table.horizontalHeader().setVisible(False)  # 用表内两行表头模拟合并表头
 
         # ✅ 列宽自适应窗口：Stretch
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Stretch)
+        # header = table.horizontalHeader()
+        # header.setSectionResizeMode(QHeaderView.Stretch)
 
         # 行高：两行表头（接近截图）
         table.setRowHeight(0, 34)  # 分组表头
@@ -185,7 +217,7 @@ class SummaryInformationTablePage(BasePage):
 
         # ---- 横向合并：桩基承载力安全系数（最小）（12~13）----
         table.setSpan(0, 12, 1, 2)
-        table.setItem(0, 12, self._mk_item("桩基承载力\n安全系数\n（最小）", bold=True, bg=bg_group))
+        table.setItem(0, 12, self._mk_item("桩基承载力安全系数（最小）", bold=True, bg=bg_group))
         table.setItem(1, 12, self._mk_item("操作", bold=True, bg=bg_header))
         table.setItem(1, 13, self._mk_item("极端", bold=True, bg=bg_header))
 
@@ -323,14 +355,41 @@ class SummaryInformationTablePage(BasePage):
                     it.setForeground(green)
                 self.table.setItem(rr, c, it)
 
-        # 行数多时：不强制无限增高，避免卡顿；行数少时：自动扩展更像“表格自然增长”
+        # # 行数多时：不强制无限增高，避免卡顿；行数少时：自动扩展更像“表格自然增长”
+        # data_n = len(rows)
+        # if data_n <= self.MAX_EXPAND_ROWS:
+        #     self._fit_table_height_expand_all()
+        #     self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # else:
+        #     self._fit_table_height_reasonable()
+        #     self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
         data_n = len(rows)
         if data_n <= self.MAX_EXPAND_ROWS:
-            self._fit_table_height_expand_all()
-            self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            total_height = 0
+            for r in range(total_rows):
+                total_height += self.table.rowHeight(r)
+            self.table.setFixedHeight(total_height + 2)
         else:
-            self._fit_table_height_reasonable()
-            self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.table.setFixedHeight(-1)
+            self.table.setMinimumHeight(300)
+
+        # 自适应列宽（基于所有单元格内容）
+        self.table.resizeColumnsToContents()
+
+        # ---------- 新增：使“操作”和“极端”两列等宽 ----------
+        col12_width = self.table.columnWidth(12)
+        col13_width = self.table.columnWidth(13)
+        max_width = max(col12_width, col13_width)
+        if max_width > 0:
+            self.table.setColumnWidth(12, max_width)
+            self.table.setColumnWidth(13, max_width)
+
+        # 重新计算总宽度，并设置表格最小宽度
+        total_width = sum(self.table.columnWidth(c) for c in range(self.table.columnCount()))
+        self.table.setMinimumWidth(total_width)
 
     def _fit_table_height_expand_all(self):
         h = 0

@@ -32,6 +32,8 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget, QHeaderView,
+    QStackedWidget,
+    QComboBox,
 )
 
 from base_page import BasePage
@@ -258,15 +260,15 @@ class FeasibilityAssessmentResultsPage(BasePage):
     def _autoload_inp_to_view(self):
         here = os.path.dirname(os.path.abspath(__file__))
         candidates = [
+            os.path.join(os.getcwd(), "data", "demo_platform_jacket.inp"),
             os.path.join(os.getcwd(), "upload", "demo_platform_jacket.inp"),
-            os.path.join(os.getcwd(), "pict", "demo_platform_jacket.inp"),
+            os.path.normpath(os.path.join(here, "..", "data", "demo_platform_jacket.inp")),
             os.path.normpath(os.path.join(here, "..", "upload", "demo_platform_jacket.inp")),
-            os.path.normpath(os.path.join(here, "..", "pict", "demo_platform_jacket.inp")),
             os.path.join(os.getcwd(), "demo_platform_jacket.inp"),
         ]
         path = next((p for p in candidates if os.path.exists(p)), "")
         if not path:
-            self.inp_view.clear_view("未找到 INP：demo_platform_jacket.inp\n请放到 upload/ 或 pict/ 目录")
+            self.inp_view.clear_view("未找到 INP：demo_platform_jacket.inp\n请放到 data/ 或 upload/ 目录")
             return
         try:
             self.inp_view.load_inp(path)
@@ -298,10 +300,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
         table.verticalHeader().setVisible(False)
 
         table.horizontalHeader().setStretchLastSection(False)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        # table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
         table.verticalHeader().setDefaultSectionSize(26)
 
-    def _set_cell(self, table: QTableWidget, r: int, c: int, text: str, bg: QColor = None, bold: bool = False, align_center: bool = True):
+    # 设置单元格内容
+    def _set_cell(self, table: QTableWidget, r: int, c: int, text: str, bg: QColor = None, bold: bool = False, align_center: bool = True, editable: bool = True):
         it = QTableWidgetItem(str(text))
         if align_center:
             it.setTextAlignment(Qt.AlignCenter)
@@ -311,6 +314,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
             f = it.font()
             f.setBold(True)
             it.setFont(f)
+        if not editable:
+            it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         table.setItem(r, c, it)
         return it
 
@@ -342,11 +347,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         # 标题行
         self.tbl_summary.setSpan(0, 0, 1, cols)
-        self._set_cell(self.tbl_summary, 0, 0, "快速评估汇总信息", bg=self.TITLE_BG, bold=True)
+        self._set_cell(self.tbl_summary, 0, 0, "快速评估汇总信息", bg=self.TITLE_BG, bold=True, editable=False)
 
         headers = ["核校内容", "构件名称", "最大（最小） UC值", "对应工况", "是否满足"]
         for c, h in enumerate(headers):
-            self._set_cell(self.tbl_summary, 1, c, h, bg=self.HDR_BG, bold=True)
+            self._set_cell(self.tbl_summary, 1, c, h, bg=self.HDR_BG, bold=True, editable=False)
 
         # 数据行（与原型图可见内容一致）
         items = [
@@ -360,18 +365,33 @@ class FeasibilityAssessmentResultsPage(BasePage):
         ]
         for i, name in enumerate(items):
             r = 2 + i
-            self._set_cell(self.tbl_summary, r, 0, name, bg=self.HDR_BG, bold=False, align_center=False)
+            self._set_cell(self.tbl_summary, r, 0, name, bg=self.HDR_BG, bold=False, align_center=False, editable=False)
             self._set_cell(self.tbl_summary, r, 1, "", bg=None)
             self._set_cell(self.tbl_summary, r, 2, "", bg=None)
             self._set_cell(self.tbl_summary, r, 3, "", bg=None)
             self._set_cell(self.tbl_summary, r, 4, "", bg=None)
 
-        # 列宽粗调
-        self.tbl_summary.setColumnWidth(0, 140)
-        self.tbl_summary.setColumnWidth(1, 120)
-        self.tbl_summary.setColumnWidth(2, 120)
-        self.tbl_summary.setColumnWidth(3, 90)
-        self.tbl_summary.setColumnWidth(4, 90)
+            # ====== 列宽自适应与滚动条终极策略 ======
+            # 1. 明确开启：内容超出时显示横向滚动条
+            self.tbl_summary.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+            # 2. 核心：让 Qt 引擎根据实际文字内容，精准计算每一列所需的最小像素
+            self.tbl_summary.resizeColumnsToContents()
+
+            header = self.tbl_summary.horizontalHeader()
+            for c in range(cols):
+                # 3. 设为 Interactive 模式，允许滚动条生效，也允许用户鼠标拖拽调整列宽
+                header.setSectionResizeMode(c, QHeaderView.Interactive)
+
+                # 4. 获取系统刚算出的完美宽度，并加上 30 像素的安全留白，彻底告别省略号
+                ideal_width = self.tbl_summary.columnWidth(c)
+                # 设置列宽，并给一个 100 的下限保底
+                self.tbl_summary.setColumnWidth(c, max(100, ideal_width + 30))
+
+            # 5. 让最后一列自动拉伸，填补窗口放大时右侧的灰色空白区域
+            header.setStretchLastSection(True)
+            # =======================================
+
         self.tbl_summary.setRowHeight(0, 26)
         for r in range(1, rows):
             self.tbl_summary.setRowHeight(r, 26)
@@ -391,88 +411,167 @@ class FeasibilityAssessmentResultsPage(BasePage):
         tab_bar = QWidget()
         tab_lay = QHBoxLayout(tab_bar)
         tab_lay.setContentsMargins(0, 0, 0, 0)
-        tab_lay.setSpacing(0)
+        tab_lay.setSpacing(0)  # 【关键点1】强制设置布局内元素间距为 0
 
         self.tab_group = QButtonGroup(self)
         self.tab_group.setExclusive(True)
 
         tabs = ["构件", "节点冲剪", "桩应力", "桩承载力操作抗压"]
-        for t in tabs:
+
+        # 准备堆叠容器存放不同的表格 (保留你之前的 QStackedWidget 逻辑)
+        self.table_stack = QStackedWidget()
+        self.detail_tables = {}
+
+        for i, t in enumerate(tabs):
             btn = QPushButton(t)
             btn.setCheckable(True)
             btn.setFixedHeight(26)
+            btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+            # 【修改点】：根据文字的实际绘制长度动态分配宽度，外加 30 像素的留白
+            text_width = btn.fontMetrics().horizontalAdvance(t)
+            btn.setMinimumWidth(text_width + 30)
+            # 【关键点2】样式中必须有 border-right: none; 这样按钮才能无缝拼接，且中间边框不会变粗
             btn.setStyleSheet("""
-                QPushButton {
-                    background: #dfead2;
-                    border: 1px solid #3b3b3b;
-                    border-right: none;
-                    padding: 0 14px;
-                    font-weight: bold;
-                }
-                QPushButton:checked {
-                    background: #cfe4b5;
-                }
-            """)
-            self.tab_group.addButton(btn)
+                        QPushButton {
+                            background: #dfead2;
+                            border: 1px solid #3b3b3b;
+                            border-right: none;  /* 隐藏右边框 */
+                            padding: 0 14px;
+                            font-weight: bold;
+                        }
+                        QPushButton:checked {
+                            background: #cfe4b5;
+                        }
+                    """)
+            self.tab_group.addButton(btn, i)
             tab_lay.addWidget(btn)
+
+            # (保留你之前的表格创建逻辑)
+            tbl = self._create_single_detail_table(t)
+            self.table_stack.addWidget(tbl)
+            self.detail_tables[t] = tbl
+
             if t == self.current_tab:
                 btn.setChecked(True)
+                self.table_stack.setCurrentIndex(i)
 
-        # 末尾补上右边框
+        # 【关键点3】因为所有按钮都没了右边框，末尾必须加一个固定大小的块来“封口”
         spacer = QWidget()
         spacer.setStyleSheet("border: 1px solid #3b3b3b; border-left:none; background:#dfead2;")
-        spacer.setFixedHeight(26)
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        tab_lay.addWidget(spacer, 1)
+        spacer.setFixedSize(30, 26)  # 宽度30（可调），高度和按钮保持一致
+        tab_lay.addWidget(spacer)
+
+        # 【关键点4】在最右侧增加弹簧。它会吸收所有剩余的空白空间，将左侧的所有按钮紧紧地向左挤压
+        tab_lay.addStretch(1)
+
+        # ====== 新增：右侧“显示行数”控件 ======
+        lbl_rows = QLabel("显示行数：")
+        lbl_rows.setStyleSheet("font-size: 13px; color: #333; font-weight: bold;")
+        tab_lay.addWidget(lbl_rows, 0)
+
+        self.cb_row_limit = QComboBox()
+        self.cb_row_limit.addItems(["10", "20", "50", "100", "全部"])
+        self.cb_row_limit.setFixedHeight(24)
+        self.cb_row_limit.setStyleSheet("""
+                    QComboBox {
+                        border: 1px solid #b9c6d6;
+                        border-radius: 3px;
+                        padding: 1px 10px 1px 5px;
+                        background: #ffffff;
+                        min-width: 60px;
+                    }
+                """)
+        # 绑定下拉框值改变的信号
+        self.cb_row_limit.currentTextChanged.connect(self._on_row_limit_changed)
+        tab_lay.addWidget(self.cb_row_limit, 0)
+        # ====================================
 
         self.tab_group.buttonClicked.connect(self._on_tab_clicked)
         lay.addWidget(tab_bar, 0)
 
-        # 详情表：1 行标题 + 1 行表头 + 4 行数据（与原型显示一致）
-        rows = 1 + 1 + 4
-        cols = 5
-        self.tbl_detail = QTableWidget(rows, cols)
-        self._init_table_common(self.tbl_detail)
+        lay.addWidget(self.table_stack, 1)
 
-        # 标题行
-        self.tbl_detail.setSpan(0, 0, 1, cols)
-        self._set_cell(self.tbl_detail, 0, 0, "快速评估信息", bg=self.TITLE_BG, bold=True)
-
-        headers = ["序号", "构件名称", "最大（最小） UC值", "对应工况", "是否满足"]
-        for c, h in enumerate(headers):
-            self._set_cell(self.tbl_detail, 1, c, h, bg=self.HDR_BG, bold=True)
-
-        for i in range(4):
-            r = 2 + i
-            self._set_cell(self.tbl_detail, r, 0, str(i + 1), bg=self.INDEX_BG, bold=False)
-            self._set_cell(self.tbl_detail, r, 1, "", bg=None, align_center=False)
-            self._set_cell(self.tbl_detail, r, 2, "", bg=None)
-            self._set_cell(self.tbl_detail, r, 3, "", bg=None)
-            self._set_cell(self.tbl_detail, r, 4, "", bg=None)
-
-        # 列宽与行高
-        self.tbl_detail.setColumnWidth(0, 60)
-        self.tbl_detail.setColumnWidth(1, 160)
-        self.tbl_detail.setColumnWidth(2, 140)
-        self.tbl_detail.setColumnWidth(3, 100)
-        self.tbl_detail.setColumnWidth(4, 100)
-        for r in range(rows):
-            self.tbl_detail.setRowHeight(r, 26)
-
-        lay.addWidget(self.tbl_detail, 0)
+        # 初始化完毕后，触发一次表格行数渲染
+        self._update_current_table_rows()
 
         return box
 
-    # -------------------按钮事件--------------------
+    def _create_single_detail_table(self, tab_name: str) -> QTableWidget:
+        """为每一个标签页生成一个独立的、自适应列宽的表格基础框架"""
+        cols = 5
+        # 初始只创建 2 行（标题行 + 表头行），数据行留给动态方法生成
+        tbl = QTableWidget(2, cols)
+        self._init_table_common(tbl)
+
+        tbl.setSpan(0, 0, 1, cols)
+        self._set_cell(tbl, 0, 0, f"{tab_name} - 快速评估信息", bg=self.TITLE_BG, bold=True, editable=False)
+
+        headers = ["序号", "构件名称", "最大（最小） UC值", "对应工况", "是否满足"]
+        for c, h in enumerate(headers):
+            self._set_cell(tbl, 1, c, h, bg=self.HDR_BG, bold=True, editable=False)
+
+            # ====== 列宽自适应与滚动条终极策略 ======
+            tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            tbl.resizeColumnsToContents()
+
+            header = tbl.horizontalHeader()
+            for c in range(cols):
+                header.setSectionResizeMode(c, QHeaderView.Interactive)
+                ideal_width = tbl.columnWidth(c)
+                tbl.setColumnWidth(c, max(100, ideal_width + 30))
+
+            header.setStretchLastSection(True)
+            # =======================================
+
+        tbl.setRowHeight(0, 26)
+        tbl.setRowHeight(1, 26)
+
+        return tbl
+
+    # ------------------- 表格行数控制与事件 --------------------
+    def _update_current_table_rows(self):
+        """根据下拉框的值，动态调整当前显示表格的行数并填充空单元格"""
+        limit_text = self.cb_row_limit.currentText()
+        if limit_text == "全部":
+            limit = 200  # UI占位：假设"全部"对应200行测试数据
+        else:
+            limit = int(limit_text)
+
+        # 获取当前正在显示的表格
+        idx = self.table_stack.currentIndex()
+        if idx == -1: return
+        current_tbl = self.table_stack.widget(idx)
+
+        # 目标总行数 = 2行表头 + 数据行
+        target_rows = 2 + limit
+        current_tbl.setRowCount(target_rows)
+
+        # 补充新增出来的行数据（如果是减少行数，setRowCount 会自动截断）
+        for i in range(limit):
+            r = 2 + i
+            current_tbl.setRowHeight(r, 26)
+
+            # 判断第0列（序号）是否为空，为空说明是新生成的行，需要初始化格式
+            if current_tbl.item(r, 0) is None:
+                self._set_cell(current_tbl, r, 0, str(i + 1), bg=self.INDEX_BG, bold=False, editable=False)
+                self._set_cell(current_tbl, r, 1, "", bg=None, align_center=False)
+                self._set_cell(current_tbl, r, 2, "", bg=None)
+                self._set_cell(current_tbl, r, 3, "", bg=None)
+                self._set_cell(current_tbl, r, 4, "", bg=None)
+
+    def _on_row_limit_changed(self, text):
+        """下拉框数值改变时触发"""
+        self._update_current_table_rows()
+
     def _on_tab_clicked(self, btn: QPushButton):
+        """点击标签页切换时触发"""
         self.current_tab = btn.text().strip()
-        # 当前仅做占位：清空数据区，后续接入解析结果后按 tab 填充
-        for r in range(2, self.tbl_detail.rowCount()):
-            for c in range(1, self.tbl_detail.columnCount()):
-                it = self.tbl_detail.item(r, c)
-                if it is not None:
-                    it.setText("")
-        # 也可在这里更新标题/其它内容（原型标题不变，所以不改）
+        idx = self.tab_group.id(btn)
+        if idx != -1:
+            self.table_stack.setCurrentIndex(idx)
+            # 切换表格后，确保新表格的行数也和右上角的下拉框保持一致
+            self._update_current_table_rows()
 
     # ---------------- 生成报告按钮 ----------------
     def _build_report_button(self) -> QWidget:
