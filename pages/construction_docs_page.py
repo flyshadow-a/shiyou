@@ -49,7 +49,7 @@ class ConstructionDocsPage(BasePage):
             {"key": "division",      "label": "分公司",   "options": ["渤江分公司"]},
             {"key": "company",       "label": "作业公司", "options": ["文昌油田群作业公司"]},
             {"key": "field",         "label": "油气田",   "options": ["文昌19-1油田"]},
-            {"key": "facility_code", "label": "设施编号", "options": ["WC19-1WHPC"]},
+            {"key": "facility_code", "label": "设施编码", "options": ["WC19-1WHPC"]},
             {"key": "facility_name", "label": "设施名称", "options": ["文昌19-1WHPC井口平台"]},
             {"key": "facility_type", "label": "设施类型", "options": ["平台"]},
             {"key": "category",      "label": "分类",     "options": ["井口平台"]},

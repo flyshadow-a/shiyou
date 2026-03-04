@@ -133,7 +133,8 @@ class ModelFilesDocsWidget(QWidget):
                 {"category": "桩基文件",            "fmt": "psiinp"},
                 {"category": "动力分析文件",        "fmt": "dyninp"},
                 {"category": "疲劳分析模型文件",    "fmt": "ftginp"},
-                {"category": "疲劳分析结果文件",    "fmt": "ftglst"},
+                {"category": "疲劳分析结果文件",    "fmt": "wvrinp"},
+                {"category": "疲劳分析结果文件", "fmt": "ftglst"},
             ],
             "collapse": [  # 倒塌
                 {"category": "结构模型文件",          "fmt": "sacinp"},
@@ -142,7 +143,7 @@ class ModelFilesDocsWidget(QWidget):
                 {"category": "倒塌分析模型文件",      "fmt": "clpinp"},
                 {"category": "倒塌分析日志文件",      "fmt": "clplog"},
                 {"category": "倒塌分析结果文件",      "fmt": "clplst"},
-                {"category": "倒塌分析结果文件(补)", "fmt": "clprst"},
+                {"category": "倒塌分析结果文件", "fmt": "clprst"},
             ],
             "seismic": [  # 地震
                 {"category": "结构模型文件",        "fmt": "sacinp"},
@@ -671,7 +672,7 @@ class ModelFilesPage(BasePage):
             {"key": "branch",         "label": "分公司",   "options": ["渤江分公司"],             "default": "渤江分公司"},
             {"key": "op_company",     "label": "作业公司", "options": ["文昌油田群作业公司"],     "default": "文昌油田群作业公司"},
             {"key": "oilfield",       "label": "油气田",   "options": ["文昌19-1油田"],          "default": "文昌19-1油田"},
-            {"key": "facility_code",  "label": "设施编号", "options": ["WC19-1WHPC"],           "default": "WC19-1WHPC"},
+            {"key": "facility_code",  "label": "设施编码", "options": ["WC19-1WHPC"],           "default": "WC19-1WHPC"},
             {"key": "facility_name",  "label": "设施名称", "options": ["文昌19-1WHPC井口平台"],   "default": "文昌19-1WHPC井口平台"},
             {"key": "facility_type",  "label": "设施类型", "options": ["平台"],                  "default": "平台"},
             {"key": "category",       "label": "分类",     "options": ["井口平台"],              "default": "井口平台"},

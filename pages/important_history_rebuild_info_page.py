@@ -296,7 +296,7 @@ class ImportantHistoryDetailWidget(QWidget):
         # 2.3) 下表：板块/因素/节点/信息来源/备注
         self.bottom_table = QTableWidget(0, 5, content)
         self.bottom_table.setHorizontalHeaderLabels(
-            ["观察板块", "观察因素", "重要节点", "信息来源", "备注"]
+            ["校核内容", "构建名称", "最大（最小）UC值", "对应工况", "是否满足"]
         )
         self._init_table_common(self.bottom_table)
         self.bottom_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -350,9 +350,9 @@ class ImportantHistoryDetailWidget(QWidget):
         if folder_name == "历史改造信息":
             # 这里可以替换成你自己想要的示例数据
             records = [
-                (1, "xxx平台建造和投产", "1998年"),
-                (2, "xxx平台进行结构加固", "2006年"),
-                (3, "xxx油田开发工程项目依托改造", "2011年"),
+                (1, "xxx平台增加调整井", "2009年"),
+                (2, "xxx油田产能释放", "2016年"),
+                (3, "xxx油田开发工程详细设计项目旧平台改造结构", "2011年"),
                 (4, "xxx平台增加救生筏和逃生软梯安装甲板", "2016年"),
                 (5, "xxx平台A3井增加放空管线", "2011年")
             ]
@@ -477,7 +477,7 @@ class ImportantHistoryEventsPage(BasePage):
             {"key": "branch",         "label": "分公司",   "options": ["渤江分公司"],             "default": "渤江分公司"},
             {"key": "op_company",     "label": "作业公司", "options": ["文昌油田群作业公司"],     "default": "文昌油田群作业公司"},
             {"key": "oilfield",       "label": "油气田",   "options": ["文昌19-1油田"],          "default": "文昌19-1油田"},
-            {"key": "facility_code",  "label": "设施编号", "options": ["WC19-1WHPC"],           "default": "WC19-1WHPC"},
+            {"key": "facility_code",  "label": "设施编码", "options": ["WC19-1WHPC"],           "default": "WC19-1WHPC"},
             {"key": "facility_name",  "label": "设施名称", "options": ["文昌19-1WHPC井口平台"],   "default": "文昌19-1WHPC井口平台"},
             {"key": "facility_type",  "label": "设施类型", "options": ["平台"],                  "default": "平台"},
             {"key": "category",       "label": "分类",     "options": ["井口平台"],              "default": "井口平台"},
