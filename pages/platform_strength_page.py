@@ -580,7 +580,7 @@ class PlatformStrengthPage(BasePage):
         row3 = QHBoxLayout()
         row3.setSpacing(8)
         lab_layers = QLabel("水平层高程")
-        lab_layers.setFixedWidth(90)
+        lab_layers.setFixedWidth(120)
         row3.addWidget(lab_layers)
         row3.addStretch(1)
         box_layout.addLayout(row3)
