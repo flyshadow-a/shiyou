@@ -344,14 +344,19 @@ class FeasibilityAssessmentPage(BasePage):
         self._auto_fit_columns(self.tbl1, padding=18, equal_width_groups=groups_tbl1)
 
         # 创建表格的滚动区域
-        table_scroll = QScrollArea()
-        table_scroll.setWidgetResizable(False)  # 让表格自身决定宽度
-        table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        table_scroll.setWidget(self.tbl1)
+        # table_scroll = QScrollArea()
+        # table_scroll.setWidgetResizable(False)  # 让表格自身决定宽度
+        # table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # table_scroll.setWidget(self.tbl1)
+        #
+        # # 将滚动区域添加到 QGroupBox 布局
+        # lay.addWidget(table_scroll, 1)  # 原来 lay.addWidget(self.tbl1, 1) 替换为滚动区域
 
-        # 将滚动区域添加到 QGroupBox 布局
-        lay.addWidget(table_scroll, 1)  # 原来 lay.addWidget(self.tbl1, 1) 替换为滚动区域
+        # === 2. 替换为直接添加表格，并明确启用表格自身的滚动条 ===
+        self.tbl1.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tbl1.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        lay.addWidget(self.tbl1, 1)
 
         #lay.addWidget(self.tbl1, 1)
         return box
@@ -448,13 +453,18 @@ class FeasibilityAssessmentPage(BasePage):
         ]
         self._auto_fit_columns(self.tbl2, padding=18, equal_width_groups=groups_tbl2)
 
-        # 创建滚动区域容纳表格
-        table_scroll = QScrollArea()
-        table_scroll.setWidgetResizable(False)
-        table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        table_scroll.setWidget(self.tbl2)
-        lay.addWidget(table_scroll, 1)
+        # # 创建滚动区域容纳表格
+        # table_scroll = QScrollArea()
+        # table_scroll.setWidgetResizable(False)
+        # table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # table_scroll.setWidget(self.tbl2)
+        # lay.addWidget
+
+        # === 2. 替换为直接添加表格，并明确启用表格自身的滚动条 ===
+        self.tbl2.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tbl2.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        lay.addWidget(self.tbl2, 1)
         #lay.addWidget(self.tbl2, 1)
         return box
 
@@ -515,14 +525,19 @@ class FeasibilityAssessmentPage(BasePage):
         ]
         self._auto_fit_columns(self.tbl3, padding=18, equal_width_groups=groups_tbl3)
 
-        table_scroll = QScrollArea()
-        table_scroll.setWidgetResizable(False)
-        table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        table_scroll.setWidget(self.tbl3)
-        lay.addWidget(table_scroll, 1)
+        # table_scroll = QScrollArea()
+        # table_scroll.setWidgetResizable(False)
+        # table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # table_scroll.setWidget(self.tbl3)
+        # lay.addWidget(table_scroll, 1)
 
+        # === 2. 替换为直接添加表格，并明确启用表格自身的滚动条 ===
+        self.tbl3.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tbl3.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         lay.addWidget(self.tbl3, 1)
+
+        # lay.addWidget(self.tbl3, 1)
         return box
 
     # ---------------- 底部按钮 ----------------
