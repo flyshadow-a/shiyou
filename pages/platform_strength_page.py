@@ -513,12 +513,12 @@ class PlatformStrengthPage(BasePage):
         self._init_table_common(tbl, show_vertical_header=False)
 
         # 列宽更像“表单表格”
-        tbl.setColumnWidth(0, 200)
+        tbl.setColumnWidth(0, 240)
         tbl.setColumnWidth(1, 160)
         tbl.setColumnWidth(2, 60)
 
-        # 第0行：泥面高度
-        item0 = QTableWidgetItem("泥面高度")
+        # 第0行：泥面高层
+        item0 = QTableWidgetItem("泥面高层")
         item0.setTextAlignment(Qt.AlignCenter)
         item0.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         tbl.setItem(0, 0, item0)
@@ -533,7 +533,7 @@ class PlatformStrengthPage(BasePage):
         unit0.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         tbl.setItem(0, 2, unit0)
 
-        # 第1行：水平台层节点数量限制
+        # 第1行：水平层节点数量限制
         item1 = QTableWidgetItem("水平层高层节点数量限制")
         item1.setTextAlignment(Qt.AlignCenter)
         item1.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
@@ -554,6 +554,17 @@ class PlatformStrengthPage(BasePage):
 
         tbl.horizontalHeader().setVisible(False)  # 隐藏列头（“1”“2”…）
         tbl.verticalHeader().setVisible(False)  # 隐藏行头（左侧行号）
+
+        # 1. 给足第一列宽度
+        tbl.setColumnWidth(0, 240)
+
+        # 2. 强制禁止自动换行，保证所有字都在一行显示
+        tbl.setWordWrap(False)
+
+        # 3. 设置表格整体的固定高度（2行28px + 上下边框预留4px = 60px）
+        #    并设置最小宽度，防止被外部布局强行挤压
+        tbl.setFixedHeight(60)
+        tbl.setMinimumWidth(480)
 
         return tbl
 
