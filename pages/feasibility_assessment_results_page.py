@@ -231,10 +231,19 @@ class FeasibilityAssessmentResultsPage(BasePage):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(12)
 
+        # left_layout.addWidget(self._build_summary_table(), 0)
+        # left_layout.addWidget(self._build_detail_section(), 0)
+        # left_layout.addWidget(self._build_report_button(), 0)
+        # left_layout.addStretch(1)
+
+        # ========== 替换为新代码 ==========
         left_layout.addWidget(self._build_summary_table(), 0)
-        left_layout.addWidget(self._build_detail_section(), 0)
+
+        # 将权重改为 1，让详情区（第二个表格及标签）像海绵一样吸满剩余的所有纵向空间
+        left_layout.addWidget(self._build_detail_section(), 1)
+
         left_layout.addWidget(self._build_report_button(), 0)
-        left_layout.addStretch(1)
+
 
         # 右侧模型视图
         right = self._build_inp_view_panel()
@@ -392,11 +401,23 @@ class FeasibilityAssessmentResultsPage(BasePage):
             header.setStretchLastSection(True)
             # =======================================
 
+        # self.tbl_summary.setRowHeight(0, 26)
+        # for r in range(1, rows):
+        #     self.tbl_summary.setRowHeight(r, 26)
+        #
+        # lay.addWidget(self.tbl_summary, 0)
+            # ========== 替换为新代码 ==========
         self.tbl_summary.setRowHeight(0, 26)
         for r in range(1, rows):
             self.tbl_summary.setRowHeight(r, 26)
 
+        # 核心：精准计算包含所有行的总像素高度，彻底锁死并关闭其专属的纵向滚动条
+        total_h = sum(self.tbl_summary.rowHeight(r) for r in range(rows))
+        self.tbl_summary.setFixedHeight(total_h + 4)  # +4 像素留给上下边框
+        self.tbl_summary.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
         lay.addWidget(self.tbl_summary, 0)
+
         return box
 
     # ---------------- 下方详情区（标签 + 详情表） ----------------
