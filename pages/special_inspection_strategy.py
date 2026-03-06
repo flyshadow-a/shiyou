@@ -231,20 +231,31 @@ class SpecialInspectionStrategy(BasePage):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(10)
 
-        # 上表：构件检验汇总（固定示例数据）
+        # 1. 上表：构件检验汇总
         self.component_table = QTableWidget(6, 5)
-        self.component_table.setHorizontalHeaderLabels(["构件风险等级", "构件数量", "检验等级II", "检验等级III", "检验等级IV"])
+        self.component_table.setHorizontalHeaderLabels(
+            ["构件风险等级", "构件数量", "检验等级II", "检验等级III", "检验等级IV"])
         self._style_summary_table(self.component_table)
+
+        # ====== 召唤动态高度工具，拒绝写死像素 ======
+        self._lock_table_height_only(self.component_table)
         v.addWidget(self._wrap_with_title("构件检验汇总", self.component_table), 0)
 
-        # 年份切换条
+        # 2. 年份切换条
         v.addWidget(self._build_year_bar(), 0)
 
-        # 下表：节点风险等级汇总（随年份变化，并吃掉剩余高度）
+        # 3. 下表：节点风险等级汇总
         self.node_table = QTableWidget(6, 5)
-        self.node_table.setHorizontalHeaderLabels(["节点风险等级", "节点焊缝数量", "检验等级II", "检验等级III", "检验等级IV"])
+        self.node_table.setHorizontalHeaderLabels(
+            ["节点风险等级", "节点焊缝数量", "检验等级II", "检验等级III", "检验等级IV"])
         self._style_summary_table(self.node_table)
-        v.addWidget(self._wrap_with_title("节点风险等级汇总", self.node_table), 1)
+
+        # ====== 召唤动态高度工具，拒绝写死像素 ======
+        self._lock_table_height_only(self.node_table)
+        v.addWidget(self._wrap_with_title("节点风险等级汇总", self.node_table), 0)
+
+        # ====== 底部弹簧，吸收所有多余空间 ======
+        v.addStretch(1)
 
         return left
 
@@ -331,6 +342,21 @@ class SpecialInspectionStrategy(BasePage):
                 it = QTableWidgetItem("-")
                 it.setTextAlignment(Qt.AlignCenter)
                 table.setItem(r, c, it)
+
+    def _lock_table_height_only(self, table: QTableWidget):
+        """动态计算并锁死表格高度，完美适配 Win11 的 DPI 缩放"""
+        # 1. 根据当前系统字体高度，动态设定舒适的行高（字体高度 + 14像素留白）
+        base_row_h = table.fontMetrics().height() + 14
+        table.verticalHeader().setDefaultSectionSize(base_row_h)
+
+        # 2. 获取表头在当前系统下的真实渲染高度（sizeHint能获取到准确值）
+        header_h = table.horizontalHeader().sizeHint().height()
+        if header_h < 20:  # 极端情况兜底
+            header_h = base_row_h
+
+        # 3. 精准计算总高度：表头高度 + (行高 × 行数) + 上下边框(4px)
+        total_h = header_h + (base_row_h * table.rowCount()) + 4
+        table.setFixedHeight(total_h)
 
     # ---------------- data ----------------
     def _fill_component_demo_data(self):
