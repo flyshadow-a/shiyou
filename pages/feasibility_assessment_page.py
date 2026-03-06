@@ -93,12 +93,26 @@ class FeasibilityAssessmentPage(BasePage):
         body_layout.setContentsMargins(8, 0, 8, 8)
         body_layout.setSpacing(10)
 
-        body_layout.addWidget(self._build_table_1(), 0)
-        body_layout.addWidget(self._build_table_2(), 0)
-        body_layout.addWidget(self._build_table_3(), 0)
+        # body_layout.addWidget(self._build_table_1(), 0)
+        # body_layout.addWidget(self._build_table_2(), 0)
+        # body_layout.addWidget(self._build_table_3(), 0)
+        #
+        # body_layout.addWidget(self._build_bottom_actions(), 0)
+        # body_layout.addStretch(1)
+
+        # ========== 修改前 ==========
+        # body_layout.addWidget(self._build_table_1(), 0)
+        # body_layout.addWidget(self._build_table_2(), 0)
+        # body_layout.addWidget(self._build_table_3(), 0)
+        # body_layout.addWidget(self._build_bottom_actions(), 0)
+        # body_layout.addStretch(1)
+
+        # ========== 修改后 ==========
+        body_layout.addWidget(self._build_table_1(), 1)  # 权重设为1，允许表格组块纵向伸展填满留白
+        body_layout.addWidget(self._build_table_2(), 1)
+        body_layout.addWidget(self._build_table_3(), 1)
 
         body_layout.addWidget(self._build_bottom_actions(), 0)
-        body_layout.addStretch(1)
 
     # ---------------- 通用表格风格 ----------------
     def _init_table_common(self, table: QTableWidget):
@@ -322,7 +336,7 @@ class FeasibilityAssessmentPage(BasePage):
         for r in range(data_rows):
             rr = header_rows + r
             # 编号
-            self._set_cell(self.tbl1, rr, 0, demo[r][0], bg=QColor("#e9eef5"), editable=True)
+            self._set_cell(self.tbl1, rr, 0, demo[r][0], bg=QColor("#e9eef5"), editable=False)
             # 基础字段
             for c in range(1, base_cols):
                 self._set_cell(self.tbl1, rr, c, demo[r][c], bg=self.DATA_BG, editable=True)
@@ -435,7 +449,7 @@ class FeasibilityAssessmentPage(BasePage):
         ]
         for r in range(data_rows):
             rr = header_rows + r
-            self._set_cell(self.tbl2, rr, 0, demo[r][0], bg=QColor("#e9eef5"), editable=True)
+            self._set_cell(self.tbl2, rr, 0, demo[r][0], bg=QColor("#e9eef5"), editable=False)
             for c in range(1, base_cols):
                 self._set_cell(self.tbl2, rr, c, demo[r][c], bg=self.DATA_BG, editable=True)
             start = base_cols
@@ -514,7 +528,7 @@ class FeasibilityAssessmentPage(BasePage):
         ]
         for r in range(data_rows):
             rr = header_rows + r
-            self._set_cell(self.tbl3, rr, 0, demo[r][0], bg=QColor("#e9eef5"), editable=True)
+            self._set_cell(self.tbl3, rr, 0, demo[r][0], bg=QColor("#e9eef5"), editable=False)
             self._set_cell(self.tbl3, rr, 1, demo[r][1], bg=self.DATA_BG, editable=True)
             self._set_cell(self.tbl3, rr, 2, demo[r][2], bg=self.DATA_BG, editable=True)
             self._set_cell(self.tbl3, rr, 3, demo[r][3], bg=self.DATA_BG, editable=True)
@@ -532,6 +546,10 @@ class FeasibilityAssessmentPage(BasePage):
         # table_scroll.setWidget(self.tbl3)
         # lay.addWidget(table_scroll, 1)
 
+        # 让所有列自动拉伸以平分、填满表格宽度
+        self.tbl3.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        # 单独把第0列（编号列）设置为按内容自适应，保持紧凑
+        self.tbl3.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         # === 2. 替换为直接添加表格，并明确启用表格自身的滚动条 ===
         self.tbl3.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.tbl3.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)

@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QGraphicsView,
-    QGraphicsScene, QMessageBox, QGridLayout, QPushButton, QComboBox,
+    QGraphicsScene, QMessageBox, QGridLayout, QPushButton, QComboBox, QHeaderView,
 )
 
 from base_page import BasePage
@@ -318,7 +318,11 @@ class PlatformStrengthPage(BasePage):
                 if isinstance(combo_widget, QComboBox):
                     # 创建按钮
                     self.evaluate_btn = QPushButton("快速评估")
-                    self.evaluate_btn.setFixedSize(100, 26)  # 匹配下拉框高度
+                    #self.evaluate_btn.setFixedSize(150, 30)  # 匹配下拉框高度
+                    # ========== 修改后 ==========
+                    # 移除 setFixedSize，设置尺寸策略为自动扩展，并给定一个最小高度保证不被压得太扁
+                    self.evaluate_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                    self.evaluate_btn.setMinimumHeight(30)
                     self.evaluate_btn.setStyleSheet("""
                         QPushButton {
                             background-color: #efefef;
@@ -367,7 +371,11 @@ class PlatformStrengthPage(BasePage):
 
         # 创建并添加按钮
         self.evaluate_btn = QPushButton("快速评估")
-        self.evaluate_btn.setFixedSize(120, 30)
+        #self.evaluate_btn.setFixedSize(120, 30)
+        # ========== 修改后 ==========
+        # 移除 setFixedSize，设置尺寸策略为自动扩展，并给定一个最小高度保证不被压得太扁
+        self.evaluate_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.evaluate_btn.setMinimumHeight(30)
         self.evaluate_btn.setStyleSheet("""
             QPushButton {
                 background-color: #1890ff;
@@ -563,8 +571,19 @@ class PlatformStrengthPage(BasePage):
 
         # 3. 设置表格整体的固定高度（2行28px + 上下边框预留4px = 60px）
         #    并设置最小宽度，防止被外部布局强行挤压
-        tbl.setFixedHeight(60)
-        tbl.setMinimumWidth(480)
+        # tbl.setFixedHeight(60)
+        # tbl.setMinimumWidth(480)
+
+        # ========== 替换 _build_structure_model_kv_table 末尾的尺寸设置 ==========
+        # 1. 给足第一列宽度
+        tbl.setColumnWidth(0, 240)
+        # 2. 强制禁止自动换行
+        tbl.setWordWrap(False)
+
+        # 3. 严格计算总宽高（240+160+60+边框4 = 464），关闭自身所有滚动条
+        tbl.setFixedSize(464, 60)
+        tbl.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        #tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         return tbl
 
@@ -592,9 +611,9 @@ class PlatformStrengthPage(BasePage):
         self.tbl_layers.setRowCount(3)
         self.tbl_layers.setVerticalHeaderLabels(["Z(m)", "节点数量", "是否水平层"])
 
-        self._set_center_item(self.tbl_layers, 0, 0, "Z(m)")
-        self._set_center_item(self.tbl_layers, 1, 0, "节点数量")
-        self._set_center_item(self.tbl_layers, 2, 0, "是否水平层")
+        self._set_center_item(self.tbl_layers, 0, 0, "Z(m)", editable=False)
+        self._set_center_item(self.tbl_layers, 1, 0, "节点数量", editable=False)
+        self._set_center_item(self.tbl_layers, 2, 0, "是否水平层", editable=False)
 
         demo_z = ["36", "31", "27", "23", "18", "7", "10", "15", "20"]
         demo_n = ["1", "412", "191", "456", "289", "85", "74", "62", "87"]
@@ -604,7 +623,6 @@ class PlatformStrengthPage(BasePage):
             self._set_center_item(self.tbl_layers, 1, i + 1, demo_n[i])
             self._set_center_item(self.tbl_layers, 2, i + 1, demo_h[i])
 
-        # “是否水平”行：点击切换 ✓/×，不允许直接编辑
         for col in range(1, 10):
             it = self.tbl_layers.item(2, col)
             if it is None:
@@ -615,14 +633,22 @@ class PlatformStrengthPage(BasePage):
 
         self.tbl_layers.cellClicked.connect(self._on_layers_cell_clicked)
 
-        #self._auto_fit_columns_with_padding(self.tbl_layers, padding=28)替换为：
         self.tbl_layers.resizeColumnsToContents()
         total_width = sum(self.tbl_layers.columnWidth(c) for c in range(self.tbl_layers.columnCount()))
         self.tbl_layers.setMinimumWidth(total_width)
-        self.tbl_layers.horizontalHeader().setStretchLastSection(False)
+
+        # 整体开启拉伸填满外框宽度
+        self.tbl_layers.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_layers.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+
+        # ====== 核心修改：精准固定表格高度，消除底部留白 ======
+        # 表头约 32px + 3行数据每行 28px + 上下边框 4px ≈ 120px，设为 122 防止误差截断
+        self.tbl_layers.setFixedHeight(122)
+        # 彻底关闭内部垂直滚动条，交给外层页面统一滚动
+        self.tbl_layers.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # ======================================================
 
         box_layout.addWidget(self.tbl_layers, 0)
-
         left_layout.addWidget(box)
 
     def _on_layers_cell_clicked(self, row: int, col: int):
@@ -665,9 +691,11 @@ class PlatformStrengthPage(BasePage):
         # table.horizontalHeader().setStretchLastSection(True) 移除最后一列拉伸
         table.verticalHeader().setDefaultSectionSize(28)
 
-    def _set_center_item(self, table: QTableWidget, row: int, col: int, text: str):
+    def _set_center_item(self, table: QTableWidget, row: int, col: int, text: str, editable: bool=True):
         item = QTableWidgetItem(str(text))
         item.setTextAlignment(Qt.AlignCenter)
+        if not editable:
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         table.setItem(row, col, item)
 
     def _auto_fit_columns_with_padding(self, table: QTableWidget, padding: int = 30):
@@ -704,7 +732,15 @@ class PlatformStrengthPage(BasePage):
         tbl_splash.resizeColumnsToContents()
         total_width = sum(tbl_splash.columnWidth(c) for c in range(tbl_splash.columnCount()))
         tbl_splash.setMinimumWidth(total_width)
+        tbl_splash.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         tbl_splash.horizontalHeader().setStretchLastSection(False)
+
+        # ====== 核心修改：固定高度 (1行表头32 + 1行数据28 + 边框 ≈ 64) ======
+        header_h = self.tbl_layers.horizontalHeader().height() if not self.tbl_layers.horizontalHeader().isHidden() else 0
+        row_h = self.tbl_layers.verticalHeader().length()
+        self.tbl_layers.setFixedHeight(header_h + row_h + 6)
+        self.tbl_layers.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # ====================================================================
 
         splash_layout.addWidget(tbl_splash)
         left_layout.addWidget(splash_box)
@@ -715,7 +751,8 @@ class PlatformStrengthPage(BasePage):
         pile_layout.setContentsMargins(8, 6, 8, 8)
 
         tbl_pile = QTableWidget(1, 4, pile_box)
-        tbl_pile.setHorizontalHeaderLabels(["基础冲刷(m)", "桩基础抗压承载能力(t)", "桩基础抗拔承载能力(t)", "单根桩泥下自重(t)"])
+        tbl_pile.setHorizontalHeaderLabels(
+            ["基础冲刷(m)", "桩基础抗压承载能力(t)", "桩基础抗拔承载能力(t)", "单根桩泥下自重(t)"])
         self._init_table_common(tbl_pile, show_vertical_header=False)
         for c in range(4):
             self._set_center_item(tbl_pile, 0, c, "")
@@ -724,6 +761,14 @@ class PlatformStrengthPage(BasePage):
         total_width = sum(tbl_pile.columnWidth(c) for c in range(tbl_pile.columnCount()))
         tbl_pile.setMinimumWidth(total_width)
         tbl_pile.horizontalHeader().setStretchLastSection(False)
+        tbl_pile.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        # ====== 核心修改：固定高度 (1行表头32 + 1行数据28 + 边框 ≈ 64) ======
+        header_h = tbl_pile.horizontalHeader().height() if not tbl_pile.horizontalHeader().isHidden() else 0
+        row_h = tbl_pile.verticalHeader().length()
+        tbl_pile.setFixedHeight(header_h + row_h + 6)
+        tbl_pile.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # ====================================================================
 
         pile_layout.addWidget(tbl_pile)
         left_layout.addWidget(pile_box)
@@ -740,15 +785,15 @@ class PlatformStrengthPage(BasePage):
 
         # 第一行
         tbl_marine.setSpan(0, 0, 1, 3)
-        self._set_center_item(tbl_marine, 0, 0, "层数")
+        self._set_center_item(tbl_marine, 0, 0, "层数", editable=False)
         for i in range(9):
             self._set_center_item(tbl_marine, 0, 3 + i, str(i + 1))
 
         # 第二行
         tbl_marine.setSpan(1, 0, 2, 2)
-        self._set_center_item(tbl_marine, 1, 0, "高度区域")
-        self._set_center_item(tbl_marine, 1, 2, "上限(m)")
-        self._set_center_item(tbl_marine, 2, 2, "下限(m)")
+        self._set_center_item(tbl_marine, 1, 0, "高度区域", editable=False)
+        self._set_center_item(tbl_marine, 1, 2, "上限(m)", editable=False)
+        self._set_center_item(tbl_marine, 2, 2, "下限(m)", editable=False)
 
         upper = ["0", "-15", "-30", "-50", "-60", "-70", "-80", "-95", "-110"]
         lower = ["-15", "-30", "-50", "-60", "-70", "-80", "-95", "-110", "-122"]
@@ -758,8 +803,8 @@ class PlatformStrengthPage(BasePage):
 
         # 第三行（合并了三、四行）
         tbl_marine.setSpan(3, 0, 1, 2)
-        self._set_center_item(tbl_marine, 3, 0, "海生物")
-        self._set_center_item(tbl_marine, 3, 2, "厚度(mm)")
+        self._set_center_item(tbl_marine, 3, 0, "海生物", editable=False)
+        self._set_center_item(tbl_marine, 3, 2, "厚度(mm)", editable=False)
         thickness = ["10", "10", "10", "4.5", "4.5", "4.5", "4", "4", "4"]
         for i in range(9):
             self._set_center_item(tbl_marine, 3, 3 + i, thickness[i])
@@ -768,13 +813,23 @@ class PlatformStrengthPage(BasePage):
         # 第5行
         tbl_marine.setSpan(4, 0, 1, 3)
         tbl_marine.setSpan(4, 3, 1, 9)
-        self._set_center_item(tbl_marine, 4, 0, "海生物密度（t/m^2）")
+        self._set_center_item(tbl_marine, 4, 0, "海生物密度（t/m^3）", editable=False)
         self._set_center_item(tbl_marine, 4, 3, "1.4")
 
         tbl_marine.resizeColumnsToContents()
         total_width = sum(tbl_marine.columnWidth(c) for c in range(tbl_marine.columnCount()))
         tbl_marine.setMinimumWidth(total_width)
         tbl_marine.horizontalHeader().setStretchLastSection(False)
+        tbl_marine.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tbl_marine.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        tbl_marine.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        tbl_marine.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+
+        # ====== 核心修改：固定高度 (无隐藏表头，纯5行数据 5x28 + 边框 ≈ 144) ======
+        row_h = tbl_marine.verticalHeader().length()
+        tbl_marine.setFixedHeight(row_h + 6)
+        tbl_marine.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # ==========================================================================
 
         marine_layout.addWidget(tbl_marine)
         left_layout.addWidget(marine_box)

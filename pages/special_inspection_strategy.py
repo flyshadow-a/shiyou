@@ -196,7 +196,9 @@ class SpecialInspectionStrategy(BasePage):
 
         for b in [self.btn_view_strategy, self.btn_view_history]:
             b.setFixedSize(90, 30)
-        self.btn_add.setFixedSize(120, 30)
+        # self.btn_add.setFixedSize(120, 30)
+        self.btn_add.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.btn_add.setMinimumHeight(30)
 
         self.btn_view_strategy.clicked.connect(self._on_view_strategy)
         self.btn_view_history.clicked.connect(self._on_view_history)
