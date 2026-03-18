@@ -17,13 +17,15 @@
 import os
 import csv
 import random
+import re
 import openpyxl
 from typing import List, Tuple, Dict, Optional
 
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QComboBox, QLabel,
     QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox,
-    QHeaderView, QToolTip, QFileDialog, QGridLayout
+    QHeaderView, QToolTip, QFileDialog, QGridLayout,
+    QButtonGroup, QRadioButton
 )
 from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtGui import QColor, QFontMetrics
@@ -161,6 +163,11 @@ class PlatformLoadInformationPage(BasePage):
     DEMO_MAIN_CSV = "platform_load_information_demo_strict.csv"
     DEMO_RESULT_CSV = "platform_load_result_demo.csv"
 
+    TOP_KEY_ORDER: List[str] = [
+        "branch", "op_company", "oilfield", "facility_code", "facility_name",
+        "facility_type", "category", "start_time", "design_life",
+    ]
+
     # 顶部固定表头（9字段）
     TOP_FIELDS: List[Tuple[str, str]] = [
         ("分公司", "湛江分公司"),
@@ -192,10 +199,13 @@ class PlatformLoadInformationPage(BasePage):
     def __init__(self, parent=None):
         super().__init__("", parent)
         self.data_dir = os.path.join(os.getcwd(), "data")
+        self._num_pat = r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
 
         # === 红色字段 Excel 导入（仅当前行）===
         self.result_excel_path: Optional[str] = None
         self.red_field_mode: str = 'manual'  # 'manual' or 'excel'
+        # 数据区行勾选（单选）：用于“读取结果文件”定位目标行
+        self._row_radio_group: Optional[QButtonGroup] = None
         # 从《平台汇总信息样表.xls》加载下拉选项（失败则回退到原 mock 逻辑）
         self._excel_provider = ReadTableXls()
         self._excel_loaded = False
@@ -204,6 +214,11 @@ class PlatformLoadInformationPage(BasePage):
             self._excel_loaded = True
         except Exception:
             self._excel_loaded = False
+
+        # 顶部下拉：优先使用汇总信息样表构建级联数据
+        self._top_records: List[Dict[str, str]] = self._load_top_records_from_excel()
+        self._top_cascade_enabled: bool = len(self._top_records) > 0
+        self._top_cascade_lock: bool = False
 
 
 
@@ -248,33 +263,41 @@ class PlatformLoadInformationPage(BasePage):
         top_layout.setSpacing(10)
 
         top_layout.setAlignment(Qt.AlignTop)
-        # 顶部下拉条（样式与“平台基本信息”一致：DropdownBar）
-                # 顶部下拉条：选项从《平台汇总信息样表.xls》提取（若读取失败则用内置 mock）
-        def _opts(field_cn: str, fallback_default: str):
-            if getattr(self, "_excel_loaded", False):
-                opts = self._excel_provider.options_for(field_cn)
-                if opts:
-                    return opts, self._excel_provider.default_for(field_cn, fallback_default)
-            # fallback
-            return self._mock_top_options(field_cn, fallback_default), fallback_default
-
+        # 顶部下拉条：优先按《平台汇总信息样表.xls》构建级联；失败时回退 mock
+        fallback_defaults = {k: v for k, v in self.TOP_FIELDS}
+        stretch_map = {
+            "branch": 1,
+            "op_company": 2,
+            "oilfield": 2,
+            "facility_code": 2,
+            "facility_name": 3,
+            "facility_type": 1,
+            "category": 1,
+            "start_time": 1,
+            "design_life": 1,
+        }
         fields = []
-        for key, label, fallback in [
-            ("branch",        "分公司",   "湛江分公司"),
-            ("op_company",    "作业公司", "文昌油田群作业公司"),
-            ("oilfield",      "油气田",   "文昌19-1油田"),
-            ("facility_code", "设施编码", "WC19-1WHPC"),
-            ("facility_name", "设施名称", "文昌19-1WHPC井口平台"),
-            ("facility_type", "设施类型", "平台"),
-            ("category",      "分类",     "井口平台"),
-            ("start_time",    "投产时间", "2013-07-15"),
-            ("design_life",   "设计年限", "15"),
-        ]:
-            opts, default = _opts(label, fallback)
-            fields.append({"key": key, "label": label, "options": opts, "default": default})
+        for key in self.TOP_KEY_ORDER:
+            label = self.KEY_TO_FIELD[key]
+            fallback = fallback_defaults.get(label, "")
+            if self._top_cascade_enabled:
+                opts = self._unique_record_values(self._top_records, label)
+                default = opts[0] if opts else fallback
+            else:
+                opts = self._mock_top_options(label, fallback)
+                default = fallback
+            fields.append({
+                "key": key,
+                "label": label,
+                "options": opts,
+                "default": default,
+                "stretch": stretch_map.get(key, 1),
+            })
 
         self.dropdown_bar = DropdownBar(fields, parent=self)
         self.dropdown_bar.valueChanged.connect(self._on_top_key_changed)
+        if self._top_cascade_enabled:
+            self._apply_top_cascade()
         top_layout.addWidget(self.dropdown_bar, 1)
 
         btn_widget = QWidget()
@@ -342,6 +365,8 @@ class PlatformLoadInformationPage(BasePage):
 
         self.table = self._build_main_table_skeleton()
         self.table.setObjectName("MainTable")
+        # 只保留外层 table_scroll 的横向滚动条，避免双滚动条
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         # 主表允许编辑（但我们会用 item flags 精细控制哪些格可编辑）
         self.table.setEditTriggers(QTableWidget.DoubleClicked | QTableWidget.SelectedClicked | QTableWidget.EditKeyPressed)
@@ -421,6 +446,168 @@ class PlatformLoadInformationPage(BasePage):
             return
         it.setText(txt)
 
+    def _normalize_top_value(self, value: object) -> str:
+        txt = "" if value is None else str(value).strip()
+        if (not txt) or (txt.lower() == "nan"):
+            return ""
+        if re.fullmatch(r"[-+]?\d+\.0+", txt):
+            txt = txt.split(".", 1)[0]
+        return txt
+
+    def _load_top_records_from_excel(self) -> List[Dict[str, str]]:
+        if (not getattr(self, "_excel_loaded", False)) or (not hasattr(self._excel_provider, "df")):
+            return []
+
+        df = self._excel_provider.df
+        if df is None:
+            return []
+
+        fields = [f for f, _ in self.TOP_FIELDS]
+        resolved: Dict[str, str] = {}
+        for field in fields:
+            col = self._excel_provider._resolve_col(field) if hasattr(self._excel_provider, "_resolve_col") else None
+            if not col:
+                return []
+            resolved[field] = col
+
+        records: List[Dict[str, str]] = []
+        seen = set()
+        for _, row in df.iterrows():
+            rec: Dict[str, str] = {}
+            for field, col in resolved.items():
+                raw = self._excel_provider._clean(row[col]) if hasattr(self._excel_provider, "_clean") else row[col]
+                rec[field] = self._normalize_top_value(raw)
+
+            if not any(rec.get(k) for k in ("分公司", "作业公司", "油气田", "设施编码", "设施名称")):
+                continue
+
+            uniq = tuple(rec.get(f, "") for f in fields)
+            if uniq in seen:
+                continue
+            seen.add(uniq)
+            records.append(rec)
+
+        return records
+
+    def _unique_record_values(self, records: List[Dict[str, str]], field: str) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for rec in records:
+            v = self._normalize_top_value(rec.get(field, ""))
+            if (not v) or (v in seen):
+                continue
+            seen.add(v)
+            out.append(v)
+        return out
+
+    def _pick_option(self, options: List[str], preferred: str = "") -> str:
+        p = self._normalize_top_value(preferred)
+        if p and p in options:
+            return p
+        return options[0] if options else ""
+
+    def _apply_top_cascade(self, changed_key: Optional[str] = None, changed_value: str = ""):
+        if (not self._top_cascade_enabled) or (not hasattr(self, "dropdown_bar")):
+            return
+
+        records = self._top_records
+        current = {k: self.dropdown_bar.get_value(k) for k in self.TOP_KEY_ORDER}
+        if changed_key:
+            current[changed_key] = self._normalize_top_value(changed_value)
+
+        reset_downstream = {
+            "branch": {"op_company", "oilfield", "facility_code", "facility_name"},
+            "op_company": {"oilfield", "facility_code", "facility_name"},
+            "oilfield": {"facility_code", "facility_name"},
+            "facility_code": {"facility_name"},
+            "facility_name": {"facility_code"},
+        }
+        reset = reset_downstream.get(changed_key or "", set())
+
+        branches = self._unique_record_values(records, "分公司")
+        branch = self._pick_option(branches, current.get("branch", ""))
+        branch_rows = [r for r in records if r.get("分公司", "") == branch] if branch else list(records)
+
+        op_opts = self._unique_record_values(branch_rows, "作业公司")
+        op_pref = "" if "op_company" in reset else current.get("op_company", "")
+        op = self._pick_option(op_opts, op_pref)
+        op_rows = [r for r in branch_rows if r.get("作业公司", "") == op] if op else list(branch_rows)
+
+        oil_opts = self._unique_record_values(op_rows, "油气田")
+        oil_pref = "" if "oilfield" in reset else current.get("oilfield", "")
+        oilfield = self._pick_option(oil_opts, oil_pref)
+        oil_rows = [r for r in op_rows if r.get("油气田", "") == oilfield] if oilfield else list(op_rows)
+
+        code_opts = self._unique_record_values(oil_rows, "设施编码")
+        name_opts = self._unique_record_values(oil_rows, "设施名称")
+
+        selected_row: Optional[Dict[str, str]] = None
+        if changed_key == "facility_name":
+            name_pref = current.get("facility_name", "")
+            selected_name = self._pick_option(name_opts, name_pref)
+            for rec in oil_rows:
+                if rec.get("设施名称", "") == selected_name:
+                    selected_row = rec
+                    break
+        else:
+            code_pref = "" if "facility_code" in reset else current.get("facility_code", "")
+            selected_code = self._pick_option(code_opts, code_pref)
+            for rec in oil_rows:
+                if rec.get("设施编码", "") == selected_code:
+                    selected_row = rec
+                    break
+
+        if selected_row is None and oil_rows:
+            selected_row = oil_rows[0]
+
+        selected_code = self._normalize_top_value((selected_row or {}).get("设施编码", ""))
+        selected_name = self._normalize_top_value((selected_row or {}).get("设施名称", ""))
+
+        if selected_code and selected_code not in code_opts:
+            code_opts = [selected_code] + code_opts
+        if selected_name and selected_name not in name_opts:
+            name_opts = [selected_name] + name_opts
+
+        fixed_key_to_field = {
+            "facility_type": "设施类型",
+            "category": "分类",
+            "start_time": "投产时间",
+            "design_life": "设计年限",
+        }
+        fixed_values: Dict[str, str] = {}
+        for k, field_cn in fixed_key_to_field.items():
+            val = self._normalize_top_value((selected_row or {}).get(field_cn, ""))
+            fixed_values[k] = val
+
+        self._top_cascade_lock = True
+        try:
+            self.dropdown_bar.set_options("branch", branches, branch)
+            self.dropdown_bar.set_options("op_company", op_opts, op)
+            self.dropdown_bar.set_options("oilfield", oil_opts, oilfield)
+            self.dropdown_bar.set_options("facility_code", code_opts, selected_code)
+            self.dropdown_bar.set_options("facility_name", name_opts, selected_name)
+
+            for k in ("facility_type", "category", "start_time", "design_life"):
+                v = fixed_values.get(k, "")
+                self.dropdown_bar.set_options(k, [v] if v else [], v)
+        finally:
+            self._top_cascade_lock = False
+
+        self._sync_all_top_meta_values()
+
+    def _sync_all_top_meta_values(self):
+        for field_cn in self.FIELD_TO_KEY.keys():
+            self._sync_meta_value(field_cn, self._get_top_value(field_cn))
+
+    def _current_top_defaults(self) -> Dict[str, str]:
+        defaults = {k: v for k, v in self.TOP_FIELDS}
+        if hasattr(self, "dropdown_bar"):
+            for field_cn in defaults.keys():
+                cur = self._get_top_value(field_cn)
+                if cur:
+                    defaults[field_cn] = cur
+        return defaults
+
     def _mock_top_options(self, field: str, default: str) -> List[str]:
         options_map = {
             "分公司": ["湛江分公司", "深圳分公司", "上海分公司", "海南分公司", "天津分公司"],
@@ -439,8 +626,15 @@ class PlatformLoadInformationPage(BasePage):
     def _on_top_key_changed(self, key: str, txt: str):
         """
         顶部 DropdownBar 改变：
+        - 级联刷新下拉值
         - 同步回填主表所属信息区（字段名用中文）
         """
+        if self._top_cascade_enabled:
+            if self._top_cascade_lock:
+                return
+            self._apply_top_cascade(changed_key=key, changed_value=txt)
+            return
+
         field = self.KEY_TO_FIELD.get(key, key)
         self._sync_meta_value(field, txt)
 
@@ -535,8 +729,8 @@ class PlatformLoadInformationPage(BasePage):
         table.setRowHeight(2, 30)
         table.setRowHeight(3, 60)
 
-        # 顶部默认值
-        top_defaults = {k: v for k, v in self.TOP_FIELDS}
+        # 顶部默认值（来自当前下拉）
+        top_defaults = self._current_top_defaults()
 
         # ===== 所属信息两行（无绿色提示）=====
         # 每行 3 块：7 + 6 + 6 = 19
@@ -584,24 +778,24 @@ class PlatformLoadInformationPage(BasePage):
         table.setItem(2, 2, self._mk_item("改扩建时间", bold=True, bg=bg))
         table.setItem(2, 3, self._mk_item("改扩建内容", bold=True, bg=bg))
 
-        table.setItem(2, 4, self._mk_item("上部组块总操作重量,MT", bold=True, bg=bg))
-        table.setItem(2, 5, self._mk_item("上部组块不可超越重量,MT", bold=True, bg=bg))
-        table.setItem(2, 6, self._mk_item("重量变化,MT", bold=True, bg=bg))
-        table.setItem(2, 7, self._mk_item("上部组块重心 x,y,z,\nm", bold=True, bg=bg))
-        table.setItem(2, 8, self._mk_item("上部组块重心\n不可超越\n半径,m", bold=True, bg=bg))
+        table.setItem(2, 4, self._mk_item("上部组块总操作重量,（MT）", bold=True, bg=bg))
+        table.setItem(2, 5, self._mk_item("上部组块不可超越重量,（MT）", bold=True, bg=bg))
+        table.setItem(2, 6, self._mk_item("重量变化,（MT）", bold=True, bg=bg))
+        table.setItem(2, 7, self._mk_item("上部组块重心 x,y,z,\n（m）", bold=True, bg=bg))
+        table.setItem(2, 8, self._mk_item("上部组块重心\n不可超越\n半径,（m）", bold=True, bg=bg))
 
         # 红色字段（严格：Mz 纵向显示）
         fx_headers = [
-            ("Fx,KN", "Fx,KN"),
-            ("Fy,KN", "Fy,KN"),
-            ("Fz,KN", "Fz,KN"),
-            ("Mx,KN·m", "Mx,KN·m"),
-            ("My,KN·m", "My,KN·m"),
-            ("Mz,KN·m", "Mz,KN·m"),
+            ("Fx,（KN）", "Fx,（KN）"),
+            ("Fy,（KN）", "Fy,（KN）"),
+            ("Fz,（KN）", "Fz,（KN）"),
+            ("Mx,（KN·m）", "Mx,（KN·m）"),
+            ("My,（KN·m）", "My,（KN·m）"),
+            ("Mz,（KN·m）", "Mz,（KN·m）"),
         ]
         red_cols = list(range(9, 15))
         for (src, shown), c in zip(fx_headers, red_cols):
-            txt = shown.replace(",", "\n") if src != "Mz,KN·m" else shown
+            txt = shown.replace(",", "\n") if src != "Mz,（KN·m）" else shown
             table.setItem(3, c, self._mk_item(txt, bold=True, bg=bg, fg=red))
 
         table.setItem(3, 15, self._mk_item("操作工况", bold=True, bg=bg, fg=red))
@@ -649,6 +843,94 @@ class PlatformLoadInformationPage(BasePage):
                 return r
         return self.table.rowCount()
 
+    def _rebuild_row_radio_selectors(self, data_start: int, data_end: int):
+        """在数据区每行首列放置单选框（互斥），用于“读取结果文件”定位目标行。"""
+        # 清理旧 group，避免旧按钮残留
+        if self._row_radio_group is not None:
+            self._row_radio_group.deleteLater()
+        self._row_radio_group = QButtonGroup(self)
+        self._row_radio_group.setExclusive(True)
+
+        # 先移除首列旧 cellWidget
+        for r in range(self.table.rowCount()):
+            self.table.removeCellWidget(r, 0)
+
+        for row_idx in range(data_start, data_end):
+            seq_item = self.table.item(row_idx, 0)
+            seq_text = seq_item.text().strip() if seq_item else ""
+
+            radio = QRadioButton()
+            radio.setCursor(Qt.PointingHandCursor)
+            radio.toggled.connect(lambda checked, rr=row_idx: self._on_row_radio_toggled(checked, rr))
+
+            holder = QWidget(self.table)
+            lay = QHBoxLayout(holder)
+            lay.setContentsMargins(6, 0, 6, 0)
+            lay.setSpacing(6)
+            lay.addWidget(radio, 0, Qt.AlignCenter)
+
+            seq_lab = QLabel(seq_text)
+            seq_lab.setAlignment(Qt.AlignCenter)
+            lay.addWidget(seq_lab, 0, Qt.AlignCenter)
+            lay.addStretch(1)
+
+            self.table.setCellWidget(row_idx, 0, holder)
+            self._row_radio_group.addButton(radio, row_idx)
+
+    def _on_row_radio_toggled(self, checked: bool, row: int):
+        if not checked:
+            return
+        # 勾选时同步当前单元格，便于用户感知当前行
+        if 0 <= row < self.table.rowCount():
+            self.table.setCurrentCell(row, 1)
+
+    def _checked_data_row(self) -> Optional[int]:
+        if self._row_radio_group is None:
+            return None
+        row = self._row_radio_group.checkedId()
+        return None if row < 0 else row
+
+    def _text_pixel_width(self, text: str, fm: QFontMetrics) -> int:
+        lines = str(text).splitlines() or [str(text)]
+        return max(fm.horizontalAdvance(line) for line in lines)
+
+    def _auto_fit_main_table_columns(self):
+        """按文字内容自适应主表列宽（忽略跨列单元格，避免异常拉宽）。"""
+        if not hasattr(self, "table") or self.table is None:
+            return
+
+        table = self.table
+        col_count = table.columnCount()
+        data_end = self._find_data_end_row()
+        fm = QFontMetrics(table.font())
+
+        min_width = 72
+        max_width = 420
+        padding = 24
+
+        for c in range(col_count):
+            best = min_width
+            for r in range(data_end):
+                # 跳过跨列单元格，避免分组标题/说明区影响单列宽度
+                if table.columnSpan(r, c) > 1:
+                    continue
+                it = table.item(r, c)
+                if it is None:
+                    continue
+                cand = self._text_pixel_width(it.text(), fm) + padding
+                if cand > best:
+                    best = cand
+
+            # 首列包含“单选框 + 序号”控件，给更大最小宽度
+            if c == 0:
+                best = max(best, 110)
+
+            table.setColumnWidth(c, min(max_width, best))
+
+        total_width = table.frameWidth() * 2 + sum(table.columnWidth(c) for c in range(col_count))
+        table.setFixedWidth(total_width + 2)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
     def _apply_data(self, rows: List[List[str]]):
         base_rows = 4
         bg = QColor("#eef2ff")
@@ -693,7 +975,7 @@ class PlatformLoadInformationPage(BasePage):
             for c, val in enumerate(row):
                 # 数据区：允许编辑
                 # 主表中“上部组块总操作重量/重心”不允许直接编辑，需跳转到分项目计算表
-                editable = (c not in (4, 7))
+                editable = (c not in (0, 4, 7))
                 it = self._mk_item(val, editable=editable)
 
                 # 示例：第0/1行的提示用绿/红区分（但依然可编辑）
@@ -719,7 +1001,7 @@ class PlatformLoadInformationPage(BasePage):
         for r in range(0, self.table.rowCount()):
             for c in range(self.table.columnCount()):
                 if self.table.item(r, c) is None and self.table.cellWidget(r, c) is None:
-                    editable = (base_rows <= r < data_end) and (c not in (4, 7))
+                    editable = (base_rows <= r < data_end) and (c not in (0, 4, 7))
                     self.table.setItem(r, c, self._mk_item("", bg=bg, editable=editable))
 
             # ========== 新增：确保序号连续 ==========
@@ -729,6 +1011,9 @@ class PlatformLoadInformationPage(BasePage):
             seq_item = self.table.item(row_idx, 0)
             if seq_item is not None:
                 seq_item.setText(str(idx))  # 从0开始连续编号
+
+        # 每个数据行首列放置“单选框 + 序号”
+        self._rebuild_row_radio_selectors(data_start, data_end)
 
         data_n = len(rows)
 
@@ -744,37 +1029,8 @@ class PlatformLoadInformationPage(BasePage):
             self.table.setFixedHeight(-1)  # 取消固定高度
             self.table.setMinimumHeight(300)  # 设置一个合理的最小高度
 
-        # 自适应列宽（基于所有单元格内容）
-        self.table.resizeColumnsToContents()
-
-        # ========== 新增：前三列等宽 ==========
-        col0_width = self.table.columnWidth(0)
-        col1_width = self.table.columnWidth(1)
-        col2_width = self.table.columnWidth(2)
-        min_width = min(col0_width, col1_width, col2_width)
-        if min_width > 0:
-            self.table.setColumnWidth(0, min_width)
-            self.table.setColumnWidth(1, min_width)
-            self.table.setColumnWidth(2, min_width)
-
-        # 特殊列等宽处理：
-        # 1. 红色字段列 Fx~Mz (9~14) 加上 操作工况(15) 和 极端工况(16) 共8列
-        #    取这些列的最大宽度统一设置，使它们等宽
-        red_cols = list(range(9, 17))  # 9..16
-        max_red_width = max(self.table.columnWidth(c) for c in red_cols)
-        for c in red_cols:
-            self.table.setColumnWidth(c, max_red_width)
-
-        # 2. 如果还有其他需要等宽的组，可按需添加，例如：
-        #    - 上部组块重控下的列 4~8 等宽
-        #    - 但可能不需要，先不做
-
-        # 更新表格最小宽度为所有列宽之和，确保水平滚动条出现
-        total_width = sum(self.table.columnWidth(c) for c in range(self.table.columnCount()))
-        self.table.setMinimumWidth(total_width)
-
-        # 确保水平滚动条策略正确（默认即为 AsNeeded，但可显式设置）
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # 列宽按文字内容自适应，并由外层 table_scroll 统一承接横向滚动
+        self._auto_fit_main_table_columns()
     # ---------------- 结果文件读取接口 ----------------
     # === 红色字段 Excel 导入模式（仅当前行）===
     def _on_red_field_mode_changed(self, idx: int):
@@ -836,6 +1092,7 @@ class PlatformLoadInformationPage(BasePage):
     def _apply_excel_values_to_row(self, row: int, values: Dict[str, object]):
         keys = ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz', '操作工况', '极端工况']
         cols = [9, 10, 11, 12, 13, 14, 15, 16]
+        red = QColor("#cc0000")
         for k, c in zip(keys, cols):
             v = values.get(k, '')
             it = self.table.item(row, c)
@@ -843,6 +1100,9 @@ class PlatformLoadInformationPage(BasePage):
                 it = self._mk_item('', editable=False)
                 self.table.setItem(row, c, it)
             it.setText('' if v is None else str(v))
+            if str(v).strip():
+                it.setForeground(red)
+        self._auto_fit_main_table_columns()
 
     def _read_result_excel_generic(self, path: str) -> Dict[str, object]:
         """通用Excel解析（没有样例文件前的兼容方案）：
@@ -875,41 +1135,241 @@ class PlatformLoadInformationPage(BasePage):
                         result[v] = right if right is not None else down
         return result
 
+    def _to_float(self, value: object) -> Optional[float]:
+        try:
+            return float(str(value).strip())
+        except Exception:
+            return None
+
+    def _fmt_float(self, value: object) -> str:
+        fv = self._to_float(value)
+        if fv is None:
+            return "" if value is None else str(value)
+        return f"{fv:.6f}".rstrip("0").rstrip(".")
+
+    def _extract_numbers(self, text: str) -> List[float]:
+        vals: List[float] = []
+        for s in re.findall(self._num_pat, text or ""):
+            fv = self._to_float(s)
+            if fv is not None:
+                vals.append(fv)
+        return vals
+
+    def _read_text_file_with_fallback(self, path: str) -> str:
+        encodings = ["utf-8", "utf-8-sig", "gb18030", "gbk", "latin-1"]
+        for enc in encodings:
+            try:
+                with open(path, "r", encoding=enc) as f:
+                    return f.read()
+            except UnicodeDecodeError:
+                continue
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+
+    def _result_inp_search_roots(self) -> List[str]:
+        roots = [
+            self.data_dir,
+            os.path.join(os.getcwd(), "upload"),
+        ]
+        uniq: List[str] = []
+        for p in roots:
+            np = os.path.normpath(p)
+            if os.path.isdir(np) and np not in uniq:
+                uniq.append(np)
+        return uniq
+
+    def _find_result_inp_by_seq(self, seq_text: str) -> Optional[str]:
+        seq = str(seq_text).strip()
+        if not seq:
+            return None
+        try:
+            seq = str(int(float(seq)))
+        except Exception:
+            pass
+
+        expected_names = [
+            f"{seq}.inp",
+            f"row_{seq}.inp",
+            f"result_{seq}.inp",
+            f"seq_{seq}.inp",
+            f"序号{seq}.inp",
+        ]
+        expected_set = {n.lower() for n in expected_names}
+        token_re = re.compile(rf"(?<!\d){re.escape(seq)}(?!\d)")
+
+        roots = self._result_inp_search_roots()
+        candidates: List[Tuple[int, float, str]] = []
+        seen = set()
+
+        for root_idx, root in enumerate(roots):
+            root_priority = max(1, len(roots) - root_idx)
+            for dir_path, _, file_names in os.walk(root):
+                for fn in file_names:
+                    if not fn.lower().endswith(".inp"):
+                        continue
+                    full_path = os.path.normpath(os.path.join(dir_path, fn))
+                    if full_path in seen:
+                        continue
+                    seen.add(full_path)
+
+                    base = os.path.basename(fn).lower()
+                    stem = os.path.splitext(base)[0]
+                    score = 0
+
+                    if base in expected_set:
+                        score += 120
+                    if token_re.search(stem):
+                        score += 60
+                    if any(k in stem for k in ("result", "row", "seq", "load", "case", "结果", "工况")):
+                        score += 15
+                    if "demo_platform_jacket" in stem:
+                        score -= 40
+
+                    score += root_priority
+                    if score <= 0:
+                        continue
+
+                    try:
+                        mtime = os.path.getmtime(full_path)
+                    except OSError:
+                        mtime = 0.0
+                    candidates.append((score, mtime, full_path))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return candidates[0][2]
+
+    def _extract_loads_from_text(self, text: str) -> Dict[str, str]:
+        loads: Dict[str, str] = {}
+        keys = ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]
+
+        for key in keys:
+            pattern = re.compile(
+                rf"(?i)\b{key}\b(?:\s*\([^\)\r\n]*\))?\s*[,，:：=]?\s*({self._num_pat})"
+            )
+            vals: List[float] = []
+            for m in pattern.finditer(text):
+                fv = self._to_float(m.group(1))
+                if fv is not None:
+                    vals.append(fv)
+            if vals:
+                loads[key] = self._fmt_float(max(vals, key=lambda x: abs(x)))
+
+        # 兼容“表头一行 + 数据一行”写法
+        if len(loads) < len(keys):
+            lines = text.splitlines()
+            for i in range(len(lines) - 1):
+                hdr = lines[i]
+                if all(re.search(rf"(?i)\b{k}\b", hdr) for k in keys):
+                    nums = self._extract_numbers(lines[i + 1])
+                    if len(nums) >= 6:
+                        for k, v in zip(keys, nums[:6]):
+                            loads.setdefault(k, self._fmt_float(v))
+                    break
+        return loads
+
+    def _extract_safety_from_text(self, text: str) -> Dict[str, str]:
+        out: Dict[str, str] = {}
+        op_vals: List[float] = []
+        ex_vals: List[float] = []
+
+        patterns_op = [
+            rf"(?im)操作工况[^\r\n]*?({self._num_pat})",
+            rf"(?im)安全系数[^\r\n]*?操作[^\r\n]*?({self._num_pat})",
+            rf"(?im)(?:operating|operation|operational|op\b)[^\r\n]*?({self._num_pat})",
+        ]
+        patterns_ex = [
+            rf"(?im)极端工况[^\r\n]*?({self._num_pat})",
+            rf"(?im)安全系数[^\r\n]*?极端[^\r\n]*?({self._num_pat})",
+            rf"(?im)(?:extreme|storm|survival)[^\r\n]*?({self._num_pat})",
+        ]
+
+        for pat in patterns_op:
+            for m in re.finditer(pat, text):
+                fv = self._to_float(m.group(1))
+                if fv is not None:
+                    op_vals.append(fv)
+
+        for pat in patterns_ex:
+            for m in re.finditer(pat, text):
+                fv = self._to_float(m.group(1))
+                if fv is not None:
+                    ex_vals.append(fv)
+
+        # 行级兜底
+        if not op_vals or not ex_vals:
+            lines = text.splitlines()
+            for i, line in enumerate(lines):
+                merged = line
+                if i + 1 < len(lines):
+                    merged += " " + lines[i + 1]
+                low = line.lower()
+                if ("操作工况" in line) or ("operation" in low) or ("operating" in low):
+                    op_vals.extend(self._extract_numbers(merged))
+                if ("极端工况" in line) or ("extreme" in low) or ("storm" in low):
+                    ex_vals.extend(self._extract_numbers(merged))
+
+        def pick_min(vals: List[float]) -> Optional[float]:
+            if not vals:
+                return None
+            safe_range = [v for v in vals if 0 < v < 10]
+            use_vals = safe_range if safe_range else vals
+            return min(use_vals)
+
+        op = pick_min(op_vals)
+        ex = pick_min(ex_vals)
+        if op is not None:
+            out["操作工况"] = self._fmt_float(op)
+        if ex is not None:
+            out["极端工况"] = self._fmt_float(ex)
+        return out
+
+    def _read_result_inp_generic(self, path: str) -> Dict[str, object]:
+        text = self._read_text_file_with_fallback(path)
+        if not text.strip():
+            return {}
+        result: Dict[str, object] = {}
+        result.update(self._extract_loads_from_text(text))
+        result.update(self._extract_safety_from_text(text))
+        return result
+
     def _on_import_result(self):
-        """读取结果文件：
-        - 如果选择的是 Excel（.xlsx/.xlsm），则按“导入当前行”的方式只写入当前选中行的红色字段；
-        - 如果选择的是 CSV，则沿用你原有的“按序号匹配多行回填”的逻辑（不改原功能）。
-        """
-        default_path = os.path.join(self.data_dir, self.DEMO_RESULT_CSV)
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择结果文件（CSV/Excel）",
-            default_path,
-            "CSV Files (*.csv);;Excel Files (*.xlsx *.xlsm);;All Files (*)"
-        )
-        if not path:
+        """读取结果文件（INP）：按勾选行序号匹配文件名并回填该行红色字段。"""
+        base_rows = 4
+        data_end = self._find_data_end_row()
+        row = self._checked_data_row()
+
+        if row is None or row < base_rows or row >= data_end:
+            QMessageBox.information(self, "提示", "请先勾选一行数据（序号前单选框）。")
             return
 
-        ext = os.path.splitext(path)[1].lower()
+        seq = self._cell_text(row, 0).strip()
+        if not seq:
+            QMessageBox.warning(self, "读取失败", "勾选行缺少序号，无法匹配结果文件。")
+            return
+
+        path = self._find_result_inp_by_seq(seq)
+        if not path:
+            roots = "\n".join(self._result_inp_search_roots())
+            QMessageBox.warning(
+                self,
+                "读取失败",
+                f"未找到序号 {seq} 对应的 INP 结果文件。\n"
+                f"请按序号命名（例如：{seq}.inp、row_{seq}.inp、result_{seq}.inp）。\n\n"
+                f"搜索目录：\n{roots}"
+            )
+            return
+
         try:
-            if ext in [".xlsx", ".xlsm", ".xls"]:
-                # Excel：只导入当前行（红色字段）
-                row = self.table.currentRow()
-                base_rows = 4
-                data_end = self._find_data_end_row()
-                if row < base_rows or row >= data_end:
-                    QMessageBox.information(self, "提示", "请先在主表数据区选中一行（非表头/说明区）。")
-                    return
-                values = self._read_result_excel_generic(path)
-                if not values:
-                    QMessageBox.warning(self, "读取失败", "未在Excel中解析到 Fx/Fy/Fz/Mx/My/Mz/操作工况/极端工况 字段。")
-                    return
-                self._apply_excel_values_to_row(row, values)
-                QMessageBox.information(self, "读取结果文件", "已从Excel导入并写入当前行（红色字段）。")
-            else:
-                # CSV：保留原逻辑（按序号匹配全表回填）
-                self._apply_result_file(path)
-                QMessageBox.information(self, "读取结果文件", "结果文件已回填到红色字段列。")
+            values = self._read_result_inp_generic(path)
+            keys = ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz', '操作工况', '极端工况']
+            if not any(str(values.get(k, '')).strip() for k in keys):
+                QMessageBox.warning(self, "读取失败", "在INP文件中未解析到 Fx/Fy/Fz/Mx/My/Mz/操作工况/极端工况。")
+                return
+            self._apply_excel_values_to_row(row, values)
+            QMessageBox.information(self, "读取结果文件", f"已按序号 {seq} 读取并回填。\n文件：{path}")
         except Exception as e:
             QMessageBox.warning(self, "读取失败", f"读取或解析失败：{e}")
 
@@ -960,6 +1420,8 @@ class PlatformLoadInformationPage(BasePage):
                 else:
                     it.setText(val)
                 it.setForeground(red)
+
+        self._auto_fit_main_table_columns()
 
     # ---------------- 曲线页面：从主表数据生成 ----------------
     def _collect_series_for_curve(self) -> Dict[str, List[float]]:
@@ -1104,6 +1566,7 @@ class PlatformLoadInformationPage(BasePage):
                     it = self._mk_item("", editable=False)
                     self.table.setItem(src_row, c, it)
                 it.setText(str(val) if val is not None else "")
+            self._auto_fit_main_table_columns()
             return
 
         # ---------- 2) 旧版字段 ----------
@@ -1126,6 +1589,7 @@ class PlatformLoadInformationPage(BasePage):
             it_cg = self._mk_item("", editable=False)
             self.table.setItem(src_row, 7, it_cg)
         it_cg.setText(cg_txt)
+        self._auto_fit_main_table_columns()
 
 
 
