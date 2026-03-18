@@ -851,7 +851,7 @@ class PlatformStrengthPage(BasePage):
         center_layout.addWidget(left_scroll, 7)
 
         right = self._build_inp_view_panel()
-        center_layout.addWidget(right, 3)
+        center_layout.addWidget(right, 4)
 
     def on_quick_evaluate(self):
         facility_code = self._get_top_value("facility_code") or "XXXX"

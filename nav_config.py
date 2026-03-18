@@ -39,7 +39,7 @@ NAV_CONFIG = [
                 "page": ConstructionDocsPage,
             },
             {"text": "历史改造文件", "page": HistoryRebuildFilesPage},
-            {"text": "\u5386\u53f2\u4e8b\u4ef6\u53ca\u68c0\u6d4b", "page": HistoryEventsInspectionPage},
+            {"text": "检测记录", "page": HistoryEventsInspectionPage},
             {"text": "模型文件", "page": ModelFilesPage},
         ],
     },

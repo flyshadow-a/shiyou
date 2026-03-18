@@ -33,7 +33,7 @@ class SummaryInformationTablePage(BasePage):
         * 行数 > 50：表格保持合理高度（表格内部滚动更流畅）
     """
 
-    EXCEL_NAME = "平台汇总信息样表.xls"
+    EXCEL_NAME = "platform_total.xls"
     MAX_EXPAND_ROWS = 50
 
     def __init__(self, parent=None):
@@ -133,7 +133,7 @@ class SummaryInformationTablePage(BasePage):
             "填表说明\n"
             "1、变化率、重心、桩基承载力安全系数、是否整体评估：每年更新一次，填写最新数据。\n"
             "2、变化量=变化总重/建造总操作重量。\n"
-            f"（数据来源：平台汇总信息样表.xls；本页从样表筛选字段并映射到当前表格列）"
+            f"（数据来源：platform_total.xls；本页从样表筛选字段并映射到当前表格列）"
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#111827; font-size:12px; padding:6px;")
@@ -250,7 +250,7 @@ class SummaryInformationTablePage(BasePage):
 
     # ---------- data import ----------
     def _default_excel_path(self) -> str:
-        """默认从 data/平台汇总信息样表.xls 读取；若不存在，尝试从当前工作目录读取同名文件。"""
+        """默认从 data/platform_total.xls 读取；若不存在，尝试从当前工作目录读取同名文件。"""
         p1 = os.path.join(self.data_dir, self.EXCEL_NAME)
         if os.path.exists(p1):
             return p1
@@ -261,7 +261,7 @@ class SummaryInformationTablePage(BasePage):
 
     def load_from_excel(self, excel_path: str):
         """
-        从“平台汇总信息样表.xls”导入数据，并筛选/映射到当前表格 16 列（表格设计不变）。
+        从“platform_total.xls”导入数据，并筛选/映射到当前表格 16 列（表格设计不变）。
         - 样表字段很多：这里只取少量字段填入；其余列留空，后续可按真实口径继续补齐映射/计算逻辑。
         """
         if not os.path.exists(excel_path):

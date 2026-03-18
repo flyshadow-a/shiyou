@@ -206,11 +206,11 @@ class PlatformLoadInformationPage(BasePage):
         self.red_field_mode: str = 'manual'  # 'manual' or 'excel'
         # 数据区行勾选（单选）：用于“读取结果文件”定位目标行
         self._row_radio_group: Optional[QButtonGroup] = None
-        # 从《平台汇总信息样表.xls》加载下拉选项（失败则回退到原 mock 逻辑）
+        # 从《platform_total.xls》加载下拉选项（失败则回退到原 mock 逻辑）
         self._excel_provider = ReadTableXls()
         self._excel_loaded = False
         try:
-            self._excel_provider.load()  # 默认路径：data/平台汇总信息样表.xls
+            self._excel_provider.load()  # 默认路径：data/platform_total.xls
             self._excel_loaded = True
         except Exception:
             self._excel_loaded = False
@@ -263,7 +263,7 @@ class PlatformLoadInformationPage(BasePage):
         top_layout.setSpacing(10)
 
         top_layout.setAlignment(Qt.AlignTop)
-        # 顶部下拉条：优先按《平台汇总信息样表.xls》构建级联；失败时回退 mock
+        # 顶部下拉条：优先按样表记录构建级联；失败时回退 mock 选项
         fallback_defaults = {k: v for k, v in self.TOP_FIELDS}
         stretch_map = {
             "branch": 1,
