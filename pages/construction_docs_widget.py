@@ -25,6 +25,7 @@ class ClickableLabel(QLabel):
 
 
 class ConstructionDocsWidget(QWidget):
+    navigationStateChanged = pyqtSignal(bool)
     """
     建设阶段完工文件 复用组件：
 
@@ -57,10 +58,14 @@ class ConstructionDocsWidget(QWidget):
         return os.path.join(project_root, "uploads")
     # =================================================
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, show_platform_description=False):
         super().__init__(parent)
         self.setObjectName("ConstructionDocsWidget")
         self.setAttribute(Qt.WA_StyledBackground, True)
+        self.show_platform_description = show_platform_description
+        self.breadcrumb_font_ratio = 0.015
+        self.platform_name = ""
+        self.platform_description = ""
 
         # 当前路径：["详细设计", "结构", "规格书"] 之类
         self.current_path: List[str] = []
@@ -111,8 +116,8 @@ class ConstructionDocsWidget(QWidget):
                     "其他文件": {"type": "file_view"},
                 },
             },
-            "完工文件": {"type": "folder", "children": {}},
-            "安装文件": {"type": "folder", "children": {}},
+            "完工文件": {"type": "file_view"},
+            "安装文件": {"type": "file_view"},
         }
 
     def _build_demo_file_records(self) -> Dict[str, List[Dict]]:
@@ -207,6 +212,9 @@ class ConstructionDocsWidget(QWidget):
     def _current_path_key(self) -> str:
         return "/".join(self.current_path)
 
+    def _is_upload_only_path(self, path: List[str]) -> bool:
+        return path in (["完工文件"], ["安装文件"])
+
     def _get_node_by_path(self, path: List[str]) -> Dict:
         node = {"type": "folder", "children": self.folder_tree}
         for name in path:
@@ -261,7 +269,6 @@ class ConstructionDocsWidget(QWidget):
             }
 
             QLabel#Breadcrumb {
-                font-size: 12px;
                 color: #ffffff;
                 background-color: transparent;
             }
@@ -270,12 +277,10 @@ class ConstructionDocsWidget(QWidget):
             }
             QLabel#BreadcrumbCurrent {
                 font-weight: bold;
-                font-size: 12px;
                 color: #ffffff;
                 background-color: transparent;
             }
             QLabel#BreadcrumbArrow {
-                font-size: 12px;
                 color: #ffffff;
                 background-color: transparent;
             }
@@ -316,6 +321,30 @@ class ConstructionDocsWidget(QWidget):
             }
             QTableWidget::item {
                 padding: 2px 4px;
+            }
+
+            QFrame#PlatformDescriptionCard {
+                background: qlineargradient(
+                    x1: 0, y1: 0, x2: 1, y2: 1,
+                    stop: 0 #0f5ea5,
+                    stop: 1 #1e88d8
+                );
+                border: none;
+                border-radius: 16px;
+            }
+
+            QLabel#PlatformDescriptionTitle {
+                color: #dbeeff;
+                font-size: 13px;
+                font-weight: 600;
+                background: transparent;
+            }
+
+            QLabel#PlatformDescriptionText {
+                color: #ffffff;
+                font-size: 14px;
+                line-height: 1.6;
+                background: transparent;
             }
         """)
 
@@ -386,6 +415,28 @@ class ConstructionDocsWidget(QWidget):
         self.folder_grid.setVerticalSpacing(26)
         self.folder_grid.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         folder_layout.addLayout(self.folder_grid)
+
+        if self.show_platform_description:
+            self.platform_desc_card = QFrame(self.folder_page)
+            self.platform_desc_card.setObjectName("PlatformDescriptionCard")
+
+            desc_layout = QVBoxLayout(self.platform_desc_card)
+            desc_layout.setContentsMargins(20, 18, 20, 18)
+            desc_layout.setSpacing(8)
+
+            self.platform_desc_title = QLabel("\u5e73\u53f0\u63cf\u8ff0", self.platform_desc_card)
+            self.platform_desc_title.setObjectName("PlatformDescriptionTitle")
+
+            self.platform_desc_label = QLabel(self.platform_desc_card)
+            self.platform_desc_label.setObjectName("PlatformDescriptionText")
+            self.platform_desc_label.setWordWrap(True)
+            self.platform_desc_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+            desc_layout.addWidget(self.platform_desc_title)
+            desc_layout.addWidget(self.platform_desc_label)
+            folder_layout.addWidget(self.platform_desc_card)
+            self._update_platform_description_label()
+
         folder_layout.addStretch()
 
         self.content_stack.addWidget(self.folder_page)
@@ -465,6 +516,7 @@ class ConstructionDocsWidget(QWidget):
         # 初始
         self._refresh_folder_view()
         self.content_stack.setCurrentWidget(self.folder_page)
+        self._emit_navigation_state()
 
     # ---------------- 面包屑 ---------------- #
     def _update_path_label(self):
@@ -496,9 +548,31 @@ class ConstructionDocsWidget(QWidget):
                 arrow.setObjectName("BreadcrumbArrow")
                 self.breadcrumb_layout.addWidget(arrow)
 
+        self._update_breadcrumb_font_scale()
+
+    def _update_breadcrumb_font_scale(self):
+        if not hasattr(self, "breadcrumb_layout"):
+            return
+
+        font_size = max(11.0, min(20.0, self.width() * self.breadcrumb_font_ratio - 2.0))
+        for i in range(self.breadcrumb_layout.count()):
+            item = self.breadcrumb_layout.itemAt(i)
+            widget = item.widget()
+            if widget is None or not isinstance(widget, QLabel):
+                continue
+            font = widget.font()
+            font.setPointSizeF(font_size)
+            widget.setFont(font)
+
     def _on_breadcrumb_clicked(self, path_prefix: List[str]):
         self.current_path = list(path_prefix)
         self._update_path_label()
+
+        if self._is_upload_only_path(self.current_path):
+            self._show_files_for_current_path()
+            self.content_stack.setCurrentWidget(self.files_page)
+            self._emit_navigation_state()
+            return
 
         node = self._get_node_by_path(self.current_path)
         if not node:
@@ -509,6 +583,7 @@ class ConstructionDocsWidget(QWidget):
         else:
             self._show_files_for_current_path()
             self.content_stack.setCurrentWidget(self.files_page)
+        self._emit_navigation_state()
 
     # ---------------- 文件夹视图 ---------------- #
     def _clear_grid_layout(self, layout: QGridLayout):
@@ -520,6 +595,9 @@ class ConstructionDocsWidget(QWidget):
 
     def _refresh_folder_view(self):
         self._clear_grid_layout(self.folder_grid)
+
+        if hasattr(self, "platform_desc_card"):
+            self.platform_desc_card.setVisible(len(self.current_path) == 0)
 
         node = self._get_node_by_path(self.current_path)
         children = node.get("children", {}) if node else {}
@@ -556,12 +634,19 @@ class ConstructionDocsWidget(QWidget):
         self.current_path.append(folder_name)
         self._update_path_label()
 
+        if self._is_upload_only_path(self.current_path):
+            self._show_files_for_current_path()
+            self.content_stack.setCurrentWidget(self.files_page)
+            self._emit_navigation_state()
+            return
+
         if child.get("type") == "folder":
             self._refresh_folder_view()
             self.content_stack.setCurrentWidget(self.folder_page)
         else:
             self._show_files_for_current_path()
             self.content_stack.setCurrentWidget(self.files_page)
+        self._emit_navigation_state()
 
     # ---------------- 文件列表视图 ---------------- #
     def _show_files_for_current_path(self):
@@ -707,3 +792,86 @@ class ConstructionDocsWidget(QWidget):
             return
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _build_folder_tree(self) -> Dict:
+        return {
+            "\u8be6\u7ec6\u8bbe\u8ba1": {
+                "type": "folder",
+                "children": {
+                    "\u7ed3\u6784": {
+                        "type": "folder",
+                        "children": {
+                            "\u89c4\u683c\u4e66": {"type": "file_view"},
+                            "\u8bbe\u8ba1\u56fe\u7eb8": {"type": "file_view"},
+                            "\u5206\u6790\u62a5\u544a": {"type": "file_view"},
+                            "\u91cd\u63a7\u62a5\u544a": {"type": "file_view"},
+                        },
+                    },
+                    "\u603b\u56fe": {"type": "file_view"},
+                    "\u5176\u4ed6\u6587\u4ef6": {"type": "file_view"},
+                },
+            },
+            "\u5b8c\u5de5\u6587\u4ef6": {"type": "folder", "children": {}},
+            "\u5b89\u88c5\u6587\u4ef6": {"type": "folder", "children": {}},
+        }
+
+    def _build_demo_file_records(self) -> Dict[str, List[Dict]]:
+        records: Dict[str, List[Dict]] = {}
+
+        def path_key(path_list: List[str]) -> str:
+            return "/".join(path_list)
+
+        records[path_key(["\u8be6\u7ec6\u8bbe\u8ba1", "\u7ed3\u6784", "\u89c4\u683c\u4e66"])] = [
+            {"index": 1, "category": "\u5e73\u53f0\u7ed3\u6784\u8bbe\u8ba1\u89c4\u683c\u4e66", "fmt": "pdf/word", "mtime": "", "path": "", "remark": ""},
+        ]
+        records[path_key(["\u8be6\u7ec6\u8bbe\u8ba1", "\u7ed3\u6784", "\u8bbe\u8ba1\u56fe\u7eb8"])] = [
+            {"index": 1, "category": "\u7ed3\u6784\u8bbe\u8ba1\u56fe", "fmt": "pdf/dwg/rar", "mtime": "", "path": "", "remark": ""},
+        ]
+        records[path_key(["\u8be6\u7ec6\u8bbe\u8ba1", "\u7ed3\u6784", "\u5206\u6790\u62a5\u544a"])] = [
+            {"index": 1, "category": "\u5e73\u53f0\u5728\u4f4d\u5de5\u51b5\u5206\u6790\u62a5\u544a", "fmt": "pdf/word", "mtime": "", "path": "", "remark": ""},
+            {"index": 2, "category": "\u4e0a\u90e8\u7ec4\u5757\u5206\u6790\u62a5\u544a", "fmt": "pdf/word", "mtime": "", "path": "", "remark": ""},
+        ]
+        records[path_key(["\u8be6\u7ec6\u8bbe\u8ba1", "\u7ed3\u6784", "\u91cd\u63a7\u62a5\u544a"])] = [
+            {"index": 1, "category": "\u5e73\u53f0\u91cd\u91cf\u91cd\u5fc3\u5206\u6790\u62a5\u544a", "fmt": "pdf/word", "mtime": "", "path": "", "remark": ""},
+        ]
+        records[path_key(["\u8be6\u7ec6\u8bbe\u8ba1", "\u603b\u56fe"])] = [
+            {"index": 1, "category": "\u5e73\u53f0\u603b\u56fe\u53ca\u8bbe\u8ba1\u56fe\u7eb8", "fmt": "pdf/dwg/rar", "mtime": "", "path": "", "remark": ""},
+        ]
+        records[path_key(["\u8be6\u7ec6\u8bbe\u8ba1", "\u5176\u4ed6\u6587\u4ef6"])] = [
+            {"index": 1, "category": "\u56fe\u7eb8\u9001\u5ba1\u8bb0\u5f55", "fmt": "pdf/word", "mtime": "", "path": "", "remark": ""},
+            {"index": 2, "category": "\u5176\u4ed6\u8bbe\u8ba1\u7c7b\u6587\u4ef6", "fmt": "pdf/word/excel", "mtime": "", "path": "", "remark": ""},
+        ]
+
+        return records
+
+    def set_platform_name(self, name: str):
+        self.platform_name = name or ""
+        self._update_platform_description_label()
+
+    def set_platform_description(self, description: str):
+        self.platform_description = description or ""
+        self._update_platform_description_label()
+
+    def _update_platform_description_label(self):
+        if not hasattr(self, "platform_desc_label"):
+            return
+
+        if self.platform_description:
+            text = self.platform_description
+        elif self.platform_name:
+            text = (
+                f"{self.platform_name}\uff0c\u5f53\u524d\u5df2\u88ab\u9009\u4e2d\u4e3a\u5efa\u8bbe\u9636\u6bb5\u5b8c\u5de5\u6587\u4ef6\u7684"
+                "\u7ba1\u7406\u5bf9\u8c61\uff0c\u53ef\u5728\u4e0a\u65b9\u6587\u4ef6\u5939\u4e2d\u6309\u4e13\u4e1a\u5206\u7c7b\u67e5\u770b\u548c"
+                "\u7ef4\u62a4\u5bf9\u5e94\u8bbe\u8ba1\u4e0e\u5b8c\u5de5\u8d44\u6599\u3002"
+            )
+        else:
+            text = "\u8bf7\u5148\u5728\u4e0a\u65b9\u4e0b\u62c9\u6846\u4e2d\u9009\u62e9\u5e73\u53f0\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u5f53\u524d\u9009\u4e2d\u5e73\u53f0\u7684\u63cf\u8ff0\u4fe1\u606f\u3002"
+
+        self.platform_desc_label.setText(text)
+
+    def _emit_navigation_state(self):
+        self.navigationStateChanged.emit(len(self.current_path) == 0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_breadcrumb_font_scale()

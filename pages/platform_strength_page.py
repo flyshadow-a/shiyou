@@ -352,7 +352,6 @@ class PlatformStrengthPage(BasePage):
                     # 添加按钮到相同位置
                     grid_layout.addWidget(self.evaluate_btn, 1, last_col)
 
-                    print("成功将最后一列替换为按钮")
                     return
 
         except Exception as e:

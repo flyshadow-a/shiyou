@@ -20,7 +20,6 @@ from dropdown_bar import DropdownBar
 # ✅ 直接复用 ConstructionDocsWidget 的文件夹UI与交互（FolderButton / folder_grid / PathBar 等）
 from .construction_docs_widget import ConstructionDocsWidget
 
-
 # ============================================================
 # 辅助：可点击 Label（用于“首页”）
 # ============================================================
@@ -41,6 +40,7 @@ class ClickableLabel(QLabel):
 #             自己的蓝色面包屑仅在“叶子表格页”显示，避免重复顶栏
 # ============================================================
 class ModelFilesDocsWidget(QWidget):
+    navigationStateChanged = pyqtSignal(bool)
     """
     模型文件专用内容区：
     - Folder View：直接用 ConstructionDocsWidget 画（严格复用其布局/样式/交互）
@@ -50,6 +50,7 @@ class ModelFilesDocsWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.breadcrumb_font_ratio = 0.015
 
         # 当前路径（不含“首页”），例如：
         # [] / ["详细设计模型"] / ["详细设计模型","静力"]
@@ -191,7 +192,7 @@ class ModelFilesDocsWidget(QWidget):
         # 统一样式（蓝色 header bar + 白字）
         bar.setStyleSheet("""
             QFrame#BreadcrumbBar { background-color: #1e3a8a; border: none; }
-            QLabel { color: #ffffff; font-size: 14px; }
+            QLabel { color: #ffffff; }
             QLabel#BreadcrumbHome { font-weight: 600; }
             QLabel#BreadcrumbCrumb { font-weight: 600; }
         """)
@@ -225,10 +226,11 @@ class ModelFilesDocsWidget(QWidget):
         self.current_path = []
         self.current_leaf_key = ""
         self._refresh_folder_view()
-        self.content_stack.setCurrentWidget(self.docs_widget)
+        self.docs_widget.content_stack.setCurrentWidget(self.docs_widget.folder_page)
 
         # ✅ 叶子页面包屑隐藏，文件夹页交给 ConstructionDocsWidget
         self.breadcrumb_bar.hide()
+        self._emit_navigation_state()
 
     def _update_breadcrumb_bar(self):
         # 清空并重建
@@ -273,6 +275,25 @@ class ModelFilesDocsWidget(QWidget):
             self.breadcrumb_layout.addWidget(crumb, 0)
 
         self.breadcrumb_layout.addStretch(1)
+        self._update_breadcrumb_font_scale()
+
+    def _update_breadcrumb_font_scale(self):
+        if not hasattr(self, "breadcrumb_layout"):
+            return
+
+        font_size = max(11.0, min(20.0, self.width() * self.breadcrumb_font_ratio - 2.0))
+        for i in range(self.breadcrumb_layout.count()):
+            item = self.breadcrumb_layout.itemAt(i)
+            widget = item.widget()
+            if widget is None or not isinstance(widget, QLabel):
+                continue
+            font = widget.font()
+            font.setPointSizeF(font_size)
+            widget.setFont(font)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_breadcrumb_font_scale()
 
     # ------------------------------------------------------------------
     # 表格工具（来自旧代码）
@@ -397,6 +418,7 @@ class ModelFilesDocsWidget(QWidget):
         # 初次刷新 folder_grid（让首页/文件夹显示正确）
         self.docs_widget._refresh_folder_view()
         self.docs_widget.content_stack.setCurrentWidget(self.docs_widget.folder_page)
+        self._emit_navigation_state()
 
         # 最终只把 docs_widget（含 PathBar + 卡片 + 内容区）放进本组件
         layout.addWidget(self.docs_widget, 1)
@@ -425,17 +447,18 @@ class ModelFilesDocsWidget(QWidget):
 
         if node.get("type") == "folder":
             self._refresh_folder_view()
-            self.content_stack.setCurrentWidget(self.docs_widget)
+            self.docs_widget.content_stack.setCurrentWidget(self.docs_widget.folder_page)
 
             # ✅ 文件夹页：隐藏本文件蓝色面包屑，使用 ConstructionDocsWidget 自带 PathBar
             self.breadcrumb_bar.hide()
         else:
             self._show_files_for_current_leaf()
-            self.content_stack.setCurrentWidget(self.files_page)
+            self.docs_widget.content_stack.setCurrentWidget(self.docs_widget.files_page)
 
             # ✅ 叶子页：显示本文件蓝色面包屑（不影响你旧逻辑）
             self._update_breadcrumb_bar()
             self.breadcrumb_bar.show()
+        self._emit_navigation_state()
 
     def _on_folder_clicked(self, folder_name: str):
         node = self._get_node_by_path(self.current_path)
@@ -450,17 +473,18 @@ class ModelFilesDocsWidget(QWidget):
 
         if child.get("type") == "folder":
             self._refresh_folder_view()
-            self.content_stack.setCurrentWidget(self.docs_widget)
+            self.docs_widget.content_stack.setCurrentWidget(self.docs_widget.folder_page)
 
             # ✅ 文件夹页：隐藏本文件蓝色面包屑，使用 ConstructionDocsWidget 自带 PathBar
             self.breadcrumb_bar.hide()
         else:
             self._show_files_for_current_leaf()
-            self.content_stack.setCurrentWidget(self.files_page)
+            self.docs_widget.content_stack.setCurrentWidget(self.docs_widget.files_page)
 
             # ✅ 叶子页：显示本文件蓝色面包屑（不影响你旧逻辑）
             self._update_breadcrumb_bar()
             self.breadcrumb_bar.show()
+        self._emit_navigation_state()
 
     # ------------------------------------------------------------------
     # 叶子：文件表格（旧逻辑）
@@ -636,6 +660,9 @@ class ModelFilesDocsWidget(QWidget):
 #    - 顶部不显示 BasePage 标题
 #    - 不自写文件夹布局（文件夹由 ConstructionDocsWidget 渲染）
 # ============================================================
+    def _emit_navigation_state(self):
+        self.navigationStateChanged.emit(len(self.current_path) == 0)
+
 class ModelFilesPage(BasePage):
     """文件管理 -> 模型文件 页面（文件夹UI严格复用 ConstructionDocsWidget）"""
 
@@ -706,7 +733,23 @@ class ModelFilesPage(BasePage):
 
         # 保留联动入口
         self.dropdown_bar.valueChanged.connect(self.on_filter_changed)
+        self.docs_widget.docs_widget.navigationStateChanged.connect(self._set_dropdown_visible)
+        self._sync_platform_ui()
 
     def on_filter_changed(self, key: str, value: str):
         print(f"[ModelFilesPage] 条件变化：{key} -> {value}")
         # 如果未来要按筛选条件重置目录/刷新，可在此扩展
+        self._sync_platform_ui()
+
+    def _sync_platform_ui(self):
+        platform_name = self.dropdown_bar.get_value("facility_name")
+        window = self.window()
+        if hasattr(window, "set_current_platform_name"):
+            window.set_current_platform_name(platform_name)
+
+    def get_current_platform_name(self):
+        return self.dropdown_bar.get_value("facility_name")
+
+    def _set_dropdown_visible(self, visible: bool):
+        self.dropdown_bar.setVisible(visible)
+        self.dropdown_bar.setFixedHeight(self.dropdown_bar.sizeHint().height() if visible else 0)

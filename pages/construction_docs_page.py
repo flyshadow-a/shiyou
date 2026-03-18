@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import QWidget, QLabel
 from base_page import BasePage
 from dropdown_bar import DropdownBar
 from pages.construction_docs_widget import ConstructionDocsWidget
+from pages.file_management_header import build_platform_description
 
 
 class ConstructionDocsPage(BasePage):
@@ -62,13 +63,32 @@ class ConstructionDocsPage(BasePage):
 
         # ✅ 2) 关键：不要再额外包一层 HomeCard/HomeHeaderBar
         #    直接使用 ConstructionDocsWidget 自己那套“首页 + 文件夹UI”
-        self.docs_widget = ConstructionDocsWidget(self)
+        self.docs_widget = ConstructionDocsWidget(self, show_platform_description=True)
         self.main_layout.addWidget(self.docs_widget, 1)
 
         # 3) 监听筛选条件变化（保留）
         self.dropdown_bar.valueChanged.connect(self.on_filter_changed)
+        self.docs_widget.navigationStateChanged.connect(self._set_dropdown_visible)
+        self._sync_platform_ui()
 
     def on_filter_changed(self, key: str, value: str):
         print(f"[ConstructionDocsPage] 条件变化：{key} -> {value}")
         # 后续联动过滤：例如
         # self.docs_widget.reload_by_filters(self.dropdown_bar.get_all_values())
+        self._sync_platform_ui()
+
+    def _sync_platform_ui(self):
+        values = self.dropdown_bar.get_all_values()
+        platform_name = values.get("facility_name", "")
+        self.docs_widget.set_platform_name(platform_name)
+        self.docs_widget.set_platform_description(build_platform_description(values))
+        window = self.window()
+        if hasattr(window, "set_current_platform_name"):
+            window.set_current_platform_name(platform_name)
+
+    def get_current_platform_name(self):
+        return self.dropdown_bar.get_value("facility_name")
+
+    def _set_dropdown_visible(self, visible: bool):
+        self.dropdown_bar.setVisible(visible)
+        self.dropdown_bar.setFixedHeight(self.dropdown_bar.sizeHint().height() if visible else 0)

@@ -4,32 +4,27 @@
 import os
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QPixmap, QFont
+from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QFrame,
-    QWidget,
-    QLabel,
-    QVBoxLayout,
+    QHeaderView,
     QHBoxLayout,
-    QGridLayout,
-    QStackedWidget,
+    QLabel,
+    QPushButton,
     QSizePolicy,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
-    QHeaderView,
-    QAbstractItemView,
+    QVBoxLayout,
+    QWidget,
 )
 
 from base_page import BasePage
 from dropdown_bar import DropdownBar
-
-# ✅ 关键：直接引用 ConstructionDocsWidget 的“文件夹布局格式代码”
 from .construction_docs_widget import ConstructionDocsWidget
 
 
-# ======================================================================
-# 小工具类：可点击的 QLabel，用于面包屑“首页”
-# ======================================================================
 class ClickableLabel(QLabel):
     clicked = pyqtSignal()
 
@@ -43,22 +38,17 @@ class ClickableLabel(QLabel):
         super().mouseReleaseEvent(event)
 
 
-# ======================================================================
-# 小工具类：文件夹图标 + 文字（保留：不删除原逻辑与文字）
-# ======================================================================
 class FolderTile(QFrame):
     clicked = pyqtSignal()
 
-    # ✅ 这里三组值就是“文件夹大小格式”的核心：改成你在 ConstructionDocsWidget 里那套即可
-    TILE_W, TILE_H = 160, 140          # 文件夹卡片大小
-    ICON_W, ICON_H = 64, 56            # 文件夹图标显示大小（KeepAspectRatio）
-    PADDING = (12, 12, 12, 12)         # 内边距
-    SPACING = 8                        # 图标与文字间距
+    TILE_W, TILE_H = 160, 140
+    ICON_W, ICON_H = 64, 56
+    PADDING = (12, 12, 12, 12)
+    SPACING = 8
 
     def __init__(self, text: str, icon_path: str, parent=None):
         super().__init__(parent)
         self.setCursor(Qt.PointingHandCursor)
-
         self.setObjectName("FolderTile")
         self.setProperty("selected", False)
         self.setFixedSize(self.TILE_W, self.TILE_H)
@@ -78,17 +68,16 @@ class FolderTile(QFrame):
 
         self.text_label = QLabel(text, self)
         self.text_label.setObjectName("FolderText")
-        f = self.text_label.font()
-        f.setPointSize(11)             # ✅ 文件夹名称字号（改成你那套）
-        f.setBold(False)
-        self.text_label.setFont(f)
+        text_font = self.text_label.font()
+        text_font.setPointSize(11)
+        self.text_label.setFont(text_font)
         self.text_label.setAlignment(Qt.AlignCenter)
 
         layout.addWidget(self.icon_label)
         layout.addWidget(self.text_label)
 
-        # ✅ 默认 / 悬停 / 选中：文件夹卡片与文字样式
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QFrame#FolderTile {
                 background: transparent;
                 border: 1px solid transparent;
@@ -97,7 +86,6 @@ class FolderTile(QFrame):
             QFrame#FolderTile QLabel#FolderText {
                 color: #111827;
             }
-
             QFrame#FolderTile:hover {
                 background: #f3f4f6;
                 border: 1px solid #d1d5db;
@@ -105,19 +93,18 @@ class FolderTile(QFrame):
             QFrame#FolderTile:hover QLabel#FolderText {
                 color: #0074c9;
             }
-
             QFrame#FolderTile[selected="true"] {
                 background: #e6f3ff;
                 border: 1px solid #0074c9;
             }
             QFrame#FolderTile[selected="true"] QLabel#FolderText {
-                color: #e11d48;   /* 选中文字变红：如果你不想红就改回 #0074c9 或 #111827 */
+                color: #e11d48;
             }
-        """)
+            """
+        )
 
     def set_selected(self, on: bool):
         self.setProperty("selected", bool(on))
-        # 触发样式刷新
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
@@ -128,16 +115,10 @@ class FolderTile(QFrame):
         super().mouseReleaseEvent(event)
 
 
-# ======================================================================
-# ✅ 直接复用 ConstructionDocsWidget 的文件夹布局（QToolButton 那套）
-#    但把点击行为改为“发信号”，交给外部页面做 stack 切换
-# ======================================================================
 class HistoryEventsHomeDocsWidget(ConstructionDocsWidget):
     folderSelected = pyqtSignal(str)
 
     def _build_folder_tree(self):
-        # 首页三个文件夹：让 ConstructionDocsWidget 自己渲染文件夹布局
-        # 这里用 folder 类型即可（不进入 files_page），我们拦截点击发信号
         return {
             "历史改造信息": {"type": "folder", "children": {}},
             "特检延寿": {"type": "folder", "children": {}},
@@ -145,76 +126,171 @@ class HistoryEventsHomeDocsWidget(ConstructionDocsWidget):
         }
 
     def _build_demo_file_records(self):
-        # 不需要文件表格数据（这里只做入口），保持空
         return {}
 
     def _on_folder_clicked(self, folder_name: str):
-        # ✅ 关键：不走 ConstructionDocsWidget 原有“进入下一层/进入表格页”的逻辑
-        # 直接把 folder_name 抛给外部页面处理（进入详情页）
         self.folderSelected.emit(folder_name)
 
 
-# ======================================================================
-# 详细页面：上表 + 中间描述 + 下表（保留原逻辑与文字）
-# ======================================================================
 class ImportantHistoryDetailWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-
         self._project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._folder_icon_path = os.path.join(self._project_root, "pict", "wenjian.png")
+        self._breadcrumb_font_ratio = 0.015
+        self._demo_history_data = self._build_demo_history_data()
+        self._current_projects = []
 
         self._build_ui()
 
-    # ---------- 公共表格样式 ----------
     def _init_table_common(self, table: QTableWidget):
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
         table.setAlternatingRowColors(False)
         table.setShowGrid(True)
 
-        # 放大字体
-        font = table.font()
-        font.setPointSize(10)
-        table.setFont(font)
+        table_font = table.font()
+        table_font.setPointSize(10)
+        table.setFont(table_font)
 
         table.verticalHeader().setVisible(False)
-        hh = table.horizontalHeader()
-        hh.setDefaultAlignment(Qt.AlignCenter)
-        hh.setHighlightSections(False)
-        # 默认：所有列一起自适应填充宽度
-        hh.setSectionResizeMode(QHeaderView.Stretch)
+        header = table.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignCenter)
+        header.setHighlightSections(False)
+        header.setSectionResizeMode(QHeaderView.Stretch)
 
-        # 选中时是淡蓝色
-        table.setStyleSheet("""
+        table.setStyleSheet(
+            """
             QTableWidget {
                 gridline-color: #d0d0d0;
             }
             QHeaderView::section {
                 background-color: #f3f4f6;
-                border-bottom: 1px solid #d0d0d0;   /* 表头下面的下划线就在这里 */
+                border-bottom: 1px solid #d0d0d0;
                 padding: 4px 8px;
             }
             QTableWidget::item:selected {
                 background-color: #cce8ff;
             }
-        """)
+            """
+        )
 
     def _set_center_item(self, table: QTableWidget, row: int, col: int, text: str):
         item = QTableWidgetItem(str(text))
         item.setTextAlignment(Qt.AlignCenter)
         table.setItem(row, col, item)
 
-    # ---------- UI ----------
+    def _build_demo_history_data(self):
+        return {
+            "历史改造信息": {
+                "projects": [
+                    {
+                        "index": 1,
+                        "name": "WC19-1WHPC平台增加调压井改造",
+                        "year": "2009年",
+                        "conclusion": "完成井口流程和局部结构补强校核后，新增调压井改造满足运行要求，可按现状继续使用。",
+                        "files": [
+                            {"name": "调压井改造方案说明书.pdf", "type": "PDF", "updated": "2009-06-18", "note": "方案版"},
+                            {"name": "调压井结构校核报告.docx", "type": "Word", "updated": "2009-06-24", "note": "校核结论"},
+                            {"name": "调压井改造总图.dwg", "type": "CAD", "updated": "2009-06-25", "note": "施工图"},
+                        ],
+                    },
+                    {
+                        "index": 2,
+                        "name": "WC19-1油田产能释放改造",
+                        "year": "2016年",
+                        "conclusion": "经复核，上部组块荷载增长在可控范围内，配套加固后满足产能释放改造需求。",
+                        "files": [
+                            {"name": "产能释放改造请示.pdf", "type": "PDF", "updated": "2016-03-08", "note": "立项材料"},
+                            {"name": "产能释放新增设备清单.xlsx", "type": "Excel", "updated": "2016-03-12", "note": "设备统计"},
+                            {"name": "产能释放结构复核报告.pdf", "type": "PDF", "updated": "2016-03-28", "note": "复核报告"},
+                        ],
+                    },
+                    {
+                        "index": 3,
+                        "name": "WC19-1详细设计项目旧平台结构改造",
+                        "year": "2011年",
+                        "conclusion": "原平台结构经补强设计后可承接新增模块荷载，施工条件和后续运行条件均满足要求。",
+                        "files": [
+                            {"name": "旧平台结构改造设计说明.docx", "type": "Word", "updated": "2011-04-16", "note": "设计说明"},
+                            {"name": "旧平台节点补强详图.dwg", "type": "CAD", "updated": "2011-04-18", "note": "详图文件"},
+                            {"name": "旧平台结构改造计算书.pdf", "type": "PDF", "updated": "2011-04-20", "note": "计算成果"},
+                        ],
+                    },
+                    {
+                        "index": 4,
+                        "name": "WC19-1平台增加救生筏和逃生软梯安装甲板",
+                        "year": "2016年",
+                        "conclusion": "新增逃生设施对应的局部甲板和支撑构件校核通过，改造后安全疏散能力得到提升。",
+                        "files": [
+                            {"name": "救生设施改造布置图.pdf", "type": "PDF", "updated": "2016-09-02", "note": "布置图"},
+                            {"name": "逃生软梯安装方案.docx", "type": "Word", "updated": "2016-09-06", "note": "施工方案"},
+                            {"name": "甲板补强复核单.xlsx", "type": "Excel", "updated": "2016-09-08", "note": "校核记录"},
+                        ],
+                    },
+                    {
+                        "index": 5,
+                        "name": "WC19-1平台A3井增加放空管线",
+                        "year": "2011年",
+                        "conclusion": "新增放空管线对现有平台整体影响较小，完成支架优化后可满足长期运行要求。",
+                        "files": [
+                            {"name": "A3井放空管线改造图.dwg", "type": "CAD", "updated": "2011-11-10", "note": "施工图"},
+                            {"name": "放空管线材料统计表.xlsx", "type": "Excel", "updated": "2011-11-12", "note": "材料表"},
+                            {"name": "放空管线改造总结.pdf", "type": "PDF", "updated": "2011-11-20", "note": "总结材料"},
+                        ],
+                    },
+                ]
+            },
+            "特检延寿": {
+                "projects": [
+                    {
+                        "index": 1,
+                        "name": "平台特检延寿评估项目",
+                        "year": "2022年",
+                        "conclusion": "结合近年检测和校核结果，平台延寿条件基本具备，建议按整改闭环后进入延寿实施阶段。",
+                        "files": [
+                            {"name": "特检延寿评估报告.pdf", "type": "PDF", "updated": "2022-05-16", "note": "评估结论"},
+                            {"name": "延寿整改项清单.xlsx", "type": "Excel", "updated": "2022-05-18", "note": "整改项"},
+                        ],
+                    }
+                ]
+            },
+            "特殊事件检测（台风、碰撞等）": {
+                "projects": [
+                    {
+                        "index": 1,
+                        "name": "台风后损伤复核项目",
+                        "year": "2020年",
+                        "conclusion": "本次台风造成局部附属构件受损，主体结构未见明显失效，完成修复后可恢复正常生产。",
+                        "files": [
+                            {"name": "台风后巡检记录.pdf", "type": "PDF", "updated": "2020-08-23", "note": "巡检记录"},
+                            {"name": "损伤修复方案.docx", "type": "Word", "updated": "2020-08-25", "note": "修复方案"},
+                        ],
+                    }
+                ]
+            },
+        }
+
+    def _build_placeholder_project(self, folder_name: str):
+        return [
+            {
+                "index": 1,
+                "name": f"{folder_name}示例项目",
+                "year": "待补充",
+                "conclusion": f"{folder_name}的结论内容当前先使用演示文案占位，后续可替换为实际评估或审批结论。",
+                "files": [
+                    {"name": f"{folder_name}资料汇总.pdf", "type": "PDF", "updated": "待补充", "note": "演示文件"},
+                    {"name": f"{folder_name}附件清单.xlsx", "type": "Excel", "updated": "待补充", "note": "演示文件"},
+                ],
+            }
+        ]
+
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
-
-        # ✅ 顶格：不要让 header 和内容之间多出空白
         main_layout.setSpacing(0)
 
-        # 1) 顶部蓝色面包屑条
         header = QFrame(self)
         header.setObjectName("PathBar")
         header_layout = QHBoxLayout(header)
@@ -231,9 +307,9 @@ class ImportantHistoryDetailWidget(QWidget):
         self.lbl_home = ClickableLabel("首页", header)
         self.lbl_home.setObjectName("Breadcrumb")
 
-        sep1 = QLabel(">", header)
-        sep1.setObjectName("BreadcrumbArrow")
-        sep1.setContentsMargins(4, 0, 4, 0)
+        self.lbl_sep = QLabel(">", header)
+        self.lbl_sep.setObjectName("BreadcrumbArrow")
+        self.lbl_sep.setContentsMargins(4, 0, 4, 0)
 
         self.lbl_folder = QLabel("历史改造信息", header)
         self.lbl_folder.setObjectName("BreadcrumbCurrent")
@@ -242,70 +318,98 @@ class ImportantHistoryDetailWidget(QWidget):
         header_layout.addSpacing(4)
         header_layout.addWidget(self.lbl_home)
         header_layout.addSpacing(4)
-        header_layout.addWidget(sep1)
+        header_layout.addWidget(self.lbl_sep)
         header_layout.addSpacing(4)
         header_layout.addWidget(self.lbl_folder)
         header_layout.addStretch()
 
         main_layout.addWidget(header, 0)
 
-        # 2) 中间内容区域：上表 + 描述 + 下表
         content = QFrame(self)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(12, 8, 12, 8)
-        content_layout.setSpacing(8)
+        content_layout.setSpacing(10)
 
-        # 2.1) 上表：序号 / 项目名称 / 年份
         self.top_table = QTableWidget(0, 3, content)
-        self.top_table.setHorizontalHeaderLabels(["序号", "项目名称", "年份"])
+        self.top_table.setHorizontalHeaderLabels(["序号", "改造项目", "年份"])
         self._init_table_common(self.top_table)
-
-        # ✅ 上表列宽控制：
-        #    第 0、2 列：可手动设置宽度
-        #    第 1 列：自适应拉伸，占满剩余空间
-        header_view = self.top_table.horizontalHeader()
-        header_view.setSectionResizeMode(0, QHeaderView.Interactive)
-        header_view.setSectionResizeMode(1, QHeaderView.Stretch)
-        header_view.setSectionResizeMode(2, QHeaderView.Interactive)
-
-        # 在这里改“序号”和“年份”的宽度（像素）
-        self.top_table.setColumnWidth(0, 120)   # 序号列宽度
-        self.top_table.setColumnWidth(2, 160)   # 年份列宽度
-
-        self.top_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.top_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Interactive)
+        self.top_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.top_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Interactive)
+        self.top_table.setColumnWidth(0, 90)
+        self.top_table.setColumnWidth(2, 120)
+        self.top_table.setMinimumHeight(220)
+        self.top_table.itemSelectionChanged.connect(self._on_project_selection_changed)
         content_layout.addWidget(self.top_table, 0)
 
-        # 2.2) 中间蓝底简介文本
         self.desc_frame = QFrame(content)
         self.desc_frame.setObjectName("HistoryDescFrame")
         desc_layout = QVBoxLayout(self.desc_frame)
-        desc_layout.setContentsMargins(10, 8, 10, 8)
-        desc_layout.setSpacing(4)
+        desc_layout.setContentsMargins(14, 12, 14, 12)
+        desc_layout.setSpacing(6)
+
+        self.desc_title = QLabel("当前改造项目结论", self.desc_frame)
+        self.desc_title.setObjectName("HistoryDescTitle")
 
         self.desc_label = QLabel(self.desc_frame)
+        self.desc_label.setObjectName("HistoryDescLabel")
         self.desc_label.setWordWrap(True)
         self.desc_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        font_desc = self.desc_label.font()
-        font_desc.setPointSize(10)
-        self.desc_label.setFont(font_desc)
-        self.desc_label.setStyleSheet("color: white;")
+        desc_font = self.desc_label.font()
+        desc_font.setPointSize(10)
+        self.desc_label.setFont(desc_font)
 
+        desc_layout.addWidget(self.desc_title)
         desc_layout.addWidget(self.desc_label)
         content_layout.addWidget(self.desc_frame, 0)
 
-        # 2.3) 下表：板块/因素/节点/信息来源/备注
-        self.bottom_table = QTableWidget(0, 5, content)
-        self.bottom_table.setHorizontalHeaderLabels(
-            ["校核内容", "构建名称", "最大（最小）UC值", "对应工况", "是否满足"]
-        )
-        self._init_table_common(self.bottom_table)
-        self.bottom_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        content_layout.addWidget(self.bottom_table, 1)
+        file_frame = QFrame(content)
+        file_layout = QVBoxLayout(file_frame)
+        file_layout.setContentsMargins(0, 0, 0, 0)
+        file_layout.setSpacing(8)
 
+        file_header = QHBoxLayout()
+        file_header.setContentsMargins(0, 0, 0, 0)
+        file_header.setSpacing(8)
+
+        self.file_title = QLabel("改造项目文件列表", file_frame)
+        self.file_title.setObjectName("HistorySectionTitle")
+
+        self.upload_button = QPushButton("上传文件", file_frame)
+        self.upload_button.setObjectName("PrimaryActionButton")
+        self.upload_button.clicked.connect(self._upload_demo_file)
+
+        self.download_button = QPushButton("下载选中文件", file_frame)
+        self.download_button.setObjectName("SecondaryActionButton")
+        self.download_button.clicked.connect(self._download_selected_file)
+
+        file_header.addWidget(self.file_title)
+        file_header.addStretch()
+        file_header.addWidget(self.upload_button)
+        file_header.addWidget(self.download_button)
+        file_layout.addLayout(file_header)
+
+        self.files_table = QTableWidget(0, 4, file_frame)
+        self.files_table.setHorizontalHeaderLabels(["文件名称", "文件类型", "更新时间", "说明"])
+        self._init_table_common(self.files_table)
+        self.files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.files_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.files_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.files_table.setMinimumHeight(220)
+        self.files_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        file_layout.addWidget(self.files_table, 1)
+
+        self.file_status_label = QLabel("", file_frame)
+        self.file_status_label.setObjectName("HistoryFileStatus")
+        self.file_status_label.setWordWrap(True)
+        file_layout.addWidget(self.file_status_label)
+
+        content_layout.addWidget(file_frame, 1)
         main_layout.addWidget(content, 1)
 
-        # 整体样式
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QFrame#PathBar {
                 background-color: #006bb3;
             }
@@ -314,7 +418,6 @@ class ImportantHistoryDetailWidget(QWidget):
                 border-radius: 3px;
             }
             QLabel#Breadcrumb {
-                font-size: 12px;
                 color: #ffffff;
                 background-color: transparent;
             }
@@ -323,116 +426,180 @@ class ImportantHistoryDetailWidget(QWidget):
             }
             QLabel#BreadcrumbCurrent {
                 font-weight: bold;
-                font-size: 12px;
                 color: #ffffff;
                 background-color: transparent;
             }
             QLabel#BreadcrumbArrow {
-                font-size: 12px;
                 color: #ffffff;
                 background-color: transparent;
             }
             QFrame#HistoryDescFrame {
-                background-color: #0074c9;
-                border-radius: 0px;
+                background-color: #0b78d0;
+                border-radius: 8px;
             }
-        """)
+            QLabel#HistoryDescTitle {
+                font-size: 12px;
+                font-weight: bold;
+                color: #dbeafe;
+                background-color: transparent;
+            }
+            QLabel#HistoryDescLabel {
+                color: #ffffff;
+                line-height: 1.6;
+                background-color: transparent;
+            }
+            QLabel#HistorySectionTitle {
+                font-size: 13px;
+                font-weight: bold;
+                color: #1f2937;
+            }
+            QPushButton#PrimaryActionButton,
+            QPushButton#SecondaryActionButton {
+                min-height: 32px;
+                padding: 0 14px;
+                border-radius: 6px;
+                border: 1px solid #0b78d0;
+            }
+            QPushButton#PrimaryActionButton {
+                background-color: #0b78d0;
+                color: #ffffff;
+            }
+            QPushButton#PrimaryActionButton:hover {
+                background-color: #0968b3;
+            }
+            QPushButton#SecondaryActionButton {
+                background-color: #ffffff;
+                color: #0b78d0;
+            }
+            QPushButton#SecondaryActionButton:hover {
+                background-color: #eff6ff;
+            }
+            QLabel#HistoryFileStatus {
+                min-height: 22px;
+                color: #4b5563;
+            }
+            """
+        )
 
-        # 默认加载“历史改造信息”的示例数据
+        self._update_breadcrumb_font_scale()
+
         self.load_history_event("历史改造信息")
 
-    # ---------- 数据填充 ----------
+    def _update_breadcrumb_font_scale(self):
+        font_size = max(11.0, min(20.0, self.width() * self._breadcrumb_font_ratio - 2.0))
+        for widget in (self.lbl_home, self.lbl_sep, self.lbl_folder):
+            font = widget.font()
+            font.setPointSizeF(font_size)
+            widget.setFont(font)
+
     def load_history_event(self, folder_name: str):
-        """根据点击的文件夹名，刷新上表、说明文字和下表内容"""
-        # 更新面包屑中的文件夹名称
         self.lbl_folder.setText(folder_name)
+        folder_data = self._demo_history_data.get(folder_name)
+        if folder_data is None:
+            folder_data = {"projects": self._build_placeholder_project(folder_name)}
+            self._demo_history_data[folder_name] = folder_data
 
-        if folder_name == "历史改造信息":
-            # 这里可以替换成你自己想要的示例数据
-            records = [
-                (1, "xxx平台增加调整井", "2009年"),
-                (2, "xxx油田产能释放", "2016年"),
-                (3, "xxx油田开发工程详细设计项目旧平台改造结构", "2011年"),
-                (4, "xxx平台增加救生筏和逃生软梯安装甲板", "2016年"),
-                (5, "xxx平台A3井增加放空管线", "2011年")
-            ]
-            desc_text = (
-                "xxx平台于2006年安装并投产，平台原设计寿命15年，在投产后平台进行了"
-                "一系列的改造，其中较大的改造包括xxx油田开发工程项目依托电缆护管和立管、"
-                "增加结构房间、2016年增加救生筏和逃生软梯、xxx油田产能释放项目等。"
-                "结果显示所有杆件UC值小于1.0，桩基承载力安全系数大于1.5，满足规范要求；"
-                "极限强度分析结果显示最小RSR为2.1，满足规范要求。综合以上结论，认为增加隔水套管可行。"
-            )
-            bottom_rows = [
-                ("构件", "", "", "", ""),
-                ("节点冲剪", "", "", "", ""),
-                ("桩应力", "", "", "", ""),
-                ("节点疲劳", "", "", "", ""),
-                ("桩承载力操作抗压", "", "", "", ""),
-                ("桩承载力操作抗拔", "", "", "", ""),
-                ("桩承载力极端抗压", "", "", "", ""),
-                ("桩承载力极端抗拔", "", "", "", ""),
-            ]
+        self._current_projects = folder_data["projects"]
+        self.file_status_label.clear()
+
+        self.top_table.blockSignals(True)
+        self.top_table.clearContents()
+        self.top_table.setRowCount(len(self._current_projects))
+        for row, project in enumerate(self._current_projects):
+            self._set_center_item(self.top_table, row, 0, project["index"])
+            name_item = QTableWidgetItem(project["name"])
+            name_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.top_table.setItem(row, 1, name_item)
+            self._set_center_item(self.top_table, row, 2, project["year"])
+        self.top_table.blockSignals(False)
+
+        if self._current_projects:
+            self.top_table.selectRow(0)
+            self._refresh_project_detail(0)
         else:
-            # 其它两个文件夹暂时展示占位内容
-            records = [
-                (1, f"{folder_name}相关重要历史事件（示例）", ""),
-            ]
-            desc_text = (
-                f"当前文件夹“{folder_name}”暂未录入详细的历史事件数据，可在后续阶段根据实际"
-                "评估结果补充上表与下表的具体信息。"
+            self.desc_label.setText("当前暂无改造项目结论。")
+            self._populate_files_table([])
+
+    def _on_project_selection_changed(self):
+        row = self.top_table.currentRow()
+        if row < 0 and self.top_table.rowCount():
+            row = 0
+        self._refresh_project_detail(row)
+
+    def _refresh_project_detail(self, row: int):
+        if row < 0 or row >= len(self._current_projects):
+            self.desc_label.setText("当前暂无改造项目结论。")
+            self._populate_files_table([])
+            return
+
+        project = self._current_projects[row]
+        self.desc_label.setText(f"{project['name']}：{project['conclusion']}")
+        self._populate_files_table(project["files"])
+
+    def _populate_files_table(self, files):
+        self.files_table.clearContents()
+        self.files_table.setRowCount(len(files))
+        for row, file_info in enumerate(files):
+            values = (
+                file_info["name"],
+                file_info["type"],
+                file_info["updated"],
+                file_info["note"],
             )
-            bottom_rows = [
-                ("", "", "", "", ""),
-            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                align = Qt.AlignLeft | Qt.AlignVCenter if col in (0, 3) else Qt.AlignCenter
+                item.setTextAlignment(align)
+                self.files_table.setItem(row, col, item)
 
-        # 填充上表
-        self.top_table.setRowCount(len(records))
-        for r, (idx, name, year) in enumerate(records):
-            self._set_center_item(self.top_table, r, 0, idx)
-            item_name = QTableWidgetItem(name)
-            item_name.setTextAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
-            self.top_table.setItem(r, 1, item_name)
-            self._set_center_item(self.top_table, r, 2, year)
+        if files:
+            self.files_table.selectRow(0)
 
-        # 描述文本
-        self.desc_label.setText(desc_text)
+    def _get_selected_project(self):
+        row = self.top_table.currentRow()
+        if row < 0 or row >= len(self._current_projects):
+            return None
+        return self._current_projects[row]
 
-        # 填充下表
-        self.bottom_table.setRowCount(len(bottom_rows))
-        for r, (c1, c2, c3, c4, c5) in enumerate(bottom_rows):
-            for col, val in enumerate((c1, c2, c3, c4, c5)):
-                item = QTableWidgetItem(val)
-                item.setTextAlignment(Qt.AlignCenter)
-                self.bottom_table.setItem(r, col, item)
+    def _upload_demo_file(self):
+        project = self._get_selected_project()
+        if not project:
+            self.file_status_label.setText("请先选择一个改造项目。")
+            return
+
+        next_index = len(project["files"]) + 1
+        demo_file = {
+            "name": f"{project['name']}-补充资料{next_index}.pdf",
+            "type": "PDF",
+            "updated": "演示新增",
+            "note": "上传占位文件",
+        }
+        project["files"].append(demo_file)
+        self._populate_files_table(project["files"])
+        self.file_status_label.setText(f"已为“{project['name']}”追加演示文件：{demo_file['name']}")
+
+    def _download_selected_file(self):
+        project = self._get_selected_project()
+        row = self.files_table.currentRow()
+        if not project or row < 0 or row >= len(project["files"]):
+            self.file_status_label.setText("请先在下方文件列表中选择一个文件。")
+            return
+
+        file_info = project["files"][row]
+        self.file_status_label.setText(f"已模拟下载文件：{file_info['name']}")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_breadcrumb_font_scale()
 
 
-# ======================================================================
-# 整个页面：上级 BasePage，包含“文件夹首页” + “详细内容”两个子页面
-# ======================================================================
 class ImportantHistoryEventsPage(BasePage):
-    """
-    文件管理 -> 重要历史事件记录
-
-    - 进入页面时：先看到“首页”，中间三个文件夹：
-        * 历史改造信息
-        * 特检延寿
-        * 台风&损伤
-      顶部有 DropdownBar 下拉条。
-    - 点击任一文件夹：切换到详细界面（无下拉条），显示上表+简介+下表。
-    - 详细界面顶部的“首页”文字可点击，点击后返回到三个文件夹界面。
-    """
-
     def __init__(self, parent=None):
-        # ✅ 顶格：避免 BasePage 顶部标题占位导致“多一条空白”
         super().__init__("", parent)
-        self._project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self._folder_icon_path = os.path.join(self._project_root, "pict", "wenjian.png")
         self._build_ui()
         self._hide_base_title_if_any()
 
     def _hide_base_title_if_any(self):
-        """兜底：兼容不同 BasePage 实现，尽量把顶部标题 QLabel 隐藏掉"""
         for attr in ("title_label", "lbl_title", "label_title", "page_title_label"):
             w = getattr(self, attr, None)
             if isinstance(w, QLabel):
@@ -446,51 +613,37 @@ class ImportantHistoryEventsPage(BasePage):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(8)
 
-        # 整个页面用一个堆叠：0 = 三个文件夹首页；1 = 详细界面
         self.stack = QStackedWidget(self)
         self.main_layout.addWidget(self.stack)
 
-        # 0) 文件夹首页
         self.home_page = self._build_home_page()
         self.stack.addWidget(self.home_page)
 
-        # 1) 详细界面
         self.detail_widget = ImportantHistoryDetailWidget(self)
-        # 点击“首页”返回
         self.detail_widget.lbl_home.clicked.connect(self._go_home)
         self.stack.addWidget(self.detail_widget)
-
-        # 默认显示首页
         self.stack.setCurrentIndex(0)
 
-    # ---------- 首页：三个文件夹 ----------
     def _build_home_page(self) -> QWidget:
         page = QFrame(self)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-
-        # ✅ 顶格：去掉 DropdownBar 和下面内容之间的额外空白（原来是 8）
         layout.setSpacing(8)
 
-        # 顶部下拉条
         fields = [
-            {"key": "branch",         "label": "分公司",   "options": ["渤江分公司"],             "default": "渤江分公司"},
-            {"key": "op_company",     "label": "作业公司", "options": ["文昌油田群作业公司"],     "default": "文昌油田群作业公司"},
-            {"key": "oilfield",       "label": "油气田",   "options": ["文昌19-1油田"],          "default": "文昌19-1油田"},
-            {"key": "facility_code",  "label": "设施编码", "options": ["WC19-1WHPC"],           "default": "WC19-1WHPC"},
-            {"key": "facility_name",  "label": "设施名称", "options": ["文昌19-1WHPC井口平台"],   "default": "文昌19-1WHPC井口平台"},
-            {"key": "facility_type",  "label": "设施类型", "options": ["平台"],                  "default": "平台"},
-            {"key": "category",       "label": "分类",     "options": ["井口平台"],              "default": "井口平台"},
-            {"key": "start_time",     "label": "投产时间", "options": ["2013-07-15"],           "default": "2013-07-15"},
-            {"key": "design_life",    "label": "设计年限", "options": ["15"],                   "default": "15"},
+            {"key": "branch", "label": "分公司", "options": ["湛江分公司"], "default": "湛江分公司"},
+            {"key": "op_company", "label": "作业公司", "options": ["文昌油田群作业公司"], "default": "文昌油田群作业公司"},
+            {"key": "oilfield", "label": "油气田", "options": ["文昌19-1油田"], "default": "文昌19-1油田"},
+            {"key": "facility_code", "label": "设施编号", "options": ["WC19-1WHPC"], "default": "WC19-1WHPC"},
+            {"key": "facility_name", "label": "设施名称", "options": ["文昌19-1WHPC井口平台"], "default": "文昌19-1WHPC井口平台"},
+            {"key": "facility_type", "label": "设施类型", "options": ["平台"], "default": "平台"},
+            {"key": "category", "label": "分类", "options": ["井口平台"], "default": "井口平台"},
+            {"key": "start_time", "label": "投产时间", "options": ["2013-07-15"], "default": "2013-07-15"},
+            {"key": "design_life", "label": "设计年限", "options": ["15"], "default": "15"},
         ]
         self.dropdown_bar = DropdownBar(fields, parent=page)
         layout.addWidget(self.dropdown_bar, 0)
 
-        # =========================================================
-        # ✅ 直接引用 ConstructionDocsWidget 的“文件夹布局格式代码”
-        #    首页三个文件夹的排布/间距/样式/路径栏都由 ConstructionDocsWidget 管
-        # =========================================================
         card = QFrame(page)
         card.setObjectName("HomeCard")
         card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -500,21 +653,15 @@ class ImportantHistoryEventsPage(BasePage):
         card_layout.setSpacing(0)
 
         self.home_docs = HistoryEventsHomeDocsWidget(card)
-        # 点击任意文件夹 -> 进入你的详情页逻辑
         self.home_docs.folderSelected.connect(self._enter_detail)
 
         card_layout.addWidget(self.home_docs)
         layout.addWidget(card, 1)
-
         return page
 
-    # ---------- 逻辑：进入/返回 ----------
     def _enter_detail(self, folder_name: str):
-        # 加载对应的数据
         self.detail_widget.load_history_event(folder_name)
-        # 切到详细页面
         self.stack.setCurrentIndex(1)
 
     def _go_home(self):
-        # 返回“首页”（三个文件夹）
         self.stack.setCurrentIndex(0)

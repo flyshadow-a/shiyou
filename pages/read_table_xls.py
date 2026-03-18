@@ -10,9 +10,9 @@ import pandas as pd
 
 
 class ReadTableXls:
-    """从《平台汇总信息样表.xls》读取并提取下拉框选项（可复用）。"""
+    """从《platform_total.xls》读取并提取下拉框选项（可复用）。"""
 
-    EXCEL_NAME = "平台汇总信息样表.xls"
+    EXCEL_NAME = "platform_total.xls"
 
     FIELD_CANDIDATES: Dict[str, List[str]] = {
         "分公司": ["分公司", "所属分公司"],
