@@ -5,7 +5,7 @@ import sys
 import os
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap, QIcon
+from PyQt5.QtGui import QPixmap, QIcon, QFont
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QTabWidget, QStackedWidget, QLabel, QLineEdit,
@@ -90,14 +90,15 @@ class MainWindow(QMainWindow):
         self.nav_search = QLineEdit()
         self.nav_search.setPlaceholderText("菜单搜索：支持菜单名称、路径")
         self.nav_search.setClearButtonEnabled(True)
-        self.nav_search.setFixedHeight(26)
+        self.nav_search.setFixedHeight(32)
         self.nav_search.setStyleSheet("""
             QLineEdit {
                 background-color: rgba(255,255,255,0.10);
                 border: 1px solid rgba(255,255,255,0.35);
                 border-radius: 4px;
-                padding-left: 8px;
+                padding-left: 10px;
                 color: #ffffff;
+                font-size: 15px;
             }
             QLineEdit:focus {
                 background-color: rgba(255,255,255,0.18);
@@ -105,6 +106,9 @@ class MainWindow(QMainWindow):
                 color: #ffffff;
             }
         """)
+        nav_search_font = QFont(self.nav_search.font())
+        nav_search_font.setPixelSize(15)
+        self.nav_search.setFont(nav_search_font)
         nav_layout.addWidget(self.nav_search)
 
         # 树菜单本体
@@ -117,10 +121,11 @@ class MainWindow(QMainWindow):
             background-color: #004a80;
             color: #ffffff;
             border: none;
+            font-size: 16px;
         }
         QTreeWidget::viewport { background-color: #004a80; }
 
-        QTreeWidget::item { height: 26px; }
+        QTreeWidget::item { height: 36px; }
 
         /* 鼠标悬停可以保留淡淡高亮（可选） */
         QTreeWidget::item:hover { background-color: rgba(255,255,255,0.10); }
@@ -143,6 +148,9 @@ class MainWindow(QMainWindow):
             outline: none;
         }
         """)
+        nav_tree_font = QFont(self.nav_tree.font())
+        nav_tree_font.setPixelSize(16)
+        self.nav_tree.setFont(nav_tree_font)
         nav_layout.addWidget(self.nav_tree, 1)
 
         # ---- 右侧：占位首页 + tab 控件（不把首页放进 Tab） ----
@@ -159,10 +167,16 @@ class MainWindow(QMainWindow):
                 background: #ffffff;
             }
             QTabBar::tab {
-                height: 28px;
-                padding: 4px 16px;
+                height: 36px;
+                padding: 6px 20px;
+                font-size: 15px;
+                font-weight: 600;
             }
         """)
+        tab_font = QFont(self.tab_widget.tabBar().font())
+        tab_font.setPixelSize(15)
+        tab_font.setBold(True)
+        self.tab_widget.tabBar().setFont(tab_font)
 
         # 用 Stack 把“首页背景图”与“多标签页”分离
         self.right_stack = QStackedWidget()
@@ -170,7 +184,7 @@ class MainWindow(QMainWindow):
         self.right_stack.addWidget(self.tab_widget)  # index 1: 功能页面 Tabs
         self.right_stack.setCurrentWidget(self.home_page)
 
-        self.nav_container.setMaximumWidth(360)
+        self.nav_container.setMaximumWidth(380)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.nav_container)
@@ -218,7 +232,7 @@ class MainWindow(QMainWindow):
         self.build_nav_tree()
 
         self.nav_tree.header().setSectionResizeMode(0, QHeaderView.Fixed)
-        self.nav_tree.setColumnWidth(0, 260)  # 左侧文字显示宽度（调这个就行）
+        self.nav_tree.setColumnWidth(0, 280)  # 左侧文字显示宽度（调这个就行）
         self.nav_tree.setTextElideMode(Qt.ElideRight)  # 太长就…省略号
         self.nav_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
@@ -306,6 +320,11 @@ class MainWindow(QMainWindow):
                 path = f"{parent_path}/{text}" if parent_path else text
 
                 item = QTreeWidgetItem([text])
+                item_font = QFont(item.font(0))
+                item_font.setPixelSize(16)
+                if parent_item is None:
+                    item_font.setBold(True)
+                item.setFont(0, item_font)
                 if parent_item is None:
                     self.nav_tree.addTopLevelItem(item)
                 else:
