@@ -260,7 +260,7 @@ class FeasibilityAssessmentPage(BasePage):
         lay.setSpacing(8)
 
         lab = QLabel(title)
-        lab.setStyleSheet("font-weight: bold;")
+        lab.setStyleSheet("font-size: 18px; font-weight: bold; color: #1d2b3a;")
         lay.addWidget(lab, 0)
         lay.addStretch(1)
 

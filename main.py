@@ -311,12 +311,12 @@ class MainWindow(QMainWindow):
         if os.path.exists(logo_path):
             pixmap = QPixmap(logo_path)
             if not pixmap.isNull():
-                pixmap = pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pixmap = pixmap.scaled(42, 42, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 logo_label.setPixmap(pixmap)
-        logo_label.setFixedSize(30, 30)
+        logo_label.setFixedSize(44, 44)
 
         title = QLabel("海上平台结构载荷管理系统")
-        title.setStyleSheet("font-size:18px; font-weight:bold;")
+        title.setStyleSheet("font-size: 26px; font-weight: 800;")
         self.current_platform_label = QLabel("--")
         self.current_platform_label.setAlignment(Qt.AlignCenter)
         self.current_platform_label.setStyleSheet("""
