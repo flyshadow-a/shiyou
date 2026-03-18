@@ -2,6 +2,7 @@
 from typing import List, Dict, Optional
 
 from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QFontMetrics
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QGridLayout, QLabel, QComboBox, QSizePolicy
 )
@@ -56,21 +57,24 @@ class DropdownBar(QFrame):
             QLabel.DropdownHeader {
                 background-color: #0090d0;
                 color: #ffffff;
-                padding: 4px 6px;
+                padding: 7px 6px;
                 font-weight: bold;
+                font-size: 15px;
                 border: none;
             }
 
             QComboBox {
                 background-color: #ffffff;
                 border: 1px solid #d0d0d0;
-                min-width: 90px;
-                padding: 2px 4px;
+                min-width: 100px;
+                min-height: 32px;
+                padding: 4px 6px;
+                font-size: 14px;
             }
             QComboBox::drop-down {
                 subcontrol-origin: padding;
                 subcontrol-position: top right;
-                width: 16px;
+                width: 18px;
             }
         """)
 
@@ -80,6 +84,7 @@ class DropdownBar(QFrame):
             label_text: str = field.get("label", "")
             options: List[str] = field.get("options") or []
             default_value: Optional[str] = field.get("default")
+            stretch = max(1, int(field.get("stretch", 1) or 1))
 
             # ------ 行 0：蓝色表头 ------
             lbl = QLabel(label_text)
@@ -87,12 +92,14 @@ class DropdownBar(QFrame):
             lbl.setProperty("class", "DropdownHeader")
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            lbl.setMinimumHeight(32)
             grid.addWidget(lbl, 0, col)
 
             # ------ 行 1：白色下拉框 ------
             combo = QComboBox()
             combo.addItems(options)
             combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            combo.setMinimumHeight(34)
 
             # 默认选中
             if default_value:
@@ -102,15 +109,35 @@ class DropdownBar(QFrame):
 
             # 下拉变化 -> 发射 signal
             if key:
-                combo.currentTextChanged.connect(
-                    lambda text, k=key: self.valueChanged.emit(k, text)
-                )
+                combo.currentTextChanged.connect(lambda text, k=key, cb=combo: self._on_combo_changed(k, cb, text))
+
+            self._update_combo_display_metrics(combo)
+            combo.setToolTip(combo.currentText())
 
             grid.addWidget(combo, 1, col)
-            grid.setColumnStretch(col, 1)  # 所有列等比分配宽度
+            grid.setColumnStretch(col, stretch)
 
             if key:
                 self._combos[key] = combo
+
+    def _on_combo_changed(self, key: str, combo: QComboBox, text: str):
+        combo.setToolTip(text)
+        self.valueChanged.emit(key, text)
+
+    def _update_combo_display_metrics(self, combo: QComboBox):
+        fm = QFontMetrics(combo.font())
+        texts = [combo.itemText(i) for i in range(combo.count())]
+        max_px = max((fm.horizontalAdvance(t) for t in texts), default=0)
+        max_chars = max((len(t) for t in texts), default=0)
+
+        if max_chars > 0:
+            combo.setMinimumContentsLength(min(max(max_chars, 8), 30))
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+
+        view = combo.view()
+        if view is not None and max_px > 0:
+            popup_width = max_px + 42
+            view.setMinimumWidth(max(view.minimumWidth(), popup_width))
 
     # ---------------- 对外接口：取值/设值 ---------------- #
     def get_value(self, key: str) -> str:
@@ -145,6 +172,8 @@ class DropdownBar(QFrame):
             idx = cb.findText(default)
             if idx >= 0:
                 cb.setCurrentIndex(idx)
+        self._update_combo_display_metrics(cb)
+        cb.setToolTip(cb.currentText())
         cb.blockSignals(False)
 
     def get_combo(self, key: str) -> Optional[QComboBox]:
