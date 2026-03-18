@@ -325,7 +325,6 @@ class PlatformSummaryPage(BasePage):
         # ============================================
     
     def _generate_initial_data(self) -> List[List[str]]:
-        """根据图片描述生成初始数据（5列：分公司、作业公司、油气田码、设施名称）"""
         initial_rows = [
             ["湛江分公司", "文昌油田群作业公司", "文昌19-1油田", "WC19-1WHPB", "文昌19-1WHPB井口平台"],
             ["湛江分公司", "涠洲作业公司", "涠洲6-12油田", "WZ6-12WHP", "涠洲6-12WHP井口平台"],
