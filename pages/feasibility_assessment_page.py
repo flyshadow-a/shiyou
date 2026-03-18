@@ -123,7 +123,7 @@ class FeasibilityAssessmentPage(BasePage):
         table.setShowGrid(False)
 
         table.setStyleSheet("""
-                    QTableWidget { background-color: #ffffff; gridline-color: #d0d0d0; }
+                    QTableWidget { background-color: #ffffff; gridline-color: #d0d0d0; border: 1px solid #e6e6e6; }
                     QTableWidget::item { border: 1px solid #e6e6e6; padding: 2px; }
                     QTableWidget::item:selected { background-color: #dbe9ff; color: #000000; }
                     QTableWidget::item:focus { outline: none; }
@@ -160,18 +160,25 @@ class FeasibilityAssessmentPage(BasePage):
         return it
 
     def _set_combo_cell(self, table: QTableWidget, row: int, col: int, default: str = "无连接"):
-        combo = QComboBox()
+        cell_wrap = QWidget()
+        cell_wrap.setStyleSheet("background: #ffffff; border: 1px solid #e6e6e6;")
+        cell_lay = QHBoxLayout(cell_wrap)
+        cell_lay.setContentsMargins(0, 0, 0, 0)
+        cell_lay.setSpacing(0)
+
+        combo = QComboBox(cell_wrap)
         combo.addItems(self.CONNECT_OPTIONS)
         if default in self.CONNECT_OPTIONS:
             combo.setCurrentText(default)
         combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         combo.setMinimumContentsLength(6)
-        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         combo.setStyleSheet("""
-            QComboBox { background: #ffffff; border: 1px solid #c8d3e1; padding: 1px 6px; }
+            QComboBox { background: #ffffff; border: none; padding: 1px 6px; }
             QComboBox::drop-down { border-left: 1px solid #c8d3e1; width: 16px; }
         """)
-        table.setCellWidget(row, col, combo)
+        cell_lay.addWidget(combo)
+        table.setCellWidget(row, col, cell_wrap)
 
     def _auto_fit_columns(self, table: QTableWidget, padding: int = 18, equal_width_groups: Optional[List[List[int]]] = None):
         fm = QFontMetrics(table.font())
@@ -388,8 +395,8 @@ class FeasibilityAssessmentPage(BasePage):
         header_rows = 2
         data_rows = 3
 
-        # 编号 | 工作平面坐标(2) | 立管/电缆尺寸(2) | 倾斜度(2) | 高程及连接形式(7)
-        base_cols = 1 + 2 + 2 + 2
+        # 编号 | 工作平面坐标(2) | 立管/电缆尺寸(2) | 支撑结构(2) | 倾斜度(2) | 高程及连接形式(7)
+        base_cols = 1 + 2 + 2 + 2 + 2
         cols = base_cols + len(self.ELEVATIONS)
 
         self.tbl2 = QTableWidget(header_rows + data_rows, cols, box)
@@ -406,6 +413,10 @@ class FeasibilityAssessmentPage(BasePage):
 
         self.tbl2.setSpan(0, c, 1, 2)
         self._set_cell(self.tbl2, 0, c, "立管/电缆尺寸", bg=self.HEADER_BG, bold=True, editable=False)
+        self._set_cell(self.tbl2, 0, c+1, "", bg=self.HEADER_BG, editable=False); c += 2
+
+        self.tbl2.setSpan(0, c, 1, 2)
+        self._set_cell(self.tbl2, 0, c, "支撑结构", bg=self.HEADER_BG, bold=True, editable=False)
         self._set_cell(self.tbl2, 0, c+1, "", bg=self.HEADER_BG, editable=False); c += 2
 
         self.tbl2.setSpan(0, c, 1, 2)
@@ -428,13 +439,11 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl2, 1, c, "OD(mm)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
         self._set_cell(self.tbl2, 1, c, "WT(mm)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
 
+        self._set_cell(self.tbl2, 1, c, "OD(mm)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
+        self._set_cell(self.tbl2, 1, c, "WT(mm)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
+
         self._set_cell(self.tbl2, 1, c, "X方向", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
         self._set_cell(self.tbl2, 1, c, "Y方向", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
-
-        # 倾斜度（第1行该列不需要重复写，因为已 rowspan=2，但为了边框一致写空格）
-        # 该列索引 = 1+2+2+2 = 7
-        # 不设置 item 也行；这里设置一个不可编辑空 cell，背景同表头
-        self._set_cell(self.tbl2, 1, 7, "", bg=self.SUBHDR_BG, editable=False)
 
         c = base_cols
         for e in self.ELEVATIONS:
@@ -443,9 +452,9 @@ class FeasibilityAssessmentPage(BasePage):
 
         # 数据区
         demo = [
-            ["1", "1.314", "1.714", "914", "25", "406", "19", ""],
-            ["2", "1.314", "-0.572", "610", "25", "406", "19", ""],
-            ["3", "1.314", "-2.858", "610", "25", "406", "19", ""],
+            ["1", "1.314", "1.714", "914", "25", "406", "19", "0.1", "0.1"],
+            ["2", "1.314", "-0.572", "610", "25", "406", "19", "0.1", "0.1"],
+            ["3", "1.314", "-2.858", "610", "25", "406", "19", "0.1", "0.1"],
         ]
         for r in range(data_rows):
             rr = header_rows + r
@@ -462,8 +471,9 @@ class FeasibilityAssessmentPage(BasePage):
         groups_tbl2 = [
             [1, 2],  # X, Y
             [3, 4],  # 立管/电缆尺寸 OD, WT
-            [5, 6],  # 方向 X方向, Y方向
-            list(range(7, 7 + len(self.ELEVATIONS)))  # 高程列
+            [5, 6],  # 支撑结构 OD, WT
+            [7, 8],  # 倾斜度 X方向, Y方向
+            list(range(9, 9 + len(self.ELEVATIONS)))  # 高程列
         ]
         self._auto_fit_columns(self.tbl2, padding=18, equal_width_groups=groups_tbl2)
 
@@ -516,7 +526,7 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl3, 1, 1, "X(m)", bg=self.SUBHDR_BG, bold=True, editable=False)
         self._set_cell(self.tbl3, 1, 2, "Y(m)", bg=self.SUBHDR_BG, bold=True, editable=False)
         self._set_cell(self.tbl3, 1, 3, "Z(m)", bg=self.SUBHDR_BG, bold=True, editable=False)
-        self._set_cell(self.tbl3, 1, 4, "t", bg=self.SUBHDR_BG, bold=True, editable=False)
+        self._set_cell(self.tbl3, 1, 4, "(t)", bg=self.SUBHDR_BG, bold=True, editable=False)
 
         demo = [
             ["1", "1.314", "1.714", "10", "5"],
@@ -603,7 +613,7 @@ class FeasibilityAssessmentPage(BasePage):
 
     def _on_save_table2(self):
         self._save_table_as_csv(self.tbl2, header_rows=2, default_name="立管电缆信息.csv",
-                                with_combo_cols=True, combo_start_col=8)
+                                with_combo_cols=True, combo_start_col=9)
 
     def _on_save_table3(self):
         self._save_table_as_csv(self.tbl3, header_rows=2, default_name="新增组块载荷信息.csv",
@@ -659,7 +669,7 @@ class FeasibilityAssessmentPage(BasePage):
                 f.write("** ----------------------------\n\n")
                 f.write(self._dump_table_block("新增井槽信息", self.tbl1, header_rows=2, with_combo_cols=True, combo_start_col=8))
                 f.write("\n")
-                f.write(self._dump_table_block("立管/电缆信息", self.tbl2, header_rows=2, with_combo_cols=True, combo_start_col=8))
+                f.write(self._dump_table_block("立管/电缆信息", self.tbl2, header_rows=2, with_combo_cols=True, combo_start_col=9))
                 f.write("\n")
                 f.write(self._dump_table_block("新增组块载荷信息", self.tbl3, header_rows=2, with_combo_cols=False, combo_start_col=0))
                 f.write("\n")
