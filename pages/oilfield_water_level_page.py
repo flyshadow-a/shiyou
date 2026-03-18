@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 # pages/oilfield_water_level_page.py
+from typing import List, Dict, Optional
+
 from PyQt5.QtGui import QFontMetrics
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout,
@@ -9,6 +11,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from base_page import BasePage
 from dropdown_bar import DropdownBar
+from pages.read_table_xls import ReadTableXls
 
 
 class OilfieldWaterLevelPage(BasePage):
@@ -18,11 +21,181 @@ class OilfieldWaterLevelPage(BasePage):
     - 中部：水深水位、风参数、波浪参数、海流参数 四个子页
             用按钮模拟选项卡 + 内部 QStackedWidget 切换
     """
+
+    TOP_FIELDS: List[tuple] = [
+        ("分公司", "湛江分公司"),
+        ("作业公司", "文昌油田群作业公司"),
+        ("油气田", "文昌19-1油田"),
+    ]
+
+    KEY_TO_FIELD: Dict[str, str] = {
+        "branch": "分公司",
+        "op_company": "作业公司",
+        "oilfield": "油气田",
+    }
+
+    TOP_KEY_ORDER = ["branch", "op_company", "oilfield"]
+
     def __init__(self, parent=None):
         super().__init__("", parent)
         self.tab_buttons = []
         self.tab_pages = None
+
+        self._excel_provider = ReadTableXls()
+        self._excel_loaded = False
+        try:
+            self._excel_provider.load()
+            self._excel_loaded = True
+        except Exception:
+            self._excel_loaded = False
+
+        self._top_records: List[Dict[str, str]] = self._load_top_records_from_excel()
+        self._top_cascade_enabled: bool = len(self._top_records) > 0
+        self._top_cascade_lock: bool = False
+
         self.build_ui()
+
+    def _normalize_top_value(self, value: object) -> str:
+        txt = "" if value is None else str(value).strip()
+        if (not txt) or (txt.lower() == "nan"):
+            return ""
+        if txt.endswith(".0") and txt[:-2].isdigit():
+            return txt[:-2]
+        return txt
+
+    def _load_top_records_from_excel(self) -> List[Dict[str, str]]:
+        if (not self._excel_loaded) or (not hasattr(self._excel_provider, "df")):
+            return []
+
+        df = self._excel_provider.df
+        if df is None:
+            return []
+
+        fields = [f for f, _ in self.TOP_FIELDS]
+        resolved: Dict[str, str] = {}
+        for field in fields:
+            col = self._excel_provider._resolve_col(field) if hasattr(self._excel_provider, "_resolve_col") else None
+            if not col:
+                return []
+            resolved[field] = col
+
+        rows: List[Dict[str, str]] = []
+        seen = set()
+        for _, row in df.iterrows():
+            rec: Dict[str, str] = {}
+            for field, col in resolved.items():
+                raw = self._excel_provider._clean(row[col]) if hasattr(self._excel_provider, "_clean") else row[col]
+                rec[field] = self._normalize_top_value(raw)
+
+            if not any(rec.get(k) for k in ("分公司", "作业公司", "油气田")):
+                continue
+
+            sig = tuple(rec.get(f, "") for f in fields)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            rows.append(rec)
+
+        return rows
+
+    def _unique_record_values(self, records: List[Dict[str, str]], field: str) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for rec in records:
+            v = self._normalize_top_value(rec.get(field, ""))
+            if (not v) or (v in seen):
+                continue
+            seen.add(v)
+            out.append(v)
+        return out
+
+    def _pick_option(self, options: List[str], preferred: str = "") -> str:
+        p = self._normalize_top_value(preferred)
+        if p and p in options:
+            return p
+        return options[0] if options else ""
+
+    def _mock_top_options(self, field: str, default: str) -> List[str]:
+        options_map = {
+            "分公司": ["渤江分公司", "南海分公司", "东海分公司", "湛江分公司"],
+            "作业公司": ["文昌油田群作业公司", "测试作业公司", "珠江作业公司"],
+            "油气田": ["文昌19-1油田", "文昌X油田", "文昌19-2油田"],
+        }
+        opts = options_map.get(field, [default])
+        return opts if default in opts else [default] + opts
+
+    def _build_top_dropdown_fields(self) -> List[Dict]:
+        defaults = {
+            "branch": "渤江分公司",
+            "op_company": "文昌油田群作业公司",
+            "oilfield": "文昌19-1油田",
+        }
+        stretch_map = {
+            "branch": 1,
+            "op_company": 2,
+            "oilfield": 2,
+        }
+
+        fields: List[Dict] = []
+        for key in self.TOP_KEY_ORDER:
+            label = self.KEY_TO_FIELD[key]
+            fallback = defaults[key]
+            if self._top_cascade_enabled:
+                opts = self._unique_record_values(self._top_records, label)
+                default = opts[0] if opts else fallback
+            else:
+                opts = self._mock_top_options(label, fallback)
+                default = fallback
+
+            fields.append({
+                "key": key,
+                "label": label,
+                "options": opts,
+                "default": default,
+                "stretch": stretch_map.get(key, 1),
+            })
+        return fields
+
+    def _apply_top_cascade(self, changed_key: Optional[str] = None, changed_value: str = ""):
+        if (not self._top_cascade_enabled) or (not hasattr(self, "dropdown_bar")):
+            return
+
+        current = {k: self.dropdown_bar.get_value(k) for k in self.TOP_KEY_ORDER}
+        if changed_key:
+            current[changed_key] = self._normalize_top_value(changed_value)
+
+        reset_downstream = {
+            "branch": {"op_company", "oilfield"},
+            "op_company": {"oilfield"},
+        }
+        reset = reset_downstream.get(changed_key or "", set())
+
+        branches = self._unique_record_values(self._top_records, "分公司")
+        branch = self._pick_option(branches, current.get("branch", ""))
+        branch_rows = [r for r in self._top_records if r.get("分公司", "") == branch] if branch else list(self._top_records)
+
+        op_opts = self._unique_record_values(branch_rows, "作业公司")
+        op_pref = "" if "op_company" in reset else current.get("op_company", "")
+        op_company = self._pick_option(op_opts, op_pref)
+        op_rows = [r for r in branch_rows if r.get("作业公司", "") == op_company] if op_company else list(branch_rows)
+
+        oil_opts = self._unique_record_values(op_rows, "油气田")
+        oil_pref = "" if "oilfield" in reset else current.get("oilfield", "")
+        oilfield = self._pick_option(oil_opts, oil_pref)
+
+        self._top_cascade_lock = True
+        try:
+            self.dropdown_bar.set_options("branch", branches, branch)
+            self.dropdown_bar.set_options("op_company", op_opts, op_company)
+            self.dropdown_bar.set_options("oilfield", oil_opts, oilfield)
+        finally:
+            self._top_cascade_lock = False
+
+    def _on_top_key_changed(self, key: str, txt: str):
+        if key in self.TOP_KEY_ORDER and self._top_cascade_enabled:
+            if self._top_cascade_lock:
+                return
+            self._apply_top_cascade(changed_key=key, changed_value=txt)
 
     def build_ui(self):
         self.setStyleSheet("""
@@ -33,6 +206,7 @@ class OilfieldWaterLevelPage(BasePage):
                         border-radius: 3px;
                         padding: 6px 16px;
                         font-weight: bold;
+                        font-size: 15px;
                     }
                     QPushButton#TopActionBtn:hover { background: #ffb86b; }
                 """)
@@ -69,15 +243,13 @@ class OilfieldWaterLevelPage(BasePage):
         top_layout = QHBoxLayout(top_wrap)
         top_layout.setContentsMargins(10, 10, 10, 0)
         top_layout.setSpacing(10)
+
         # ---------- 顶部下拉条 ----------
-        fields = [
-            {"key": "branch", "label": "分公司", "options": ["渤江分公司", "南海分公司", "东海分公司"], "default": "渤江分公司"},
-            {"key": "op_company", "label": "作业公司", "options": ["文昌油田群作业公司", "测试作业公司"],
-             "default": "文昌油田群作业公司"},
-            {"key": "oilfield", "label": "油气田", "options": ["文昌19-1油田", "文昌X油田"], "default": "文昌19-1油田"},
-        ]
-        self.dropdown_bar = DropdownBar(fields, parent=self)
-        top_layout.addWidget(self.dropdown_bar, 0)
+        self.dropdown_bar = DropdownBar(self._build_top_dropdown_fields(), parent=self)
+        self.dropdown_bar.valueChanged.connect(self._on_top_key_changed)
+        if self._top_cascade_enabled:
+            self._apply_top_cascade()
+        top_layout.addWidget(self.dropdown_bar, 1)
 
         # “保存”按钮布局设计
         btn_widget = QWidget()
@@ -87,9 +259,13 @@ class OilfieldWaterLevelPage(BasePage):
         btn_col.setSpacing(6)
 
         self.btn_save = QPushButton("保存")
+        self.btn_save.setObjectName("TopActionBtn")
+        self.btn_save.setMinimumWidth(150)
+        self.btn_save.setMinimumHeight(34)
         self.btn_save.clicked.connect(self._on_save)
 
         btn_col.addWidget(self.btn_save)
+        btn_col.addStretch(1)
         top_layout.addWidget(btn_widget)
 
         self.main_layout.addWidget(top_wrap)
@@ -103,13 +279,15 @@ class OilfieldWaterLevelPage(BasePage):
         def create_tab_button(text: str) -> QPushButton:
             btn = QPushButton(text)
             btn.setCheckable(True)
-            btn.setMinimumHeight(36)
+            btn.setMinimumHeight(42)
             btn.setStyleSheet("""
                 QPushButton {
                     border: 1px solid #888;
                     border-bottom: none;
-                    padding: 6px 18px;
+                    padding: 7px 20px;
                     background-color: #f0f0f0;
+                    font-size: 15px;
+                    font-weight: 600;
                 }
                 QPushButton:checked {
                     background-color: #ffffff;
@@ -178,10 +356,11 @@ class OilfieldWaterLevelPage(BasePage):
             QTableWidget {
                 gridline-color: #d9d9d9;
                 background-color: #ffffff;
+                font-size: 14px;
             }
             QTableWidget::item {
                 border: 1px solid #ffffff;
-                padding: 6px 10px;         /* ✅ 新增：让文字更舒适，不挤 */
+                padding: 8px 12px;
             }
         """)
         table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -261,9 +440,9 @@ class OilfieldWaterLevelPage(BasePage):
 
         # 行高
         for r in range(table.rowCount()):
-            table.setRowHeight(r, 34)
-        table.setRowHeight(0, 40)
-        table.setRowHeight(1, 36)
+            table.setRowHeight(r, 36)
+        table.setRowHeight(0, 42)
+        table.setRowHeight(1, 38)
 
         # ===== 表头（合并）=====
         table.setSpan(0, 0, 2, 2)
@@ -365,10 +544,10 @@ class OilfieldWaterLevelPage(BasePage):
 
         # 行高（你可按审美调）
         for r in range(table.rowCount()):
-            table.setRowHeight(r, 32)
-        table.setRowHeight(0, 34)
-        table.setRowHeight(1, 32)
-        table.setRowHeight(2, 32)
+            table.setRowHeight(r, 34)
+        table.setRowHeight(0, 36)
+        table.setRowHeight(1, 34)
+        table.setRowHeight(2, 34)
 
         # 顶部标题（跨全列）
         table.setSpan(0, 0, 1, 7)
@@ -462,8 +641,8 @@ class OilfieldWaterLevelPage(BasePage):
         self._finalize_table_style(table)
 
         for r in range(table.rowCount()):
-            table.setRowHeight(r, 32)
-        table.setRowHeight(0, 34)
+            table.setRowHeight(r, 34)
+        table.setRowHeight(0, 36)
 
         table.setSpan(0, 0, 1, 7)
         self._set_item(table, 0, 0, "波浪参数", bold=True)
@@ -555,8 +734,8 @@ class OilfieldWaterLevelPage(BasePage):
         self._finalize_table_style(table)
 
         for r in range(table.rowCount()):
-            table.setRowHeight(r, 32)
-        table.setRowHeight(0, 34)
+            table.setRowHeight(r, 34)
+        table.setRowHeight(0, 36)
 
         table.setSpan(0, 0, 1, 7)
         self._set_item(table, 0, 0, "海流速度（m/s）", bold=True)
