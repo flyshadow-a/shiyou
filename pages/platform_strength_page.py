@@ -1069,7 +1069,8 @@ class PlatformStrengthPage(BasePage):
         self._set_center_item(tbl, 1, 2, "", editable=False)
 
         self._set_center_item(tbl, 2, 0, "工作平面高程Workpoint", editable=False)
-        self._set_center_item(tbl, 2, 1, "10")
+        self.edt_workpoint = QLineEdit("10")
+        tbl.setCellWidget(2, 1, self.edt_workpoint)
         self._set_center_item(tbl, 2, 2, "m", editable=False)
 
         for r in range(3):
