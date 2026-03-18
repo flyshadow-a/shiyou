@@ -14,6 +14,9 @@ from dropdown_bar import DropdownBar
 from pages.read_table_xls import ReadTableXls
 
 
+SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
+
+
 class OilfieldWaterLevelPage(BasePage):
     """
     油气田信息页面：
@@ -131,9 +134,9 @@ class OilfieldWaterLevelPage(BasePage):
             "oilfield": "文昌19-1油田",
         }
         stretch_map = {
-            "branch": 1,
-            "op_company": 2,
-            "oilfield": 2,
+            "branch": 0,
+            "op_company": 0,
+            "oilfield": 0,
         }
 
         fields: List[Dict] = []
@@ -153,6 +156,7 @@ class OilfieldWaterLevelPage(BasePage):
                 "options": opts,
                 "default": default,
                 "stretch": stretch_map.get(key, 1),
+                "expand": False,
             })
         return fields
 
@@ -246,14 +250,15 @@ class OilfieldWaterLevelPage(BasePage):
 
         # ---------- 顶部下拉条 ----------
         self.dropdown_bar = DropdownBar(self._build_top_dropdown_fields(), parent=self)
+        self.dropdown_bar.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         self.dropdown_bar.valueChanged.connect(self._on_top_key_changed)
         if self._top_cascade_enabled:
             self._apply_top_cascade()
-        top_layout.addWidget(self.dropdown_bar, 1)
+        top_layout.addWidget(self.dropdown_bar, 0, Qt.AlignLeft | Qt.AlignTop)
 
         # “保存”按钮布局设计
         btn_widget = QWidget()
-        btn_widget.setFixedWidth(180)
+        btn_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         btn_col = QVBoxLayout(btn_widget)
         btn_col.setContentsMargins(0, 0, 0, 0)
         btn_col.setSpacing(6)
@@ -266,7 +271,8 @@ class OilfieldWaterLevelPage(BasePage):
 
         btn_col.addWidget(self.btn_save)
         btn_col.addStretch(1)
-        top_layout.addWidget(btn_widget)
+        top_layout.addWidget(btn_widget, 0, Qt.AlignLeft | Qt.AlignTop)
+        top_layout.addStretch(1)
 
         self.main_layout.addWidget(top_wrap)
 
@@ -280,19 +286,20 @@ class OilfieldWaterLevelPage(BasePage):
             btn = QPushButton(text)
             btn.setCheckable(True)
             btn.setMinimumHeight(42)
-            btn.setStyleSheet("""
-                QPushButton {
+            btn.setStyleSheet(f"""
+                QPushButton {{
                     border: 1px solid #888;
                     border-bottom: none;
                     padding: 7px 20px;
                     background-color: #f0f0f0;
-                    font-size: 15px;
+                    font-family: {SONGTI_FONT_FALLBACK};
+                    font-size: 14pt;
                     font-weight: 600;
-                }
-                QPushButton:checked {
+                }}
+                QPushButton:checked {{
                     background-color: #ffffff;
                     font-weight: bold;
-                }
+                }}
             """)
             return btn
 

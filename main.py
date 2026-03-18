@@ -5,7 +5,7 @@ import sys
 import os
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap, QIcon, QFont
+from PyQt5.QtGui import QPixmap, QIcon, QFont, QFontDatabase
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QTabWidget, QStackedWidget, QLabel, QLineEdit,
@@ -23,6 +23,26 @@ from pages.login_dialog import LoginDialog
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QHeaderView
 from PyQt5.QtWidgets import QStatusBar
+
+
+# ==========================================
+WINDOWS_SONGTI_FONT_CANDIDATES = [
+    "SimSun",
+    "NSimSun",
+    "宋体",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+]
+
+
+def pick_windows_compatible_zh_font() -> str:
+    """优先宋体，回退到 Windows 常见中文字体（Win10/Win11）。"""
+    families = {name.lower(): name for name in QFontDatabase().families()}
+    for name in WINDOWS_SONGTI_FONT_CANDIDATES:
+        hit = families.get(name.lower())
+        if hit:
+            return hit
+    return QFont().defaultFamily()
 
 
 # ==========================================
@@ -149,7 +169,8 @@ class MainWindow(QMainWindow):
             background-color: #004a80;
             color: #ffffff;
             border: none;
-            font-size: 16px;
+            font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+            font-size: 14pt;
         }
         QTreeWidget::viewport { background-color: #004a80; }
 
@@ -177,7 +198,8 @@ class MainWindow(QMainWindow):
         }
         """)
         nav_tree_font = QFont(self.nav_tree.font())
-        nav_tree_font.setPixelSize(16)
+        nav_tree_font.setFamily(pick_windows_compatible_zh_font())
+        nav_tree_font.setPointSize(14)
         self.nav_tree.setFont(nav_tree_font)
         nav_layout.addWidget(self.nav_tree, 1)
 
@@ -196,14 +218,16 @@ class MainWindow(QMainWindow):
                 background: #ffffff;
             }
             QTabBar::tab {
-                height: 36px;
+                height: 42px;
                 padding: 6px 20px;
-                font-size: 15px;
+                font-size: 14pt;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
                 font-weight: 600;
             }
         """)
         tab_font = QFont(self.tab_widget.tabBar().font())
-        tab_font.setPixelSize(15)
+        tab_font.setFamily(pick_windows_compatible_zh_font())
+        tab_font.setPointSize(14)
         tab_font.setBold(True)
         self.tab_widget.tabBar().setFont(tab_font)
 
@@ -366,10 +390,11 @@ class MainWindow(QMainWindow):
                 path = f"{parent_path}/{text}" if parent_path else text
 
                 item = QTreeWidgetItem([text])
-                item_font = QFont(item.font(0))
-                item_font.setPixelSize(16)
+                item_font = QFont(self.nav_tree.font())
                 if parent_item is None:
                     item_font.setBold(True)
+                else:
+                    item_font.setBold(False)
                 item.setFont(0, item_font)
                 if parent_item is None:
                     self.nav_tree.addTopLevelItem(item)
