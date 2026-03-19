@@ -289,6 +289,7 @@ class ConstructionDocsWidget(QWidget):
                 border: none;
                 padding: 4px;
                 color: #374151;
+                font-size: 14pt;
             }
             QToolButton#FolderButton:hover {
                 background-color: #e5f0ff;
@@ -335,7 +336,7 @@ class ConstructionDocsWidget(QWidget):
 
             QLabel#PlatformDescriptionTitle {
                 color: #dbeeff;
-                font-size: 13px;
+                font-size: 14px;
                 font-weight: 600;
                 background: transparent;
             }

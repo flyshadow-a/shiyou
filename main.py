@@ -341,7 +341,7 @@ class MainWindow(QMainWindow):
 
         title = QLabel("海上平台结构载荷管理系统")
         title.setStyleSheet("font-size: 26px; font-weight: 800;")
-        self.current_platform_label = QLabel("--")
+        self.current_platform_label = QLabel("")
         self.current_platform_label.setAlignment(Qt.AlignCenter)
         self.current_platform_label.setStyleSheet("""
             QLabel {
@@ -354,7 +354,7 @@ class MainWindow(QMainWindow):
                 min-width: 320px;
             }
         """)
-        self.current_platform_label.setText("--")
+        self.current_platform_label.setText("")
         self.current_platform_label.hide()
 
         # 用户 + 登录按钮
@@ -426,7 +426,7 @@ class MainWindow(QMainWindow):
         self.right_stack.setCurrentWidget(self.home_page)
         if self.current_platform_label is not None:
             self.current_platform_label.hide()
-            self.current_platform_label.setText("--")
+            self.current_platform_label.setText("")
 
     # ================== 默认打开第一个菜单页（备用，不再默认调用） ================== #
     def open_first_leaf_page(self):
@@ -529,7 +529,14 @@ class MainWindow(QMainWindow):
     def set_current_platform_name(self, name: str):
         if self.current_platform_label is None:
             return
-        text = name.strip() if name else "--"
+
+        active_widget = self._get_active_content_widget()
+        if not self._is_file_management_widget(active_widget):
+            self.current_platform_label.hide()
+            self.current_platform_label.setText("")
+            return
+
+        text = name.strip() if name else ""
         self.current_platform_label.setText(text)
         self._update_header_font_scale()
         self._refresh_platform_header_visibility()
@@ -575,7 +582,7 @@ class MainWindow(QMainWindow):
             return
 
         self.current_platform_label.hide()
-        self.current_platform_label.setText("--")
+        self.current_platform_label.setText("")
 
     def _sync_current_platform_from_widget(self, widget: QWidget | None):
         active_widget = self._get_active_content_widget()
@@ -585,7 +592,7 @@ class MainWindow(QMainWindow):
         if widget is None or not self._is_file_management_widget(widget):
             if self.current_platform_label is not None:
                 self.current_platform_label.hide()
-                self.current_platform_label.setText("--")
+                self.current_platform_label.setText("")
             return
 
         getter = getattr(widget, "get_current_platform_name", None)

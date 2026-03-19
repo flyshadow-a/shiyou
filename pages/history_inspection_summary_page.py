@@ -1302,7 +1302,7 @@ class HistoryInspectionSummaryPage(BasePage):
             QToolButton#FolderButton {
                 border: none;
                 background: transparent;
-                font-size: 14px;
+                font-size: 14pt;
             }
             QToolButton#FolderButton:hover {
                 color: #0069b4;

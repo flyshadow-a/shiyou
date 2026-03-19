@@ -69,7 +69,7 @@ class FolderTile(QFrame):
         self.text_label = QLabel(text, self)
         self.text_label.setObjectName("FolderText")
         text_font = self.text_label.font()
-        text_font.setPointSize(11)
+        text_font.setPointSize(14)
         self.text_label.setFont(text_font)
         self.text_label.setAlignment(Qt.AlignCenter)
 
