@@ -577,7 +577,8 @@ class MainWindow(QMainWindow):
             return
 
         active_widget = self._get_active_content_widget()
-        if self._is_file_management_widget(active_widget):
+        label_text = self.current_platform_label.text().strip()
+        if self._is_file_management_widget(active_widget) and label_text:
             self.current_platform_label.show()
             return
 

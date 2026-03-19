@@ -349,6 +349,27 @@ class ConstructionDocsWidget(QWidget):
             }
         """)
 
+        if self.show_platform_description:
+            self.platform_desc_card = QFrame(self)
+            self.platform_desc_card.setObjectName("PlatformDescriptionCard")
+
+            desc_layout = QVBoxLayout(self.platform_desc_card)
+            desc_layout.setContentsMargins(20, 18, 20, 18)
+            desc_layout.setSpacing(8)
+
+            self.platform_desc_title = QLabel("平台描述", self.platform_desc_card)
+            self.platform_desc_title.setObjectName("PlatformDescriptionTitle")
+
+            self.platform_desc_label = QLabel(self.platform_desc_card)
+            self.platform_desc_label.setObjectName("PlatformDescriptionText")
+            self.platform_desc_label.setWordWrap(True)
+            self.platform_desc_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+            desc_layout.addWidget(self.platform_desc_title)
+            desc_layout.addWidget(self.platform_desc_label)
+            main_layout.addWidget(self.platform_desc_card)
+            self._update_platform_description_label()
+
         # 外层容器
         container = QFrame()
         container.setObjectName("DocsContainer")
@@ -416,27 +437,6 @@ class ConstructionDocsWidget(QWidget):
         self.folder_grid.setVerticalSpacing(26)
         self.folder_grid.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         folder_layout.addLayout(self.folder_grid)
-
-        if self.show_platform_description:
-            self.platform_desc_card = QFrame(self.folder_page)
-            self.platform_desc_card.setObjectName("PlatformDescriptionCard")
-
-            desc_layout = QVBoxLayout(self.platform_desc_card)
-            desc_layout.setContentsMargins(20, 18, 20, 18)
-            desc_layout.setSpacing(8)
-
-            self.platform_desc_title = QLabel("\u5e73\u53f0\u63cf\u8ff0", self.platform_desc_card)
-            self.platform_desc_title.setObjectName("PlatformDescriptionTitle")
-
-            self.platform_desc_label = QLabel(self.platform_desc_card)
-            self.platform_desc_label.setObjectName("PlatformDescriptionText")
-            self.platform_desc_label.setWordWrap(True)
-            self.platform_desc_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-
-            desc_layout.addWidget(self.platform_desc_title)
-            desc_layout.addWidget(self.platform_desc_label)
-            folder_layout.addWidget(self.platform_desc_card)
-            self._update_platform_description_label()
 
         folder_layout.addStretch()
 
