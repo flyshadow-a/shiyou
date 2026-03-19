@@ -4,7 +4,7 @@
 # 结构强度 -> WC19-1DPPA平台强度/改造可行性评估评估结果
 #
 # - 左侧：上方“快速评估汇总信息”表（含合并标题单元格）
-#         下方：标签页（构件/节点冲剪/桩应力/桩承载力操作抗压） + “快速评估信息”表（含合并标题单元格）
+#         下方：标签页（构件/节点冲剪/桩应力/操作工况桩基承载力/极端工况桩基承载力） + “快速评估信息”表（含合并标题单元格）
 #         左下：生成评估报告按钮
 # - 右侧：自动加载 INP，显示线框投影（无额外操作）
 #
@@ -197,7 +197,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
         "构件": ["序号", "构件名称", "最大UC值", "对应工况", "是否满足"],
         "节点冲剪": ["序号", "节点名称", "最大UC值", "对应工况", "是否满足"],
         "桩应力": ["序号", "桩头ID", "距离桩头(m)", "最大UC值", "对应工况", "是否满足"],
-        "桩承载力操作抗压": ["序号", "构件名称", "最大（最小） UC值", "对应工况", "是否满足"],
+        "操作工况桩基承载力": ["序号", "构件名称", "最大（最小） UC值", "对应工况", "是否满足"],
+        "极端工况桩基承载力": ["序号", "构件名称", "最大（最小） UC值", "对应工况", "是否满足"],
     }
     PILE_CAPACITY_STATIC_ROWS = [
         ["P101", "110887", "117019", "6864.3", "OL37", "37389", "-", "-", "2.51", "-"],
@@ -462,7 +463,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self.tab_group = QButtonGroup(self)
         self.tab_group.setExclusive(True)
 
-        tabs = ["构件", "节点冲剪", "桩应力", "桩承载力操作抗压"]
+        tabs = ["构件", "节点冲剪", "桩应力", "操作工况桩基承载力", "极端工况桩基承载力"]
 
         # 准备堆叠容器存放不同的表格 (保留你之前的 QStackedWidget 逻辑)
         self.table_stack = QStackedWidget()
@@ -562,7 +563,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _create_single_detail_table(self, tab_name: str) -> QTableWidget:
         """为每一个标签页生成一个独立的、自适应列宽的表格基础框架"""
-        if tab_name == "桩承载力操作抗压":
+        if tab_name in {"操作工况桩基承载力", "极端工况桩基承载力"}:
             return self._create_pile_capacity_table(tab_name)
 
         headers = self.DETAIL_HEADERS.get(tab_name, self.DETAIL_HEADERS["构件"])
@@ -669,7 +670,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
     # ------------------- 表格行数控制与事件 --------------------
     def _update_current_table_rows(self):
         """根据下拉框的值，动态调整当前显示表格的行数并填充空单元格"""
-        # 静态样表页（桩承载力操作抗压）不参与动态行数切换
+        # 静态样表页（操作工况桩基承载力、极端工况桩基承载力）不参与动态行数切换
         idx = self.table_stack.currentIndex()
         if idx == -1:
             return
