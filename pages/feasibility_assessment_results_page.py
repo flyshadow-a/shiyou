@@ -279,7 +279,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         lay.setSpacing(10)
 
         title = QLabel("三维模型（INP线框预览）")
-        title.setStyleSheet("font-weight: bold; color: #1d2b3a; font-size: 16px;")
+        title.setStyleSheet("font-weight: normal; color: #1d2b3a; font-size: 16px;")
         lay.addWidget(title, 0)
 
         self.inp_view = InpWireframeView()
@@ -307,6 +307,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     # ---------------- 表格通用样式 ----------------
     def _init_table_common(self, table: QTableWidget):
+        # 强制在代码层面设置 table 字体为 12pt，防止 TableWidgetItem 获取默认 QFont 时丢失大小信息
+        font = table.font()
+        font.setFamily("SimSun")
+        font.setPointSize(12)
+        table.setFont(font)
+
         table.setEditTriggers(QAbstractItemView.AllEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectItems)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -317,7 +323,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
                     QTableWidget {
                         background-color: #ffffff;
                         gridline-color: #d0d0d0;
-                        font-size: 14px;
+                        font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                        font-size: 12pt;
                     }
                     QTableWidget::item { border: 1px solid #e6e6e6; padding: 6px; }
                     QTableWidget::item:selected { background-color: #dbe9ff; color: #000000; }
@@ -326,8 +333,9 @@ class FeasibilityAssessmentResultsPage(BasePage):
                         background-color: #f3f6fb;
                         border: 1px solid #e6e6e6;
                         padding: 6px;
-                        font-weight: bold;
-                        font-size: 15px;
+                        font-weight: normal;
+                        font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                        font-size: 12pt;
                     }
                 """)
         # 隐藏默认 header，用“表内表头”实现合并单元格
@@ -345,10 +353,13 @@ class FeasibilityAssessmentResultsPage(BasePage):
             it.setTextAlignment(Qt.AlignCenter)
         if bg is not None:
             it.setBackground(QBrush(bg))
-        if bold:
-            f = it.font()
-            f.setBold(True)
-            it.setFont(f)
+            
+        f = it.font()
+        f.setFamily("SimSun")
+        f.setPointSize(12) # 强制给每个创建的 item 单独指定大小
+        f.setBold(False)
+        it.setFont(f)
+        
         if not editable:
             it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         table.setItem(r, c, it)
@@ -475,9 +486,16 @@ class FeasibilityAssessmentResultsPage(BasePage):
             btn.setFixedHeight(36)
             btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
+            # 新增：必须在计算 text_width 之前，先将按钮的字体设为 12pt 加粗，否则会按默认的小字体计算导致宽度不够
+            f = btn.font()
+            f.setFamily("SimSun")
+            f.setPointSize(12)
+            f.setBold(False)
+            btn.setFont(f)
+
             # 【修改点】：根据文字的实际绘制长度动态分配宽度，外加 30 像素的留白
             text_width = btn.fontMetrics().horizontalAdvance(t)
-            btn.setMinimumWidth(text_width + 40)
+            btn.setMinimumWidth(text_width + 24)
             # 【关键点2】样式中必须有 border-right: none; 这样按钮才能无缝拼接，且中间边框不会变粗
             btn.setStyleSheet("""
                         QPushButton {
@@ -485,9 +503,10 @@ class FeasibilityAssessmentResultsPage(BasePage):
                             color: #1f2a36;
                             border: 1px solid #3b3b3b;
                             border-right: none;  /* 隐藏右边框 */
-                            padding: 0 16px;
-                            font-weight: bold;
-                            font-size: 15px;
+                            padding: 0 8px;
+                            font-weight: normal;
+                            font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                            font-size: 12pt;
                         }
                         QPushButton:hover {
                             background: #e8f2dd;
@@ -501,7 +520,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
                             border: 1px solid #1d4f88;
                             border-right: none;
                             border-bottom: 4px solid #ffd24a;
-                            font-weight: 800;
+                            font-weight: normal;
                         }
                         QPushButton:checked:hover {
                             background: #3a8be2;
@@ -522,7 +541,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         # 【关键点3】因为所有按钮都没了右边框，末尾必须加一个固定大小的块来“封口"
         spacer = QWidget()
         spacer.setStyleSheet("border: 1px solid #3b3b3b; border-left:none; background:#dfead2;")
-        spacer.setFixedSize(32, 36)  # 宽度32（可调），高度和按钮保持一致
+        spacer.setFixedSize(12, 36)  # 宽度32（可调），高度和按钮保持一致
         tab_lay.addWidget(spacer)
 
         # 【关键点4】在最右侧增加弹簧。它会吸收所有剩余的空白空间，将左侧的所有按钮紧紧地向左挤压
@@ -530,7 +549,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         # ====== 新增：右侧“显示行数”控件 ======
         lbl_rows = QLabel("显示行数：")
-        lbl_rows.setStyleSheet("font-size: 15px; color: #333; font-weight: bold;")
+        lbl_rows.setStyleSheet("font-size: 12pt; color: #333; font-weight: normal;")
         tab_lay.addWidget(lbl_rows, 0)
 
         self.cb_row_limit = QComboBox()
@@ -543,7 +562,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
                         padding: 3px 10px 3px 5px;
                         background: #ffffff;
                         min-width: 60px;
-                        font-size: 14px;
+                        font-size: 12pt;
                     }
                 """)
         # 绑定下拉框值改变的信号
@@ -732,8 +751,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 background: #2aa9df;
                 border: 2px solid #1b2a3a;
                 border-radius: 6px;
-                font-size: 17px;
-                font-weight: bold;
+                font-size: 12pt;
+                font-weight: normal;
             }
             QPushButton:hover { background: #4bbbe8; }
         """)

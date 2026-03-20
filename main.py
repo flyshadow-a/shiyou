@@ -170,7 +170,7 @@ class MainWindow(QMainWindow):
             color: #ffffff;
             border: none;
             font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
-            font-size: 14pt;
+            font-size: 12pt;
         }
         QTreeWidget::viewport { background-color: #004a80; }
 
@@ -199,7 +199,7 @@ class MainWindow(QMainWindow):
         """)
         nav_tree_font = QFont(self.nav_tree.font())
         nav_tree_font.setFamily(pick_windows_compatible_zh_font())
-        nav_tree_font.setPointSize(14)
+        nav_tree_font.setPointSize(12)
         self.nav_tree.setFont(nav_tree_font)
         nav_layout.addWidget(self.nav_tree, 1)
 
@@ -220,14 +220,14 @@ class MainWindow(QMainWindow):
             QTabBar::tab {
                 height: 42px;
                 padding: 6px 20px;
-                font-size: 14pt;
+                font-size: 12pt;
                 font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
                 font-weight: 600;
             }
         """)
         tab_font = QFont(self.tab_widget.tabBar().font())
         tab_font.setFamily(pick_windows_compatible_zh_font())
-        tab_font.setPointSize(14)
+        tab_font.setPointSize(12)
         tab_font.setBold(True)
         self.tab_widget.tabBar().setFont(tab_font)
 
@@ -340,8 +340,8 @@ class MainWindow(QMainWindow):
         logo_label.setFixedSize(44, 44)
 
         title = QLabel("海上平台结构载荷管理系统")
-        title.setStyleSheet("font-size: 26px; font-weight: 800;")
-        self.current_platform_label = QLabel("")
+        title.setStyleSheet("font-size: 12pt; font-weight: 800;")
+        self.current_platform_label = QLabel("--")
         self.current_platform_label.setAlignment(Qt.AlignCenter)
         self.current_platform_label.setStyleSheet("""
             QLabel {

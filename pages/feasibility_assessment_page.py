@@ -14,7 +14,7 @@ import subprocess
 from typing import Optional,List
 
 from PyQt5.QtCore import Qt, QUrl
-from PyQt5.QtGui import QFontMetrics, QColor, QBrush
+from PyQt5.QtGui import QFont, QFontMetrics, QColor, QBrush
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QVBoxLayout,
@@ -41,6 +41,9 @@ from dropdown_bar import DropdownBar
 from pages.feasibility_assessment_results_page import FeasibilityAssessmentResultsPage
 
 
+SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
+
+
 class FeasibilityAssessmentPage(BasePage):
     """
     WC19-1DPPA平台强度/改造可行性评估（feasibility_assessment_page）
@@ -52,6 +55,12 @@ class FeasibilityAssessmentPage(BasePage):
     HEADER_BG = QColor("#cfe4b5")   # 浅绿
     SUBHDR_BG = QColor("#cfe4b5")   # 同色（原型里基本一致）
     DATA_BG   = QColor("#ffffff")   # 白
+
+    @staticmethod
+    def _songti_small_four_font(bold: bool = False) -> QFont:
+        font = QFont("SimSun", 12)
+        font.setBold(bold)
+        return font
 
     def __init__(self, main_window,facility_code, parent=None):
         if parent is None:
@@ -89,6 +98,7 @@ class FeasibilityAssessmentPage(BasePage):
 
         body = QWidget()
         scroll.setWidget(body)
+        body.setFont(self._songti_small_four_font())
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(8, 0, 8, 8)
         body_layout.setSpacing(10)
@@ -116,6 +126,7 @@ class FeasibilityAssessmentPage(BasePage):
 
     # ---------------- 通用表格风格 ----------------
     def _init_table_common(self, table: QTableWidget):
+        table.setFont(self._songti_small_four_font())
         table.setEditTriggers(QAbstractItemView.AllEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectItems)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -168,6 +179,7 @@ class FeasibilityAssessmentPage(BasePage):
 
         combo = QComboBox(cell_wrap)
         combo.addItems(self.CONNECT_OPTIONS)
+        combo.setFont(self._songti_small_four_font())
         if default in self.CONNECT_OPTIONS:
             combo.setCurrentText(default)
         combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
@@ -226,6 +238,14 @@ class FeasibilityAssessmentPage(BasePage):
                         table.setColumnWidth(c, max_group_width)
                     print(f"  分组 {group} 最大宽度 = {max_group_width}，应用于列 {valid_group}")
 
+        # 编号列统一适当加宽，避免数字过于紧凑
+        if col_count > 0:
+            index_min_width = 62
+            if table.columnWidth(0) < index_min_width:
+                table.setColumnWidth(0, index_min_width)
+                col_widths[0] = index_min_width
+                print(f"  编号列最小宽度修正: 列 0 现在 = {index_min_width}")
+
         # 对表1的OD/WT列额外增加宽度
         if hasattr(self, 'tbl1') and table is self.tbl1:
             extra = 20
@@ -233,6 +253,16 @@ class FeasibilityAssessmentPage(BasePage):
                 new_width = table.columnWidth(col) + extra
                 table.setColumnWidth(col, new_width)
                 print(f"  额外增加宽度: 列 {col} 现在 = {new_width}")
+
+            # 垂向载荷列在小四字体下容易被压缩，设置更稳妥的最小宽度
+            bold_font = QFont(table.font())
+            bold_font.setBold(True)
+            fm_bold = QFontMetrics(bold_font)
+            load_min_width = max(96, fm_bold.horizontalAdvance("垂向载荷") + padding + 18)
+            if table.columnWidth(7) < load_min_width:
+                table.setColumnWidth(7, load_min_width)
+                col_widths[7] = load_min_width
+                print(f"  垂向载荷列最小宽度修正: 列 7 现在 = {load_min_width}")
 
         total_width = sum(table.columnWidth(c) for c in range(col_count))
         table.setMinimumWidth(total_width)
@@ -242,15 +272,18 @@ class FeasibilityAssessmentPage(BasePage):
     def _make_save_button(self) -> QPushButton:
         btn = QPushButton("保存")
         btn.setFixedSize(90, 28)
+        btn.setFont(self._songti_small_four_font(bold=True))
         btn.setStyleSheet("""
             QPushButton {
                 background: #27a7d8;
                 border: 1px solid #2f3a4a;
                 border-radius: 3px;
+                font-family: %s;
+                font-size: 12pt;
                 font-weight: bold;
             }
             QPushButton:hover { background: #45b8e2; }
-        """)
+        """ % SONGTI_FONT_FALLBACK)
         return btn
 
     def _make_group_header(self, title: str, on_save) -> QWidget:
@@ -260,7 +293,8 @@ class FeasibilityAssessmentPage(BasePage):
         lay.setSpacing(8)
 
         lab = QLabel(title)
-        lab.setStyleSheet("font-size: 18px; font-weight: bold; color: #1d2b3a;")
+        lab.setFont(self._songti_small_four_font(bold=True))
+        lab.setStyleSheet("font-family: %s; font-size: 12pt; font-weight: bold; color: #1d2b3a;" % SONGTI_FONT_FALLBACK)
         lay.addWidget(lab, 0)
         lay.addStretch(1)
 
@@ -579,16 +613,18 @@ class FeasibilityAssessmentPage(BasePage):
             b = QPushButton(text)
             b.setFixedHeight(42)
             b.setMinimumWidth(160)
+            b.setFont(self._songti_small_four_font(bold=True))
             b.setStyleSheet("""
                 QPushButton {
                     background: #2aa9df;
                     border: 2px solid #1b2a3a;
                     border-radius: 6px;
-                    font-size: 15px;
+                    font-family: %s;
+                    font-size: 12pt;
                     font-weight: bold;
                 }
                 QPushButton:hover { background: #4bbbe8; }
-            """)
+            """ % SONGTI_FONT_FALLBACK)
             return b
 
         self.btn_create = mk("创建新模型")

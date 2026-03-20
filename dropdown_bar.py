@@ -53,9 +53,9 @@ class DropdownBar(QFrame):
         self._combos: Dict[str, QComboBox] = {}
 
         self._font_family = _pick_windows_compatible_zh_font()
-        self._header_font = QFont(self._font_family, 14)
+        self._header_font = QFont(self._font_family, 12)
         self._header_font.setBold(True)
-        self._combo_font = QFont(self._font_family, 14)
+        self._combo_font = QFont(self._font_family, 12)
         self._header_min_height = self._calc_control_min_height(self._header_font, base=32, extra=8)
         self._combo_min_height = self._calc_control_min_height(self._combo_font, base=34, extra=10)
 

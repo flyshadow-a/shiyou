@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox
@@ -58,6 +58,13 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
     COL_EX_X = 8
     COL_EX_Y = 9
     COL_EX_Z = 10
+
+    @staticmethod
+    def _songti_small_four_font(bold: bool = False) -> QFont:
+        font = QFont("SimSun")
+        font.setPointSize(12)
+        font.setBold(bold)
+        return font
 
     def __init__(self, main_window=None, parent=None):
         super().__init__(parent)
@@ -115,6 +122,7 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         btn_bar = QHBoxLayout()
         btn_bar.addStretch(1)
         self.btn_save = QPushButton("保存")
+        self.btn_save.setFont(self._songti_small_four_font(bold=True))
 
         self.btn_save.clicked.connect(self._on_save)
         btn_bar.addWidget(self.btn_save)
@@ -122,6 +130,7 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
 
         # 表格
         self.table = QTableWidget(0, 11)
+        self.table.setFont(self._songti_small_four_font())
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setVisible(False)
@@ -162,11 +171,7 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         else:
             flags &= ~Qt.ItemIsEditable
         it.setFlags(flags)
-
-        if bold:
-            f = it.font()
-            f.setBold(True)
-            it.setFont(f)
+        it.setFont(self._songti_small_four_font(bold=bold))
 
         if bg is not None:
             it.setBackground(bg)

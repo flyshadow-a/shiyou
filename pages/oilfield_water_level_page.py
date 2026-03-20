@@ -2,7 +2,7 @@
 # pages/oilfield_water_level_page.py
 from typing import List, Dict, Optional
 
-from PyQt5.QtGui import QFontMetrics
+from PyQt5.QtGui import QFont, QFontMetrics
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout,
     QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
@@ -38,6 +38,12 @@ class OilfieldWaterLevelPage(BasePage):
     }
 
     TOP_KEY_ORDER = ["branch", "op_company", "oilfield"]
+
+    @staticmethod
+    def _songti_small_four_font(bold: bool = False) -> QFont:
+        font = QFont("SimSun", 12)
+        font.setBold(bold)
+        return font
 
     def __init__(self, parent=None):
         super().__init__("", parent)
@@ -209,8 +215,9 @@ class OilfieldWaterLevelPage(BasePage):
                         border: 1px solid #2f3a4a;
                         border-radius: 3px;
                         padding: 6px 16px;
-                        font-weight: bold;
-                        font-size: 15px;
+                        font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                        font-weight: 400;
+                        font-size: 12pt;
                     }
                     QPushButton#TopActionBtn:hover { background: #ffb86b; }
                 """)
@@ -267,6 +274,7 @@ class OilfieldWaterLevelPage(BasePage):
         self.btn_save.setObjectName("TopActionBtn")
         self.btn_save.setMinimumWidth(150)
         self.btn_save.setMinimumHeight(34)
+        self.btn_save.setFont(self._songti_small_four_font())
         self.btn_save.clicked.connect(self._on_save)
 
         btn_col.addWidget(self.btn_save)
@@ -293,7 +301,7 @@ class OilfieldWaterLevelPage(BasePage):
                     padding: 7px 20px;
                     background-color: #f0f0f0;
                     font-family: {SONGTI_FONT_FALLBACK};
-                    font-size: 14pt;
+                    font-size: 12pt;
                     font-weight: 600;
                 }}
                 QPushButton:checked {{
@@ -341,16 +349,16 @@ class OilfieldWaterLevelPage(BasePage):
                   align=Qt.AlignCenter, bold: bool = False):
         item = QTableWidgetItem(str(text))
         item.setTextAlignment(align)
-        if bold:
-            f = item.font()
-            f.setBold(True)
-            item.setFont(f)
+        font = table.font()
+        font.setBold(bold)
+        item.setFont(font)
         table.setItem(r, c, item)
 
     def _finalize_table_style(self, table: QTableWidget):
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setVisible(False)  # ✅ 去掉顶部 1..n
         table.setCornerButtonEnabled(False)
+        table.setFont(self._songti_small_four_font())
 
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setSelectionMode(QAbstractItemView.NoSelection)
@@ -363,7 +371,8 @@ class OilfieldWaterLevelPage(BasePage):
             QTableWidget {
                 gridline-color: #d9d9d9;
                 background-color: #ffffff;
-                font-size: 14px;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
             }
             QTableWidget::item {
                 border: 1px solid #ffffff;

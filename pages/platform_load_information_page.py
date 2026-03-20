@@ -28,7 +28,7 @@ from PyQt5.QtWidgets import (
     QButtonGroup, QRadioButton
 )
 from PyQt5.QtCore import Qt, QEvent
-from PyQt5.QtGui import QColor, QFontMetrics
+from PyQt5.QtGui import QColor, QFont, QFontMetrics
 
 from base_page import BasePage
 from dropdown_bar import DropdownBar  # 复用平台基本信息页的顶部下拉条样式
@@ -72,9 +72,19 @@ def _setup_chinese_matplotlib_font():
         if name in installed:
             mpl.rcParams['font.sans-serif'] = [name]
             mpl.rcParams['axes.unicode_minus'] = False
+            mpl.rcParams['font.size'] = 12
+            mpl.rcParams['axes.titlesize'] = 12
+            mpl.rcParams['axes.labelsize'] = 12
+            mpl.rcParams['xtick.labelsize'] = 12
+            mpl.rcParams['ytick.labelsize'] = 12
             return
     # 若找不到中文字体，则至少保证负号显示正常
     mpl.rcParams['axes.unicode_minus'] = False
+    mpl.rcParams['font.size'] = 12
+    mpl.rcParams['axes.titlesize'] = 12
+    mpl.rcParams['axes.labelsize'] = 12
+    mpl.rcParams['xtick.labelsize'] = 12
+    mpl.rcParams['ytick.labelsize'] = 12
 
 
 
@@ -82,6 +92,8 @@ class SimpleLineChart(FigureCanvas):
     """一个简单折线图控件（matplotlib 默认样式/颜色）。"""
 
     _font_inited = False
+    SMALL_FOUR_PT = 12
+
     def __init__(self, title: str, x: List[float], y: List[float], xlabel: str = "改建次数", ylabel: str = ""):
         if not SimpleLineChart._font_inited:
             _setup_chinese_matplotlib_font()
@@ -90,11 +102,12 @@ class SimpleLineChart(FigureCanvas):
         self.ax = fig.add_subplot(111)
         super().__init__(fig)
 
-        self.ax.set_title(title, fontsize=9)
+        self.ax.set_title(title, fontsize=self.SMALL_FOUR_PT)
         self.ax.plot(x, y, marker="o")  # 默认蓝色
-        self.ax.set_xlabel(xlabel, fontsize=8)
+        self.ax.set_xlabel(xlabel, fontsize=self.SMALL_FOUR_PT)
         if ylabel:
-            self.ax.set_ylabel(ylabel, fontsize=8)
+            self.ax.set_ylabel(ylabel, fontsize=self.SMALL_FOUR_PT)
+        self.ax.tick_params(axis="both", labelsize=self.SMALL_FOUR_PT)
         self.ax.grid(True, linewidth=0.6, alpha=0.6)
         fig.tight_layout()
 
@@ -195,6 +208,13 @@ class PlatformLoadInformationPage(BasePage):
     }
     FIELD_TO_KEY: Dict[str, str] = {v: k for k, v in KEY_TO_FIELD.items()}
 
+    @staticmethod
+    def _songti_small_four_font(bold: bool = False) -> QFont:
+        font = QFont("SimSun")
+        font.setPointSize(12)
+        font.setBold(bold)
+        return font
+
 
     def __init__(self, parent=None):
         super().__init__("", parent)
@@ -237,6 +257,8 @@ class PlatformLoadInformationPage(BasePage):
                 border: 1px solid #2f3a4a;
                 border-radius: 3px;
                 padding: 6px 16px;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
                 font-weight: bold;
             }
             QPushButton#TopActionBtn:hover { background: #ffb86b; }
@@ -246,6 +268,8 @@ class PlatformLoadInformationPage(BasePage):
                 background-color: #ffffff;
                 gridline-color: #d0d0d0;
                 border: 1px solid #2f3a4a;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
             }
             QTableWidget#MainTable::item {
                 border-bottom: 1px solid #d0d0d0;
@@ -273,7 +297,7 @@ class PlatformLoadInformationPage(BasePage):
             "facility_name": 3,
             "facility_type": 1,
             "category": 1,
-            "start_time": 1,
+            "start_time": 2,
             "design_life": 1,
         }
         fields = []
@@ -301,7 +325,7 @@ class PlatformLoadInformationPage(BasePage):
         top_layout.addWidget(self.dropdown_bar, 1)
 
         btn_widget = QWidget()
-        btn_widget.setFixedWidth(180)
+        btn_widget.setFixedWidth(160)
         btn_col = QVBoxLayout(btn_widget)
         btn_col.setContentsMargins(0, 0, 0, 0)
         btn_col.setSpacing(6)
@@ -313,21 +337,31 @@ class PlatformLoadInformationPage(BasePage):
         self.red_field_mode_combo = QComboBox()
         self.red_field_mode_combo.addItems(['红色字段：手动输入', '红色字段：Excel导入'])
         self.red_field_mode_combo.setMinimumHeight(32)
+        self.red_field_mode_combo.setFont(self._songti_small_four_font())
         self.red_field_mode_combo.setToolTip('仅控制红色字段(Fx~Mz、操作工况、极端工况)的数据来源：手动输入或从Excel导入到当前行')
 
         self.btn_pick_excel_result = QPushButton('选择结果Excel')
         self.btn_pick_excel_result.setMinimumWidth(150)
         self.btn_pick_excel_result.setMinimumHeight(32)
+        self.btn_pick_excel_result.setFont(self._songti_small_four_font())
 
         self.btn_import_excel_result = QPushButton('导入Excel到当前行')
         self.btn_import_excel_result.setMinimumWidth(150)
         self.btn_import_excel_result.setMinimumHeight(32)
+        self.btn_import_excel_result.setFont(self._songti_small_four_font())
         self.btn_curve = QPushButton("重量中心变化曲线")
 
         for b in (self.btn_save, self.btn_export, self.btn_import_result, self.btn_curve):
             b.setObjectName("TopActionBtn")
-        # 避免右侧按钮被挤压：统一设置最小尺寸
-        for b in (self.btn_save, self.btn_export, self.btn_import_result, self.btn_curve):
+            b.setFont(self._songti_small_four_font(bold=True))
+
+        # 顶部右侧按钮略缩窄，给“投产时间”等下拉项留出宽度
+        for b in (self.btn_save, self.btn_export):
+            b.setMinimumWidth(132)
+            b.setMinimumHeight(32)
+
+        # 底部两个按钮保持原有宽度
+        for b in (self.btn_import_result, self.btn_curve):
             b.setMinimumWidth(150)
             b.setMinimumHeight(32)
 
@@ -365,6 +399,7 @@ class PlatformLoadInformationPage(BasePage):
 
         self.table = self._build_main_table_skeleton()
         self.table.setObjectName("MainTable")
+        self.table.setFont(self._songti_small_four_font())
         # 只保留外层 table_scroll 的横向滚动条，避免双滚动条
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
@@ -682,10 +717,7 @@ class PlatformLoadInformationPage(BasePage):
             flags &= ~Qt.ItemIsEditable
         it.setFlags(flags)
         it.setTextAlignment(align)
-        if bold:
-            f = it.font()
-            f.setBold(True)
-            it.setFont(f)
+        it.setFont(self._songti_small_four_font(bold=bold))
         if fg is not None:
             it.setForeground(fg)
         if bg is not None:
@@ -717,6 +749,7 @@ class PlatformLoadInformationPage(BasePage):
         # 行：0-1 所属信息，2-3 表头
         base_rows = 4
         table = HoverTipTable(base_rows, col_count)
+        table.setFont(self._songti_small_four_font())
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setVisible(False)
         # table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -871,6 +904,7 @@ class PlatformLoadInformationPage(BasePage):
 
             seq_lab = QLabel(seq_text)
             seq_lab.setAlignment(Qt.AlignCenter)
+            seq_lab.setFont(self._songti_small_four_font())
             lay.addWidget(seq_lab, 0, Qt.AlignCenter)
             lay.addStretch(1)
 

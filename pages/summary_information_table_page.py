@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QHeaderView, QToolTip
 )
 from PyQt5.QtCore import Qt, QEvent
-from PyQt5.QtGui import QColor, QFontMetrics
+from PyQt5.QtGui import QColor, QFont, QFontMetrics
 
 from pages.hover_tip_table import HoverTipTable
 from base_page import BasePage
@@ -36,6 +36,13 @@ class SummaryInformationTablePage(BasePage):
     EXCEL_NAME = "platform_total.xls"
     MAX_EXPAND_ROWS = 50
 
+    @staticmethod
+    def _songti_small_four_font(bold: bool = False) -> QFont:
+        font = QFont("SimSun")
+        font.setPointSize(12)
+        font.setBold(bold)
+        return font
+
     def __init__(self, parent=None):
         super().__init__("", parent)
         self.data_dir = os.path.join(os.getcwd(), "data")
@@ -52,7 +59,9 @@ class SummaryInformationTablePage(BasePage):
                 border: 1px solid #2f3a4a;
                 border-radius: 4px;
                 padding: 4px 16px;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
                 font-weight: bold;
+                font-size: 12pt;
             }
             QPushButton:hover { background: #ffffff; }
 
@@ -60,6 +69,8 @@ class SummaryInformationTablePage(BasePage):
                 background-color: #ffffff;
                 gridline-color: #d0d0d0;
                 border: 1px solid #2f3a4a;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
             }
             QTableWidget::item {
                 border-bottom: 1px solid #d0d0d0;
@@ -97,6 +108,8 @@ class SummaryInformationTablePage(BasePage):
 
         self.btn_save = QPushButton("保存")
         self.btn_export = QPushButton("导出数据")
+        self.btn_save.setFont(self._songti_small_four_font(bold=True))
+        self.btn_export.setFont(self._songti_small_four_font(bold=True))
         self.btn_save.clicked.connect(self._on_save)
         self.btn_export.clicked.connect(self._on_export)
 
@@ -136,7 +149,8 @@ class SummaryInformationTablePage(BasePage):
             f"（数据来源：platform_total.xls；本页从样表筛选字段并映射到当前表格列）"
         )
         note.setWordWrap(True)
-        note.setStyleSheet("color:#111827; font-size:12px; padding:6px;")
+        note.setStyleSheet("color:#111827; font-size:12pt; padding:6px;")
+        note.setFont(self._songti_small_four_font())
         root.addWidget(note, 0)
 
     # ---------- merged header helpers ----------
@@ -144,10 +158,7 @@ class SummaryInformationTablePage(BasePage):
         it = QTableWidgetItem(text)
         it.setTextAlignment(Qt.AlignCenter)
         it.setFlags(it.flags() & ~Qt.ItemIsEditable)
-        if bold:
-            f = it.font()
-            f.setBold(True)
-            it.setFont(f)
+        it.setFont(self._songti_small_four_font(bold=bold))
         if bg is not None:
             it.setBackground(bg)
         if fg is not None:
@@ -187,6 +198,7 @@ class SummaryInformationTablePage(BasePage):
         header_rows = 2
 
         table = HoverTipTable(header_rows, len(cols))
+        table.setFont(self._songti_small_four_font())
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setVisible(False)  # 用表内两行表头模拟合并表头
 

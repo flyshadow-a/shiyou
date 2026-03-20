@@ -7,7 +7,7 @@ import math
 from typing import Dict, List, Tuple, Optional
 
 from PyQt5.QtCore import Qt, QRectF
-from PyQt5.QtGui import QColor, QPen
+from PyQt5.QtGui import QColor, QFont, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -521,6 +521,13 @@ class PlatformStrengthPage(BasePage):
         "facility_type", "category", "start_time", "design_life",
     ]
 
+    @staticmethod
+    def _songti_small_four_font(bold: bool = False) -> QFont:
+        font = QFont("SimSun")
+        font.setPointSize(12)
+        font.setBold(bold)
+        return font
+
     def __init__(self, main_window, parent=None):
         if parent is None:
             parent = main_window
@@ -684,6 +691,7 @@ class PlatformStrengthPage(BasePage):
         row, col, row_span, col_span = grid.getItemPosition(idx)
 
         self.evaluate_btn = QPushButton("快速评估")
+        self.evaluate_btn.setFont(self._songti_small_four_font(bold=True))
         self.evaluate_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.evaluate_btn.setMinimumHeight(max(30, combo.sizeHint().height()))
         self.evaluate_btn.setStyleSheet("""
@@ -692,6 +700,8 @@ class PlatformStrengthPage(BasePage):
                 color: #1b2a3a;
                 border: 1px solid #c7d0dc;
                 border-radius: 4px;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
                 font-weight: bold;
                 padding: 4px 10px;
             }
@@ -1060,16 +1070,19 @@ class PlatformStrengthPage(BasePage):
 
         self._set_center_item(tbl, 0, 0, "泥面高程", editable=False)
         self.edt_mud_level = QLineEdit("-122.4")
+        self.edt_mud_level.setFont(self._songti_small_four_font())
         tbl.setCellWidget(0, 1, self.edt_mud_level)
         self._set_center_item(tbl, 0, 2, "m", editable=False)
 
         self._set_center_item(tbl, 1, 0, "水平层高程节点数量限制", editable=False)
         self.edt_node_limit = QLineEdit("40")
+        self.edt_node_limit.setFont(self._songti_small_four_font())
         tbl.setCellWidget(1, 1, self.edt_node_limit)
         self._set_center_item(tbl, 1, 2, "", editable=False)
 
         self._set_center_item(tbl, 2, 0, "工作平面高程Workpoint", editable=False)
         self.edt_workpoint = QLineEdit("10")
+        self.edt_workpoint.setFont(self._songti_small_four_font())
         tbl.setCellWidget(2, 1, self.edt_workpoint)
         self._set_center_item(tbl, 2, 2, "m", editable=False)
 
@@ -1086,27 +1099,29 @@ class PlatformStrengthPage(BasePage):
         box = QGroupBox("结构模型信息")
         box.setStyleSheet("""
             QGroupBox {
-                font-size: 17px;
+                font-size: 12pt;
                 font-weight: bold;
-                margin-top: 10px;
+                margin-top: 12px;
+                border: none;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 left: 8px;
-                padding: 0 4px;
+                padding: 0 6px;
                 background-color: #ffffff;
             }
         """)
         box_layout = QVBoxLayout(box)
-        box_layout.setContentsMargins(10, 6, 10, 10)
+        box_layout.setContentsMargins(10, 10, 10, 10)
         box_layout.setSpacing(8)
 
         kv_tbl = self._build_structure_model_kv_table()
         box_layout.addWidget(kv_tbl, 0)
 
         lab_layers = QLabel("水平层高程")
-        lab_layers.setStyleSheet("font-size: 15px; font-weight: bold; color: #1d2b3a;")
+        lab_layers.setFont(self._songti_small_four_font(bold=True))
+        lab_layers.setStyleSheet("color: #1d2b3a;")
         box_layout.addWidget(lab_layers, 0)
 
         self.tbl_layers = QTableWidget(3, 10, box)
@@ -1150,7 +1165,7 @@ class PlatformStrengthPage(BasePage):
             + lab_layers.sizeHint().height()
             + layer_tbl_h
             + box_layout.spacing() * 2
-            + 18
+            + 24
         )
         box.setFixedHeight(total_h)
         box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -1169,6 +1184,9 @@ class PlatformStrengthPage(BasePage):
         self.tbl_layers.clearSelection()
 
     def _init_table_common(self, table: QTableWidget, show_vertical_header: bool):
+        table.setFont(self._songti_small_four_font())
+        table.horizontalHeader().setFont(self._songti_small_four_font(bold=True))
+        table.verticalHeader().setFont(self._songti_small_four_font(bold=True))
         table.setEditTriggers(QAbstractItemView.AllEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectItems)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -1179,6 +1197,8 @@ class PlatformStrengthPage(BasePage):
                 background-color: #ffffff;
                 gridline-color: #d0d0d0;
                 border: 1px solid #d0d0d0;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
             }
             QTableWidget::item { border: 1px solid #e6e6e6; padding: 2px; }
             QTableWidget::item:selected { background-color: #dbe9ff; color: #000000; }
@@ -1187,6 +1207,8 @@ class PlatformStrengthPage(BasePage):
                 background-color: #f3f6fb;
                 border: 1px solid #e6e6e6;
                 padding: 4px;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
                 font-weight: bold;
             }
         """)
@@ -1196,6 +1218,7 @@ class PlatformStrengthPage(BasePage):
 
     def _set_center_item(self, table: QTableWidget, row: int, col: int, text: str, editable: bool = True):
         item = QTableWidgetItem(str(text))
+        item.setFont(table.font())
         item.setTextAlignment(Qt.AlignCenter)
         if not editable:
             item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
@@ -1204,15 +1227,17 @@ class PlatformStrengthPage(BasePage):
     def _build_left_tables(self) -> Tuple[QGroupBox, QGroupBox]:
         section_title_qss = """
             QGroupBox {
-                font-size: 17px;
+                font-size: 12pt;
                 font-weight: bold;
-                margin-top: 10px;
+                margin-top: 12px;
+                border: none;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 left: 8px;
-                padding: 0 4px;
+                padding: 0 6px;
+                background-color: #ffffff;
             }
         """
 
@@ -1220,7 +1245,7 @@ class PlatformStrengthPage(BasePage):
         pile_box = QGroupBox("桩基信息")
         pile_box.setStyleSheet(section_title_qss)
         pile_layout = QVBoxLayout(pile_box)
-        pile_layout.setContentsMargins(8, 6, 8, 8)
+        pile_layout.setContentsMargins(8, 10, 8, 8)
 
         tbl_pile = QTableWidget(1, 4, pile_box)
         tbl_pile.setHorizontalHeaderLabels(["基础冲刷(m)", "桩基础抗压承载能力(t)", "桩基础抗拔承载能力(t)", "单根桩泥下自重(t)"])
@@ -1241,7 +1266,7 @@ class PlatformStrengthPage(BasePage):
         pile_layout.addWidget(tbl_pile, 1)
 
         pile_margins = pile_layout.contentsMargins()
-        pile_box_h = pile_margins.top() + pile_margins.bottom() + pile_tbl_h + 14
+        pile_box_h = pile_margins.top() + pile_margins.bottom() + pile_tbl_h + 22
         pile_box.setMinimumHeight(pile_box_h)
         pile_box.setMaximumHeight(pile_box_h)
         pile_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -1250,7 +1275,7 @@ class PlatformStrengthPage(BasePage):
         marine_box = QGroupBox("海生物信息")
         marine_box.setStyleSheet(section_title_qss)
         marine_layout = QVBoxLayout(marine_box)
-        marine_layout.setContentsMargins(8, 8, 8, 10)
+        marine_layout.setContentsMargins(8, 10, 8, 10)
 
         tbl_marine = QTableWidget(5, 12, marine_box)
         self._init_table_common(tbl_marine, show_vertical_header=False)
@@ -1304,7 +1329,7 @@ class PlatformStrengthPage(BasePage):
 
         marine_layout.addWidget(tbl_marine, 1)
         marine_margins = marine_layout.contentsMargins()
-        marine_box_h = marine_margins.top() + marine_margins.bottom() + marine_tbl_h + 10
+        marine_box_h = marine_margins.top() + marine_margins.bottom() + marine_tbl_h + 14
         marine_box.setMinimumHeight(marine_box_h)
         marine_box.setMaximumHeight(marine_box_h)
         marine_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
