@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 
 from base_page import BasePage
 from dropdown_bar import DropdownBar
+from .doc_man import DocManWidget
 
 # ✅ 直接复用 ConstructionDocsWidget 的文件夹UI与交互（FolderButton / folder_grid / PathBar 等）
 from .construction_docs_widget import ConstructionDocsWidget
@@ -59,6 +60,8 @@ class ModelFilesDocsWidget(QWidget):
         # 文件夹树结构 + 每种模型对应的行配置
         self.folder_tree = self._build_folder_tree()
         self.model_row_configs = self._build_model_row_configs()
+        self.doc_man_configs = self._build_doc_man_configs()
+        self.doc_man_records = self._build_doc_man_records()
 
         # 每个叶子路径对应的 {row_index: 文件绝对路径}
         self.row_paths_by_path: Dict[str, Dict[int, str]] = {}  # { "详细设计模型/静力": {0: path, 1: path, ...}}
@@ -402,6 +405,9 @@ class ModelFilesDocsWidget(QWidget):
         self._init_table_common(self.table)
         self.table.cellClicked.connect(self._on_table_cell_clicked)
         files_layout.addWidget(self.table)
+        self.table.hide()
+        self.doc_man_widget = DocManWidget(self._get_doc_man_upload_dir, self.custom_files_page)
+        files_layout.addWidget(self.doc_man_widget)
 
         # ✅ 把我们的页塞进它的 content_stack，并用它的 PathBar 管理“文件夹/叶子”切换
         self.docs_widget.content_stack.addWidget(self.custom_files_page)
@@ -533,11 +539,17 @@ class ModelFilesDocsWidget(QWidget):
         if not node or node.get("type") != "leaf":
             return
 
+        path_key = self._current_path_key()
+        if path_key in self.doc_man_configs:
+            self.current_leaf_key = path_key
+            records = self.doc_man_records.setdefault(path_key, [])
+            self.doc_man_widget.set_context(self.current_path, records, self.doc_man_configs[path_key])
+            return
+
         model_key = node.get("model_key")
         row_configs = self.model_row_configs.get(model_key, [])
         self.current_row_configs = row_configs
 
-        path_key = self._current_path_key()
         self.current_leaf_key = path_key
         row_paths = self._get_row_paths_for(path_key)
 
@@ -570,6 +582,79 @@ class ModelFilesDocsWidget(QWidget):
     # ------------------------------------------------------------------
     # 上传 / 下载 点击事件（旧逻辑）
     # ------------------------------------------------------------------
+    def _build_doc_man_configs(self) -> Dict[str, List[str]]:
+        leaf_categories = {
+            "静力": [
+                "结构模型文件",
+                "海况文件",
+                "桩基文件",
+                "冲剪节点文件",
+                "静力分析文件",
+                "其他",
+            ],
+            "疲劳": [
+                "结构模型文件",
+                "海况文件",
+                "桩基文件",
+                "动力分析文件",
+                "疲劳分析模型文件",
+                "疲劳分析结果文件",
+                "其他",
+            ],
+            "倒塌": [
+                "结构模型文件",
+                "海况文件",
+                "桩基文件",
+                "倒塌分析模型文件",
+                "倒塌分析结果文件",
+                "其他",
+            ],
+            "地震": [
+                "结构模型文件",
+                "海况文件",
+                "桩基文件",
+                "冲剪节点文件",
+                "动力分析文件",
+                "地震分析模型文件",
+                "地震分析结果文件",
+            ],
+            "其他模型": [
+                "结构模型文件",
+                "海况文件",
+                "其他分析模型文件",
+                "其他分析结果文件",
+                "其他",
+            ],
+        }
+
+        configs: Dict[str, List[str]] = {}
+        for model_root in ["当前模型", "详细设计模型", "改造1模型", "改造N模型"]:
+            for leaf_name, categories in leaf_categories.items():
+                configs["/".join([model_root, leaf_name])] = list(categories)
+        return configs
+
+    def _build_doc_man_records(self) -> Dict[str, List[Dict]]:
+        records: Dict[str, List[Dict]] = {}
+        for path_key, categories in self.doc_man_configs.items():
+            records[path_key] = [
+                {
+                    "index": idx + 1,
+                    "checked": False,
+                    "category": category,
+                    "fmt": "",
+                    "mtime": "",
+                    "path": "",
+                    "remark": "",
+                }
+                for idx, category in enumerate(categories)
+            ]
+        return records
+
+    def _get_doc_man_upload_dir(self, path_segments: List[str]) -> str:
+        target_dir = os.path.join(self.upload_root, *path_segments)
+        os.makedirs(target_dir, exist_ok=True)
+        return target_dir
+
     def _on_table_cell_clicked(self, row: int, col: int):
         if not self.current_leaf_key:
             return

@@ -13,6 +13,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QIcon, QDesktopServices
 from PyQt5.QtCore import Qt, QSize, QDateTime, pyqtSignal, QUrl
 
+from pages.doc_man import DocManWidget
+
 
 class ClickableLabel(QLabel):
     """一个简单的可点击 QLabel，发出 clicked() 信号。"""
@@ -73,6 +75,7 @@ class ConstructionDocsWidget(QWidget):
         # 文件夹树结构 & 文件记录
         self.folder_tree = self._build_folder_tree()
         self.file_records: Dict[str, List[Dict]] = self._build_demo_file_records()
+        self.doc_man_configs = self._build_doc_man_configs()
 
         # 资源路径：项目根目录
         self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -468,6 +471,9 @@ class ConstructionDocsWidget(QWidget):
 
         self.file_view_stack.addWidget(self.empty_page)
 
+        self.doc_man_widget = DocManWidget(self._get_doc_man_upload_dir, self.files_page)
+        self.file_view_stack.addWidget(self.doc_man_widget)
+
         # 表格页面：顶部按钮 + 表格
         self.table_page = QWidget()
         table_layout = QVBoxLayout(self.table_page)
@@ -652,6 +658,12 @@ class ConstructionDocsWidget(QWidget):
     # ---------------- 文件列表视图 ---------------- #
     def _show_files_for_current_path(self):
         key = self._current_path_key()
+        if key in self.doc_man_configs:
+            records = self.file_records.setdefault(key, [])
+            self.doc_man_widget.set_context(self.current_path, records, self.doc_man_configs[key])
+            self.file_view_stack.setCurrentWidget(self.doc_man_widget)
+            return
+
         records = self.file_records.get(key, [])
 
         if not records:
@@ -794,6 +806,50 @@ class ConstructionDocsWidget(QWidget):
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
+    def _build_doc_man_configs(self) -> Dict[str, List[str]]:
+        spec_key = "/".join(["详细设计", "结构", "规格书"])
+        drawing_key = "/".join(["详细设计", "结构", "设计图纸"])
+        analysis_key = "/".join(["详细设计", "结构", "分析报告"])
+        weight_key = "/".join(["详细设计", "结构", "重控报告"])
+        general_key = "/".join(["详细设计", "总图"])
+        other_key = "/".join(["详细设计", "其他文件"])
+        return {
+            spec_key: [
+                "平台结构设计规划书",
+                "其他",
+            ],
+            drawing_key: [
+                "结构设计图",
+                "其他",
+            ],
+            analysis_key: [
+                "强度校核报告",
+                "检测策略报告",
+                "平台结构在位工况分析报告",
+                "其他",
+            ],
+            weight_key: [
+                "平台重量控制程序",
+                "平台重量控制报告",
+                "其他",
+            ],
+            general_key: [
+                "平台总图及设计图纸",
+                "其他",
+            ],
+            other_key: [
+                "图纸送审记录",
+                "其他设计类文件",
+                "其他",
+            ],
+        }
+
+    def _get_doc_man_upload_dir(self, path_segments: List[str]) -> str:
+        upload_root = self._get_upload_root()
+        target_dir = os.path.join(upload_root, *path_segments)
+        os.makedirs(target_dir, exist_ok=True)
+        return target_dir
+
     def _build_folder_tree(self) -> Dict:
         return {
             "\u8be6\u7ec6\u8bbe\u8ba1": {
@@ -823,24 +879,26 @@ class ConstructionDocsWidget(QWidget):
             return "/".join(path_list)
 
         records[path_key(["\u8be6\u7ec6\u8bbe\u8ba1", "\u7ed3\u6784", "\u89c4\u683c\u4e66"])] = [
-            {"index": 1, "category": "\u5e73\u53f0\u7ed3\u6784\u8bbe\u8ba1\u89c4\u683c\u4e66", "fmt": "pdf/word", "mtime": "", "path": "", "remark": ""},
+            {"index": 1, "checked": False, "category": "\u5e73\u53f0\u7ed3\u6784\u8bbe\u8ba1\u89c4\u5212\u4e66", "fmt": "", "mtime": "", "path": "", "remark": ""},
         ]
         records[path_key(["\u8be6\u7ec6\u8bbe\u8ba1", "\u7ed3\u6784", "\u8bbe\u8ba1\u56fe\u7eb8"])] = [
-            {"index": 1, "category": "\u7ed3\u6784\u8bbe\u8ba1\u56fe", "fmt": "pdf/dwg/rar", "mtime": "", "path": "", "remark": ""},
+            {"index": 1, "checked": False, "category": "\u7ed3\u6784\u8bbe\u8ba1\u56fe", "fmt": "", "mtime": "", "path": "", "remark": ""},
         ]
         records[path_key(["\u8be6\u7ec6\u8bbe\u8ba1", "\u7ed3\u6784", "\u5206\u6790\u62a5\u544a"])] = [
-            {"index": 1, "category": "\u5e73\u53f0\u5728\u4f4d\u5de5\u51b5\u5206\u6790\u62a5\u544a", "fmt": "pdf/word", "mtime": "", "path": "", "remark": ""},
-            {"index": 2, "category": "\u4e0a\u90e8\u7ec4\u5757\u5206\u6790\u62a5\u544a", "fmt": "pdf/word", "mtime": "", "path": "", "remark": ""},
+            {"index": 1, "checked": False, "category": "\u5f3a\u5ea6\u6821\u6838\u62a5\u544a", "fmt": "", "mtime": "", "path": "", "remark": ""},
+            {"index": 2, "checked": False, "category": "\u68c0\u6d4b\u7b56\u7565\u62a5\u544a", "fmt": "", "mtime": "", "path": "", "remark": ""},
+            {"index": 3, "checked": False, "category": "\u5e73\u53f0\u7ed3\u6784\u5728\u4f4d\u5de5\u51b5\u5206\u6790\u62a5\u544a", "fmt": "", "mtime": "", "path": "", "remark": ""},
         ]
         records[path_key(["\u8be6\u7ec6\u8bbe\u8ba1", "\u7ed3\u6784", "\u91cd\u63a7\u62a5\u544a"])] = [
-            {"index": 1, "category": "\u5e73\u53f0\u91cd\u91cf\u91cd\u5fc3\u5206\u6790\u62a5\u544a", "fmt": "pdf/word", "mtime": "", "path": "", "remark": ""},
+            {"index": 1, "checked": False, "category": "\u5e73\u53f0\u91cd\u91cf\u63a7\u5236\u7a0b\u5e8f", "fmt": "", "mtime": "", "path": "", "remark": ""},
+            {"index": 2, "checked": False, "category": "\u5e73\u53f0\u91cd\u91cf\u63a7\u5236\u62a5\u544a", "fmt": "", "mtime": "", "path": "", "remark": ""},
         ]
         records[path_key(["\u8be6\u7ec6\u8bbe\u8ba1", "\u603b\u56fe"])] = [
-            {"index": 1, "category": "\u5e73\u53f0\u603b\u56fe\u53ca\u8bbe\u8ba1\u56fe\u7eb8", "fmt": "pdf/dwg/rar", "mtime": "", "path": "", "remark": ""},
+            {"index": 1, "checked": False, "category": "\u5e73\u53f0\u603b\u56fe\u53ca\u8bbe\u8ba1\u56fe\u7eb8", "fmt": "", "mtime": "", "path": "", "remark": ""},
         ]
         records[path_key(["\u8be6\u7ec6\u8bbe\u8ba1", "\u5176\u4ed6\u6587\u4ef6"])] = [
-            {"index": 1, "category": "\u56fe\u7eb8\u9001\u5ba1\u8bb0\u5f55", "fmt": "pdf/word", "mtime": "", "path": "", "remark": ""},
-            {"index": 2, "category": "\u5176\u4ed6\u8bbe\u8ba1\u7c7b\u6587\u4ef6", "fmt": "pdf/word/excel", "mtime": "", "path": "", "remark": ""},
+            {"index": 1, "checked": False, "category": "\u56fe\u7eb8\u9001\u5ba1\u8bb0\u5f55", "fmt": "", "mtime": "", "path": "", "remark": ""},
+            {"index": 2, "checked": False, "category": "\u5176\u4ed6\u8bbe\u8ba1\u7c7b\u6587\u4ef6", "fmt": "", "mtime": "", "path": "", "remark": ""},
         ]
 
         return records

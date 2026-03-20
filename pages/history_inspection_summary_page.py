@@ -45,6 +45,7 @@ from PyQt5.QtWidgets import (
 
 from base_page import BasePage
 from dropdown_bar import DropdownBar
+from pages.doc_man import DocManWidget
 
 # ✅ 直接复用 ConstructionDocsWidget 的文件夹布局样式
 from pages.construction_docs_widget import ConstructionDocsWidget
@@ -230,6 +231,8 @@ class HistoryInspectionSummaryPage(BasePage):
         self.folder_rows = self._build_folder_rows()
         self.periodic_demo_data = self._build_periodic_demo_data()
         self.special_event_demo_data = self._build_special_event_demo_data()
+        self.doc_man_configs = self._build_doc_man_configs()
+        self.doc_man_records = self._build_doc_man_records()
 
         # 资源路径（小文件夹图标）
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -566,6 +569,12 @@ class HistoryInspectionSummaryPage(BasePage):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 8, 0, 8)
         layout.setSpacing(0)
+
+        if folder_key in self.doc_man_configs:
+            doc_widget = DocManWidget(self._get_doc_man_upload_dir, page)
+            doc_widget.set_context([folder_key], self.doc_man_records[folder_key], self.doc_man_configs[folder_key])
+            layout.addWidget(doc_widget)
+            return page
 
         table = self._create_table_for_folder(folder_key)
         layout.addWidget(table)
@@ -1080,6 +1089,35 @@ class HistoryInspectionSummaryPage(BasePage):
     # ------------------------------------------------------------------
     # 构造单个文件夹的表格
     # ------------------------------------------------------------------
+    def _build_doc_man_configs(self) -> Dict[str, List[str]]:
+        return {
+            "complete": [
+                "检测策略报告",
+                "节点风险评估表",
+                "节点检验计划表",
+                "构件风险评估表",
+                "构件检验计划表",
+                "节点构件检验计划位置",
+            ],
+        }
+
+    def _build_doc_man_records(self) -> Dict[str, List[Dict]]:
+        records: Dict[str, List[Dict]] = {}
+        for folder_key, categories in self.doc_man_configs.items():
+            records[folder_key] = [
+                {
+                    "index": idx + 1,
+                    "checked": False,
+                    "category": category,
+                    "fmt": "",
+                    "mtime": "",
+                    "path": "",
+                    "remark": "",
+                }
+                for idx, category in enumerate(categories)
+            ]
+        return records
+
     def _create_table_for_folder(self, folder_key: str) -> QTableWidget:
         rows = self.folder_rows.get(folder_key, [])
         table = QTableWidget(len(rows), 7, self)
@@ -1226,6 +1264,11 @@ class HistoryInspectionSummaryPage(BasePage):
         """历史检测及结论上传文件根目录。"""
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         return os.path.join(project_root, "uploads", "history_inspection")
+
+    def _get_doc_man_upload_dir(self, path_segments: List[str]) -> str:
+        target_dir = os.path.join(self._get_upload_root(), *path_segments)
+        os.makedirs(target_dir, exist_ok=True)
+        return target_dir
 
     def _guess_allowed_exts(self, fmt_text: str):
         """根据“文件格式”文本推断允许的扩展名列表。"""
