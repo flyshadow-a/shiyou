@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
 
 # 兼容你项目里可能存在的 base（如果不存在也不影响运行）
 try:
-    from base import BasePage  # type: ignore
+    from base_page import BasePage  # type: ignore
 except Exception:
     BasePage = QWidget  # fallback
 
@@ -29,13 +29,7 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
     11列结构（与你确认一致）：
     0 阶段 | 1 日常作业(分项) | 2 系数(操作/极端) | 3-6 操作(重量+XYZ) | 7-10 极端(重量+XYZ)
 
-    系数列输入格式：
-    - “×1.0/×0.75” 或 “1.0/0.75” 或 “x1.0/x0.75”
-      左边是操作系数，右边是极端系数
-    - 只有一个数字：两者同值
-    - 空：默认(1.0, 1.0)
-
-    计算逻辑（按示意图）：
+    计算逻辑：
     - 阶段总重量 = Σ(分项重量 × 系数)
     - 阶段重心 = Σ(分项重量 × 系数 × 分项重心) / 阶段总重量
     - 当前总重：对所有阶段的总重量/加权重心再汇总
@@ -67,7 +61,7 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         return font
 
     def __init__(self, main_window=None, parent=None):
-        super().__init__(parent)
+        super().__init__("", parent) # BasePage 定义了 self.main_layout
         self.main_window = main_window
 
         # 回填上下文
@@ -79,7 +73,7 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         self.phases: List[Phase] = [
             Phase("build", "建设阶段\n(详细设计或称重)"),
             Phase("rebuild_1", "改造1"),
-            Phase("rebuild_2", "改造1"),  # 你原文件也是两个“改造1”，如需改为“改造2”可直接改这里
+            Phase("rebuild_2", "改造2"),
         ]
 
         # (分项名称, 默认操作系数, 默认极端系数)
@@ -108,25 +102,70 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         self.source_row = source_row
         self.source_col = source_col
         self.source_row_data = source_row_data or {}
-
-        # 主表传入的是“汇总值”。为避免把旧汇总值当作本页计算结果，这里不直接写入“当前总重”行。
-        # 如需显示旧值，建议在页面上单独加只读标签展示（此版本先不做）。
         self._recalc_all()
+
+    def get_table_data(self) -> dict:
+        """获取用户填写的明细数据，用于页面关闭后保留状态。"""
+        data = {}
+        for r in range(self.HEADER_ROWS, self.table.rowCount()):
+            if r == self._grand_total_row or r in self._phase_total_row.values():
+                continue
+            row_data = {}
+            for c in range(self.table.columnCount()):
+                it = self.table.item(r, c)
+                if it and (it.flags() & Qt.ItemIsEditable):
+                    row_data[str(c)] = it.text()
+            if row_data:
+                data[str(r)] = row_data
+        return data
+
+    def load_table_data(self, data: dict):
+        """恢复此前填写的状态并重算。"""
+        if not data: return
+        self._updating = True
+        try:
+            for r_idx, row_dict in data.items():
+                r = int(r_idx)
+                if r >= self.table.rowCount(): continue
+                for c_idx, txt in row_dict.items():
+                    c = int(c_idx)
+                    if c >= self.table.columnCount(): continue
+                    it = self.table.item(r, c)
+                    if it: it.setText(str(txt))
+        finally:
+            self._updating = False
+            self._recalc_all()
 
     # ---------- ui ----------
 
     def _build_ui(self):
-        root = QVBoxLayout(self)
-
+        # 使用 BasePage 提供的布局
         # 顶部按钮区
         btn_bar = QHBoxLayout()
         btn_bar.addStretch(1)
         self.btn_save = QPushButton("保存")
+        self.btn_save.setObjectName("TopActionBtn") # 使用与主页相同的 ObjectName 以便将来可能的样式扩展
         self.btn_save.setFont(self._songti_small_four_font(bold=True))
+        self.btn_save.setMinimumSize(120, 32)
+        
+        # 应用与主页一致的样式
+        self.btn_save.setStyleSheet("""
+            QPushButton#TopActionBtn {
+                background: #f6a24a;
+                border: 1px solid #2f3a4a;
+                border-radius: 3px;
+                padding: 6px 16px;
+                color: black;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+                font-weight: bold;
+            }
+            QPushButton#TopActionBtn:hover { background: #ffb86b; }
+        """)
 
         self.btn_save.clicked.connect(self._on_save)
         btn_bar.addWidget(self.btn_save)
-        root.addLayout(btn_bar)
+        self.main_layout.addLayout(btn_bar)
 
         # 表格
         self.table = QTableWidget(0, 11)
@@ -136,24 +175,13 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         self.table.horizontalHeader().setVisible(False)
         self.table.setWordWrap(True)
 
-        root.addWidget(self.table, 1)
+        self.main_layout.addWidget(self.table, 1)
 
         self._fill_skeleton()
 
-        # ====== 核心修复：列宽自适应与横向滚动条 ======
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-
-        # 必须在 _fill_skeleton() 填完中文字符后调用，Qt 才能量出真实的文字宽度
-        self.table.resizeColumnsToContents()
-
+        # ====== 优化：全列等宽拉伸填满窗口 ======
         header = self.table.horizontalHeader()
-        for c in range(11):
-            header.setSectionResizeMode(c, QHeaderView.Interactive)
-            ideal_width = self.table.columnWidth(c)
-            # 根据内部文字大小自动调整，提供 80 的保底宽度，并加上 20 像素的呼吸空间
-            self.table.setColumnWidth(c, max(80, ideal_width + 20))
-
-        header.setStretchLastSection(True)
+        header.setSectionResizeMode(QHeaderView.Stretch)
         # ============================================
 
         self.table.itemChanged.connect(self._on_item_changed)
@@ -193,7 +221,7 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         # 表头
         self._set_span_item(0, self.COL_PHASE, 3, 1, "阶段", bg=bg_header)
         self._set_span_item(0, self.COL_ITEM,  3, 1, "日常作业", bg=bg_header)
-        self._set_span_item(0, self.COL_COEF,  3, 1, "", bg=bg_header)
+        self._set_span_item(0, self.COL_COEF,  3, 1, "系数\n(操作/极端)", bg=bg_header)
 
         self._set_span_item(0, self.COL_OP_W, 1, 4, "操作工况重量重心", bg=bg_header)
         self._set_span_item(0, self.COL_EX_W, 1, 4, "极端工况重量重心", bg=bg_header)
@@ -223,211 +251,131 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
             for i, (name, op_coef, ex_coef) in enumerate(detail):
                 rr = r + i
                 self.table.setRowHeight(rr, 32)
-
                 self.table.setItem(rr, self.COL_ITEM, self._mk_item(name, align=Qt.AlignLeft | Qt.AlignVCenter))
 
-                # 系数列（合并显示）
-                if op_coef or ex_coef:
-                    op_t = op_coef if op_coef else "×1.0"
-                    ex_t = ex_coef if ex_coef else "×1.0"
-                    coef_text = f"{op_t}/{ex_t}"
-                else:
-                    coef_text = ""
+                # 系数列
+                op_t = op_coef if op_coef else "×1.0"
+                ex_t = ex_coef if ex_coef else "×1.0"
+                coef_text = f"{op_t}/{ex_t}" if (op_coef or ex_coef) else ""
                 self.table.setItem(rr, self.COL_COEF, self._mk_item(coef_text, editable=True))
 
-                # 可编辑输入区
-                for c in (self.COL_OP_W, self.COL_OP_X, self.COL_OP_Y, self.COL_OP_Z,
-                          self.COL_EX_W, self.COL_EX_X, self.COL_EX_Y, self.COL_EX_Z):
+                # 输入区
+                for c in range(3, 11):
                     self.table.setItem(rr, c, self._mk_item("", editable=True))
 
             # 阶段总计行
             total_rr = r + len(detail)
-            self.table.setRowHeight(total_rr, 34)
-            self.table.setItem(total_rr, self.COL_ITEM, self._mk_item("总重量", bold=True, align=Qt.AlignLeft | Qt.AlignVCenter))
-            self.table.setItem(total_rr, self.COL_COEF, self._mk_item("求和", bold=True))
-            for c in (self.COL_OP_W, self.COL_OP_X, self.COL_OP_Y, self.COL_OP_Z,
-                      self.COL_EX_W, self.COL_EX_X, self.COL_EX_Y, self.COL_EX_Z):
-                self.table.setItem(total_rr, c, self._mk_item("", editable=False, bold=True))
-
             self._phase_total_row[ph.key] = total_rr
+            self.table.setItem(total_rr, self.COL_ITEM, self._mk_item("总重量", bold=True, bg=QColor("#fff2cc")))
+            self.table.setItem(total_rr, self.COL_COEF, self._mk_item("求和", bg=QColor("#fff2cc")))
+            for c in range(3, 11):
+                self.table.setItem(total_rr, c, self._mk_item("", editable=False, bg=QColor("#fff2cc")))
+
             r += block_rows
 
         # 当前总重行
         self._grand_total_row = r
-        self.table.setRowHeight(r, 36)
-        self.table.setItem(r, self.COL_PHASE, self._mk_item("当前总重", bold=True, align=Qt.AlignLeft | Qt.AlignVCenter))
-        self.table.setItem(r, self.COL_ITEM, self._mk_item("总重量", bold=True, align=Qt.AlignLeft | Qt.AlignVCenter))
-        self.table.setItem(r, self.COL_COEF, self._mk_item("求和", bold=True))
-        for c in (self.COL_OP_W, self.COL_OP_X, self.COL_OP_Y, self.COL_OP_Z,
-                  self.COL_EX_W, self.COL_EX_X, self.COL_EX_Y, self.COL_EX_Z):
-            self.table.setItem(r, c, self._mk_item("", editable=False, bold=True))
+        self._set_span_item(r, 0, 1, 2, "当前总重", bg=QColor("#d9ead3"))
+        self.table.setItem(r, self.COL_COEF, self._mk_item("求和", bg=QColor("#d9ead3")))
+        for c in range(3, 11):
+            self.table.setItem(r, c, self._mk_item("", editable=False, bg=QColor("#d9ead3")))
 
     # ---------- calc ----------
     def _parse_coef_pair(self, text: str):
-        t = (text or "").strip()
-        if not t:
-            return 1.0, 1.0
-        t = t.replace("×", "").replace("X", "x")
-        # separators: / | 空格 ,
+        t = (text or "").strip().replace("×", "").replace("X", "x")
+        if not t: return 1.0, 1.0
         import re as _re
         parts = _re.split(r"[\/\|\s,]+", t)
         nums = []
         for p in parts:
-            p = p.strip()
-            if not p:
-                continue
-            p = p.replace("x", "")
-            try:
-                nums.append(float(p))
-            except Exception:
-                continue
-        if not nums:
-            return 1.0, 1.0
-        if len(nums) == 1:
-            return nums[0], nums[0]
-        return nums[0], nums[1]
+            try: nums.append(float(p.replace("x", "")))
+            except: continue
+        if not nums: return 1.0, 1.0
+        return (nums[0], nums[1]) if len(nums) > 1 else (nums[0], nums[0])
 
     def _to_float(self, txt: str) -> float:
-        try:
-            t = (txt or "").strip().replace("，", ",")
-            if not t:
-                return 0.0
-            return float(t)
-        except Exception:
-            return 0.0
+        try: return float((txt or "").strip().replace("，", ","))
+        except: return 0.0
 
     def _fmt(self, v: float) -> str:
-        if abs(v) < 1e-12:
-            return "0"
-        return (f"{v:.6f}").rstrip("0").rstrip(".")
+        return f"{v:.3f}"
 
-    def _set_text(self, row: int, col: int, text: str):
-        it = self.table.item(row, col)
-        if it is None:
-            it = self._mk_item("", editable=False, bold=True)
-            self.table.setItem(row, col, it)
-        it.setText(text)
-
-    def _set_total_row(self, row: int,
-                       op_w_sum: float, op_xw: float, op_yw: float, op_zw: float,
-                       ex_w_sum: float, ex_xw: float, ex_yw: float, ex_zw: float):
-        # 操作
-        self._set_text(row, self.COL_OP_W, self._fmt(op_w_sum))
-        if op_w_sum > 1e-12:
-            self._set_text(row, self.COL_OP_X, self._fmt(op_xw / op_w_sum))
-            self._set_text(row, self.COL_OP_Y, self._fmt(op_yw / op_w_sum))
-            self._set_text(row, self.COL_OP_Z, self._fmt(op_zw / op_w_sum))
-        else:
-            self._set_text(row, self.COL_OP_X, "0")
-            self._set_text(row, self.COL_OP_Y, "0")
-            self._set_text(row, self.COL_OP_Z, "0")
-
-        # 极端
-        self._set_text(row, self.COL_EX_W, self._fmt(ex_w_sum))
-        if ex_w_sum > 1e-12:
-            self._set_text(row, self.COL_EX_X, self._fmt(ex_xw / ex_w_sum))
-            self._set_text(row, self.COL_EX_Y, self._fmt(ex_yw / ex_w_sum))
-            self._set_text(row, self.COL_EX_Z, self._fmt(ex_zw / ex_w_sum))
-        else:
-            self._set_text(row, self.COL_EX_X, "0")
-            self._set_text(row, self.COL_EX_Y, "0")
-            self._set_text(row, self.COL_EX_Z, "0")
+    def _set_total_row(self, row: int, op_w, op_xw, op_yw, op_zw, ex_w, ex_xw, ex_yw, ex_zw):
+        def _put(c, val):
+            it = self.table.item(row, c)
+            if it: it.setText(val)
+        _put(self.COL_OP_W, self._fmt(op_w))
+        if op_w > 1e-12:
+            _put(self.COL_OP_X, self._fmt(op_xw/op_w)); _put(self.COL_OP_Y, self._fmt(op_yw/op_w)); _put(self.COL_OP_Z, self._fmt(op_zw/op_w))
+        _put(self.COL_EX_W, self._fmt(ex_w))
+        if ex_w > 1e-12:
+            _put(self.COL_EX_X, self._fmt(ex_xw/ex_w)); _put(self.COL_EX_Y, self._fmt(ex_yw/ex_w)); _put(self.COL_EX_Z, self._fmt(ex_zw/ex_w))
 
     def _on_item_changed(self, item: QTableWidgetItem):
-        if self._updating:
-            return
-        if item.row() < self.HEADER_ROWS:
-            return
+        if self._updating or item.row() < self.HEADER_ROWS: return
         self._recalc_all()
 
     def _recalc_all(self):
         self._updating = True
         try:
-            phase_totals = []
+            grand_vals = [0.0]*8 # op_w, op_xw...
             r = self.HEADER_ROWS
             for ph in self.phases:
                 detail = self.build_items if ph.key.startswith("build") else self.rebuild_items
-                block_rows = len(detail) + 1
                 total_rr = self._phase_total_row.get(ph.key)
-
-                op_w_sum = 0.0
-                op_xw = op_yw = op_zw = 0.0
-                ex_w_sum = 0.0
-                ex_xw = ex_yw = ex_zw = 0.0
-
+                p_v = [0.0]*8
                 for i in range(len(detail)):
                     rr = r + i
-                    coef_it = self.table.item(rr, self.COL_COEF)
-                    op_c, ex_c = self._parse_coef_pair(coef_it.text() if coef_it else "")
+                    it_c = self.table.item(rr, self.COL_COEF)
+                    op_c, ex_c = self._parse_coef_pair(it_c.text() if it_c else "")
+                    
+                    ow = self._to_float(self.table.item(rr, self.COL_OP_W).text() if self.table.item(rr, self.COL_OP_W) else "")
+                    ox = self._to_float(self.table.item(rr, self.COL_OP_X).text() if self.table.item(rr, self.COL_OP_X) else "")
+                    oy = self._to_float(self.table.item(rr, self.COL_OP_Y).text() if self.table.item(rr, self.COL_OP_Y) else "")
+                    oz = self._to_float(self.table.item(rr, self.COL_OP_Z).text() if self.table.item(rr, self.COL_OP_Z) else "")
+                    
+                    ew = self._to_float(self.table.item(rr, self.COL_EX_W).text() if self.table.item(rr, self.COL_EX_W) else "")
+                    ex = self._to_float(self.table.item(rr, self.COL_EX_X).text() if self.table.item(rr, self.COL_EX_X) else "")
+                    ey = self._to_float(self.table.item(rr, self.COL_EX_Y).text() if self.table.item(rr, self.COL_EX_Y) else "")
+                    ez = self._to_float(self.table.item(rr, self.COL_EX_Z).text() if self.table.item(rr, self.COL_EX_Z) else "")
 
-                    op_w = self._to_float(self.table.item(rr, self.COL_OP_W).text() if self.table.item(rr, self.COL_OP_W) else "")
-                    op_x = self._to_float(self.table.item(rr, self.COL_OP_X).text() if self.table.item(rr, self.COL_OP_X) else "")
-                    op_y = self._to_float(self.table.item(rr, self.COL_OP_Y).text() if self.table.item(rr, self.COL_OP_Y) else "")
-                    op_z = self._to_float(self.table.item(rr, self.COL_OP_Z).text() if self.table.item(rr, self.COL_OP_Z) else "")
+                    p_v[0]+=ow*op_c; p_v[1]+=ow*op_c*ox; p_v[2]+=ow*op_c*oy; p_v[3]+=ow*op_c*oz
+                    p_v[4]+=ew*ex_c; p_v[5]+=ew*ex_c*ex; p_v[6]+=ew*ex_c*ey; p_v[7]+=ew*ex_c*ez
 
-                    ex_w = self._to_float(self.table.item(rr, self.COL_EX_W).text() if self.table.item(rr, self.COL_EX_W) else "")
-                    ex_x = self._to_float(self.table.item(rr, self.COL_EX_X).text() if self.table.item(rr, self.COL_EX_X) else "")
-                    ex_y = self._to_float(self.table.item(rr, self.COL_EX_Y).text() if self.table.item(rr, self.COL_EX_Y) else "")
-                    ex_z = self._to_float(self.table.item(rr, self.COL_EX_Z).text() if self.table.item(rr, self.COL_EX_Z) else "")
+                if total_rr is not None: self._set_total_row(total_rr, *p_v)
+                for j in range(8): grand_vals[j] += p_v[j]
+                r += (len(detail) + 1)
 
-                    op_eff = op_w * op_c
-                    op_w_sum += op_eff
-                    op_xw += op_eff * op_x
-                    op_yw += op_eff * op_y
-                    op_zw += op_eff * op_z
-
-                    ex_eff = ex_w * ex_c
-                    ex_w_sum += ex_eff
-                    ex_xw += ex_eff * ex_x
-                    ex_yw += ex_eff * ex_y
-                    ex_zw += ex_eff * ex_z
-
-                if total_rr is not None:
-                    self._set_total_row(total_rr, op_w_sum, op_xw, op_yw, op_zw, ex_w_sum, ex_xw, ex_yw, ex_zw)
-
-                phase_totals.append((op_w_sum, op_xw, op_yw, op_zw, ex_w_sum, ex_xw, ex_yw, ex_zw))
-                r += block_rows
-
-            # 当前总重（汇总所有阶段）
-            if self._grand_total_row is not None and phase_totals:
-                op_w_sum = sum(p[0] for p in phase_totals)
-                op_xw = sum(p[1] for p in phase_totals)
-                op_yw = sum(p[2] for p in phase_totals)
-                op_zw = sum(p[3] for p in phase_totals)
-
-                ex_w_sum = sum(p[4] for p in phase_totals)
-                ex_xw = sum(p[5] for p in phase_totals)
-                ex_yw = sum(p[6] for p in phase_totals)
-                ex_zw = sum(p[7] for p in phase_totals)
-
-                self._set_total_row(self._grand_total_row, op_w_sum, op_xw, op_yw, op_zw, ex_w_sum, ex_xw, ex_yw, ex_zw)
-        finally:
-            self._updating = False
+            if self._grand_total_row is not None: self._set_total_row(self._grand_total_row, *grand_vals)
+        finally: self._updating = False
 
     # ---------- actions ----------
     def _on_save(self):
-        if self.source_row is None:
-            QMessageBox.information(self, "保存", "未绑定来源单元格，无法回填。")
-            return
-
+        if self.source_row is None: return
         r = self._grand_total_row
-        if r is None:
-            QMessageBox.information(self, "保存", "未找到“当前总重”行，无法回填。")
-            return
+        if r is None: return
 
         op_w = self.table.item(r, self.COL_OP_W).text() if self.table.item(r, self.COL_OP_W) else "0"
         op_x = self.table.item(r, self.COL_OP_X).text() if self.table.item(r, self.COL_OP_X) else "0"
         op_y = self.table.item(r, self.COL_OP_Y).text() if self.table.item(r, self.COL_OP_Y) else "0"
         op_z = self.table.item(r, self.COL_OP_Z).text() if self.table.item(r, self.COL_OP_Z) else "0"
 
-        # 回填到主表：col4=重量, col7=重心
         payload = {
             "source_row": self.source_row,
             "source_col": self.source_col,
+            "table_data": self.get_table_data(), # 必须导出明细数据
             "write_back": {
                 4: op_w,
                 7: f"{op_x},{op_y},{op_z}",
             }
         }
         self.saved.emit(payload)
-        QMessageBox.information(self, "保存", "已保存并回填到平台载荷信息表。")
+        QMessageBox.information(self, "保存", "计算结果已回填。")
+
+        # 自动跳回主表页面
+        mw = self.window()
+        if hasattr(mw, "tab_widget"):
+            for i in range(mw.tab_widget.count()):
+                if "平台载荷信息" in mw.tab_widget.tabText(i):
+                    mw.tab_widget.setCurrentIndex(i)
+                    break
