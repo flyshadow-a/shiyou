@@ -44,14 +44,17 @@ class NewSpecialInspectionPage(BasePage):
         self.collapse_demo_files: List[str] = []
         self.fatigue_file: str = ""
 
-        super().__init__(f"{facility_code}特检策略", parent)
+        super().__init__("", parent)
         self._build_ui()
         self._reload_system_files_from_backend()
 
     def _build_ui(self):
         # 整页浅蓝灰背景
         self.setStyleSheet("""
-            QWidget { background: #e6eef7; }
+            QWidget { 
+                background: #e6eef7; 
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+            }
             QFrame#Card {
                 background: #e6eef7;
                 border: 1px solid #c7d2e3;
@@ -59,12 +62,12 @@ class NewSpecialInspectionPage(BasePage):
             QLabel#SectionTitle {
                 font-weight: bold;
                 color: #2b2b2b;
-                font-size: 16px;
+                font-size: 12pt;
             }
             QLabel#RedSectionTitle {
                 font-weight: bold;
                 color: #d10000;
-                font-size: 16px;
+                font-size: 12pt;
             }
             QPushButton#ActionBtn {
                 background: #00a0d6;
@@ -73,7 +76,7 @@ class NewSpecialInspectionPage(BasePage):
                 border-radius: 4px;
                 padding: 4px 12px;
                 min-height: 34px;
-                font-size: 15px;
+                font-size: 12pt;
                 font-weight: bold;
             }
             QPushButton#ActionBtn:hover { background: #00b6f2; }
@@ -84,29 +87,30 @@ class NewSpecialInspectionPage(BasePage):
                 border: 1px solid #0a5f7a;
                 border-radius: 6px;
                 min-height: 50px;
-                font-size: 19px;
+                font-size: 12pt;
                 font-weight: bold;
             }
             QPushButton#BigBlueBtn:hover { background: #00b6f2; }
 
             QTableWidget {
-                background: #f7fbff;
-                gridline-color: #7b8798;
-                border: 1px solid #7b8798;
-                font-size: 14px;
+                background: #ffffff;
+                gridline-color: #d0d0d0;
+                border: 1px solid #d0d0d0;
+                font-size: 12pt;
             }
             QHeaderView::section {
-                background: #d9e6f5;
-                border: 1px solid #7b8798;
+                background: #f3f6fb;
+                color: #000000;
+                border: 1px solid #e6e6e6;
                 padding: 6px 6px;
-                font-weight: bold;
-                font-size: 15px;
+                font-weight: normal;
+                font-size: 12pt;
             }
             QLineEdit {
                 background: white;
                 border: 1px solid #c7d2e3;
                 padding: 4px 6px;
-                font-size: 14px;
+                font-size: 12pt;
             }
         """)
 
@@ -353,23 +357,23 @@ class NewSpecialInspectionPage(BasePage):
         table.setMinimumHeight(300)
         table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         v.addWidget(table, 1)
-
         # 两个大按钮（对应截图：更新风险等级 / 查看结果）
-        btn_row = QVBoxLayout()
+        btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
 
         btn_update = QPushButton("更新风险等级")
         btn_update.setObjectName("BigBlueBtn")
-        btn_update.setFixedWidth(300)
+        btn_update.setFixedWidth(200)
         btn_update.clicked.connect(self._on_update_risk_level)
 
         btn_view = QPushButton("查看结果")
         btn_view.setObjectName("BigBlueBtn")
-        btn_view.setFixedWidth(300)
+        btn_view.setFixedWidth(200)
         btn_view.clicked.connect(self._on_view_result)
 
-        btn_row.addWidget(btn_update, 0, Qt.AlignLeft)
-        btn_row.addWidget(btn_view, 0, Qt.AlignLeft)
+        btn_row.addWidget(btn_update)
+        btn_row.addWidget(btn_view)
+        btn_row.addStretch(1)
 
         v.addLayout(btn_row, 0)
 
@@ -773,16 +777,17 @@ class NewSpecialInspectionPage(BasePage):
         self.files_table.setSpan(r_fatigue_val, 0, 1, 2)
 
         val_widget = QWidget()
+        val_widget.setStyleSheet("background-color: #ffffff;")
         val_lay = QHBoxLayout(val_widget)
         val_lay.setContentsMargins(10, 0, 10, 0)
         val_lay.setSpacing(10)
 
         lbl = QLabel("疲劳结果文件:")
-        lbl.setStyleSheet("color: #333; font-weight: normal;")
+        lbl.setStyleSheet('color: #333; font-weight: normal; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
 
         path_text = self._short_path(self.fatigue_file) if self.fatigue_file else "暂未选择..."
         val = QLabel(path_text)
-        val.setStyleSheet("color: #333;")
+        val.setStyleSheet('color: #333; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
         val.setWordWrap(True)
         val.setToolTip(self.fatigue_file)
 
@@ -934,7 +939,7 @@ class NewSpecialInspectionPage(BasePage):
 
         # 左侧标题文本
         lbl = QLabel(title_text)
-        lbl.setStyleSheet("font-weight: bold; color: #333; border: none; font-size: 15px;")
+        lbl.setStyleSheet('font-weight: bold; color: #333; border: none; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
         lay.addWidget(lbl)
 
         # 弹簧，将按钮挤到最右侧
@@ -953,7 +958,8 @@ class NewSpecialInspectionPage(BasePage):
                     padding: 0 12px; 
                     color: #1b2a3a; 
                     font-weight: normal;
-                    font-size: 14px;
+                    font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                    font-size: 12pt;
                 }
                 QPushButton:hover { background: #d9e6f5; }
             """)

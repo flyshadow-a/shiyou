@@ -382,8 +382,18 @@ class SpecialInspectionStrategy(BasePage):
         # 使用与 dropdown_bar.py 一致的主色（你项目里为 #0090d0）
         right.setStyleSheet("""
             QFrame#RightActions { background-color: #0090d0; }
-            QLabel { color: white; font-weight: bold; }
-            QPushButton { background: #efefef; border: 1px solid #666; }
+            QLabel { 
+                color: white; 
+                font-weight: bold;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+            }
+            QPushButton { 
+                background: #efefef; 
+                border: 1px solid #666;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+            }
             QPushButton:hover { background: #f7f7f7; }
             QPushButton#AddBtn { background:#cfe6b8; font-weight:bold; }
         """)
@@ -507,8 +517,17 @@ class SpecialInspectionStrategy(BasePage):
             btn.setCheckable(True)
             btn.setFixedHeight(28)
             btn.setStyleSheet("""
-                QPushButton { background: #efefef; border: 1px solid #333; padding: 2px 14px; }
-                QPushButton:checked { background: #d6f0d0; font-weight: bold; }
+                QPushButton { 
+                    background: #efefef; 
+                    border: 1px solid #333; 
+                    padding: 2px 14px; 
+                    font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                    font-size: 12pt;
+                }
+                QPushButton:checked { 
+                    background: #d6f0d0; 
+                    font-weight: bold; 
+                }
             """)
             btn.clicked.connect(lambda _, yy=y: self._on_year_changed(yy))
             lay.addWidget(btn)
@@ -532,7 +551,12 @@ class SpecialInspectionStrategy(BasePage):
         tl.setContentsMargins(10, 4, 10, 4)
 
         title_label = QLabel(title)
-        title_label.setStyleSheet("color:white;font-weight:bold;")
+        title_label.setStyleSheet("""
+            color: white;
+            font-weight: bold;
+            font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+            font-size: 12pt;
+        """)
         tl.addWidget(title_label)
         tl.addStretch(1)
 
@@ -550,16 +574,28 @@ class SpecialInspectionStrategy(BasePage):
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         table.setStyleSheet("""
-            QTableWidget { background: #dfe9f6; gridline-color: #ffffff; }
-            QHeaderView::section { background-color: #4f79bd; color: white; font-weight: bold; border: 1px solid #2f3a4a; }
+            QTableWidget { 
+                background-color: #ffffff; 
+                gridline-color: #d0d0d0; 
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+            }
+            QHeaderView::section { 
+                background-color: #f3f6fb; 
+                color: #000000; 
+                font-weight: normal; 
+                border: 1px solid #e6e6e6; 
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+            }
         """)
 
         row_heads = ["一", "二", "三", "四", "五", "总计"]
         for r, head in enumerate(row_heads):
             it = QTableWidgetItem(head)
             it.setTextAlignment(Qt.AlignCenter)
-            it.setBackground(QColor("#4f79bd"))
-            it.setForeground(QColor("white"))
+            it.setBackground(QColor("#f3f6fb"))
+            it.setForeground(QColor("#000000"))
             table.setItem(r, 0, it)
 
         for r in range(table.rowCount()):
