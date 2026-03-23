@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QComboBox, QLabel,
     QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox,
     QHeaderView, QToolTip, QFileDialog, QGridLayout,
-    QButtonGroup, QRadioButton
+    QButtonGroup, QRadioButton, QCheckBox
 )
 from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtGui import QColor, QFont, QFontMetrics
@@ -329,8 +329,10 @@ class PlatformLoadInformationPage(BasePage):
         self.btn_save = QPushButton("保存")
         self.btn_export = QPushButton("导出数据")
         self.btn_curve = QPushButton("重量中心变化曲线")
+        self.btn_add_row = QPushButton("新增改扩建项目")
+        self.btn_del_row = QPushButton("删除改扩建项目")
 
-        for b in (self.btn_save, self.btn_export, self.btn_curve):
+        for b in (self.btn_save, self.btn_export, self.btn_curve, self.btn_add_row, self.btn_del_row):
             b.setObjectName("TopActionBtn")
             b.setFont(self._songti_small_four_font(bold=True))
             b.setMinimumHeight(32)
@@ -339,10 +341,14 @@ class PlatformLoadInformationPage(BasePage):
         self.btn_save.setMinimumWidth(100)
         self.btn_export.setMinimumWidth(100)
         self.btn_curve.setMinimumWidth(160)
+        self.btn_add_row.setMinimumWidth(100)
+        self.btn_del_row.setMinimumWidth(100)
 
         self.btn_save.clicked.connect(self._on_save)
         self.btn_export.clicked.connect(self._on_export)
         self.btn_curve.clicked.connect(self._open_curve_page)
+        self.btn_add_row.clicked.connect(self._on_add_row)
+        self.btn_del_row.clicked.connect(self._on_del_row)
 
         self.main_layout.addWidget(top_wrap, 0)
 
@@ -387,13 +393,19 @@ class PlatformLoadInformationPage(BasePage):
         # 将内部滚动区域添加到主布局，并设置拉伸因子
         root.addWidget(self.table_scroll, 1)
 
-        # 底部按钮区：保存、导出、重量中心变化曲线，横向居中排列
+        # 底部按钮区：新增、删除、保存、导出、重心曲线，横向居中排列
         bottom_btn_wrap = QWidget()
         bottom_btn_lay = QHBoxLayout(bottom_btn_wrap)
         bottom_btn_lay.setContentsMargins(0, 10, 0, 0)
-        bottom_btn_lay.setSpacing(20)
+        bottom_btn_lay.setSpacing(15)
         
         bottom_btn_lay.addStretch(1)
+        bottom_btn_lay.addWidget(self.btn_add_row)
+        bottom_btn_lay.addWidget(self.btn_del_row)
+        # 加个小分隔
+        sep = QLabel("|")
+        sep.setStyleSheet("color: #2f3a4a; font-weight: bold;")
+        bottom_btn_lay.addWidget(sep)
         bottom_btn_lay.addWidget(self.btn_save)
         bottom_btn_lay.addWidget(self.btn_export)
         bottom_btn_lay.addWidget(self.btn_curve)
@@ -849,31 +861,28 @@ class PlatformLoadInformationPage(BasePage):
                 return r
         return self.table.rowCount()
 
-    def _rebuild_row_radio_selectors(self, data_start: int, data_end: int):
-        """在数据区每行首列放置单选框（互斥），用于“读取结果文件”定位目标行。"""
-        # 清理旧 group，避免旧按钮残留
-        if self._row_radio_group is not None:
-            self._row_radio_group.deleteLater()
-        self._row_radio_group = QButtonGroup(self)
-        self._row_radio_group.setExclusive(True)
-
-        # 先移除首列旧 cellWidget
+    def _rebuild_row_checkbox_selectors(self, data_start: int, data_end: int):
+        """在数据区每行首列放置复选框，用于批量操作。"""
+        # 移除旧的 cellWidget
         for r in range(self.table.rowCount()):
             self.table.removeCellWidget(r, 0)
+
+        self._row_checkboxes: Dict[int, QCheckBox] = {}
 
         for row_idx in range(data_start, data_end):
             seq_item = self.table.item(row_idx, 0)
             seq_text = seq_item.text().strip() if seq_item else ""
 
-            radio = QRadioButton()
-            radio.setCursor(Qt.PointingHandCursor)
-            radio.toggled.connect(lambda checked, rr=row_idx: self._on_row_radio_toggled(checked, rr))
+            cb = QCheckBox()
+            cb.setCursor(Qt.PointingHandCursor)
+            # 记录复选框引用
+            self._row_checkboxes[row_idx] = cb
 
             holder = QWidget(self.table)
             lay = QHBoxLayout(holder)
-            lay.setContentsMargins(6, 0, 6, 0)
-            lay.setSpacing(6)
-            lay.addWidget(radio, 0, Qt.AlignCenter)
+            lay.setContentsMargins(8, 0, 8, 0)
+            lay.setSpacing(8)
+            lay.addWidget(cb, 0, Qt.AlignCenter)
 
             seq_lab = QLabel(seq_text)
             seq_lab.setAlignment(Qt.AlignCenter)
@@ -882,20 +891,6 @@ class PlatformLoadInformationPage(BasePage):
             lay.addStretch(1)
 
             self.table.setCellWidget(row_idx, 0, holder)
-            self._row_radio_group.addButton(radio, row_idx)
-
-    def _on_row_radio_toggled(self, checked: bool, row: int):
-        if not checked:
-            return
-        # 勾选时同步当前单元格，便于用户感知当前行
-        if 0 <= row < self.table.rowCount():
-            self.table.setCurrentCell(row, 1)
-
-    def _checked_data_row(self) -> Optional[int]:
-        if self._row_radio_group is None:
-            return None
-        row = self._row_radio_group.checkedId()
-        return None if row < 0 else row
 
     def _on_item_changed(self, item: QTableWidgetItem):
         """处理单元格变动：如果是红色列的手动修改，恢复背景色为白色。"""
@@ -1051,6 +1046,9 @@ class PlatformLoadInformationPage(BasePage):
             if seq_item is not None:
                 seq_item.setText(str(idx))  # 从0开始连续编号
 
+        # 刷新复选框显示
+        self._rebuild_row_checkbox_selectors(data_start, data_end)
+
         data_n = len(rows)
 
         # 动态设置垂直滚动策略和表格高度
@@ -1191,6 +1189,76 @@ class PlatformLoadInformationPage(BasePage):
     def _fmt_float(self, value: object) -> str:
         fv = self._to_float(value)
         return f"{fv:.6f}".rstrip("0").rstrip(".") if fv is not None else (str(value) if value else "")
+
+    # ---------------- 表格行操作（新增/删除） ----------------
+    def _on_add_row(self):
+        """在数据区末尾（填表说明之前）新增一行。"""
+        base_rows = 4
+        data_end = self._find_data_end_row()
+        self.table.insertRow(data_end)
+        
+        # 初始化新行的样式
+        cols = self.table.columnCount()
+        calc_bg = QColor("#d8ffcf")
+        red_cols = set(range(9, 17))
+        
+        for c in range(cols):
+            # 第0列是序号/单选，第7列是跳转重心，这两个不可直接编辑
+            editable = (c not in (0, 7))
+            bg = calc_bg if c == 7 else QColor("white")
+            it = self._mk_item("", bg=bg, editable=editable)
+            if c in red_cols:
+                it.setToolTip("双击可手动输入数据；右键点击可读取本行对应的分析结果文件。")
+            self.table.setItem(data_end, c, it)
+            
+        self._refresh_table_layout_and_seq()
+
+    def _on_del_row(self):
+        """删除当前选中的数据行。"""
+        row = self.table.currentRow()
+        base_rows = 4
+        data_end = self._find_data_end_row()
+        
+        if not (base_rows <= row < data_end):
+            QMessageBox.warning(self, "提示", "请先选中要删除的数据行。")
+            return
+            
+        seq = self._cell_text(row, 0)
+        ret = QMessageBox.question(self, "确认删除", f"确定要删除序号为 {seq} 的项目行吗？",
+                                   QMessageBox.Yes | QMessageBox.No)
+        if ret != QMessageBox.Yes:
+            return
+            
+        self.table.removeRow(row)
+        self._refresh_table_layout_and_seq()
+
+    def _refresh_table_layout_and_seq(self):
+        """统一刷新序号、单选框、行高及表格总高度。"""
+        base_rows = 4
+        data_end = self._find_data_end_row()
+        
+        # 1. 重新设置序号（连续编号）
+        for idx, row_idx in enumerate(range(base_rows, data_end)):
+            it = self.table.item(row_idx, 0)
+            if it: it.setText(str(idx))
+            self.table.setRowHeight(row_idx, 44)
+            
+        # 2. 重新构建复选框
+        self._rebuild_row_checkbox_selectors(base_rows, data_end)
+        
+        # 3. 重新计算总高度
+        total_rows = self.table.rowCount()
+        data_n = data_end - base_rows
+        if data_n <= self.MAX_EXPAND_ROWS:
+            self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            total_h = sum(self.table.rowHeight(r) for r in range(total_rows))
+            self.table.setFixedHeight(total_h + 2)
+        else:
+            self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.table.setFixedHeight(-1)
+            self.table.setMinimumHeight(300)
+            
+        self._auto_fit_main_table_columns()
 
     def _extract_numbers(self, text: str) -> List[float]:
         return [float(s) for s in re.findall(self._num_pat, text or "") if self._to_float(s) is not None]
