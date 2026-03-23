@@ -693,20 +693,19 @@ class PlatformStrengthPage(BasePage):
         self.evaluate_btn = QPushButton("快速评估")
         self.evaluate_btn.setFont(self._songti_small_four_font(bold=True))
         self.evaluate_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.evaluate_btn.setMinimumHeight(max(30, combo.sizeHint().height()))
+        self.evaluate_btn.setMinimumHeight(max(32, combo.sizeHint().height()))
         self.evaluate_btn.setStyleSheet("""
             QPushButton {
-                background-color: #efefef;
-                color: #1b2a3a;
-                border: 1px solid #c7d0dc;
-                border-radius: 4px;
+                background: #f6a24a;
+                border: 1px solid #2f3a4a;
+                border-radius: 3px;
+                padding: 6px 16px;
                 font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
                 font-size: 12pt;
                 font-weight: bold;
-                padding: 4px 10px;
             }
-            QPushButton:hover { background-color: #dce9f7; }
-            QPushButton:pressed { background-color: #c8ddf3; }
+            QPushButton:hover { background: #ffb86b; }
+            QPushButton:pressed { background: #e68a00; }
         """)
         self.evaluate_btn.clicked.connect(self.on_quick_evaluate)
 
@@ -846,7 +845,7 @@ class PlatformStrengthPage(BasePage):
         left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         left_frame = QFrame()
-        left_frame.setStyleSheet("QFrame { background:#ffffff; border:1px solid #b9c6d6; }")
+        left_frame.setStyleSheet(".QFrame { background:#ffffff; border:1px solid #b9c6d6; }")
         left_layout = QVBoxLayout(left_frame)
         left_layout.setContentsMargins(8, 6, 8, 8)
         left_layout.setSpacing(12)
@@ -1033,6 +1032,21 @@ class PlatformStrengthPage(BasePage):
         candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
         return candidates[0][2]
 
+    def _parse_mud_level_from_sacinp(self, file_path: str) -> Optional[str]:
+        """从 SACS INP 文件读取 LDOPT 卡片的泥面高程字段。"""
+        lines = self.inp_view._read_lines_with_fallback(file_path)
+        for line in lines:
+            if line.upper().startswith("LDOPT"):
+                # 根据 SACS 固定格式，泥面高程通常在 33-40 列 (index 32-40)
+                if len(line) >= 40:
+                    val_str = line[32:40].strip()
+                    try:
+                        val_float = float(val_str)
+                        return f"{val_float:.3f}"
+                    except ValueError:
+                        pass
+        return None
+
     def _autoload_inp_to_view(self):
         if not hasattr(self, "inp_view"):
             return
@@ -1050,6 +1064,11 @@ class PlatformStrengthPage(BasePage):
         try:
             self.inp_view.load_inp(path)
             self.inp_path_label.setText(f"当前模型文件：{path}")
+            
+            # 解析泥面高程并回填
+            mud_level = self._parse_mud_level_from_sacinp(path)
+            if mud_level and hasattr(self, "edt_mud_level"):
+                self.edt_mud_level.setText(mud_level)
         except Exception as e:
             self.inp_path_label.setText("模型加载失败")
             self.inp_view.clear_view(f"INP 加载失败：\n{e}")
@@ -1069,19 +1088,19 @@ class PlatformStrengthPage(BasePage):
         tbl.setColumnWidth(2, 70)
 
         self._set_center_item(tbl, 0, 0, "泥面高程", editable=False)
-        self.edt_mud_level = QLineEdit("-122.4")
+        self.edt_mud_level = QLineEdit("") # 初始为空，由模型加载后回填
         self.edt_mud_level.setFont(self._songti_small_four_font())
         tbl.setCellWidget(0, 1, self.edt_mud_level)
         self._set_center_item(tbl, 0, 2, "m", editable=False)
 
         self._set_center_item(tbl, 1, 0, "水平层高程节点数量限制", editable=False)
-        self.edt_node_limit = QLineEdit("40")
+        self.edt_node_limit = QLineEdit("40") # 默认值 40
         self.edt_node_limit.setFont(self._songti_small_four_font())
         tbl.setCellWidget(1, 1, self.edt_node_limit)
         self._set_center_item(tbl, 1, 2, "", editable=False)
 
         self._set_center_item(tbl, 2, 0, "工作平面高程Workpoint", editable=False)
-        self.edt_workpoint = QLineEdit("10")
+        self.edt_workpoint = QLineEdit("") # 用户输入，初始为空
         self.edt_workpoint.setFont(self._songti_small_four_font())
         tbl.setCellWidget(2, 1, self.edt_workpoint)
         self._set_center_item(tbl, 2, 2, "m", editable=False)
