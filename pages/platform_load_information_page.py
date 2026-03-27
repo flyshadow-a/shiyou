@@ -22,9 +22,10 @@ import openpyxl
 from typing import List, Tuple, Dict, Optional
 
 from PyQt5.QtWidgets import (
+    QAction,
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QComboBox, QLabel,
     QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox,
-    QHeaderView, QToolTip, QFileDialog, QGridLayout,
+    QHeaderView, QToolTip, QFileDialog, QGridLayout, QMenu,
     QButtonGroup, QRadioButton, QCheckBox
 )
 from PyQt5.QtCore import Qt, QEvent
@@ -215,6 +216,30 @@ class PlatformLoadInformationPage(BasePage):
         font.setBold(bold)
         return font
 
+    @staticmethod
+    def _menu_qss() -> str:
+        return """
+            QMenu {
+                background-color: #ffffff;
+                color: #1d2b3a;
+                border: 1px solid #cfd8e3;
+                padding: 4px 0;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+                background-color: transparent;
+                color: #1d2b3a;
+            }
+            QMenu::item:selected {
+                background-color: #dbe9ff;
+                color: #1d2b3a;
+            }
+            QMenu::item:disabled {
+                color: #8a94a6;
+                background-color: #f7f9fc;
+            }
+        """
+
 
     def __init__(self, parent=None):
         super().__init__("", parent)
@@ -329,10 +354,8 @@ class PlatformLoadInformationPage(BasePage):
         self.btn_save = QPushButton("保存")
         self.btn_export = QPushButton("导出数据")
         self.btn_curve = QPushButton("重量中心变化曲线")
-        self.btn_add_row = QPushButton("新增改扩建项目")
-        self.btn_del_row = QPushButton("删除改扩建项目")
 
-        for b in (self.btn_save, self.btn_export, self.btn_curve, self.btn_add_row, self.btn_del_row):
+        for b in (self.btn_save, self.btn_export, self.btn_curve):
             b.setObjectName("TopActionBtn")
             b.setFont(self._songti_small_four_font(bold=True))
             b.setMinimumHeight(32)
@@ -341,14 +364,10 @@ class PlatformLoadInformationPage(BasePage):
         self.btn_save.setMinimumWidth(100)
         self.btn_export.setMinimumWidth(100)
         self.btn_curve.setMinimumWidth(160)
-        self.btn_add_row.setMinimumWidth(100)
-        self.btn_del_row.setMinimumWidth(100)
 
         self.btn_save.clicked.connect(self._on_save)
         self.btn_export.clicked.connect(self._on_export)
         self.btn_curve.clicked.connect(self._open_curve_page)
-        self.btn_add_row.clicked.connect(self._on_add_row)
-        self.btn_del_row.clicked.connect(self._on_del_row)
 
         self.main_layout.addWidget(top_wrap, 0)
 
@@ -393,19 +412,13 @@ class PlatformLoadInformationPage(BasePage):
         # 将内部滚动区域添加到主布局，并设置拉伸因子
         root.addWidget(self.table_scroll, 1)
 
-        # 底部按钮区：新增、删除、保存、导出、重心曲线，横向居中排列
+        # 底部按钮区：保存、导出、重心曲线，横向居中排列
         bottom_btn_wrap = QWidget()
         bottom_btn_lay = QHBoxLayout(bottom_btn_wrap)
         bottom_btn_lay.setContentsMargins(0, 10, 0, 0)
         bottom_btn_lay.setSpacing(15)
         
         bottom_btn_lay.addStretch(1)
-        bottom_btn_lay.addWidget(self.btn_add_row)
-        bottom_btn_lay.addWidget(self.btn_del_row)
-        # 加个小分隔
-        sep = QLabel("|")
-        sep.setStyleSheet("color: #2f3a4a; font-weight: bold;")
-        bottom_btn_lay.addWidget(sep)
         bottom_btn_lay.addWidget(self.btn_save)
         bottom_btn_lay.addWidget(self.btn_export)
         bottom_btn_lay.addWidget(self.btn_curve)
@@ -1068,22 +1081,56 @@ class PlatformLoadInformationPage(BasePage):
     # ---------------- 结果文件读取接口 ----------------
 
     def _on_table_context_menu(self, pos):
-        """表格右键菜单逻辑：仅在数据区的红色列弹出“读取结果文件”选项。"""
-        item = self.table.itemAt(pos)
-        if not item: return
-        row, col = item.row(), item.column()
+        """表格右键菜单逻辑：首列支持行操作，红色列支持读取结果文件。"""
         base_rows = 4
         data_end = self._find_data_end_row()
-        if not (base_rows <= row < data_end): return
+        row = self.table.rowAt(pos.y())
+        col = self.table.columnAt(pos.x())
+        if not (base_rows <= row < data_end):
+            return
+
+        if col == 0:
+            self._show_row_context_menu(row, pos)
+            return
 
         # 红色字段列：9..16 (Fx~Mz, 操作工况, 极端工况)
         if 9 <= col <= 16:
-            from PyQt5.QtWidgets import QMenu
-            menu = QMenu()
-            menu.setStyleSheet('font-family: "SimSun"; font-size: 12pt;')
+            menu = QMenu(self.table)
+            menu.setStyleSheet(self._menu_qss())
             action = menu.addAction("读取该行关联的结果文件 (.inp)")
             action.triggered.connect(lambda: self._on_import_result(target_row=row))
             menu.exec_(self.table.viewport().mapToGlobal(pos))
+
+    def _checked_data_rows(self) -> List[int]:
+        data_end = self._find_data_end_row()
+        rows: List[int] = []
+        for row_idx, checkbox in getattr(self, "_row_checkboxes", {}).items():
+            if row_idx < data_end and checkbox.isChecked():
+                rows.append(row_idx)
+        return sorted(rows)
+
+    def _show_row_context_menu(self, row: int, pos):
+        menu = QMenu(self.table)
+        menu.setStyleSheet(self._menu_qss())
+
+        add_above_action = QAction("在上方新增一行", menu)
+        add_below_action = QAction("在下方新增一行", menu)
+        add_above_action.triggered.connect(lambda _=False, target=row: self._insert_row_at(target))
+        add_below_action.triggered.connect(lambda _=False, target=row + 1: self._insert_row_at(target))
+        menu.addAction(add_above_action)
+        menu.addAction(add_below_action)
+
+        checked_rows = self._checked_data_rows()
+        if checked_rows:
+            delete_action = QAction(f"删除已勾选行（{len(checked_rows)}）", menu)
+            delete_action.triggered.connect(lambda _=False, rows=checked_rows: self._delete_checked_rows(rows))
+            menu.addAction(delete_action)
+        else:
+            hint_action = QAction("请先勾选要删除的行", menu)
+            hint_action.setEnabled(False)
+            menu.addAction(hint_action)
+
+        menu.exec_(self.table.viewport().mapToGlobal(pos))
 
     def _on_import_result(self, target_row: int = None):
         """读取结果文件（INP）：按指定行序号匹配文件名并回填该行红色字段。"""
@@ -1191,11 +1238,12 @@ class PlatformLoadInformationPage(BasePage):
         return f"{fv:.6f}".rstrip("0").rstrip(".") if fv is not None else (str(value) if value else "")
 
     # ---------------- 表格行操作（新增/删除） ----------------
-    def _on_add_row(self):
-        """在数据区末尾（填表说明之前）新增一行。"""
+    def _insert_row_at(self, row: int):
+        """在数据区指定位置新增一行。"""
         base_rows = 4
         data_end = self._find_data_end_row()
-        self.table.insertRow(data_end)
+        insert_row = max(base_rows, min(row, data_end))
+        self.table.insertRow(insert_row)
         
         # 初始化新行的样式
         cols = self.table.columnCount()
@@ -1209,27 +1257,38 @@ class PlatformLoadInformationPage(BasePage):
             it = self._mk_item("", bg=bg, editable=editable)
             if c in red_cols:
                 it.setToolTip("双击可手动输入数据；右键点击可读取本行对应的分析结果文件。")
-            self.table.setItem(data_end, c, it)
+            self.table.setItem(insert_row, c, it)
             
         self._refresh_table_layout_and_seq()
 
-    def _on_del_row(self):
-        """删除当前选中的数据行。"""
-        row = self.table.currentRow()
+    def _delete_checked_rows(self, rows: Optional[List[int]] = None):
+        """删除已勾选的数据行。"""
         base_rows = 4
         data_end = self._find_data_end_row()
-        
-        if not (base_rows <= row < data_end):
-            QMessageBox.warning(self, "提示", "请先选中要删除的数据行。")
+        target_rows = sorted(rows if rows is not None else self._checked_data_rows())
+
+        if not target_rows:
+            QMessageBox.information(self, "提示", "请先勾选要删除的行。")
             return
-            
-        seq = self._cell_text(row, 0)
-        ret = QMessageBox.question(self, "确认删除", f"确定要删除序号为 {seq} 的项目行吗？",
-                                   QMessageBox.Yes | QMessageBox.No)
+        if target_rows[0] < base_rows or target_rows[-1] >= data_end:
+            return
+        if len(target_rows) >= data_end - base_rows:
+            QMessageBox.information(self, "提示", "表格至少保留一条数据行。")
+            return
+
+        ret = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定删除选中的 {len(target_rows)} 行信息吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
         if ret != QMessageBox.Yes:
             return
-            
-        self.table.removeRow(row)
+
+        for row in reversed(target_rows):
+            self.table.removeRow(row)
+
         self._refresh_table_layout_and_seq()
 
     def _refresh_table_layout_and_seq(self):

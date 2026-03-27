@@ -64,6 +64,30 @@ class FeasibilityAssessmentPage(BasePage):
         font.setBold(bold)
         return font
 
+    @staticmethod
+    def _menu_qss() -> str:
+        return """
+            QMenu {
+                background-color: #ffffff;
+                color: #1d2b3a;
+                border: 1px solid #cfd8e3;
+                padding: 4px 0;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+                background-color: transparent;
+                color: #1d2b3a;
+            }
+            QMenu::item:selected {
+                background-color: #dbe9ff;
+                color: #1d2b3a;
+            }
+            QMenu::item:disabled {
+                color: #8a94a6;
+                background-color: #f7f9fc;
+            }
+        """
+
     def __init__(self, main_window,facility_code, parent=None):
         if parent is None:
             parent = main_window
@@ -477,6 +501,7 @@ class FeasibilityAssessmentPage(BasePage):
 
         meta["context_row"] = row
         menu = QMenu(table)
+        menu.setStyleSheet(self._menu_qss())
         add_above_action = QAction("在上方新增一行", menu)
         add_action = QAction("在下方新增一行", menu)
         delete_action = QAction("删除当前行", menu)
