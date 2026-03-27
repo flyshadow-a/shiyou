@@ -724,6 +724,13 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # 开启高 DPI 自动缩放
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    # 开启高 DPI 图片自适应
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # 针对某些 Qt 版本的额外环境变量配置
+    os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
