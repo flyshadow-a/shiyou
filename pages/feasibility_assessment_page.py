@@ -11,12 +11,14 @@
 import os
 import shutil
 import subprocess
-from typing import Optional,List
+from typing import List, Optional, cast
 
-from PyQt5.QtCore import Qt, QUrl
-from PyQt5.QtGui import QFont, QFontMetrics, QColor, QBrush
+from PyQt5.QtCore import QEvent, QTimer, Qt, QUrl
+from PyQt5.QtGui import QBrush, QColor, QFont, QFontMetrics, QMouseEvent
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QAction,
+    QMenu,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
@@ -68,6 +70,9 @@ class FeasibilityAssessmentPage(BasePage):
         super().__init__("", parent)
         self.facility_code = facility_code
         self.main_window = main_window
+        self._hover_combo_boxes = []
+        self._combo_hover_meta = {}
+        self._dynamic_table_meta = {}
         self._build_ui()
 
     # ---------------- UI ----------------
@@ -158,7 +163,7 @@ class FeasibilityAssessmentPage(BasePage):
                   bg: Optional[QColor] = None, bold: bool = False, editable: bool = True, center: bool = True):
         it = QTableWidgetItem(str(text))
         if center:
-            it.setTextAlignment(Qt.AlignCenter)
+            it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         if bg is not None:
             it.setBackground(QBrush(bg))
         if bold:
@@ -166,7 +171,8 @@ class FeasibilityAssessmentPage(BasePage):
             f.setBold(True)
             it.setFont(f)
         if not editable:
-            it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            flags = cast(Qt.ItemFlags, Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            it.setFlags(flags)
         table.setItem(r, c, it)
         return it
 
@@ -185,12 +191,366 @@ class FeasibilityAssessmentPage(BasePage):
         combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         combo.setMinimumContentsLength(6)
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        combo.setStyleSheet("""
-            QComboBox { background: #ffffff; border: none; padding: 1px 6px; }
-            QComboBox::drop-down { border-left: 1px solid #c8d3e1; width: 16px; }
-        """)
+        combo.setProperty("showDropdownIndicator", False)
+        arrow_btn = QPushButton("▼", cell_wrap)
+        arrow_btn.setFixedWidth(18)
+        arrow_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        arrow_btn.setFont(self._songti_small_four_font(bold=True))
+        arrow_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: #eef4fb;
+                color: #35506b;
+                border: none;
+                border-left: 1px solid #c8d3e1;
+                padding: 0;
+            }
+            QPushButton:hover { background: #dbe9f6; }
+            """
+        )
+        arrow_btn.hide()
+        combo.installEventFilter(self)
+        cell_wrap.installEventFilter(self)
+        arrow_btn.installEventFilter(self)
+        combo.view().installEventFilter(self)
+        self._hover_combo_boxes.append(combo)
+        self._combo_hover_meta[combo] = {
+            "wrap": cell_wrap,
+            "button": arrow_btn,
+        }
+        self._apply_combo_hover_style(combo, show_indicator=False)
         cell_lay.addWidget(combo)
+        cell_lay.addWidget(arrow_btn)
+        arrow_btn.clicked.connect(combo.showPopup)
+        combo.destroyed.connect(lambda *_args, c=combo: self._cleanup_hover_combo(c))
         table.setCellWidget(row, col, cell_wrap)
+
+    def _cleanup_hover_combo(self, combo: QComboBox):
+        self._combo_hover_meta.pop(combo, None)
+        self._hover_combo_boxes = [item for item in self._hover_combo_boxes if item is not combo]
+
+    def _apply_combo_hover_style(self, combo: QComboBox, *, show_indicator: bool):
+        if show_indicator:
+            combo.setStyleSheet("""
+                QComboBox {
+                    background: #ffffff;
+                    border: none;
+                    padding: 1px 6px;
+                }
+                QComboBox::drop-down {
+                    width: 0px;
+                    border: none;
+                }
+            """)
+        else:
+            combo.setStyleSheet("""
+                QComboBox {
+                    background: #ffffff;
+                    border: none;
+                    padding: 1px 6px;
+                }
+                QComboBox::drop-down {
+                    width: 0px;
+                    border: none;
+                }
+                QComboBox::down-arrow {
+                    image: none;
+                    width: 0px;
+                    height: 0px;
+                }
+            """)
+
+    def _set_combo_hover_state(self, combo: QComboBox, show_indicator: bool):
+        current = bool(combo.property("showDropdownIndicator"))
+        if current == show_indicator:
+            return
+        combo.setProperty("showDropdownIndicator", show_indicator)
+        self._apply_combo_hover_style(combo, show_indicator=show_indicator)
+        meta = self._combo_hover_meta.get(combo)
+        if meta:
+            meta["button"].setVisible(show_indicator)
+
+    def _sync_combo_hover_state(self, combo: QComboBox):
+        meta = self._combo_hover_meta.get(combo)
+        if not meta:
+            return
+        wrap = meta["wrap"]
+        button = meta["button"]
+        show_indicator = combo.view().isVisible() or wrap.underMouse() or combo.underMouse() or button.underMouse()
+        self._set_combo_hover_state(combo, show_indicator)
+
+    def _make_empty_item(self, *, bg: Optional[QColor] = None, editable: bool = True) -> QTableWidgetItem:
+        item = QTableWidgetItem("")
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        if bg is not None:
+            item.setBackground(QBrush(bg))
+        if not editable:
+            flags = cast(Qt.ItemFlags, Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            item.setFlags(flags)
+        return item
+
+    def _install_row_hover_actions(self, table: QTableWidget, table_key: str, header_rows: int):
+        viewport = table.viewport()
+        viewport.setMouseTracking(True)
+        viewport.installEventFilter(self)
+
+        panel = QWidget(viewport)
+        panel.hide()
+        panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        panel.setStyleSheet("background: transparent;")
+
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        add_btn = QPushButton("+")
+        for btn in (add_btn,):
+            btn.setFixedSize(20, 20)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFont(self._songti_small_four_font(bold=True))
+            btn.setStyleSheet(
+                """
+                QPushButton {
+                    background: #2aa9df;
+                    color: #ffffff;
+                    border: 1px solid #1b2a3a;
+                    border-radius: 10px;
+                    font-family: %s;
+                    font-size: 12pt;
+                    font-weight: bold;
+                    padding: 0;
+                }
+                QPushButton:hover { background: #4bbbe8; }
+                """ % SONGTI_FONT_FALLBACK
+            )
+            layout.addWidget(btn)
+
+        add_btn.clicked.connect(lambda: self._insert_dynamic_row(table_key))
+
+        table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        table.customContextMenuRequested.connect(
+            lambda pos, key=table_key: self._show_row_context_menu(key, pos)
+        )
+
+        self._dynamic_table_meta[table_key] = {
+            "table": table,
+            "viewport": viewport,
+            "panel": panel,
+            "header_rows": header_rows,
+            "hover_row": None,
+            "context_row": None,
+        }
+
+        table.horizontalScrollBar().valueChanged.connect(lambda _=0, key=table_key: self._update_hover_panel_position(key))
+        table.verticalScrollBar().valueChanged.connect(lambda _=0, key=table_key: self._update_hover_panel_position(key))
+
+    def _get_last_data_row(self, table_key: str) -> Optional[int]:
+        meta = self._dynamic_table_meta.get(table_key)
+        if not meta:
+            return None
+        table = meta["table"]
+        header_rows = meta["header_rows"]
+        if table.rowCount() <= header_rows:
+            return None
+        return table.rowCount() - 1
+
+    def _renumber_dynamic_rows(self, table_key: str):
+        meta = self._dynamic_table_meta.get(table_key)
+        if not meta:
+            return
+        table = meta["table"]
+        header_rows = meta["header_rows"]
+        for row in range(header_rows, table.rowCount()):
+            self._set_cell(
+                table,
+                row,
+                0,
+                str(row - header_rows + 1),
+                bg=QColor("#e9eef5"),
+                editable=False,
+            )
+
+    def _populate_table1_row(self, row: int):
+        base_cols = 1 + 2 + 2 + 2 + 1
+        self._set_cell(self.tbl1, row, 0, "", bg=QColor("#e9eef5"), editable=False)
+        for col in range(1, base_cols):
+            self.tbl1.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
+        start = base_cols
+        for i, elevation in enumerate(self.ELEVATIONS):
+            default = "焊接" if elevation in (27, 23, 18) else "无连接"
+            self._set_combo_cell(self.tbl1, row, start + i, default=default)
+
+    def _populate_table2_row(self, row: int):
+        base_cols = 1 + 2 + 2 + 2 + 2
+        self._set_cell(self.tbl2, row, 0, "", bg=QColor("#e9eef5"), editable=False)
+        for col in range(1, base_cols):
+            self.tbl2.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
+        start = base_cols
+        for i, elevation in enumerate(self.ELEVATIONS):
+            default = "焊接" if elevation in (27, 23) else "无连接"
+            self._set_combo_cell(self.tbl2, row, start + i, default=default)
+
+    def _populate_table3_row(self, row: int):
+        self._set_cell(self.tbl3, row, 0, "", bg=QColor("#e9eef5"), editable=False)
+        for col in range(1, self.tbl3.columnCount()):
+            self.tbl3.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
+
+    def _insert_dynamic_row(self, table_key: str):
+        meta = self._dynamic_table_meta.get(table_key)
+        if not meta:
+            return
+        table = meta["table"]
+        row = table.rowCount()
+        self._insert_dynamic_row_at(table_key, row)
+
+    def _insert_dynamic_row_at(self, table_key: str, row: int):
+        meta = self._dynamic_table_meta.get(table_key)
+        if not meta:
+            return
+        table = meta["table"]
+        header_rows = meta["header_rows"]
+        if row < header_rows:
+            row = header_rows
+        if row > table.rowCount():
+            row = table.rowCount()
+        table.insertRow(row)
+
+        if table_key == "tbl1":
+            self._populate_table1_row(row)
+        elif table_key == "tbl2":
+            self._populate_table2_row(row)
+        elif table_key == "tbl3":
+            self._populate_table3_row(row)
+
+        self._renumber_dynamic_rows(table_key)
+        self._update_hover_panel_position(table_key)
+
+    def _remove_dynamic_row(self, table_key: str):
+        meta = self._dynamic_table_meta.get(table_key)
+        if not meta:
+            return
+        table = meta["table"]
+        header_rows = meta["header_rows"]
+        if table.rowCount() <= header_rows + 1:
+            return
+        table.removeRow(table.rowCount() - 1)
+        self._renumber_dynamic_rows(table_key)
+        self._update_hover_panel_position(table_key)
+
+    def _remove_dynamic_row_at(self, table_key: str, row: int):
+        meta = self._dynamic_table_meta.get(table_key)
+        if not meta:
+            return
+        table = meta["table"]
+        header_rows = meta["header_rows"]
+        if table.rowCount() <= header_rows + 1:
+            QMessageBox.information(self, "提示", "表格至少保留一条数据行。")
+            return
+        if not (header_rows <= row < table.rowCount()):
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定删除第 {row - header_rows + 1} 行吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        table.removeRow(row)
+        meta["context_row"] = None
+        self._renumber_dynamic_rows(table_key)
+        self._update_hover_panel_position(table_key)
+
+    def _show_row_context_menu(self, table_key: str, pos):
+        meta = self._dynamic_table_meta.get(table_key)
+        if not meta:
+            return
+        table = meta["table"]
+        header_rows = meta["header_rows"]
+        row = table.rowAt(pos.y())
+        col = table.columnAt(pos.x())
+        if col != 0 or row < header_rows:
+            return
+
+        meta["context_row"] = row
+        menu = QMenu(table)
+        add_above_action = QAction("在上方新增一行", menu)
+        add_action = QAction("在下方新增一行", menu)
+        delete_action = QAction("删除当前行", menu)
+        add_above_action.triggered.connect(lambda _=False, key=table_key, r=row: self._insert_dynamic_row_at(key, r))
+        add_action.triggered.connect(lambda _=False, key=table_key, r=row + 1: self._insert_dynamic_row_at(key, r))
+        delete_action.triggered.connect(lambda _=False, key=table_key, r=row: self._remove_dynamic_row_at(key, r))
+        menu.addAction(add_above_action)
+        menu.addAction(add_action)
+        menu.addAction(delete_action)
+        menu.exec_(table.viewport().mapToGlobal(pos))
+
+    def _set_hover_row(self, table_key: str, row: Optional[int]):
+        meta = self._dynamic_table_meta.get(table_key)
+        if not meta:
+            return
+        meta["hover_row"] = row
+        self._update_hover_panel_position(table_key)
+
+    def _update_hover_panel_position(self, table_key: str):
+        meta = self._dynamic_table_meta.get(table_key)
+        if not meta:
+            return
+        table = meta["table"]
+        panel = meta["panel"]
+        hover_row = meta["hover_row"]
+        if hover_row is None:
+            panel.hide()
+            return
+
+        index = table.model().index(hover_row, 0)
+        rect = table.visualRect(index)
+        if not rect.isValid() or rect.isEmpty():
+            panel.hide()
+            return
+
+        hint_x = rect.left() - panel.sizeHint().width() - 6
+        x = max(2, hint_x)
+        y = rect.bottom() - panel.sizeHint().height() + 2
+        y = max(0, min(y, max(0, table.viewport().height() - panel.sizeHint().height())))
+        panel.resize(panel.sizeHint())
+        panel.move(x, y)
+        panel.show()
+        panel.raise_()
+
+    def eventFilter(self, a0, a1):
+        if isinstance(a0, QWidget):
+            for combo in list(self._hover_combo_boxes):
+                meta = self._combo_hover_meta.get(combo)
+                if not meta:
+                    continue
+                try:
+                    watched = (combo, meta["wrap"], meta["button"], combo.view())
+                except RuntimeError:
+                    self._cleanup_hover_combo(combo)
+                    continue
+                if a0 in watched:
+                    if a1.type() == QEvent.Type.Enter:
+                        self._set_combo_hover_state(combo, True)
+                    elif a1.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                        QTimer.singleShot(0, lambda c=combo: self._sync_combo_hover_state(c))
+                    return super().eventFilter(a0, a1)
+
+        for table_key, meta in self._dynamic_table_meta.items():
+            if a0 is meta["viewport"]:
+                if a1.type() == QEvent.Type.MouseMove and isinstance(a1, QMouseEvent):
+                    row = meta["table"].rowAt(a1.pos().y())
+                    last_row = self._get_last_data_row(table_key)
+                    self._set_hover_row(table_key, row if row == last_row else None)
+                elif a1.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                    self._set_hover_row(table_key, None)
+                elif a1.type() == QEvent.Type.Resize:
+                    self._update_hover_panel_position(table_key)
+                break
+        return super().eventFilter(a0, a1)
 
     def _auto_fit_columns(self, table: QTableWidget, padding: int = 18, equal_width_groups: Optional[List[List[int]]] = None):
         fm = QFontMetrics(table.font())
@@ -409,8 +769,9 @@ class FeasibilityAssessmentPage(BasePage):
         # lay.addWidget(table_scroll, 1)  # 原来 lay.addWidget(self.tbl1, 1) 替换为滚动区域
 
         # === 2. 替换为直接添加表格，并明确启用表格自身的滚动条 ===
-        self.tbl1.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.tbl1.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tbl1.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tbl1.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._install_row_hover_actions(self.tbl1, "tbl1", header_rows)
         lay.addWidget(self.tbl1, 1)
 
         #lay.addWidget(self.tbl1, 1)
@@ -520,8 +881,9 @@ class FeasibilityAssessmentPage(BasePage):
         # lay.addWidget
 
         # === 2. 替换为直接添加表格，并明确启用表格自身的滚动条 ===
-        self.tbl2.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.tbl2.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tbl2.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tbl2.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._install_row_hover_actions(self.tbl2, "tbl2", header_rows)
         lay.addWidget(self.tbl2, 1)
         #lay.addWidget(self.tbl2, 1)
         return box
@@ -595,8 +957,9 @@ class FeasibilityAssessmentPage(BasePage):
         # 单独把第0列（编号列）设置为按内容自适应，保持紧凑
         self.tbl3.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         # === 2. 替换为直接添加表格，并明确启用表格自身的滚动条 ===
-        self.tbl3.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.tbl3.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tbl3.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tbl3.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._install_row_hover_actions(self.tbl3, "tbl3", header_rows)
         lay.addWidget(self.tbl3, 1)
 
         # lay.addWidget(self.tbl3, 1)
@@ -807,7 +1170,7 @@ class FeasibilityAssessmentPage(BasePage):
 
         if extra_open_path:
             btn_open = QPushButton("用系统打开")
-            btn_open.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(extra_open_path)))
+            btn_open.clicked.connect(lambda: self._open_local_file(extra_open_path))
             btn_row.addWidget(btn_open)
 
         btn_close = QPushButton("关闭")
@@ -816,3 +1179,6 @@ class FeasibilityAssessmentPage(BasePage):
 
         v.addLayout(btn_row)
         dlg.exec_()
+
+    def _open_local_file(self, path: str) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
