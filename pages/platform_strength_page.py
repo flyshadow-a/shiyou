@@ -848,11 +848,12 @@ class PlatformStrengthPage(BasePage):
         left_frame.setStyleSheet(".QFrame { background:#ffffff; border:1px solid #b9c6d6; }")
         left_layout = QVBoxLayout(left_frame)
         left_layout.setContentsMargins(8, 6, 8, 8)
-        left_layout.setSpacing(12)
+        left_layout.setSpacing(10)
 
         struct_box = self._build_structure_model_box()
-        pile_box, marine_box = self._build_left_tables()
+        splash_box, pile_box, marine_box = self._build_left_tables()
         left_layout.addWidget(struct_box, 0)
+        left_layout.addWidget(splash_box, 0)
         left_layout.addWidget(pile_box, 0)
         left_layout.addWidget(marine_box, 1)
 
@@ -1132,8 +1133,8 @@ class PlatformStrengthPage(BasePage):
             }
         """)
         box_layout = QVBoxLayout(box)
-        box_layout.setContentsMargins(10, 10, 10, 10)
-        box_layout.setSpacing(8)
+        box_layout.setContentsMargins(10, 8, 10, 8)
+        box_layout.setSpacing(6)
 
         kv_tbl = self._build_structure_model_kv_table()
         box_layout.addWidget(kv_tbl, 0)
@@ -1184,7 +1185,7 @@ class PlatformStrengthPage(BasePage):
             + lab_layers.sizeHint().height()
             + layer_tbl_h
             + box_layout.spacing() * 2
-            + 24
+            + 18
         )
         box.setFixedHeight(total_h)
         box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -1243,7 +1244,7 @@ class PlatformStrengthPage(BasePage):
             item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         table.setItem(row, col, item)
 
-    def _build_left_tables(self) -> Tuple[QGroupBox, QGroupBox]:
+    def _build_left_tables(self) -> Tuple[QGroupBox, QGroupBox, QGroupBox]:
         section_title_qss = """
             QGroupBox {
                 font-size: 12pt;
@@ -1260,11 +1261,41 @@ class PlatformStrengthPage(BasePage):
             }
         """
 
+        # 飞溅区腐蚀余量
+        splash_box = QGroupBox("飞溅区腐蚀余量")
+        splash_box.setStyleSheet(section_title_qss)
+        splash_layout = QVBoxLayout(splash_box)
+        splash_layout.setContentsMargins(8, 8, 8, 8)
+
+        tbl_splash = QTableWidget(1, 3, splash_box)
+        tbl_splash.setHorizontalHeaderLabels(["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm/y)"])
+        self._init_table_common(tbl_splash, show_vertical_header=False)
+        for c in range(3):
+            self._set_center_item(tbl_splash, 0, c, "")
+        tbl_splash.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tbl_splash.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tbl_splash.setRowHeight(0, 32)
+        splash_header_h = tbl_splash.horizontalHeader().height() if not tbl_splash.horizontalHeader().isHidden() else 0
+        splash_rows_h = sum(tbl_splash.rowHeight(r) for r in range(tbl_splash.rowCount()))
+        splash_tbl_h = splash_header_h + splash_rows_h + tbl_splash.frameWidth() * 2 + 6
+        tbl_splash.setMinimumHeight(splash_tbl_h)
+        tbl_splash.setMaximumHeight(splash_tbl_h)
+        tbl_splash.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        tbl_splash.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        tbl_splash.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        splash_layout.addWidget(tbl_splash, 1)
+
+        splash_margins = splash_layout.contentsMargins()
+        splash_box_h = splash_margins.top() + splash_margins.bottom() + splash_tbl_h + 18
+        splash_box.setMinimumHeight(splash_box_h)
+        splash_box.setMaximumHeight(splash_box_h)
+        splash_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
         # 桩基信息
         pile_box = QGroupBox("桩基信息")
         pile_box.setStyleSheet(section_title_qss)
         pile_layout = QVBoxLayout(pile_box)
-        pile_layout.setContentsMargins(8, 10, 8, 8)
+        pile_layout.setContentsMargins(8, 8, 8, 8)
 
         tbl_pile = QTableWidget(1, 4, pile_box)
         tbl_pile.setHorizontalHeaderLabels(["基础冲刷(m)", "桩基础抗压承载能力(t)", "桩基础抗拔承载能力(t)", "单根桩泥下自重(t)"])
@@ -1273,7 +1304,7 @@ class PlatformStrengthPage(BasePage):
             self._set_center_item(tbl_pile, 0, c, "")
         tbl_pile.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         tbl_pile.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        tbl_pile.setRowHeight(0, 34)
+        tbl_pile.setRowHeight(0, 32)
         pile_header_h = tbl_pile.horizontalHeader().height() if not tbl_pile.horizontalHeader().isHidden() else 0
         pile_rows_h = sum(tbl_pile.rowHeight(r) for r in range(tbl_pile.rowCount()))
         pile_tbl_h = pile_header_h + pile_rows_h + tbl_pile.frameWidth() * 2 + 6
@@ -1285,7 +1316,7 @@ class PlatformStrengthPage(BasePage):
         pile_layout.addWidget(tbl_pile, 1)
 
         pile_margins = pile_layout.contentsMargins()
-        pile_box_h = pile_margins.top() + pile_margins.bottom() + pile_tbl_h + 22
+        pile_box_h = pile_margins.top() + pile_margins.bottom() + pile_tbl_h + 18
         pile_box.setMinimumHeight(pile_box_h)
         pile_box.setMaximumHeight(pile_box_h)
         pile_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -1294,7 +1325,7 @@ class PlatformStrengthPage(BasePage):
         marine_box = QGroupBox("海生物信息")
         marine_box.setStyleSheet(section_title_qss)
         marine_layout = QVBoxLayout(marine_box)
-        marine_layout.setContentsMargins(8, 10, 8, 10)
+        marine_layout.setContentsMargins(8, 8, 8, 8)
 
         tbl_marine = QTableWidget(5, 12, marine_box)
         self._init_table_common(tbl_marine, show_vertical_header=False)
@@ -1337,7 +1368,7 @@ class PlatformStrengthPage(BasePage):
         tbl_marine.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         tbl_marine.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
         for r in range(tbl_marine.rowCount()):
-            tbl_marine.setRowHeight(r, 30)
+            tbl_marine.setRowHeight(r, 28)
 
         marine_rows_h = sum(tbl_marine.rowHeight(r) for r in range(tbl_marine.rowCount()))
         marine_tbl_h = marine_rows_h + tbl_marine.frameWidth() * 2 + 8
@@ -1348,8 +1379,8 @@ class PlatformStrengthPage(BasePage):
 
         marine_layout.addWidget(tbl_marine, 1)
         marine_margins = marine_layout.contentsMargins()
-        marine_box_h = marine_margins.top() + marine_margins.bottom() + marine_tbl_h + 14
+        marine_box_h = marine_margins.top() + marine_margins.bottom() + marine_tbl_h + 12
         marine_box.setMinimumHeight(marine_box_h)
         marine_box.setMaximumHeight(marine_box_h)
         marine_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        return pile_box, marine_box
+        return splash_box, pile_box, marine_box
