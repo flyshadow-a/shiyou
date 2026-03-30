@@ -49,14 +49,14 @@ NAV_CONFIG = [
         "text": "平台载荷管理",
         "children": [
             {
-                "text": "油气田信息","page": OilfieldWaterLevelPage
+                "text": "海洋环境","page": OilfieldWaterLevelPage
             },
             {"text": "载荷信息",
              "children":[
-                 {"text":"汇总信息表","page":SummaryInformationTablePage},
-                 {"text":"平台载荷信息表","page":PlatformLoadInformationPage}
+                 {"text":"汇总信息","page":SummaryInformationTablePage},
+                 {"text":"平台载荷信息","page":PlatformLoadInformationPage}
              ]},
-            {"text": "状态监测（结构和腐蚀性检测）",},
+            {"text": "状态监测（结构和腐蚀性检测）", "disabled": True},
             {"text": "结构强度/改造可行性评估","page":PlatformStrengthPage},
 
             {"text": "特检策略","page": SpecialInspectionStrategy},

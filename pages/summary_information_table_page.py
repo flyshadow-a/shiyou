@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtGui import QColor, QFont, QFontMetrics
 
+from app_paths import external_path, first_existing_path
 from pages.hover_tip_table import HoverTipTable
 from base_page import BasePage
 
@@ -45,7 +46,8 @@ class SummaryInformationTablePage(BasePage):
 
     def __init__(self, parent=None):
         super().__init__("", parent)
-        self.data_dir = os.path.join(os.getcwd(), "data")
+        self.data_dir = first_existing_path("data")
+        self.output_data_dir = external_path("data")
         self._build_ui()
         self.load_from_excel(self._default_excel_path())
 
@@ -171,7 +173,7 @@ class SummaryInformationTablePage(BasePage):
         return [
             "序号",
             "分公司",
-            "作业单元",
+            "作业公司",
             "设施名称",
             "投产时间",
             "设计年限",
@@ -239,7 +241,7 @@ class SummaryInformationTablePage(BasePage):
         labels = {
             0: "序号",
             1: "分公司",
-            2: "作业单元",
+            2: "作业公司",
             3: "设施名称",
             4: "投产时间",
             5: "设计年限",
@@ -259,10 +261,10 @@ class SummaryInformationTablePage(BasePage):
         p1 = os.path.join(self.data_dir, self.EXCEL_NAME)
         if os.path.exists(p1):
             return p1
-        p2 = os.path.join(os.getcwd(), self.EXCEL_NAME)
+        p2 = first_existing_path(self.EXCEL_NAME)
         if os.path.exists(p2):
             return p2
-        return p1  # 默认返回 data 路径（用于报错提示）
+        return os.path.join(self.output_data_dir, self.EXCEL_NAME)  # 默认返回外部 data 路径（用于报错提示）
 
     def load_from_excel(self, excel_path: str):
         """
@@ -309,7 +311,7 @@ class SummaryInformationTablePage(BasePage):
         # 映射：当前表格 15 列 -> 样表字段（能找到就填，找不到留空）
         col_map = {
             "分公司": "分公司",
-            "作业单元": "作业公司",
+            "作业公司": "作业公司",
             "设施名称": "设施名称",
             "投产时间": "投产时间",
             "设计年限": "设计年限",
@@ -410,7 +412,8 @@ class SummaryInformationTablePage(BasePage):
 
     def _on_export(self):
         # 导出当前表格（不含两行表头的“合并表头行”，仅导出数据）
-        export_path = os.path.join(self.data_dir, "summary_information_table_export.csv")
+        os.makedirs(self.output_data_dir, exist_ok=True)
+        export_path = os.path.join(self.output_data_dir, "summary_information_table_export.csv")
         header = self._columns()
 
         header_rows = 2

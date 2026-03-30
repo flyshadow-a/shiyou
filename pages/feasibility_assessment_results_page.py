@@ -13,6 +13,7 @@
 import os
 from typing import Dict, List, Tuple
 
+from app_paths import first_existing_path
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QColor, QPen, QBrush, QFontMetrics
 from PyQt5.QtWidgets import (
@@ -290,11 +291,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
     def _autoload_inp_to_view(self):
         here = os.path.dirname(os.path.abspath(__file__))
         candidates = [
-            os.path.join(os.getcwd(), "data", "demo_platform_jacket.inp"),
-            os.path.join(os.getcwd(), "upload", "demo_platform_jacket.inp"),
+            first_existing_path("data", "demo_platform_jacket.inp"),
+            first_existing_path("upload", "demo_platform_jacket.inp"),
             os.path.normpath(os.path.join(here, "..", "data", "demo_platform_jacket.inp")),
             os.path.normpath(os.path.join(here, "..", "upload", "demo_platform_jacket.inp")),
-            os.path.join(os.getcwd(), "demo_platform_jacket.inp"),
+            first_existing_path("demo_platform_jacket.inp"),
         ]
         path = next((p for p in candidates if os.path.exists(p)), "")
         if not path:

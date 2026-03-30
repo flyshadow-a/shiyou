@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QComboBox, QPushButton, QScrollArea, QSizePolicy, QLabel
 )
 
+from app_paths import first_existing_path
 from base_page import BasePage
 from dropdown_bar import DropdownBar
 from pages.read_table_xls import ReadTableXls
@@ -104,7 +105,7 @@ class SpecialInspectionStrategy(BasePage):
         super().__init__("", parent)
         self.main_window = main_window
 
-        self.data_dir = os.path.join(os.getcwd(), "data")
+        self.data_dir = first_existing_path("data")
         self.current_year = "5年"
 
         self._excel_provider = ReadTableXls()

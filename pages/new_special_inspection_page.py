@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
+from app_paths import external_path, external_root, first_existing_path
 from base_page import BasePage
 from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
 from pages.platform_strength_page import InpWireframeView
@@ -35,7 +36,8 @@ class NewSpecialInspectionPage(BasePage):
     def __init__(self, facility_code: str, parent=None):
         self.facility_code = facility_code
         self._risk_updated = False
-        self.upload_root = os.path.join(os.getcwd(), "upload", "model_files")
+        self.upload_root = external_path("upload", "model_files")
+        self.packaged_upload_root = first_existing_path("upload", "model_files")
         self._collapse_static_demo = True
 
         # 页面仅展示“系统文件库”记录（当前用 upload/model_files 代替数据库）
@@ -151,8 +153,18 @@ class NewSpecialInspectionPage(BasePage):
 
         # 上半部分：结构模型信息 + 模型文件 + 分析结果文件
         v.addWidget(self._build_model_info_block(), 0)
-        v.addWidget(self._build_model_files_block(), 0)
-        v.addWidget(self._build_analysis_files_block(), 0)
+        self.model_files_block = self._build_model_files_block()
+        self.analysis_files_block = self._build_analysis_files_block()
+        self.model_files_block.setParent(panel)
+        self.analysis_files_block.setParent(panel)
+        self.model_files_block.hide()
+        self.analysis_files_block.hide()
+        # 按当前需求暂时注释掉以下区块：
+        # 1. 设置模型文件
+        # 2. 设置分析结果文件
+        # 3. 设置疲劳分析结果文件（位于分析结果文件区块内）
+        # v.addWidget(self.model_files_block, 0)
+        # v.addWidget(self.analysis_files_block, 0)
 
         # 下半部分：按你新截图增加的“用户设置/风险等级参数”
         v.addWidget(self._build_risk_level_settings_block(), 1)
@@ -471,7 +483,12 @@ class NewSpecialInspectionPage(BasePage):
         return self._store_local_file_to_upload(local_path, category)
 
     def _fetch_system_files_from_upload(self, category: str) -> List[str]:
-        if not os.path.isdir(self.upload_root):
+        search_roots = []
+        for root in [self.upload_root, self.packaged_upload_root]:
+            if root and os.path.isdir(root) and root not in search_roots:
+                search_roots.append(root)
+
+        if not search_roots:
             return []
 
         ext_map = {
@@ -482,39 +499,40 @@ class NewSpecialInspectionPage(BasePage):
         records = []
         code_lower = (self.facility_code or "").strip().lower()
 
-        for dir_path, _, file_names in os.walk(self.upload_root):
-            for fn in file_names:
-                full_path = os.path.normpath(os.path.join(dir_path, fn))
-                full_low = full_path.lower()
-                ext_no_dot = os.path.splitext(fn)[1].lower().lstrip(".")
-                stem = os.path.splitext(fn)[0].lower()
+        for search_root in search_roots:
+            for dir_path, _, file_names in os.walk(search_root):
+                for fn in file_names:
+                    full_path = os.path.normpath(os.path.join(dir_path, fn))
+                    full_low = full_path.lower()
+                    ext_no_dot = os.path.splitext(fn)[1].lower().lstrip(".")
+                    stem = os.path.splitext(fn)[0].lower()
 
-                keep = False
-                score = 0
+                    keep = False
+                    score = 0
 
-                if category == self.CATEGORY_MODEL:
-                    name_score = self._sacinp_name_score(fn)
-                    if name_score > 0 and self._scan_model_signature(full_path):
-                        keep = True
-                        score += name_score
-                else:
-                    allow = ext_map.get(category, set())
-                    in_special_bucket = f"special_strategy{os.sep}{category}".lower() in full_low
-                    if in_special_bucket or (ext_no_dot in allow):
-                        keep = True
-                        score += 100
+                    if category == self.CATEGORY_MODEL:
+                        name_score = self._sacinp_name_score(fn)
+                        if name_score > 0 and self._scan_model_signature(full_path):
+                            keep = True
+                            score += name_score
+                    else:
+                        allow = ext_map.get(category, set())
+                        in_special_bucket = f"special_strategy{os.sep}{category}".lower() in full_low
+                        if in_special_bucket or (ext_no_dot in allow):
+                            keep = True
+                            score += 100
 
-                if not keep:
-                    continue
+                    if not keep:
+                        continue
 
-                if code_lower and code_lower in stem:
-                    score += 80
+                    if code_lower and code_lower in stem:
+                        score += 80
 
-                try:
-                    mtime = os.path.getmtime(full_path)
-                except OSError:
-                    mtime = 0.0
-                records.append((score, mtime, full_path))
+                    try:
+                        mtime = os.path.getmtime(full_path)
+                    except OSError:
+                        mtime = 0.0
+                    records.append((score, mtime, full_path))
 
         records.sort(key=lambda x: (x[0], x[1]), reverse=True)
         return [p for _, _, p in records]
@@ -602,7 +620,7 @@ class NewSpecialInspectionPage(BasePage):
 
     def _short_path(self, path: str) -> str:
         try:
-            rel = os.path.relpath(path, os.getcwd())
+            rel = os.path.relpath(path, str(external_root()))
             return rel if len(rel) < 140 else f"...{rel[-140:]}"
         except Exception:
             return path
@@ -918,7 +936,7 @@ class NewSpecialInspectionPage(BasePage):
 
         if not path:
             self.inp_path_label.setText("未找到可预览的模型文件")
-            self.inp_view.clear_view("未找到可预览的模型文件\n请在“设置模型文件”中导入/提取模型")
+            self.inp_view.clear_view("未找到可预览的模型文件\n请先导入或提取模型")
             return
 
         try:

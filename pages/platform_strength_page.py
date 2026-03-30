@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
     QGraphicsScene, QMessageBox, QPushButton, QHeaderView,
 )
 
+from app_paths import first_existing_path
 from base_page import BasePage
 from dropdown_bar import DropdownBar
 from pages.feasibility_assessment_page import FeasibilityAssessmentPage
@@ -534,9 +535,9 @@ class PlatformStrengthPage(BasePage):
         super().__init__("", parent)
         self.main_window = main_window
 
-        self.data_dir = os.path.join(os.getcwd(), "data")
-        self.upload_dir = os.path.join(os.getcwd(), "upload")
-        self.model_files_root = os.path.join(self.upload_dir, "model_files")
+        self.data_dir = first_existing_path("data")
+        self.upload_dir = first_existing_path("upload")
+        self.model_files_root = first_existing_path("upload", "model_files")
 
         self._excel_provider = ReadTableXls()
         self._excel_loaded = False

@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtGui import QColor, QFont, QFontMetrics
 
+from app_paths import existing_dirs, external_path, first_existing_path
 from base_page import BasePage
 from dropdown_bar import DropdownBar  # 复用平台基本信息页的顶部下拉条样式
 # 从样表提取下拉选项（兼容：pages 包内相对导入 / 直接运行）
@@ -243,7 +244,8 @@ class PlatformLoadInformationPage(BasePage):
 
     def __init__(self, parent=None):
         super().__init__("", parent)
-        self.data_dir = os.path.join(os.getcwd(), "data")
+        self.data_dir = first_existing_path("data")
+        self.output_data_dir = external_path("data")
         self._num_pat = r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
 
         # === 红色字段 Excel 导入（仅当前行）===
@@ -1187,7 +1189,8 @@ class PlatformLoadInformationPage(BasePage):
                     it.setBackground(QColor('#f2f2f2'))
 
     def _pick_result_excel(self):
-        path, _ = QFileDialog.getOpenFileName(self, '选择结果文件（Excel）', self.data_dir, 'Excel Files (*.xlsx *.xlsm);;All Files (*)')
+        start_dir = self.data_dir if os.path.exists(self.data_dir) else self.output_data_dir
+        path, _ = QFileDialog.getOpenFileName(self, '选择结果文件（Excel）', start_dir, 'Excel Files (*.xlsx *.xlsm);;All Files (*)')
         if path: self.result_excel_path = path
 
     def _import_excel_to_current_row(self):
@@ -1330,7 +1333,8 @@ class PlatformLoadInformationPage(BasePage):
         return ""
 
     def _result_inp_search_roots(self) -> List[str]:
-        return [self.data_dir, os.path.join(os.getcwd(), "upload")]
+        roots = [self.data_dir, *existing_dirs("upload")]
+        return list(dict.fromkeys(roots))
 
     def _find_result_inp_by_seq(self, seq_text: str) -> Optional[str]:
         seq = str(seq_text).strip()
@@ -1438,12 +1442,14 @@ class PlatformLoadInformationPage(BasePage):
         mw.tab_widget.setCurrentIndex(idx)
 
     def _ensure_demo_files(self):
-        os.makedirs(self.data_dir, exist_ok=True)
+        # 打包环境下演示数据位于 _internal/data，无需在 exe 同级预创建空 data 目录。
+        return
 
     def _on_save(self): QMessageBox.information(self, "保存", "数据已保存（模拟）。")
 
     def _on_export(self):
-        path = os.path.join(self.data_dir, "platform_load_information_export.csv")
+        os.makedirs(self.output_data_dir, exist_ok=True)
+        path = os.path.join(self.output_data_dir, "platform_load_information_export.csv")
         with open(path, "w", encoding="utf-8-sig", newline="") as f:
             w = csv.writer(f)
             w.writerow(self._columns())

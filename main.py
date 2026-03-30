@@ -5,7 +5,7 @@ import sys
 import os
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap, QIcon, QFont, QFontDatabase
+from PyQt5.QtGui import QPixmap, QIcon, QFont, QFontDatabase, QColor, QBrush
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QTabWidget, QStackedWidget, QLabel, QLineEdit,
@@ -175,6 +175,7 @@ class MainWindow(QMainWindow):
         QTreeWidget::viewport { background-color: #004a80; }
 
         QTreeWidget::item { height: 36px; }
+        QTreeWidget::item:disabled { color: #9ca3af; }
 
         /* 鼠标悬停可以保留淡淡高亮（可选） */
         QTreeWidget::item:hover { background-color: rgba(255,255,255,0.10); }
@@ -408,6 +409,10 @@ class MainWindow(QMainWindow):
                 page_cls = node.get("page")
                 if page_cls is not None:
                     item.setData(0, Qt.UserRole, page_cls)
+
+                if node.get("disabled"):
+                    item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
+                    item.setForeground(0, QBrush(QColor("#9ca3af")))
 
                 children = node.get("children")
                 if children:

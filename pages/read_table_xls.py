@@ -7,6 +7,7 @@ import os
 from typing import Dict, List, Optional, Any
 
 import pandas as pd
+from app_paths import external_path, first_existing_path
 
 
 class ReadTableXls:
@@ -31,14 +32,14 @@ class ReadTableXls:
         self._resolved_cols: Dict[str, Optional[str]] = {}
 
     def default_excel_path(self) -> str:
-        data_dir = os.path.join(os.getcwd(), "data")
+        data_dir = first_existing_path("data")
         p1 = os.path.join(data_dir, self.EXCEL_NAME)
         if os.path.exists(p1):
             return p1
-        p2 = os.path.join(os.getcwd(), self.EXCEL_NAME)
+        p2 = first_existing_path(self.EXCEL_NAME)
         if os.path.exists(p2):
             return p2
-        return p1
+        return external_path("data", self.EXCEL_NAME)
 
     def load(self, excel_path: Optional[str] = None, header: int = 1) -> pd.DataFrame:
         path = excel_path or self.default_excel_path()
