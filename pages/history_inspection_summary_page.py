@@ -25,13 +25,18 @@ from PyQt5.QtWidgets import (
     QFrame,
     QVBoxLayout,
     QHBoxLayout,
+    QFormLayout,
     QLabel,
     QToolButton,
+    QPushButton,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
     QFileDialog,
+    QDialog,
+    QDialogButtonBox,
+    QLineEdit,
     QMessageBox,
     QAbstractItemView,
     QSizePolicy,
@@ -40,6 +45,7 @@ from PyQt5.QtWidgets import (
 
 from base_page import BasePage
 from dropdown_bar import DropdownBar
+from pages.doc_man import DocManWidget
 
 # ✅ 直接复用 ConstructionDocsWidget 的文件夹布局样式
 from pages.construction_docs_widget import ConstructionDocsWidget
@@ -55,6 +61,98 @@ class LinkLabel(QLabel):
         if event.button() == Qt.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
+
+
+class AddPeriodicInspectionDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("新增定期检测")
+        self.setModal(True)
+        self.resize(420, 180)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(10)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.name_edit = QLineEdit(self)
+        self.year_edit = QLineEdit(self)
+        self.year_edit.setPlaceholderText("例如：2025")
+
+        form.addRow("检测名称", self.name_edit)
+        form.addRow("年份", self.year_edit)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.button(QDialogButtonBox.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _accept_if_valid(self):
+        name = self.name_edit.text().strip()
+        year = self.year_edit.text().strip()
+        if not name:
+            QMessageBox.information(self, "提示", "请先填写名称。")
+            return
+        if not year:
+            QMessageBox.information(self, "提示", "请先填写年份。")
+            return
+        self.accept()
+
+    def get_values(self):
+        return self.name_edit.text().strip(), self.year_edit.text().strip()
+
+
+class AddSpecialEventInspectionDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("新增特殊事件检测")
+        self.setModal(True)
+        self.resize(420, 180)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(10)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.name_edit = QLineEdit(self)
+        self.year_edit = QLineEdit(self)
+        self.year_edit.setPlaceholderText("例如：2025")
+
+        form.addRow("事件名称", self.name_edit)
+        form.addRow("年份", self.year_edit)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.button(QDialogButtonBox.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _accept_if_valid(self):
+        name = self.name_edit.text().strip()
+        year = self.year_edit.text().strip()
+        if not name:
+            QMessageBox.information(self, "提示", "请先填写事件名称。")
+            return
+        if not year:
+            QMessageBox.information(self, "提示", "请先填写年份。")
+            return
+        self.accept()
+
+    def get_values(self):
+        return self.name_edit.text().strip(), self.year_edit.text().strip()
 
 
 # ----------------------------------------------------------------------
@@ -76,9 +174,8 @@ class _HomeFoldersWidget(ConstructionDocsWidget):
         """
         return {
             "完工检测": {"type": "folder", "children": {}},
-            "第1次检测": {"type": "folder", "children": {}},
-            "第N次检测": {"type": "folder", "children": {}},
-            "历史抽检记录": {"type": "folder", "children": {}},
+            "定期检测1-N": {"type": "folder", "children": {}},
+            "特殊事件检测（台风、碰撞等）": {"type": "folder", "children": {}},
         }
 
     def _build_demo_file_records(self) -> Dict[str, List[Dict]]:
@@ -88,9 +185,8 @@ class _HomeFoldersWidget(ConstructionDocsWidget):
         # 直接发信号给外部页面处理（保持你原来的 _switch_to 逻辑）
         name_to_key = {
             "完工检测": "complete",
-            "第1次检测": "first",
-            "第N次检测": "nth",
-            "历史抽检记录": "history_sampling",
+            "定期检测1-N": "periodic",
+            "特殊事件检测（台风、碰撞等）": "history_sampling",
         }
         self.folderSelected.emit(name_to_key.get(folder_name, "home"))
 
@@ -112,9 +208,17 @@ class HistoryInspectionSummaryPage(BasePage):
     COL_DOWNLOAD = 5
     COL_REMARK = 6
 
+    PERIODIC_FILE_COL_INDEX = 0
+    PERIODIC_FILE_COL_NAME = 1
+    PERIODIC_FILE_COL_MTIME = 2
+    PERIODIC_FILE_COL_UPLOAD = 3
+    PERIODIC_FILE_COL_DOWNLOAD = 4
+    PERIODIC_FILE_COL_REMARK = 5
+
     def __init__(self, parent=None):
         # ✅ 删除 BasePage 顶部标题“历史检测及结论”：不给标题文本
         super().__init__("", parent)
+        self.breadcrumb_font_ratio = 0.015
 
         # 当前所在“文件夹”
         self.current_folder_key = "home"
@@ -125,6 +229,10 @@ class HistoryInspectionSummaryPage(BasePage):
 
         # 预设每个文件夹的表格数据
         self.folder_rows = self._build_folder_rows()
+        self.periodic_demo_data = self._build_periodic_demo_data()
+        self.special_event_demo_data = self._build_special_event_demo_data()
+        self.doc_man_configs = self._build_doc_man_configs()
+        self.doc_man_records = self._build_doc_man_records()
 
         # 资源路径（小文件夹图标）
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -185,8 +293,119 @@ class HistoryInspectionSummaryPage(BasePage):
             "complete": complete_rows,
             "first": first_rows,
             "nth": nth_rows,
+            "periodic": list(first_rows),
             "history_sampling": history_rows,
         }
+
+    def _build_periodic_demo_data(self) -> List[Dict]:
+        return [
+            {
+                "index": 1,
+                "title": "第一次5年检测",
+                "year": "2010",
+                "file_section_title": "第一次检测文件",
+                "sampling_section_title": "第一次抽检记录",
+                "files": [
+                    {"name": "第一次5年检测报告.pdf", "mtime": "2010/06/18", "remark": "检测总报告"},
+                    {"name": "第一次5年检测照片记录.zip", "mtime": "2010/06/20", "remark": "现场照片"},
+                    {"name": "第一次5年检测整改跟踪表.xlsx", "mtime": "2010/06/25", "remark": "整改闭环"},
+                ],
+                "sampling": [
+                    {"node": "A1X2", "level": "IV", "conclusion": "未见异常"},
+                    {"node": "L002", "level": "II", "conclusion": "局部轻微腐蚀"},
+                    {"node": "XG030", "level": "III", "conclusion": "建议跟踪观察"},
+                ],
+            },
+            {
+                "index": 2,
+                "title": "第二次10年检测",
+                "year": "2015",
+                "file_section_title": "第二次检测文件",
+                "sampling_section_title": "第二次抽检记录",
+                "files": [
+                    {"name": "第二次10年检测报告.pdf", "mtime": "2015/07/08", "remark": "检测总报告"},
+                    {"name": "第二次10年节点复核表.xlsx", "mtime": "2015/07/10", "remark": "节点复核"},
+                    {"name": "第二次10年检测原始记录.docx", "mtime": "2015/07/12", "remark": "原始记录"},
+                ],
+                "sampling": [
+                    {"node": "A1X2", "level": "IV", "conclusion": "满足要求"},
+                    {"node": "L002", "level": "II", "conclusion": "建议局部补涂"},
+                    {"node": "XG030", "level": "III", "conclusion": "继续监测"},
+                ],
+            },
+            {
+                "index": 3,
+                "title": "第三次15年检测",
+                "year": "2020",
+                "file_section_title": "第三次检测文件",
+                "sampling_section_title": "第三次抽检记录",
+                "files": [
+                    {"name": "第三次15年检测报告.pdf", "mtime": "2020/09/15", "remark": "检测总报告"},
+                    {"name": "第三次15年导管架测厚记录.xlsx", "mtime": "2020/09/16", "remark": "测厚成果"},
+                    {"name": "第三次15年隐患整改清单.docx", "mtime": "2020/09/18", "remark": "整改建议"},
+                ],
+                "sampling": [
+                    {"node": "B2Y1", "level": "III", "conclusion": "满足要求"},
+                    {"node": "D008", "level": "II", "conclusion": "局部防腐修复"},
+                    {"node": "JG021", "level": "III", "conclusion": "建议下周期复查"},
+                ],
+            },
+        ]
+
+    def _build_special_event_demo_data(self) -> List[Dict]:
+        return [
+            {
+                "index": 1,
+                "title": "延寿检测",
+                "year": "2010",
+                "file_section_title": "延寿检测",
+                "record_section_title": "延寿检测记录",
+                "files": [
+                    {"name": "延寿检测评估报告.pdf", "mtime": "2010/05/16", "remark": "评估报告"},
+                    {"name": "延寿检测照片记录.zip", "mtime": "2010/05/18", "remark": "现场照片"},
+                    {"name": "延寿整改闭环表.xlsx", "mtime": "2010/05/20", "remark": "整改闭环"},
+                ],
+                "records": [
+                    {"node": "A1X2", "level": "III", "conclusion": "满足要求"},
+                    {"node": "L002", "level": "II", "conclusion": "建议局部复检"},
+                    {"node": "XG030", "level": "III", "conclusion": "继续跟踪"},
+                ],
+            },
+            {
+                "index": 2,
+                "title": "台风损伤检测",
+                "year": "2015",
+                "file_section_title": "台风损伤检测",
+                "record_section_title": "台风损伤检测记录",
+                "files": [
+                    {"name": "台风损伤检测报告.pdf", "mtime": "2015/09/08", "remark": "检测总报告"},
+                    {"name": "台风后结构复核表.xlsx", "mtime": "2015/09/10", "remark": "结构复核"},
+                    {"name": "台风损伤现场照片.zip", "mtime": "2015/09/12", "remark": "现场照片"},
+                ],
+                "records": [
+                    {"node": "A1X2", "level": "IV", "conclusion": "未见异常"},
+                    {"node": "L002", "level": "II", "conclusion": "局部轻微变形"},
+                    {"node": "XG030", "level": "III", "conclusion": "建议修复后复检"},
+                ],
+            },
+            {
+                "index": 3,
+                "title": "碰撞检测",
+                "year": "2020",
+                "file_section_title": "碰撞检测",
+                "record_section_title": "碰撞检测记录",
+                "files": [
+                    {"name": "碰撞检测专项报告.pdf", "mtime": "2020/11/06", "remark": "专项报告"},
+                    {"name": "碰撞区域测厚记录.xlsx", "mtime": "2020/11/08", "remark": "测厚记录"},
+                    {"name": "碰撞修复建议书.docx", "mtime": "2020/11/10", "remark": "修复建议"},
+                ],
+                "records": [
+                    {"node": "B2Y1", "level": "III", "conclusion": "满足要求"},
+                    {"node": "D008", "level": "II", "conclusion": "建议局部补强"},
+                    {"node": "JG021", "level": "III", "conclusion": "下周期复查"},
+                ],
+            },
+        ]
 
     # ------------------------------------------------------------------
     # UI 构建
@@ -235,11 +454,12 @@ class HistoryInspectionSummaryPage(BasePage):
         self.pages: Dict[str, QWidget] = {}
         self.pages["home"] = self._build_home_page()
         self.pages["complete"] = self._build_folder_table_page("完工检测", "complete")
+        self.pages["periodic"] = self._build_periodic_page()
         self.pages["first"] = self._build_folder_table_page("第1次检测", "first")
         self.pages["nth"] = self._build_folder_table_page("第N次检测", "nth")
         self.pages["history_sampling"] = self._build_history_sampling_page()
 
-        for key in ["home", "complete", "first", "nth", "history_sampling"]:
+        for key in ["home", "complete", "periodic", "first", "nth", "history_sampling"]:
             self.stack.addWidget(self.pages[key])
 
         # 默认在首页
@@ -303,9 +523,10 @@ class HistoryInspectionSummaryPage(BasePage):
             self.lbl_second.setVisible(True)
             name_map = {
                 "complete": "完工检测",
+                "periodic": "定期检测1-N",
                 "first": "第1次检测",
                 "nth": "第N次检测",
-                "history_sampling": "历史抽检记录",
+                "history_sampling": "特殊事件检测（台风、碰撞等）",
             }
             self.lbl_second.setText(name_map.get(self.current_folder_key, ""))
 
@@ -349,8 +570,106 @@ class HistoryInspectionSummaryPage(BasePage):
         layout.setContentsMargins(0, 8, 0, 8)
         layout.setSpacing(0)
 
+        if folder_key in self.doc_man_configs:
+            doc_widget = DocManWidget(self._get_doc_man_upload_dir, page)
+            doc_widget.set_context([folder_key], self.doc_man_records[folder_key], self.doc_man_configs[folder_key])
+            layout.addWidget(doc_widget)
+            return page
+
         table = self._create_table_for_folder(folder_key)
         layout.addWidget(table)
+
+        return page
+
+    def _build_periodic_page(self) -> QWidget:
+        page = QWidget(self.stack)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 10, 0, 18)
+        layout.setSpacing(14)
+
+        self.periodic_overview_table = QTableWidget(len(self.periodic_demo_data), 3, page)
+        self.periodic_overview_table.setObjectName("PeriodicOverviewTable")
+        self.periodic_overview_table.setHorizontalHeaderLabels(["序号", "项目名称", "年份"])
+        self.periodic_overview_table.verticalHeader().setVisible(False)
+        self.periodic_overview_table.setAlternatingRowColors(False)
+        self.periodic_overview_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.periodic_overview_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.periodic_overview_table.verticalHeader().setDefaultSectionSize(42)
+        self.periodic_overview_table.setShowGrid(True)
+        self.periodic_overview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.periodic_overview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.periodic_overview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        self.periodic_overview_table.setColumnWidth(0, 92)
+        self.periodic_overview_table.setColumnWidth(2, 138)
+        self.periodic_overview_table.setMinimumHeight(182)
+
+        for row, item in enumerate(self.periodic_demo_data):
+            index_item = QTableWidgetItem(str(item["index"]))
+            index_item.setTextAlignment(Qt.AlignCenter)
+            index_item.setFlags(index_item.flags() & ~Qt.ItemIsEditable)
+            self.periodic_overview_table.setItem(row, 0, index_item)
+
+            title_item = QTableWidgetItem(item["title"])
+            title_item.setTextAlignment(Qt.AlignCenter)
+            title_item.setFlags(title_item.flags() & ~Qt.ItemIsEditable)
+            self.periodic_overview_table.setItem(row, 1, title_item)
+
+            year_item = QTableWidgetItem(item["year"])
+            year_item.setTextAlignment(Qt.AlignCenter)
+            year_item.setFlags(year_item.flags() & ~Qt.ItemIsEditable)
+            self.periodic_overview_table.setItem(row, 2, year_item)
+
+        self.periodic_overview_table.itemSelectionChanged.connect(self._on_periodic_project_changed)
+        layout.addWidget(self.periodic_overview_table, 0)
+
+        periodic_action_row = QHBoxLayout()
+        periodic_action_row.setContentsMargins(0, 0, 0, 0)
+        periodic_action_row.addStretch()
+        self.periodic_add_btn = QPushButton("新增检测", page)
+        self.periodic_add_btn.setObjectName("OverviewActionButton")
+        self.periodic_add_btn.clicked.connect(self._add_periodic_project)
+        periodic_action_row.addWidget(self.periodic_add_btn, 0, Qt.AlignRight)
+        layout.addLayout(periodic_action_row)
+
+        self.periodic_files_title = QLabel("第一次检测文件", page)
+        self.periodic_files_title.setObjectName("PeriodicSectionBanner")
+        layout.addWidget(self.periodic_files_title, 0)
+
+        self.periodic_files_table = QTableWidget(0, 6, page)
+        self.periodic_files_table.setObjectName("PeriodicFilesTable")
+        self.periodic_files_table.setHorizontalHeaderLabels(["序号", "文件名", "修改时间", "上传", "下载", "备注"])
+        self.periodic_files_table.verticalHeader().setVisible(False)
+        self.periodic_files_table.setAlternatingRowColors(False)
+        self.periodic_files_table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.periodic_files_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.periodic_files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.periodic_files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.periodic_files_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.periodic_files_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.periodic_files_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.periodic_files_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.periodic_files_table.setMinimumHeight(220)
+        self.periodic_files_table.cellClicked.connect(self._on_periodic_file_cell_clicked)
+        layout.addWidget(self.periodic_files_table, 0)
+
+        self.periodic_sampling_title = QLabel("第一次抽检记录", page)
+        self.periodic_sampling_title.setObjectName("PeriodicSectionBanner")
+        layout.addWidget(self.periodic_sampling_title, 0)
+
+        self.periodic_sampling_table = QTableWidget(0, 3, page)
+        self.periodic_sampling_table.setObjectName("PeriodicSamplingTable")
+        self.periodic_sampling_table.setHorizontalHeaderLabels(["节点号", "检验等级", "检验结论"])
+        self.periodic_sampling_table.verticalHeader().setVisible(False)
+        self.periodic_sampling_table.setAlternatingRowColors(False)
+        self.periodic_sampling_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.periodic_sampling_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.periodic_sampling_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.periodic_sampling_table.setMinimumHeight(190)
+        layout.addWidget(self.periodic_sampling_table, 1)
+
+        if self.periodic_demo_data:
+            self.periodic_overview_table.selectRow(0)
+            self._refresh_periodic_detail(0)
 
         return page
 
@@ -360,39 +679,445 @@ class HistoryInspectionSummaryPage(BasePage):
     def _build_history_sampling_page(self) -> QWidget:
         page = QWidget(self.stack)
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 8, 0, 16)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 10, 0, 18)
+        layout.setSpacing(14)
 
-        # 顶部表格
-        table = self._create_table_for_folder("history_sampling")
-        layout.addWidget(table, 0)
+        self.special_event_overview_table = QTableWidget(len(self.special_event_demo_data), 3, page)
+        self.special_event_overview_table.setObjectName("SpecialEventOverviewTable")
+        self.special_event_overview_table.setHorizontalHeaderLabels(["序号", "事件名称", "年份"])
+        self.special_event_overview_table.verticalHeader().setVisible(False)
+        self.special_event_overview_table.setAlternatingRowColors(False)
+        self.special_event_overview_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.special_event_overview_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.special_event_overview_table.verticalHeader().setDefaultSectionSize(42)
+        self.special_event_overview_table.setShowGrid(True)
+        self.special_event_overview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.special_event_overview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.special_event_overview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        self.special_event_overview_table.setColumnWidth(0, 92)
+        self.special_event_overview_table.setColumnWidth(2, 138)
+        self.special_event_overview_table.setMinimumHeight(182)
 
-        # 蓝底说明区域
-        desc_frame = QFrame(page)
-        desc_frame.setObjectName("SamplingDescFrame")
+        for row, item in enumerate(self.special_event_demo_data):
+            index_item = QTableWidgetItem(str(item["index"]))
+            index_item.setTextAlignment(Qt.AlignCenter)
+            index_item.setFlags(index_item.flags() & ~Qt.ItemIsEditable)
+            self.special_event_overview_table.setItem(row, 0, index_item)
 
-        desc_layout = QVBoxLayout(desc_frame)
-        desc_layout.setContentsMargins(32, 20, 32, 24)
-        desc_layout.setSpacing(0)
+            title_item = QTableWidgetItem(item["title"])
+            title_item.setTextAlignment(Qt.AlignCenter)
+            title_item.setFlags(title_item.flags() & ~Qt.ItemIsEditable)
+            self.special_event_overview_table.setItem(row, 1, title_item)
 
-        desc_text = QLabel(
-            "xxxx年五年特检报告显示，水下导管架杆件结构完整、未发现凹陷变形与机械损伤，"
-            "牺牲阳极均在位，连接牢固；焊缝检测未发现缺陷，飞溅区构件测厚结果最小腐蚀厚度0.1mm，"
-            "最大腐蚀厚度0.5mm，平台水下结构状况良好。"
-        )
-        desc_text.setObjectName("SamplingDescText")
-        desc_text.setWordWrap(True)
-        desc_text.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            year_item = QTableWidgetItem(item["year"])
+            year_item.setTextAlignment(Qt.AlignCenter)
+            year_item.setFlags(year_item.flags() & ~Qt.ItemIsEditable)
+            self.special_event_overview_table.setItem(row, 2, year_item)
 
-        desc_layout.addWidget(desc_text)
+        self.special_event_overview_table.itemSelectionChanged.connect(self._on_special_event_changed)
+        layout.addWidget(self.special_event_overview_table, 0)
 
-        layout.addWidget(desc_frame, 0)
+        special_event_action_row = QHBoxLayout()
+        special_event_action_row.setContentsMargins(0, 0, 0, 0)
+        special_event_action_row.addStretch()
+        self.special_event_add_btn = QPushButton("新增检测", page)
+        self.special_event_add_btn.setObjectName("OverviewActionButton")
+        self.special_event_add_btn.clicked.connect(self._add_special_event)
+        special_event_action_row.addWidget(self.special_event_add_btn, 0, Qt.AlignRight)
+        layout.addLayout(special_event_action_row)
+
+        self.special_event_files_title = QLabel("台风损伤检测", page)
+        self.special_event_files_title.setObjectName("PeriodicSectionBanner")
+        layout.addWidget(self.special_event_files_title, 0)
+
+        self.special_event_files_table = QTableWidget(0, 6, page)
+        self.special_event_files_table.setObjectName("SpecialEventFilesTable")
+        self.special_event_files_table.setHorizontalHeaderLabels(["序号", "文件名", "修改时间", "上传", "下载", "备注"])
+        self.special_event_files_table.verticalHeader().setVisible(False)
+        self.special_event_files_table.setAlternatingRowColors(False)
+        self.special_event_files_table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.special_event_files_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.special_event_files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.special_event_files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.special_event_files_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.special_event_files_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.special_event_files_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.special_event_files_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.special_event_files_table.setMinimumHeight(220)
+        self.special_event_files_table.cellClicked.connect(self._on_special_event_file_cell_clicked)
+        layout.addWidget(self.special_event_files_table, 0)
+
+        self.special_event_records_title = QLabel("台风损伤检测记录", page)
+        self.special_event_records_title.setObjectName("PeriodicSectionBanner")
+        layout.addWidget(self.special_event_records_title, 0)
+
+        self.special_event_records_table = QTableWidget(0, 3, page)
+        self.special_event_records_table.setObjectName("SpecialEventRecordsTable")
+        self.special_event_records_table.setHorizontalHeaderLabels(["节点号", "检验等级", "检验结论"])
+        self.special_event_records_table.verticalHeader().setVisible(False)
+        self.special_event_records_table.setAlternatingRowColors(False)
+        self.special_event_records_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.special_event_records_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.special_event_records_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.special_event_records_table.setMinimumHeight(190)
+        layout.addWidget(self.special_event_records_table, 1)
+
+        if self.special_event_demo_data:
+            self.special_event_overview_table.selectRow(0)
+            self._refresh_special_event_detail(0)
 
         return page
+
+    def _create_periodic_demo_entry(self, title: str, year: str) -> Dict:
+        return {
+            "index": len(self.periodic_demo_data) + 1,
+            "title": title,
+            "year": year,
+            "file_section_title": f"{title}文件",
+            "sampling_section_title": f"{title}抽检记录",
+            "files": [
+                {"name": f"{title}报告.pdf", "mtime": f"{year}/06/18", "remark": "演示文件"},
+                {"name": f"{title}原始记录.xlsx", "mtime": f"{year}/06/20", "remark": "演示文件"},
+                {"name": f"{title}照片资料.zip", "mtime": f"{year}/06/22", "remark": "演示文件"},
+            ],
+            "sampling": [
+                {"node": "A1X2", "level": "III", "conclusion": "演示结论，建议跟踪观察"},
+                {"node": "L002", "level": "II", "conclusion": "演示结论，状态良好"},
+                {"node": "XG030", "level": "III", "conclusion": "演示结论，局部复核"},
+            ],
+        }
+
+    def _create_special_event_demo_entry(self, title: str, year: str) -> Dict:
+        return {
+            "index": len(self.special_event_demo_data) + 1,
+            "title": title,
+            "year": year,
+            "file_section_title": title,
+            "record_section_title": f"{title}记录",
+            "files": [
+                {"name": f"{title}报告.pdf", "mtime": f"{year}/09/08", "remark": "演示文件"},
+                {"name": f"{title}照片资料.zip", "mtime": f"{year}/09/10", "remark": "演示文件"},
+                {"name": f"{title}处理建议.docx", "mtime": f"{year}/09/12", "remark": "演示文件"},
+            ],
+            "records": [
+                {"node": "A1X2", "level": "IV", "conclusion": "演示结论，建议专项复查"},
+                {"node": "L002", "level": "II", "conclusion": "演示结论，状态可控"},
+                {"node": "XG030", "level": "III", "conclusion": "演示结论，建议补充检测"},
+            ],
+        }
+
+    def _refresh_periodic_overview_table(self, selected_row: int | None = None):
+        self.periodic_overview_table.clearContents()
+        self.periodic_overview_table.setRowCount(len(self.periodic_demo_data))
+        for row, item in enumerate(self.periodic_demo_data):
+            item["index"] = row + 1
+            for col, value in enumerate((item["index"], item["title"], item["year"])):
+                table_item = QTableWidgetItem(str(value))
+                table_item.setTextAlignment(Qt.AlignCenter)
+                table_item.setFlags(table_item.flags() & ~Qt.ItemIsEditable)
+                self.periodic_overview_table.setItem(row, col, table_item)
+
+        if self.periodic_demo_data:
+            row = len(self.periodic_demo_data) - 1 if selected_row is None else max(0, min(selected_row, len(self.periodic_demo_data) - 1))
+            self.periodic_overview_table.selectRow(row)
+            self._refresh_periodic_detail(row)
+
+    def _refresh_special_event_overview_table(self, selected_row: int | None = None):
+        self.special_event_overview_table.clearContents()
+        self.special_event_overview_table.setRowCount(len(self.special_event_demo_data))
+        for row, item in enumerate(self.special_event_demo_data):
+            item["index"] = row + 1
+            for col, value in enumerate((item["index"], item["title"], item["year"])):
+                table_item = QTableWidgetItem(str(value))
+                table_item.setTextAlignment(Qt.AlignCenter)
+                table_item.setFlags(table_item.flags() & ~Qt.ItemIsEditable)
+                self.special_event_overview_table.setItem(row, col, table_item)
+
+        if self.special_event_demo_data:
+            row = len(self.special_event_demo_data) - 1 if selected_row is None else max(0, min(selected_row, len(self.special_event_demo_data) - 1))
+            self.special_event_overview_table.selectRow(row)
+            self._refresh_special_event_detail(row)
+
+    def _add_periodic_project(self):
+        dialog = AddPeriodicInspectionDialog(self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        title, year = dialog.get_values()
+        self.periodic_demo_data.append(self._create_periodic_demo_entry(title, year))
+        self._refresh_periodic_overview_table()
+
+    def _add_special_event(self):
+        dialog = AddSpecialEventInspectionDialog(self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        title, year = dialog.get_values()
+        self.special_event_demo_data.append(self._create_special_event_demo_entry(title, year))
+        self._refresh_special_event_overview_table()
+
+    def _on_periodic_project_changed(self):
+        row = self.periodic_overview_table.currentRow()
+        if row < 0 and self.periodic_overview_table.rowCount():
+            row = 0
+        self._refresh_periodic_detail(row)
+
+    def _refresh_periodic_detail(self, row: int):
+        if row < 0 or row >= len(self.periodic_demo_data):
+            return
+
+        project = self.periodic_demo_data[row]
+        self.periodic_files_title.setText(project["file_section_title"])
+        self.periodic_sampling_title.setText(project["sampling_section_title"])
+        self._populate_periodic_files_table(row)
+        self._populate_periodic_sampling_table(row)
+
+    def _populate_periodic_files_table(self, row: int):
+        files = self.periodic_demo_data[row]["files"]
+        file_key = f"periodic_{row}"
+        self.file_paths.setdefault(file_key, {})
+
+        self.periodic_files_table.clearContents()
+        self.periodic_files_table.setRowCount(len(files))
+        for file_row, file_info in enumerate(files):
+            index_item = QTableWidgetItem(str(file_row + 1))
+            index_item.setTextAlignment(Qt.AlignCenter)
+            index_item.setFlags(index_item.flags() & ~Qt.ItemIsEditable)
+            self.periodic_files_table.setItem(file_row, self.PERIODIC_FILE_COL_INDEX, index_item)
+
+            name_item = QTableWidgetItem(file_info["name"])
+            name_item.setTextAlignment(Qt.AlignCenter)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self.periodic_files_table.setItem(file_row, self.PERIODIC_FILE_COL_NAME, name_item)
+
+            time_item = QTableWidgetItem(file_info.get("mtime", ""))
+            time_item.setTextAlignment(Qt.AlignCenter)
+            time_item.setFlags(time_item.flags() & ~Qt.ItemIsEditable)
+            self.periodic_files_table.setItem(file_row, self.PERIODIC_FILE_COL_MTIME, time_item)
+
+            upload_item = QTableWidgetItem("上传")
+            upload_item.setTextAlignment(Qt.AlignCenter)
+            upload_item.setFlags(upload_item.flags() & ~Qt.ItemIsEditable)
+            self.periodic_files_table.setItem(file_row, self.PERIODIC_FILE_COL_UPLOAD, upload_item)
+
+            download_item = QTableWidgetItem("下载")
+            download_item.setTextAlignment(Qt.AlignCenter)
+            download_item.setFlags(download_item.flags() & ~Qt.ItemIsEditable)
+            self.periodic_files_table.setItem(file_row, self.PERIODIC_FILE_COL_DOWNLOAD, download_item)
+
+            remark_item = QTableWidgetItem(file_info.get("remark", ""))
+            remark_item.setTextAlignment(Qt.AlignCenter)
+            self.periodic_files_table.setItem(file_row, self.PERIODIC_FILE_COL_REMARK, remark_item)
+
+    def _populate_periodic_sampling_table(self, row: int):
+        sampling_rows = self.periodic_demo_data[row]["sampling"]
+        self.periodic_sampling_table.clearContents()
+        self.periodic_sampling_table.setRowCount(len(sampling_rows))
+
+        for sampling_row, sampling_info in enumerate(sampling_rows):
+            for col, value in enumerate(
+                (sampling_info["node"], sampling_info["level"], sampling_info["conclusion"])
+            ):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignCenter)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.periodic_sampling_table.setItem(sampling_row, col, item)
+
+    def _on_special_event_changed(self):
+        row = self.special_event_overview_table.currentRow()
+        if row < 0 and self.special_event_overview_table.rowCount():
+            row = 0
+        self._refresh_special_event_detail(row)
+
+    def _refresh_special_event_detail(self, row: int):
+        if row < 0 or row >= len(self.special_event_demo_data):
+            return
+
+        event = self.special_event_demo_data[row]
+        self.special_event_files_title.setText(event["file_section_title"])
+        self.special_event_records_title.setText(event["record_section_title"])
+        self._populate_special_event_files_table(row)
+        self._populate_special_event_records_table(row)
+
+    def _populate_special_event_files_table(self, row: int):
+        files = self.special_event_demo_data[row]["files"]
+        file_key = f"special_event_{row}"
+        self.file_paths.setdefault(file_key, {})
+
+        self.special_event_files_table.clearContents()
+        self.special_event_files_table.setRowCount(len(files))
+        for file_row, file_info in enumerate(files):
+            index_item = QTableWidgetItem(str(file_row + 1))
+            index_item.setTextAlignment(Qt.AlignCenter)
+            index_item.setFlags(index_item.flags() & ~Qt.ItemIsEditable)
+            self.special_event_files_table.setItem(file_row, self.PERIODIC_FILE_COL_INDEX, index_item)
+
+            name_item = QTableWidgetItem(file_info["name"])
+            name_item.setTextAlignment(Qt.AlignCenter)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self.special_event_files_table.setItem(file_row, self.PERIODIC_FILE_COL_NAME, name_item)
+
+            time_item = QTableWidgetItem(file_info.get("mtime", ""))
+            time_item.setTextAlignment(Qt.AlignCenter)
+            time_item.setFlags(time_item.flags() & ~Qt.ItemIsEditable)
+            self.special_event_files_table.setItem(file_row, self.PERIODIC_FILE_COL_MTIME, time_item)
+
+            upload_item = QTableWidgetItem("上传")
+            upload_item.setTextAlignment(Qt.AlignCenter)
+            upload_item.setFlags(upload_item.flags() & ~Qt.ItemIsEditable)
+            self.special_event_files_table.setItem(file_row, self.PERIODIC_FILE_COL_UPLOAD, upload_item)
+
+            download_item = QTableWidgetItem("下载")
+            download_item.setTextAlignment(Qt.AlignCenter)
+            download_item.setFlags(download_item.flags() & ~Qt.ItemIsEditable)
+            self.special_event_files_table.setItem(file_row, self.PERIODIC_FILE_COL_DOWNLOAD, download_item)
+
+            remark_item = QTableWidgetItem(file_info.get("remark", ""))
+            remark_item.setTextAlignment(Qt.AlignCenter)
+            self.special_event_files_table.setItem(file_row, self.PERIODIC_FILE_COL_REMARK, remark_item)
+
+    def _populate_special_event_records_table(self, row: int):
+        records = self.special_event_demo_data[row]["records"]
+        self.special_event_records_table.clearContents()
+        self.special_event_records_table.setRowCount(len(records))
+
+        for record_row, record_info in enumerate(records):
+            for col, value in enumerate(
+                (record_info["node"], record_info["level"], record_info["conclusion"])
+            ):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignCenter)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.special_event_records_table.setItem(record_row, col, item)
+
+    def _on_periodic_file_cell_clicked(self, row: int, col: int):
+        project_index = self.periodic_overview_table.currentRow()
+        if project_index < 0:
+            return
+
+        file_key = f"periodic_{project_index}"
+        if col == self.PERIODIC_FILE_COL_UPLOAD:
+            self._handle_periodic_upload(file_key, row)
+        elif col == self.PERIODIC_FILE_COL_DOWNLOAD:
+            self._handle_periodic_download(file_key, row)
+
+    def _on_special_event_file_cell_clicked(self, row: int, col: int):
+        event_index = self.special_event_overview_table.currentRow()
+        if event_index < 0:
+            return
+
+        file_key = f"special_event_{event_index}"
+        if col == self.PERIODIC_FILE_COL_UPLOAD:
+            self._handle_special_event_upload(file_key, row)
+        elif col == self.PERIODIC_FILE_COL_DOWNLOAD:
+            self._handle_special_event_download(file_key, row)
+
+    def _handle_periodic_upload(self, file_key: str, row: int):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择文件上传",
+            "",
+            "所有文件 (*);;文档 (*.pdf *.doc *.docx *.xls *.xlsx *.dwg)",
+        )
+        if not file_path:
+            return
+
+        upload_root = self._get_upload_root()
+        target_dir = os.path.join(upload_root, file_key)
+        os.makedirs(target_dir, exist_ok=True)
+
+        base_name = os.path.basename(file_path)
+        target_path = os.path.join(target_dir, base_name)
+
+        try:
+            shutil.copy2(file_path, target_path)
+        except Exception as e:
+            QMessageBox.critical(self, "上传失败", f"复制文件失败：{e}")
+            return
+
+        self.file_paths.setdefault(file_key, {})[row] = target_path
+        now_str = QDateTime.currentDateTime().toString("yyyy/M/d")
+        self.periodic_files_table.item(row, self.PERIODIC_FILE_COL_MTIME).setText(now_str)
+        self.periodic_files_table.item(row, self.PERIODIC_FILE_COL_NAME).setText(base_name)
+        QMessageBox.information(self, "上传成功", "文件上传成功。")
+
+    def _handle_periodic_download(self, file_key: str, row: int):
+        path = self.file_paths.get(file_key, {}).get(row)
+        if not path or not os.path.exists(path):
+            QMessageBox.information(self, "提示", "该行尚未上传真实文件，当前展示的是演示文件名。")
+            return
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _handle_special_event_upload(self, file_key: str, row: int):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择文件上传",
+            "",
+            "所有文件 (*);;文档 (*.pdf *.doc *.docx *.xls *.xlsx *.dwg)",
+        )
+        if not file_path:
+            return
+
+        upload_root = self._get_upload_root()
+        target_dir = os.path.join(upload_root, file_key)
+        os.makedirs(target_dir, exist_ok=True)
+
+        base_name = os.path.basename(file_path)
+        target_path = os.path.join(target_dir, base_name)
+
+        try:
+            shutil.copy2(file_path, target_path)
+        except Exception as e:
+            QMessageBox.critical(self, "上传失败", f"复制文件失败：{e}")
+            return
+
+        self.file_paths.setdefault(file_key, {})[row] = target_path
+        now_str = QDateTime.currentDateTime().toString("yyyy/M/d")
+        self.special_event_files_table.item(row, self.PERIODIC_FILE_COL_MTIME).setText(now_str)
+        self.special_event_files_table.item(row, self.PERIODIC_FILE_COL_NAME).setText(base_name)
+        QMessageBox.information(self, "上传成功", "文件上传成功。")
+
+    def _handle_special_event_download(self, file_key: str, row: int):
+        path = self.file_paths.get(file_key, {}).get(row)
+        if not path or not os.path.exists(path):
+            QMessageBox.information(self, "提示", "该行尚未上传真实文件，当前展示的是演示文件名。")
+            return
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     # ------------------------------------------------------------------
     # 构造单个文件夹的表格
     # ------------------------------------------------------------------
+    def _build_doc_man_configs(self) -> Dict[str, List[str]]:
+        return {
+            "complete": [
+                "检测策略报告",
+                "节点风险评估表",
+                "节点检验计划表",
+                "构件风险评估表",
+                "构件检验计划表",
+                "节点构件检验计划位置",
+            ],
+        }
+
+    def _build_doc_man_records(self) -> Dict[str, List[Dict]]:
+        records: Dict[str, List[Dict]] = {}
+        for folder_key, categories in self.doc_man_configs.items():
+            records[folder_key] = [
+                {
+                    "index": idx + 1,
+                    "checked": False,
+                    "category": category,
+                    "fmt": "",
+                    "mtime": "",
+                    "path": "",
+                    "remark": "",
+                }
+                for idx, category in enumerate(categories)
+            ]
+        return records
+
     def _create_table_for_folder(self, folder_key: str) -> QTableWidget:
         rows = self.folder_rows.get(folder_key, [])
         table = QTableWidget(len(rows), 7, self)
@@ -540,6 +1265,11 @@ class HistoryInspectionSummaryPage(BasePage):
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         return os.path.join(project_root, "uploads", "history_inspection")
 
+    def _get_doc_man_upload_dir(self, path_segments: List[str]) -> str:
+        target_dir = os.path.join(self._get_upload_root(), *path_segments)
+        os.makedirs(target_dir, exist_ok=True)
+        return target_dir
+
     def _guess_allowed_exts(self, fmt_text: str):
         """根据“文件格式”文本推断允许的扩展名列表。"""
         mapping = {
@@ -595,7 +1325,6 @@ class HistoryInspectionSummaryPage(BasePage):
                 border-radius: 3px;
             }
             QLabel#Breadcrumb {
-                font-size: 12px;
                 color: #ffffff;
                 background-color: transparent;
             }
@@ -604,12 +1333,10 @@ class HistoryInspectionSummaryPage(BasePage):
             }
             QLabel#BreadcrumbCurrent {
                 font-weight: bold;
-                font-size: 12px;
                 color: #ffffff;
                 background-color: transparent;
             }
             QLabel#BreadcrumbArrow {
-                font-size: 12px;
                 color: #ffffff;
                 background-color: transparent;
             }
@@ -618,7 +1345,7 @@ class HistoryInspectionSummaryPage(BasePage):
             QToolButton#FolderButton {
                 border: none;
                 background: transparent;
-                font-size: 14px;
+                font-size: 14pt;
             }
             QToolButton#FolderButton:hover {
                 color: #0069b4;
@@ -632,13 +1359,13 @@ class HistoryInspectionSummaryPage(BasePage):
             }
             QHeaderView::section {
                 background-color: #f1f3f6;
-                padding: 6px 4px;
+                padding: 8px 8px;
                 border: 1px solid #d0d7e2;
                 font-weight: 500;
                 font-size: 14px;
             }
             QTableWidget::item {
-                padding: 4px;
+                padding: 6px 8px;
             }
             QTableWidget::item:selected {
                 background-color: #0f5ea5;
@@ -655,5 +1382,51 @@ class HistoryInspectionSummaryPage(BasePage):
                 font-size: 14px;
                 line-height: 1.6;
             }
+            QLabel#SectionBanner {
+                min-height: 34px;
+                padding: 0 18px;
+                background-color: #d91f11;
+                color: #ffffff;
+                font-size: 14px;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QLabel#PeriodicSectionBanner {
+                min-height: 34px;
+                padding: 0 18px;
+                background-color: #0f5ea5;
+                color: #ffffff;
+                font-size: 14px;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton#OverviewActionButton {
+                min-height: 32px;
+                padding: 0 16px;
+                border: 1px solid #0f5ea5;
+                border-radius: 6px;
+                background-color: #ffffff;
+                color: #0f5ea5;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton#OverviewActionButton:hover {
+                background-color: #eaf4ff;
+            }
             """
         )
+        self._update_breadcrumb_font_scale()
+
+    def _update_breadcrumb_font_scale(self):
+        if not hasattr(self, "lbl_home_link"):
+            return
+
+        font_size = max(11.0, min(20.0, self.width() * self.breadcrumb_font_ratio - 2.0))
+        for widget in (self.lbl_home_link, self.lbl_sep, self.lbl_second):
+            font = widget.font()
+            font.setPointSizeF(font_size)
+            widget.setFont(font)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_breadcrumb_font_scale()

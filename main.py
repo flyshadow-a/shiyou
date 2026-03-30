@@ -5,7 +5,7 @@ import sys
 import os
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap, QIcon
+from PyQt5.QtGui import QPixmap, QIcon, QFont, QFontDatabase, QColor, QBrush
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QTabWidget, QStackedWidget, QLabel, QLineEdit,
@@ -23,6 +23,26 @@ from pages.login_dialog import LoginDialog
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QHeaderView
 from PyQt5.QtWidgets import QStatusBar
+
+
+# ==========================================
+WINDOWS_SONGTI_FONT_CANDIDATES = [
+    "SimSun",
+    "NSimSun",
+    "宋体",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+]
+
+
+def pick_windows_compatible_zh_font() -> str:
+    """优先宋体，回退到 Windows 常见中文字体（Win10/Win11）。"""
+    families = {name.lower(): name for name in QFontDatabase().families()}
+    for name in WINDOWS_SONGTI_FONT_CANDIDATES:
+        hit = families.get(name.lower())
+        if hit:
+            return hit
+    return QFont().defaultFamily()
 
 
 # ==========================================
@@ -83,7 +103,8 @@ class MainWindow(QMainWindow):
         self.current_user: str = ""
         self.user_label: QLabel | None = None
         self.btn_login: QPushButton | None = None
-
+        self.current_platform_label: QLabel | None = None
+        self.current_platform_font_ratio: float = 0.0125
         self.init_ui()
 
     # ================== 整体 UI ================== #
@@ -117,14 +138,15 @@ class MainWindow(QMainWindow):
         self.nav_search = QLineEdit()
         self.nav_search.setPlaceholderText("菜单搜索：支持菜单名称、路径")
         self.nav_search.setClearButtonEnabled(True)
-        self.nav_search.setFixedHeight(26)
+        self.nav_search.setFixedHeight(32)
         self.nav_search.setStyleSheet("""
             QLineEdit {
                 background-color: rgba(255,255,255,0.10);
                 border: 1px solid rgba(255,255,255,0.35);
                 border-radius: 4px;
-                padding-left: 8px;
+                padding-left: 10px;
                 color: #ffffff;
+                font-size: 15px;
             }
             QLineEdit:focus {
                 background-color: rgba(255,255,255,0.18);
@@ -132,6 +154,9 @@ class MainWindow(QMainWindow):
                 color: #ffffff;
             }
         """)
+        nav_search_font = QFont(self.nav_search.font())
+        nav_search_font.setPixelSize(15)
+        self.nav_search.setFont(nav_search_font)
         nav_layout.addWidget(self.nav_search)
 
         # 树菜单本体
@@ -144,10 +169,13 @@ class MainWindow(QMainWindow):
             background-color: #004a80;
             color: #ffffff;
             border: none;
+            font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+            font-size: 12pt;
         }
         QTreeWidget::viewport { background-color: #004a80; }
 
-        QTreeWidget::item { height: 26px; }
+        QTreeWidget::item { height: 36px; }
+        QTreeWidget::item:disabled { color: #9ca3af; }
 
         /* 鼠标悬停可以保留淡淡高亮（可选） */
         QTreeWidget::item:hover { background-color: rgba(255,255,255,0.10); }
@@ -170,6 +198,10 @@ class MainWindow(QMainWindow):
             outline: none;
         }
         """)
+        nav_tree_font = QFont(self.nav_tree.font())
+        nav_tree_font.setFamily(pick_windows_compatible_zh_font())
+        nav_tree_font.setPointSize(12)
+        self.nav_tree.setFont(nav_tree_font)
         nav_layout.addWidget(self.nav_tree, 1)
 
         # ---- 右侧：占位首页 + tab 控件（不把首页放进 Tab） ----
@@ -180,24 +212,35 @@ class MainWindow(QMainWindow):
         self.tab_widget.setDocumentMode(True)
         self.tab_widget.setMovable(True)
         self.tab_widget.tabCloseRequested.connect(self.on_tab_close_requested)
+        self.tab_widget.currentChanged.connect(self.on_tab_changed)
         self.tab_widget.setStyleSheet("""
             QTabWidget::pane {
                 border: none;
                 background: #ffffff;
             }
             QTabBar::tab {
-                height: 28px;
-                padding: 4px 16px;
+                height: 42px;
+                padding: 6px 20px;
+                font-size: 12pt;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-weight: 600;
             }
         """)
+        tab_font = QFont(self.tab_widget.tabBar().font())
+        tab_font.setFamily(pick_windows_compatible_zh_font())
+        tab_font.setPointSize(12)
+        tab_font.setBold(True)
+        self.tab_widget.tabBar().setFont(tab_font)
 
         # 用 Stack 把“首页背景图”与“多标签页”分离
         self.right_stack = QStackedWidget()
         self.right_stack.addWidget(self.home_page)   # index 0: 首页背景
         self.right_stack.addWidget(self.tab_widget)  # index 1: 功能页面 Tabs
         self.right_stack.setCurrentWidget(self.home_page)
+        self.set_current_platform_name("")
+        self._update_header_font_scale()
 
-        self.nav_container.setMaximumWidth(360)
+        self.nav_container.setMaximumWidth(380)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.nav_container)
@@ -245,7 +288,7 @@ class MainWindow(QMainWindow):
         self.build_nav_tree()
 
         self.nav_tree.header().setSectionResizeMode(0, QHeaderView.Fixed)
-        self.nav_tree.setColumnWidth(0, 260)  # 左侧文字显示宽度（调这个就行）
+        self.nav_tree.setColumnWidth(0, 280)  # 左侧文字显示宽度（调这个就行）
         self.nav_tree.setTextElideMode(Qt.ElideRight)  # 太长就…省略号
         self.nav_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
@@ -293,12 +336,27 @@ class MainWindow(QMainWindow):
         if os.path.exists(logo_path):
             pixmap = QPixmap(logo_path)
             if not pixmap.isNull():
-                pixmap = pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pixmap = pixmap.scaled(42, 42, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 logo_label.setPixmap(pixmap)
-        logo_label.setFixedSize(30, 30)
+        logo_label.setFixedSize(44, 44)
 
         title = QLabel("海上平台结构载荷管理系统")
-        title.setStyleSheet("font-size:18px; font-weight:bold;")
+        title.setStyleSheet("font-size: 12pt; font-weight: 800;")
+        self.current_platform_label = QLabel("--")
+        self.current_platform_label.setAlignment(Qt.AlignCenter)
+        self.current_platform_label.setStyleSheet("""
+            QLabel {
+                color: #eaf6ff;
+                background-color: rgba(255,255,255,0.08);
+                border: 1px solid rgba(255,255,255,0.18);
+                border-radius: 14px;
+                padding: 8px 18px;
+                font-weight: bold;
+                min-width: 320px;
+            }
+        """)
+        self.current_platform_label.setText("")
+        self.current_platform_label.hide()
 
         # 用户 + 登录按钮
         self.user_label = QLabel("未登录")
@@ -312,6 +370,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(logo_label)
         layout.addWidget(title)
         layout.addStretch()
+        layout.addWidget(self.current_platform_label, 0, Qt.AlignCenter)
         layout.addStretch()
         layout.addWidget(self.user_label)
         layout.addWidget(self.btn_login)
@@ -332,6 +391,12 @@ class MainWindow(QMainWindow):
                 path = f"{parent_path}/{text}" if parent_path else text
 
                 item = QTreeWidgetItem([text])
+                item_font = QFont(self.nav_tree.font())
+                if parent_item is None:
+                    item_font.setBold(True)
+                else:
+                    item_font.setBold(False)
+                item.setFont(0, item_font)
                 if parent_item is None:
                     self.nav_tree.addTopLevelItem(item)
                 else:
@@ -344,6 +409,10 @@ class MainWindow(QMainWindow):
                 page_cls = node.get("page")
                 if page_cls is not None:
                     item.setData(0, Qt.UserRole, page_cls)
+
+                if node.get("disabled"):
+                    item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
+                    item.setForeground(0, QBrush(QColor("#9ca3af")))
 
                 children = node.get("children")
                 if children:
@@ -360,6 +429,9 @@ class MainWindow(QMainWindow):
         if self.right_stack is None or self.home_page is None:
             return
         self.right_stack.setCurrentWidget(self.home_page)
+        if self.current_platform_label is not None:
+            self.current_platform_label.hide()
+            self.current_platform_label.setText("")
 
     # ================== 默认打开第一个菜单页（备用，不再默认调用） ================== #
     def open_first_leaf_page(self):
@@ -400,16 +472,20 @@ class MainWindow(QMainWindow):
         # 已打开：直接激活
         if path in self.page_tab_map:
             widget = self.page_tab_map[path]
+            setattr(widget, "_nav_path", path)
             index = self.tab_widget.indexOf(widget)
             if index != -1:
                 self.tab_widget.setCurrentIndex(index)
+                self._sync_current_platform_from_widget(widget)
                 return
 
         # 未打开：新建一个页面
         page = page_cls(self)
+        setattr(page, "_nav_path", path)
         index = self.tab_widget.addTab(page, text)
         self.page_tab_map[path] = page
         self.tab_widget.setCurrentIndex(index)
+        self._sync_current_platform_from_widget(page)
 
     # ================== 左侧导航点击 ================== #
     def on_nav_item_clicked(self, item: QTreeWidgetItem, column: int):
@@ -439,6 +515,8 @@ class MainWindow(QMainWindow):
         # 如果所有功能页都关了，回到首页背景
         if self.tab_widget.count() == 0:
             self.open_home_tab()
+        else:
+            self._sync_current_platform_from_widget(self.tab_widget.currentWidget())
 
     # ================== 导航搜索过滤 ================== #
     def filter_nav_tree(self, text: str):
@@ -446,6 +524,96 @@ class MainWindow(QMainWindow):
         for i in range(self.nav_tree.topLevelItemCount()):
             item = self.nav_tree.topLevelItem(i)
             self._filter_nav_item(item, text)
+
+    def on_tab_changed(self, index: int):
+        if self.tab_widget is None or index < 0:
+            self.set_current_platform_name("")
+            return
+        self._sync_current_platform_from_widget(self.tab_widget.widget(index))
+
+    def set_current_platform_name(self, name: str):
+        if self.current_platform_label is None:
+            return
+
+        active_widget = self._get_active_content_widget()
+        if not self._is_file_management_widget(active_widget):
+            self.current_platform_label.hide()
+            self.current_platform_label.setText("")
+            return
+
+        text = name.strip() if name else ""
+        self.current_platform_label.setText(text)
+        self._update_header_font_scale()
+        self._refresh_platform_header_visibility()
+
+    def _update_header_font_scale(self):
+        if self.current_platform_label is None:
+            return
+
+        font_size = max(11.0, min(20.0, self.width() * self.current_platform_font_ratio))
+        font = self.current_platform_label.font()
+        font.setPointSizeF(font_size)
+        self.current_platform_label.setFont(font)
+
+    def _is_file_management_widget(self, widget: QWidget | None) -> bool:
+        if widget is None:
+            return False
+
+        if widget.__class__.__name__ in {
+            "ConstructionDocsPage",
+            "HistoryRebuildFilesPage",
+            "HistoryEventsInspectionPage",
+            "ModelFilesPage",
+        }:
+            return True
+
+        path = getattr(widget, "_nav_path", "")
+        return isinstance(path, str) and path.startswith("文件管理")
+
+    def _get_active_content_widget(self) -> QWidget | None:
+        if self.right_stack is None or self.tab_widget is None:
+            return None
+        if self.right_stack.currentWidget() is not self.tab_widget:
+            return None
+        return self.tab_widget.currentWidget()
+
+    def _refresh_platform_header_visibility(self):
+        if self.current_platform_label is None:
+            return
+
+        active_widget = self._get_active_content_widget()
+        label_text = self.current_platform_label.text().strip()
+        if self._is_file_management_widget(active_widget) and label_text:
+            self.current_platform_label.show()
+            return
+
+        self.current_platform_label.hide()
+        self.current_platform_label.setText("")
+
+    def _sync_current_platform_from_widget(self, widget: QWidget | None):
+        active_widget = self._get_active_content_widget()
+        if active_widget is not None:
+            widget = active_widget
+
+        if widget is None or not self._is_file_management_widget(widget):
+            if self.current_platform_label is not None:
+                self.current_platform_label.hide()
+                self.current_platform_label.setText("")
+            return
+
+        getter = getattr(widget, "get_current_platform_name", None)
+        if callable(getter):
+            try:
+                self.set_current_platform_name(getter())
+                return
+            except Exception:
+                pass
+
+        self.set_current_platform_name("")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_header_font_scale()
 
     def _filter_nav_item(self, item: QTreeWidgetItem, text: str) -> bool:
         if not text:
@@ -526,6 +694,7 @@ class MainWindow(QMainWindow):
             page = PersonalCenterPage(self)
             index = self.tab_widget.addTab(page, "个人中心")
             self.tab_widget.setCurrentIndex(index)
+            self._sync_current_platform_from_widget(page)
 
     # ================== 业务：新增特检策略 ================== #
     def open_new_special_strategy_tab(self, facility_code: str):
@@ -538,6 +707,7 @@ class MainWindow(QMainWindow):
         index = self.tab_widget.addTab(page, tab_title)
         # self.tab_widget.setTabIcon(index, QIcon('./pict/logo.png'))
         self.tab_widget.setCurrentIndex(index)
+        self._sync_current_platform_from_widget(page)
 
     # ================== 业务：风险更新结果 ================== #
     def open_upgrade_special_inspection_result_tab(self, facility_code: str):
@@ -549,6 +719,7 @@ class MainWindow(QMainWindow):
         page = UpgradeSpecialInspectionResultPage(facility_code, self)
         index = self.tab_widget.addTab(page, tab_title)
         self.tab_widget.setCurrentIndex(index)
+        self._sync_current_platform_from_widget(page)
 
     # 供子页面调用，关闭当前 Tab
     def close_current_tab(self):
@@ -558,6 +729,13 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # 开启高 DPI 自动缩放
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    # 开启高 DPI 图片自适应
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # 针对某些 Qt 版本的额外环境变量配置
+    os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()

@@ -12,8 +12,9 @@ from PyQt5.QtWidgets import (
     QHeaderView, QToolTip
 )
 from PyQt5.QtCore import Qt, QEvent
-from PyQt5.QtGui import QColor, QFontMetrics
+from PyQt5.QtGui import QColor, QFont, QFontMetrics
 
+from app_paths import external_path, first_existing_path
 from pages.hover_tip_table import HoverTipTable
 from base_page import BasePage
 
@@ -36,9 +37,17 @@ class SummaryInformationTablePage(BasePage):
     EXCEL_NAME = "platform_total.xls"
     MAX_EXPAND_ROWS = 50
 
+    @staticmethod
+    def _songti_small_four_font(bold: bool = False) -> QFont:
+        font = QFont("SimSun")
+        font.setPointSize(12)
+        font.setBold(bold)
+        return font
+
     def __init__(self, parent=None):
         super().__init__("", parent)
-        self.data_dir = os.path.join(os.getcwd(), "data")
+        self.data_dir = first_existing_path("data")
+        self.output_data_dir = external_path("data")
         self._build_ui()
         self.load_from_excel(self._default_excel_path())
 
@@ -47,19 +56,24 @@ class SummaryInformationTablePage(BasePage):
         self.setStyleSheet("""
             QWidget { background: #e6eef7; }
 
-            QPushButton {
-                background: #e8eef7;
+            /* 顶部按钮风格：参照 platform_load_information_page */
+            QPushButton#TopActionBtn {
+                background: #f6a24a;
                 border: 1px solid #2f3a4a;
-                border-radius: 4px;
-                padding: 4px 16px;
+                border-radius: 3px;
+                padding: 6px 16px;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
                 font-weight: bold;
             }
-            QPushButton:hover { background: #ffffff; }
+            QPushButton#TopActionBtn:hover { background: #ffb86b; }
 
             QTableWidget {
                 background-color: #ffffff;
                 gridline-color: #d0d0d0;
                 border: 1px solid #2f3a4a;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
             }
             QTableWidget::item {
                 border-bottom: 1px solid #d0d0d0;
@@ -79,75 +93,67 @@ class SummaryInformationTablePage(BasePage):
         # root.setContentsMargins(10, 10, 10, 10)
         # root.setSpacing(10)
 
-        # 外层滚动区域（用于整体垂直滚动）
-        outer_scroll = QScrollArea(self)
-        outer_scroll.setWidgetResizable(True)
-        outer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 禁用外层水平滚动
-        self.main_layout.addWidget(outer_scroll, 1)
-
-        container = QWidget()
-        outer_scroll.setWidget(container)
-        root = QVBoxLayout(container)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(10)
-
-        # 顶部操作条（右上角按钮）
-        top_bar = QHBoxLayout()
+        # 顶部操作条（右上角按钮） - 固定在顶部
+        top_bar_wrap = QWidget()
+        top_bar = QHBoxLayout(top_bar_wrap)
+        top_bar.setContentsMargins(10, 5, 10, 0)
         top_bar.addStretch(1)
 
         self.btn_save = QPushButton("保存")
         self.btn_export = QPushButton("导出数据")
+
+        for b in (self.btn_save, self.btn_export):
+            b.setObjectName("TopActionBtn")
+            b.setFont(self._songti_small_four_font(bold=True))
+            b.setMinimumHeight(32)
+
         self.btn_save.clicked.connect(self._on_save)
         self.btn_export.clicked.connect(self._on_export)
 
         top_bar.addWidget(self.btn_save)
         top_bar.addWidget(self.btn_export)
-        root.addLayout(top_bar)
-        """
-            109-113为旧版自适应窗口大小版本的代码
-        """
-        # # 主表格（先只建表头；数据通过 load_from_csv 导入）
-        # self.table = self._build_table_skeleton()
-        # self._auto_fit_columns_by_cells(self.table)
-        # self._auto_fit_row_height(self.table)
-        # root.addWidget(self.table, 1)
+        self.main_layout.addWidget(top_bar_wrap, 0)
 
-        """
-            116-129为对应修改109-113
-        """
+        # 外层滚动区域（用于整体垂直/水平滚动）
+        outer_scroll = QScrollArea(self)
+        outer_scroll.setWidgetResizable(True)
+        # 保留最外侧横向滚动条
+        outer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.main_layout.addWidget(outer_scroll, 1)
+
+        container = QWidget()
+        outer_scroll.setWidget(container)
+        root = QVBoxLayout(container)
+        root.setContentsMargins(10, 0, 10, 0)
+        root.setSpacing(0)
+
         # 创建表格（表头结构不变）
         self.table = self._build_table_skeleton()
+        # 禁用表格内部滚动条，交给外层 outer_scroll 统一管理
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # 创建内部滚动区域，用于表格的水平/垂直滚动
-        self.table_scroll = QScrollArea()
-        self.table_scroll.setWidgetResizable(False)  # 不自动调整内部部件大小
-        self.table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # 临时，后面会动态调整
-        self.table_scroll.setWidget(self.table)
+        # 直接添加到 root，不再使用 table_scroll
+        root.addWidget(self.table, 1)
 
-        # 将内部滚动区域添加到主布局，并设置拉伸因子
-        root.addWidget(self.table_scroll, 1)
-
-        # 填表说明
-        note = QLabel(
+        # 填表说明 - 固定在底部，不随滚动条移动
+        self.note_label = QLabel(
             "填表说明\n"
-            "1、变化总重=变化量×重心；变化率、重心、桩基承载力安全系数、是否整体评估：每年更新一次，填写最新数据。\n"
+            "1、变化率、重心、桩基承载力安全系数、是否整体评估：每年更新一次，填写最新数据。\n"
             "2、变化量=变化总重/建造总操作重量。\n"
             f"（数据来源：platform_total.xls；本页从样表筛选字段并映射到当前表格列）"
         )
-        note.setWordWrap(True)
-        note.setStyleSheet("color:#111827; font-size:12px; padding:6px;")
-        root.addWidget(note, 0)
+        self.note_label.setWordWrap(True)
+        self.note_label.setStyleSheet("color:#111827; font-size:12pt; padding:10px; background: #e6eef7; border-top: 1px solid #b6c2d6;")
+        self.note_label.setFont(self._songti_small_four_font())
+        self.main_layout.addWidget(self.note_label, 0)
 
     # ---------- merged header helpers ----------
     def _mk_item(self, text: str, *, bold: bool = False, bg: QColor | None = None, fg: QColor | None = None) -> QTableWidgetItem:
         it = QTableWidgetItem(text)
         it.setTextAlignment(Qt.AlignCenter)
         it.setFlags(it.flags() & ~Qt.ItemIsEditable)
-        if bold:
-            f = it.font()
-            f.setBold(True)
-            it.setFont(f)
+        it.setFont(self._songti_small_four_font(bold=bold))
         if bg is not None:
             it.setBackground(bg)
         if fg is not None:
@@ -167,16 +173,16 @@ class SummaryInformationTablePage(BasePage):
         return [
             "序号",
             "分公司",
-            "作业单元",
+            "作业公司",
             "设施名称",
             "投产时间",
             "设计年限",
-            "建造总操作重量,MT",
-            "变化总重量,MT",
+            "建造总操作重量,(MT)",
+            "变化总重量,(MT)",
             "变化率,%",
-            "不可超载重量,MT",
+            "不可超载重量,(MT)",
             "重心,m",
-            "重心不可超载半径,m",
+            "重心不可超载半径,(m)",
             "桩基承载力安全系数(最小)-操作",
             "桩基承载力安全系数(最小)-极端",
             "整体评估次数",
@@ -187,6 +193,7 @@ class SummaryInformationTablePage(BasePage):
         header_rows = 2
 
         table = HoverTipTable(header_rows, len(cols))
+        table.setFont(self._songti_small_four_font())
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setVisible(False)  # 用表内两行表头模拟合并表头
 
@@ -234,16 +241,16 @@ class SummaryInformationTablePage(BasePage):
         labels = {
             0: "序号",
             1: "分公司",
-            2: "作业单元",
+            2: "作业公司",
             3: "设施名称",
             4: "投产时间",
             5: "设计年限",
-            6: "建造总操作\n重量,MT",
-            7: "变化总重\n量,MT·m",
+            6: "建造总操作\n重量,(MT)",
+            7: "变化总重\n量,(MT·m)",
             8: "变化率,%",
-            9: "不可超载\n重量,MT",
+            9: "不可超载\n重量,(MT)",
             10: "重心,m",
-            11: "重心不可超\n载半径,m",
+            11: "重心不可超\n载半径,(m)",
             14: "整体评估\n次数",
         }
         return labels.get(c, "")
@@ -254,10 +261,10 @@ class SummaryInformationTablePage(BasePage):
         p1 = os.path.join(self.data_dir, self.EXCEL_NAME)
         if os.path.exists(p1):
             return p1
-        p2 = os.path.join(os.getcwd(), self.EXCEL_NAME)
+        p2 = first_existing_path(self.EXCEL_NAME)
         if os.path.exists(p2):
             return p2
-        return p1  # 默认返回 data 路径（用于报错提示）
+        return os.path.join(self.output_data_dir, self.EXCEL_NAME)  # 默认返回外部 data 路径（用于报错提示）
 
     def load_from_excel(self, excel_path: str):
         """
@@ -304,11 +311,11 @@ class SummaryInformationTablePage(BasePage):
         # 映射：当前表格 15 列 -> 样表字段（能找到就填，找不到留空）
         col_map = {
             "分公司": "分公司",
-            "作业单元": "作业公司",
+            "作业公司": "作业公司",
             "设施名称": "设施名称",
             "投产时间": "投产时间",
             "设计年限": "设计年限",
-            "建造总操作重量,MT": "上部组块操作重量(t)",
+            "建造总操作重量,(MT)": "上部组块操作重量(t)",
             # 其余列暂留空：后续你给我口径/字段名再补齐
         }
 
@@ -364,17 +371,11 @@ class SummaryInformationTablePage(BasePage):
         #     self._fit_table_height_reasonable()
         #     self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-        data_n = len(rows)
-        if data_n <= self.MAX_EXPAND_ROWS:
-            self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            total_height = 0
-            for r in range(total_rows):
-                total_height += self.table.rowHeight(r)
-            self.table.setFixedHeight(total_height + 2)
-        else:
-            self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self.table.setFixedHeight(-1)
-            self.table.setMinimumHeight(300)
+        # 总是让表格高度随内容扩展，并由外层 QScrollArea 统一管理滚动条
+        total_height = 0
+        for r in range(total_rows):
+            total_height += self.table.rowHeight(r)
+        self.table.setFixedHeight(total_height + 2)
 
         # 自适应列宽（基于所有单元格内容）
         self.table.resizeColumnsToContents()
@@ -411,7 +412,8 @@ class SummaryInformationTablePage(BasePage):
 
     def _on_export(self):
         # 导出当前表格（不含两行表头的“合并表头行”，仅导出数据）
-        export_path = os.path.join(self.data_dir, "summary_information_table_export.csv")
+        os.makedirs(self.output_data_dir, exist_ok=True)
+        export_path = os.path.join(self.output_data_dir, "summary_information_table_export.csv")
         header = self._columns()
 
         header_rows = 2

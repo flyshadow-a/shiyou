@@ -17,17 +17,21 @@
 import os
 import csv
 import random
+import re
 import openpyxl
 from typing import List, Tuple, Dict, Optional
 
 from PyQt5.QtWidgets import (
+    QAction,
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QComboBox, QLabel,
     QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox,
-    QHeaderView, QToolTip, QFileDialog, QGridLayout
+    QHeaderView, QToolTip, QFileDialog, QGridLayout, QMenu,
+    QButtonGroup, QRadioButton, QCheckBox
 )
 from PyQt5.QtCore import Qt, QEvent
-from PyQt5.QtGui import QColor, QFontMetrics
+from PyQt5.QtGui import QColor, QFont, QFontMetrics
 
+from app_paths import existing_dirs, external_path, first_existing_path
 from base_page import BasePage
 from dropdown_bar import DropdownBar  # 复用平台基本信息页的顶部下拉条样式
 # 从样表提取下拉选项（兼容：pages 包内相对导入 / 直接运行）
@@ -70,9 +74,19 @@ def _setup_chinese_matplotlib_font():
         if name in installed:
             mpl.rcParams['font.sans-serif'] = [name]
             mpl.rcParams['axes.unicode_minus'] = False
+            mpl.rcParams['font.size'] = 12
+            mpl.rcParams['axes.titlesize'] = 12
+            mpl.rcParams['axes.labelsize'] = 12
+            mpl.rcParams['xtick.labelsize'] = 12
+            mpl.rcParams['ytick.labelsize'] = 12
             return
     # 若找不到中文字体，则至少保证负号显示正常
     mpl.rcParams['axes.unicode_minus'] = False
+    mpl.rcParams['font.size'] = 12
+    mpl.rcParams['axes.titlesize'] = 12
+    mpl.rcParams['axes.labelsize'] = 12
+    mpl.rcParams['xtick.labelsize'] = 12
+    mpl.rcParams['ytick.labelsize'] = 12
 
 
 
@@ -80,6 +94,8 @@ class SimpleLineChart(FigureCanvas):
     """一个简单折线图控件（matplotlib 默认样式/颜色）。"""
 
     _font_inited = False
+    SMALL_FOUR_PT = 12
+
     def __init__(self, title: str, x: List[float], y: List[float], xlabel: str = "改建次数", ylabel: str = ""):
         if not SimpleLineChart._font_inited:
             _setup_chinese_matplotlib_font()
@@ -88,11 +104,12 @@ class SimpleLineChart(FigureCanvas):
         self.ax = fig.add_subplot(111)
         super().__init__(fig)
 
-        self.ax.set_title(title, fontsize=9)
+        self.ax.set_title(title, fontsize=self.SMALL_FOUR_PT)
         self.ax.plot(x, y, marker="o")  # 默认蓝色
-        self.ax.set_xlabel(xlabel, fontsize=8)
+        self.ax.set_xlabel(xlabel, fontsize=self.SMALL_FOUR_PT)
         if ylabel:
-            self.ax.set_ylabel(ylabel, fontsize=8)
+            self.ax.set_ylabel(ylabel, fontsize=self.SMALL_FOUR_PT)
+        self.ax.tick_params(axis="both", labelsize=self.SMALL_FOUR_PT)
         self.ax.grid(True, linewidth=0.6, alpha=0.6)
         fig.tight_layout()
 
@@ -161,6 +178,11 @@ class PlatformLoadInformationPage(BasePage):
     DEMO_MAIN_CSV = "platform_load_information_demo_strict.csv"
     DEMO_RESULT_CSV = "platform_load_result_demo.csv"
 
+    TOP_KEY_ORDER: List[str] = [
+        "branch", "op_company", "oilfield", "facility_code", "facility_name",
+        "facility_type", "category", "start_time", "design_life",
+    ]
+
     # 顶部固定表头（9字段）
     TOP_FIELDS: List[Tuple[str, str]] = [
         ("分公司", "湛江分公司"),
@@ -188,14 +210,51 @@ class PlatformLoadInformationPage(BasePage):
     }
     FIELD_TO_KEY: Dict[str, str] = {v: k for k, v in KEY_TO_FIELD.items()}
 
+    @staticmethod
+    def _songti_small_four_font(bold: bool = False) -> QFont:
+        font = QFont("SimSun")
+        font.setPointSize(12)
+        font.setBold(bold)
+        return font
+
+    @staticmethod
+    def _menu_qss() -> str:
+        return """
+            QMenu {
+                background-color: #ffffff;
+                color: #1d2b3a;
+                border: 1px solid #cfd8e3;
+                padding: 4px 0;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+                background-color: transparent;
+                color: #1d2b3a;
+            }
+            QMenu::item:selected {
+                background-color: #dbe9ff;
+                color: #1d2b3a;
+            }
+            QMenu::item:disabled {
+                color: #8a94a6;
+                background-color: #f7f9fc;
+            }
+        """
+
 
     def __init__(self, parent=None):
         super().__init__("", parent)
-        self.data_dir = os.path.join(os.getcwd(), "data")
+        self.data_dir = first_existing_path("data")
+        self.output_data_dir = external_path("data")
+        self._num_pat = r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
 
         # === 红色字段 Excel 导入（仅当前行）===
         self.result_excel_path: Optional[str] = None
         self.red_field_mode: str = 'manual'  # 'manual' or 'excel'
+        # 数据区行勾选（单选）：用于“读取结果文件”定位目标行
+        self._row_radio_group: Optional[QButtonGroup] = None
+        # 缓存子计算表用户输入的数据
+        self._uppercalc_saved_data: Dict[int, dict] = {}
         # 从《platform_total.xls》加载下拉选项（失败则回退到原 mock 逻辑）
         self._excel_provider = ReadTableXls()
         self._excel_loaded = False
@@ -204,6 +263,11 @@ class PlatformLoadInformationPage(BasePage):
             self._excel_loaded = True
         except Exception:
             self._excel_loaded = False
+
+        # 顶部下拉：优先使用汇总信息样表构建级联数据
+        self._top_records: List[Dict[str, str]] = self._load_top_records_from_excel()
+        self._top_cascade_enabled: bool = len(self._top_records) > 0
+        self._top_cascade_lock: bool = False
 
 
 
@@ -222,6 +286,8 @@ class PlatformLoadInformationPage(BasePage):
                 border: 1px solid #2f3a4a;
                 border-radius: 3px;
                 padding: 6px 16px;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
                 font-weight: bold;
             }
             QPushButton#TopActionBtn:hover { background: #ffb86b; }
@@ -231,6 +297,8 @@ class PlatformLoadInformationPage(BasePage):
                 background-color: #ffffff;
                 gridline-color: #d0d0d0;
                 border: 1px solid #2f3a4a;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
             }
             QTableWidget#MainTable::item {
                 border-bottom: 1px solid #d0d0d0;
@@ -248,85 +316,62 @@ class PlatformLoadInformationPage(BasePage):
         top_layout.setSpacing(10)
 
         top_layout.setAlignment(Qt.AlignTop)
-        # 顶部下拉条（样式与“平台基本信息”一致：DropdownBar）
-                # 顶部下拉条：选项从《platform_total.xls》提取（若读取失败则用内置 mock）
-        def _opts(field_cn: str, fallback_default: str):
-            if getattr(self, "_excel_loaded", False):
-                opts = self._excel_provider.options_for(field_cn)
-                if opts:
-                    return opts, self._excel_provider.default_for(field_cn, fallback_default)
-            # fallback
-            return self._mock_top_options(field_cn, fallback_default), fallback_default
-
+        # 顶部下拉条：优先按样表记录构建级联；失败时回退 mock 选项
+        fallback_defaults = {k: v for k, v in self.TOP_FIELDS}
+        stretch_map = {
+            "branch": 1,
+            "op_company": 2,
+            "oilfield": 2,
+            "facility_code": 2,
+            "facility_name": 3,
+            "facility_type": 1,
+            "category": 1,
+            "start_time": 2,
+            "design_life": 1,
+        }
         fields = []
-        for key, label, fallback in [
-            ("branch",        "分公司",   "湛江分公司"),
-            ("op_company",    "作业公司", "文昌油田群作业公司"),
-            ("oilfield",      "油气田",   "文昌19-1油田"),
-            ("facility_code", "设施编码", "WC19-1WHPC"),
-            ("facility_name", "设施名称", "文昌19-1WHPC井口平台"),
-            ("facility_type", "设施类型", "平台"),
-            ("category",      "分类",     "井口平台"),
-            ("start_time",    "投产时间", "2013-07-15"),
-            ("design_life",   "设计年限", "15"),
-        ]:
-            opts, default = _opts(label, fallback)
-            fields.append({"key": key, "label": label, "options": opts, "default": default})
+        for key in self.TOP_KEY_ORDER:
+            label = self.KEY_TO_FIELD[key]
+            fallback = fallback_defaults.get(label, "")
+            if self._top_cascade_enabled:
+                opts = self._unique_record_values(self._top_records, label)
+                default = opts[0] if opts else fallback
+            else:
+                opts = self._mock_top_options(label, fallback)
+                default = fallback
+            fields.append({
+                "key": key,
+                "label": label,
+                "options": opts,
+                "default": default,
+                "stretch": stretch_map.get(key, 1),
+            })
 
         self.dropdown_bar = DropdownBar(fields, parent=self)
         self.dropdown_bar.valueChanged.connect(self._on_top_key_changed)
+        if self._top_cascade_enabled:
+            self._apply_top_cascade()
         top_layout.addWidget(self.dropdown_bar, 1)
-
-        btn_widget = QWidget()
-        btn_widget.setFixedWidth(180)
-        btn_col = QVBoxLayout(btn_widget)
-        btn_col.setContentsMargins(0, 0, 0, 0)
-        btn_col.setSpacing(6)
 
         self.btn_save = QPushButton("保存")
         self.btn_export = QPushButton("导出数据")
-        self.btn_import_result = QPushButton("读取结果文件")
-        # 红色字段：手动输入 / Excel导入（不影响原有CSV读取结果文件功能）
-        self.red_field_mode_combo = QComboBox()
-        self.red_field_mode_combo.addItems(['红色字段：手动输入', '红色字段：Excel导入'])
-        self.red_field_mode_combo.setMinimumHeight(32)
-        self.red_field_mode_combo.setToolTip('仅控制红色字段(Fx~Mz、操作工况、极端工况)的数据来源：手动输入或从Excel导入到当前行')
-
-        self.btn_pick_excel_result = QPushButton('选择结果Excel')
-        self.btn_pick_excel_result.setMinimumWidth(150)
-        self.btn_pick_excel_result.setMinimumHeight(32)
-
-        self.btn_import_excel_result = QPushButton('导入Excel到当前行')
-        self.btn_import_excel_result.setMinimumWidth(150)
-        self.btn_import_excel_result.setMinimumHeight(32)
         self.btn_curve = QPushButton("重量中心变化曲线")
 
-        for b in (self.btn_save, self.btn_export, self.btn_import_result, self.btn_curve):
+        for b in (self.btn_save, self.btn_export, self.btn_curve):
             b.setObjectName("TopActionBtn")
-        # 避免右侧按钮被挤压：统一设置最小尺寸
-        for b in (self.btn_save, self.btn_export, self.btn_import_result, self.btn_curve):
-            b.setMinimumWidth(150)
+            b.setFont(self._songti_small_four_font(bold=True))
             b.setMinimumHeight(32)
 
+        # 按钮尺寸调整
+        self.btn_save.setMinimumWidth(100)
+        self.btn_export.setMinimumWidth(100)
+        self.btn_curve.setMinimumWidth(160)
 
         self.btn_save.clicked.connect(self._on_save)
         self.btn_export.clicked.connect(self._on_export)
-        self.btn_import_result.clicked.connect(self._on_import_result)
-        self.red_field_mode_combo.currentIndexChanged.connect(self._on_red_field_mode_changed)
-        self.btn_pick_excel_result.clicked.connect(self._pick_result_excel)
-        self.btn_import_excel_result.clicked.connect(self._import_excel_to_current_row)
         self.btn_curve.clicked.connect(self._open_curve_page)
 
-        btn_col.addWidget(self.btn_save)
-        btn_col.addWidget(self.btn_export)
-        btn_col.addStretch(1)
-        top_layout.addWidget(btn_widget, 0)
         self.main_layout.addWidget(top_wrap, 0)
-
-        # 滚动区：主表
-        # scroll = QScrollArea(self)
-        # scroll.setWidgetResizable(True)
-        # self.main_layout.addWidget(scroll, 1)
 
         # 外层滚动区域（用于整体垂直滚动）
         outer_scroll = QScrollArea(self)
@@ -342,11 +387,21 @@ class PlatformLoadInformationPage(BasePage):
 
         self.table = self._build_main_table_skeleton()
         self.table.setObjectName("MainTable")
+        self.table.setFont(self._songti_small_four_font())
+        # 只保留外层 table_scroll 的横向滚动条，避免双滚动条
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        # 开启右键菜单策略
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_table_context_menu)
+
+        # 监听单元格变动，用于手动修改时恢复背景色
+        self.table.itemChanged.connect(self._on_item_changed)
 
         # 主表允许编辑（但我们会用 item flags 精细控制哪些格可编辑）
         self.table.setEditTriggers(QTableWidget.DoubleClicked | QTableWidget.SelectedClicked | QTableWidget.EditKeyPressed)
 
-        # 点击“上部组块总操作重量/重心”单元格：跳转到分项目计算表编辑并回填
+        # 点击“上部组块重心”单元格：跳转到分项目计算表并回填
         self.table.cellClicked.connect(self._on_main_cell_clicked)
 
         # 创建内部滚动区域，用于表格的水平/垂直滚动
@@ -359,14 +414,19 @@ class PlatformLoadInformationPage(BasePage):
         # 将内部滚动区域添加到主布局，并设置拉伸因子
         root.addWidget(self.table_scroll, 1)
 
-        # 右下角按钮：放在主表格下方右侧两行（读取结果文件 / 重量中心变化曲线）
+        # 底部按钮区：保存、导出、重心曲线，横向居中排列
         bottom_btn_wrap = QWidget()
-        bottom_btn_lay = QVBoxLayout(bottom_btn_wrap)
-        bottom_btn_lay.setContentsMargins(0, 0, 0, 0)
-        bottom_btn_lay.setSpacing(6)
-        bottom_btn_lay.addWidget(self.btn_import_result)
+        bottom_btn_lay = QHBoxLayout(bottom_btn_wrap)
+        bottom_btn_lay.setContentsMargins(0, 10, 0, 0)
+        bottom_btn_lay.setSpacing(15)
+        
+        bottom_btn_lay.addStretch(1)
+        bottom_btn_lay.addWidget(self.btn_save)
+        bottom_btn_lay.addWidget(self.btn_export)
         bottom_btn_lay.addWidget(self.btn_curve)
-        root.addWidget(bottom_btn_wrap, 0, Qt.AlignRight)
+        bottom_btn_lay.addStretch(1)
+        
+        root.addWidget(bottom_btn_wrap, 0)
 
     # ---------------- 顶部表：固定表头 + 下拉行 ----------------
     def _build_top_header_combo_table(self) -> QTableWidget:
@@ -421,6 +481,168 @@ class PlatformLoadInformationPage(BasePage):
             return
         it.setText(txt)
 
+    def _normalize_top_value(self, value: object) -> str:
+        txt = "" if value is None else str(value).strip()
+        if (not txt) or (txt.lower() == "nan"):
+            return ""
+        if re.fullmatch(r"[-+]?\d+\.0+", txt):
+            txt = txt.split(".", 1)[0]
+        return txt
+
+    def _load_top_records_from_excel(self) -> List[Dict[str, str]]:
+        if (not getattr(self, "_excel_loaded", False)) or (not hasattr(self._excel_provider, "df")):
+            return []
+
+        df = self._excel_provider.df
+        if df is None:
+            return []
+
+        fields = [f for f, _ in self.TOP_FIELDS]
+        resolved: Dict[str, str] = {}
+        for field in fields:
+            col = self._excel_provider._resolve_col(field) if hasattr(self._excel_provider, "_resolve_col") else None
+            if not col:
+                return []
+            resolved[field] = col
+
+        records: List[Dict[str, str]] = []
+        seen = set()
+        for _, row in df.iterrows():
+            rec: Dict[str, str] = {}
+            for field, col in resolved.items():
+                raw = self._excel_provider._clean(row[col]) if hasattr(self._excel_provider, "_clean") else row[col]
+                rec[field] = self._normalize_top_value(raw)
+
+            if not any(rec.get(k) for k in ("分公司", "作业公司", "油气田", "设施编码", "设施名称")):
+                continue
+
+            uniq = tuple(rec.get(f, "") for f in fields)
+            if uniq in seen:
+                continue
+            seen.add(uniq)
+            records.append(rec)
+
+        return records
+
+    def _unique_record_values(self, records: List[Dict[str, str]], field: str) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for rec in records:
+            v = self._normalize_top_value(rec.get(field, ""))
+            if (not v) or (v in seen):
+                continue
+            seen.add(v)
+            out.append(v)
+        return out
+
+    def _pick_option(self, options: List[str], preferred: str = "") -> str:
+        p = self._normalize_top_value(preferred)
+        if p and p in options:
+            return p
+        return options[0] if options else ""
+
+    def _apply_top_cascade(self, changed_key: Optional[str] = None, changed_value: str = ""):
+        if (not self._top_cascade_enabled) or (not hasattr(self, "dropdown_bar")):
+            return
+
+        records = self._top_records
+        current = {k: self.dropdown_bar.get_value(k) for k in self.TOP_KEY_ORDER}
+        if changed_key:
+            current[changed_key] = self._normalize_top_value(changed_value)
+
+        reset_downstream = {
+            "branch": {"op_company", "oilfield", "facility_code", "facility_name"},
+            "op_company": {"oilfield", "facility_code", "facility_name"},
+            "oilfield": {"facility_code", "facility_name"},
+            "facility_code": {"facility_name"},
+            "facility_name": {"facility_code"},
+        }
+        reset = reset_downstream.get(changed_key or "", set())
+
+        branches = self._unique_record_values(records, "分公司")
+        branch = self._pick_option(branches, current.get("branch", ""))
+        branch_rows = [r for r in records if r.get("分公司", "") == branch] if branch else list(records)
+
+        op_opts = self._unique_record_values(branch_rows, "作业公司")
+        op_pref = "" if "op_company" in reset else current.get("op_company", "")
+        op = self._pick_option(op_opts, op_pref)
+        op_rows = [r for r in branch_rows if r.get("作业公司", "") == op] if op else list(branch_rows)
+
+        oil_opts = self._unique_record_values(op_rows, "油气田")
+        oil_pref = "" if "oilfield" in reset else current.get("oilfield", "")
+        oilfield = self._pick_option(oil_opts, oil_pref)
+        oil_rows = [r for r in op_rows if r.get("油气田", "") == oilfield] if oilfield else list(op_rows)
+
+        code_opts = self._unique_record_values(oil_rows, "设施编码")
+        name_opts = self._unique_record_values(oil_rows, "设施名称")
+
+        selected_row: Optional[Dict[str, str]] = None
+        if changed_key == "facility_name":
+            name_pref = current.get("facility_name", "")
+            selected_name = self._pick_option(name_opts, name_pref)
+            for rec in oil_rows:
+                if rec.get("设施名称", "") == selected_name:
+                    selected_row = rec
+                    break
+        else:
+            code_pref = "" if "facility_code" in reset else current.get("facility_code", "")
+            selected_code = self._pick_option(code_opts, code_pref)
+            for rec in oil_rows:
+                if rec.get("设施编码", "") == selected_code:
+                    selected_row = rec
+                    break
+
+        if selected_row is None and oil_rows:
+            selected_row = oil_rows[0]
+
+        selected_code = self._normalize_top_value((selected_row or {}).get("设施编码", ""))
+        selected_name = self._normalize_top_value((selected_row or {}).get("设施名称", ""))
+
+        if selected_code and selected_code not in code_opts:
+            code_opts = [selected_code] + code_opts
+        if selected_name and selected_name not in name_opts:
+            name_opts = [selected_name] + name_opts
+
+        fixed_key_to_field = {
+            "facility_type": "设施类型",
+            "category": "分类",
+            "start_time": "投产时间",
+            "design_life": "设计年限",
+        }
+        fixed_values: Dict[str, str] = {}
+        for k, field_cn in fixed_key_to_field.items():
+            val = self._normalize_top_value((selected_row or {}).get(field_cn, ""))
+            fixed_values[k] = val
+
+        self._top_cascade_lock = True
+        try:
+            self.dropdown_bar.set_options("branch", branches, branch)
+            self.dropdown_bar.set_options("op_company", op_opts, op)
+            self.dropdown_bar.set_options("oilfield", oil_opts, oilfield)
+            self.dropdown_bar.set_options("facility_code", code_opts, selected_code)
+            self.dropdown_bar.set_options("facility_name", name_opts, selected_name)
+
+            for k in ("facility_type", "category", "start_time", "design_life"):
+                v = fixed_values.get(k, "")
+                self.dropdown_bar.set_options(k, [v] if v else [], v)
+        finally:
+            self._top_cascade_lock = False
+
+        self._sync_all_top_meta_values()
+
+    def _sync_all_top_meta_values(self):
+        for field_cn in self.FIELD_TO_KEY.keys():
+            self._sync_meta_value(field_cn, self._get_top_value(field_cn))
+
+    def _current_top_defaults(self) -> Dict[str, str]:
+        defaults = {k: v for k, v in self.TOP_FIELDS}
+        if hasattr(self, "dropdown_bar"):
+            for field_cn in defaults.keys():
+                cur = self._get_top_value(field_cn)
+                if cur:
+                    defaults[field_cn] = cur
+        return defaults
+
     def _mock_top_options(self, field: str, default: str) -> List[str]:
         options_map = {
             "分公司": ["湛江分公司", "深圳分公司", "上海分公司", "海南分公司", "天津分公司"],
@@ -439,8 +661,15 @@ class PlatformLoadInformationPage(BasePage):
     def _on_top_key_changed(self, key: str, txt: str):
         """
         顶部 DropdownBar 改变：
+        - 级联刷新下拉值
         - 同步回填主表所属信息区（字段名用中文）
         """
+        if self._top_cascade_enabled:
+            if self._top_cascade_lock:
+                return
+            self._apply_top_cascade(changed_key=key, changed_value=txt)
+            return
+
         field = self.KEY_TO_FIELD.get(key, key)
         self._sync_meta_value(field, txt)
 
@@ -488,10 +717,7 @@ class PlatformLoadInformationPage(BasePage):
             flags &= ~Qt.ItemIsEditable
         it.setFlags(flags)
         it.setTextAlignment(align)
-        if bold:
-            f = it.font()
-            f.setBold(True)
-            it.setFont(f)
+        it.setFont(self._songti_small_four_font(bold=bold))
         if fg is not None:
             it.setForeground(fg)
         if bg is not None:
@@ -523,6 +749,7 @@ class PlatformLoadInformationPage(BasePage):
         # 行：0-1 所属信息，2-3 表头
         base_rows = 4
         table = HoverTipTable(base_rows, col_count)
+        table.setFont(self._songti_small_four_font())
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setVisible(False)
         # table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -535,8 +762,8 @@ class PlatformLoadInformationPage(BasePage):
         table.setRowHeight(2, 30)
         table.setRowHeight(3, 60)
 
-        # 顶部默认值
-        top_defaults = {k: v for k, v in self.TOP_FIELDS}
+        # 顶部默认值（来自当前下拉）
+        top_defaults = self._current_top_defaults()
 
         # ===== 所属信息两行（无绿色提示）=====
         # 每行 3 块：7 + 6 + 6 = 19
@@ -584,24 +811,24 @@ class PlatformLoadInformationPage(BasePage):
         table.setItem(2, 2, self._mk_item("改扩建时间", bold=True, bg=bg))
         table.setItem(2, 3, self._mk_item("改扩建内容", bold=True, bg=bg))
 
-        table.setItem(2, 4, self._mk_item("上部组块总操作重量,MT", bold=True, bg=bg))
-        table.setItem(2, 5, self._mk_item("上部组块不可超越重量,MT", bold=True, bg=bg))
-        table.setItem(2, 6, self._mk_item("重量变化,MT", bold=True, bg=bg))
-        table.setItem(2, 7, self._mk_item("上部组块重心 x,y,z,\nm", bold=True, bg=bg))
-        table.setItem(2, 8, self._mk_item("上部组块重心\n不可超越\n半径,m", bold=True, bg=bg))
+        table.setItem(2, 4, self._mk_item("上部组块总操作重量,（MT）", bold=True, bg=bg))
+        table.setItem(2, 5, self._mk_item("上部组块不可超越重量,（MT）", bold=True, bg=bg))
+        table.setItem(2, 6, self._mk_item("重量变化,（MT）", bold=True, bg=bg))
+        table.setItem(2, 7, self._mk_item("上部组块重心 x,y,z,\n（m）", bold=True, bg=bg))
+        table.setItem(2, 8, self._mk_item("上部组块重心\n不可超越\n半径,（m）", bold=True, bg=bg))
 
         # 红色字段（严格：Mz 纵向显示）
         fx_headers = [
-            ("Fx,KN", "Fx,KN"),
-            ("Fy,KN", "Fy,KN"),
-            ("Fz,KN", "Fz,KN"),
-            ("Mx,KN·m", "Mx,KN·m"),
-            ("My,KN·m", "My,KN·m"),
-            ("Mz,KN·m", "Mz,KN·m"),
+            ("Fx,（KN）", "Fx,（KN）"),
+            ("Fy,（KN）", "Fy,（KN）"),
+            ("Fz,（KN）", "Fz,（KN）"),
+            ("Mx,（KN·m）", "Mx,（KN·m）"),
+            ("My,（KN·m）", "My,（KN·m）"),
+            ("Mz,（KN·m）", "Mz,（KN·m）"),
         ]
         red_cols = list(range(9, 15))
         for (src, shown), c in zip(fx_headers, red_cols):
-            txt = shown.replace(",", "\n") if src != "Mz,KN·m" else shown
+            txt = shown.replace(",", "\n") if src != "Mz,（KN·m）" else shown
             table.setItem(3, c, self._mk_item(txt, bold=True, bg=bg, fg=red))
 
         table.setItem(3, 15, self._mk_item("操作工况", bold=True, bg=bg, fg=red))
@@ -649,6 +876,96 @@ class PlatformLoadInformationPage(BasePage):
                 return r
         return self.table.rowCount()
 
+    def _rebuild_row_checkbox_selectors(self, data_start: int, data_end: int):
+        """在数据区每行首列放置复选框，用于批量操作。"""
+        # 移除旧的 cellWidget
+        for r in range(self.table.rowCount()):
+            self.table.removeCellWidget(r, 0)
+
+        self._row_checkboxes: Dict[int, QCheckBox] = {}
+
+        for row_idx in range(data_start, data_end):
+            seq_item = self.table.item(row_idx, 0)
+            seq_text = seq_item.text().strip() if seq_item else ""
+
+            cb = QCheckBox()
+            cb.setCursor(Qt.PointingHandCursor)
+            # 记录复选框引用
+            self._row_checkboxes[row_idx] = cb
+
+            holder = QWidget(self.table)
+            lay = QHBoxLayout(holder)
+            lay.setContentsMargins(8, 0, 8, 0)
+            lay.setSpacing(8)
+            lay.addWidget(cb, 0, Qt.AlignCenter)
+
+            seq_lab = QLabel(seq_text)
+            seq_lab.setAlignment(Qt.AlignCenter)
+            seq_lab.setFont(self._songti_small_four_font())
+            lay.addWidget(seq_lab, 0, Qt.AlignCenter)
+            lay.addStretch(1)
+
+            self.table.setCellWidget(row_idx, 0, holder)
+
+    def _on_item_changed(self, item: QTableWidgetItem):
+        """处理单元格变动：如果是红色列的手动修改，恢复背景色为白色。"""
+        if getattr(self, "_loading_data", False):
+            return
+
+        row = item.row()
+        col = item.column()
+        base_rows = 4
+        data_end = self._find_data_end_row()
+
+        # 仅处理数据区的红色字段列：9..16
+        if (base_rows <= row < data_end) and (9 <= col <= 16):
+            # 如果当前背景色是淡蓝色（导入态），手动改动后应切回白色
+            if item.background().color() == QColor("#e1f5fe"):
+                self.table.blockSignals(True)
+                item.setBackground(QColor("white"))
+                self.table.blockSignals(False)
+
+    def _text_pixel_width(self, text: str, fm: QFontMetrics) -> int:
+        lines = str(text).splitlines() or [str(text)]
+        return max(fm.horizontalAdvance(line) for line in lines)
+
+    def _auto_fit_main_table_columns(self):
+        """按文字内容自适应主表列宽（忽略跨列单元格，避免异常拉宽）。"""
+        if not hasattr(self, "table") or self.table is None:
+            return
+
+        table = self.table
+        col_count = table.columnCount()
+        data_end = self._find_data_end_row()
+        fm = QFontMetrics(table.font())
+
+        min_width = 72
+        max_width = 420
+        padding = 24
+
+        for c in range(col_count):
+            best = min_width
+            for r in range(data_end):
+                # 跳过跨列单元格，避免分组标题/说明区影响单列宽度
+                if table.columnSpan(r, c) > 1:
+                    continue
+                it = table.item(r, c)
+                if it is None:
+                    continue
+                cand = self._text_pixel_width(it.text(), fm) + padding
+                if cand > best:
+                    best = cand
+
+            # 首列包含“单选框 + 序号”控件，给更大最小宽度
+            if c == 0:
+                best = max(best, 110)
+
+            table.setColumnWidth(c, min(max_width, best))
+
+        total_width = table.frameWidth() * 2 + sum(table.columnWidth(c) for c in range(col_count))
+        table.setFixedWidth(total_width + 2)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
     def _apply_data(self, rows: List[List[str]]):
         base_rows = 4
         bg = QColor("#eef2ff")
@@ -686,15 +1003,24 @@ class PlatformLoadInformationPage(BasePage):
                 rows[1] = (tip1 + [""] * self.table.columnCount())[:self.table.columnCount()]
 
         red_cols = set(range(9, 17))
+        calc_bg = QColor("#d8ffcf")  # 计算回显项的显著淡绿色
 
         # 写入数据（从 base_rows 开始），并设置可编辑
         for i, row in enumerate(rows):
             rr = base_rows + i
             for c, val in enumerate(row):
                 # 数据区：允许编辑
-                # 主表中“上部组块总操作重量/重心”不允许直接编辑，需跳转到分项目计算表
-                editable = (c not in (4, 7))
+                # 主表中“上部组块重心”不允许直接编辑，需跳转到分项目计算表
+                editable = (c not in (0, 7))
                 it = self._mk_item(val, editable=editable)
+
+                # 重心列（第 7 列）：强制染色
+                if c == 7:
+                    it.setBackground(calc_bg)
+
+                # 红色字段列添加操作提示
+                if c in red_cols:
+                    it.setToolTip("双击可手动输入数据；右键点击可读取本行对应的分析结果文件。")
 
                 # 示例：第0/1行的提示用绿/红区分（但依然可编辑）
                 if i in (0, 1) and val:
@@ -719,16 +1045,24 @@ class PlatformLoadInformationPage(BasePage):
         for r in range(0, self.table.rowCount()):
             for c in range(self.table.columnCount()):
                 if self.table.item(r, c) is None and self.table.cellWidget(r, c) is None:
-                    editable = (base_rows <= r < data_end) and (c not in (4, 7))
-                    self.table.setItem(r, c, self._mk_item("", bg=bg, editable=editable))
+                    editable = (base_rows <= r < data_end) and (c not in (0, 7))
+                    # 关键修复：补齐背景时也要保留重心列颜色
+                    item_bg = calc_bg if c == 7 else bg
+                    it = self._mk_item("", bg=item_bg, editable=editable)
+                    if (base_rows <= r < data_end) and (c in red_cols):
+                        it.setToolTip("双击可手动输入数据；右键点击可读取本行对应的分析结果文件。")
+                    self.table.setItem(r, c, it)
 
-            # ========== 新增：确保序号连续 ==========
+        # ========== 新增：确保序号连续 ==========
         data_start = base_rows
         data_end = self._find_data_end_row()
         for idx, row_idx in enumerate(range(data_start, data_end)):
             seq_item = self.table.item(row_idx, 0)
             if seq_item is not None:
                 seq_item.setText(str(idx))  # 从0开始连续编号
+
+        # 刷新复选框显示
+        self._rebuild_row_checkbox_selectors(data_start, data_end)
 
         data_n = len(rows)
 
@@ -744,56 +1078,106 @@ class PlatformLoadInformationPage(BasePage):
             self.table.setFixedHeight(-1)  # 取消固定高度
             self.table.setMinimumHeight(300)  # 设置一个合理的最小高度
 
-        # 自适应列宽（基于所有单元格内容）
-        self.table.resizeColumnsToContents()
-
-        # ========== 新增：前三列等宽 ==========
-        col0_width = self.table.columnWidth(0)
-        col1_width = self.table.columnWidth(1)
-        col2_width = self.table.columnWidth(2)
-        min_width = min(col0_width, col1_width, col2_width)
-        if min_width > 0:
-            self.table.setColumnWidth(0, min_width)
-            self.table.setColumnWidth(1, min_width)
-            self.table.setColumnWidth(2, min_width)
-
-        # 特殊列等宽处理：
-        # 1. 红色字段列 Fx~Mz (9~14) 加上 操作工况(15) 和 极端工况(16) 共8列
-        #    取这些列的最大宽度统一设置，使它们等宽
-        red_cols = list(range(9, 17))  # 9..16
-        max_red_width = max(self.table.columnWidth(c) for c in red_cols)
-        for c in red_cols:
-            self.table.setColumnWidth(c, max_red_width)
-
-        # 2. 如果还有其他需要等宽的组，可按需添加，例如：
-        #    - 上部组块重控下的列 4~8 等宽
-        #    - 但可能不需要，先不做
-
-        # 更新表格最小宽度为所有列宽之和，确保水平滚动条出现
-        total_width = sum(self.table.columnWidth(c) for c in range(self.table.columnCount()))
-        self.table.setMinimumWidth(total_width)
-
-        # 确保水平滚动条策略正确（默认即为 AsNeeded，但可显式设置）
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # 列宽按文字内容自适应，并由外层 table_scroll 统一承接横向滚动
+        self._auto_fit_main_table_columns()
     # ---------------- 结果文件读取接口 ----------------
-    # === 红色字段 Excel 导入模式（仅当前行）===
+
+    def _on_table_context_menu(self, pos):
+        """表格右键菜单逻辑：首列支持行操作，红色列支持读取结果文件。"""
+        base_rows = 4
+        data_end = self._find_data_end_row()
+        row = self.table.rowAt(pos.y())
+        col = self.table.columnAt(pos.x())
+        if not (base_rows <= row < data_end):
+            return
+
+        if col == 0:
+            self._show_row_context_menu(row, pos)
+            return
+
+        # 红色字段列：9..16 (Fx~Mz, 操作工况, 极端工况)
+        if 9 <= col <= 16:
+            menu = QMenu(self.table)
+            menu.setStyleSheet(self._menu_qss())
+            action = menu.addAction("读取该行关联的结果文件 (.inp)")
+            action.triggered.connect(lambda: self._on_import_result(target_row=row))
+            menu.exec_(self.table.viewport().mapToGlobal(pos))
+
+    def _checked_data_rows(self) -> List[int]:
+        data_end = self._find_data_end_row()
+        rows: List[int] = []
+        for row_idx, checkbox in getattr(self, "_row_checkboxes", {}).items():
+            if row_idx < data_end and checkbox.isChecked():
+                rows.append(row_idx)
+        return sorted(rows)
+
+    def _show_row_context_menu(self, row: int, pos):
+        menu = QMenu(self.table)
+        menu.setStyleSheet(self._menu_qss())
+
+        add_above_action = QAction("在上方新增一行", menu)
+        add_below_action = QAction("在下方新增一行", menu)
+        add_above_action.triggered.connect(lambda _=False, target=row: self._insert_row_at(target))
+        add_below_action.triggered.connect(lambda _=False, target=row + 1: self._insert_row_at(target))
+        menu.addAction(add_above_action)
+        menu.addAction(add_below_action)
+
+        checked_rows = self._checked_data_rows()
+        if checked_rows:
+            delete_action = QAction(f"删除已勾选行（{len(checked_rows)}）", menu)
+            delete_action.triggered.connect(lambda _=False, rows=checked_rows: self._delete_checked_rows(rows))
+            menu.addAction(delete_action)
+        else:
+            hint_action = QAction("请先勾选要删除的行", menu)
+            hint_action.setEnabled(False)
+            menu.addAction(hint_action)
+
+        menu.exec_(self.table.viewport().mapToGlobal(pos))
+
+    def _on_import_result(self, target_row: int = None):
+        """读取结果文件（INP）：按指定行序号匹配文件名并回填该行红色字段。"""
+        base_rows = 4
+        data_end = self._find_data_end_row()
+        row = target_row if target_row is not None else self.table.currentRow()
+        if row < base_rows or row >= data_end:
+            QMessageBox.information(self, "提示", "请先在主表数据区选中或右键点击一行。")
+            return
+
+        seq = self._cell_text(row, 0).strip()
+        if not seq:
+            QMessageBox.warning(self, "读取失败", "该行缺少序号，无法匹配结果文件。")
+            return
+
+        path = self._find_result_inp_by_seq(seq)
+        if not path:
+            roots = "\n".join(self._result_inp_search_roots())
+            QMessageBox.warning(self, "读取失败", f"未找到序号 {seq} 对应的 INP 结果文件。\n请按序号命名（例如：{seq}.inp）。\n\n搜索目录：\n{roots}")
+            return
+
+        try:
+            values = self._read_result_inp_generic(path)
+            keys = ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz', '操作工况', '极端工况']
+            if not any(str(values.get(k, '')).strip() for k in keys):
+                QMessageBox.warning(self, "读取失败", "在INP文件中未解析到有效字段。")
+                return
+            self._apply_excel_values_to_row(row, values, bg_color=QColor("#e1f5fe"))
+            QMessageBox.information(self, "读取结果文件", f"已按序号 {seq} 读取并回填成功。\n文件：{path}")
+        except Exception as e:
+            QMessageBox.warning(self, "读取失败", f"读取或解析失败：{e}")
+
     def _on_red_field_mode_changed(self, idx: int):
-        # 0=手动输入, 1=Excel导入
         self.red_field_mode = 'manual' if idx == 0 else 'excel'
-        # Excel模式下：导入按钮可用；手动模式下：禁用导入
         self.btn_pick_excel_result.setEnabled(self.red_field_mode == 'excel')
         self.btn_import_excel_result.setEnabled(self.red_field_mode == 'excel')
         self._apply_red_fields_editability()
 
     def _apply_red_fields_editability(self):
-        # 红色字段列：9..14 Fx~Mz, 15 操作工况, 16 极端工况（与你表头绘制保持一致）
         red_cols = list(range(9, 17))
-        base_rows = 4
-        data_end = self._find_data_end_row()
+        base_rows, data_end = 4, self._find_data_end_row()
         for r in range(base_rows, data_end):
             for c in red_cols:
                 it = self.table.item(r, c)
-                if it is None:
+                if not it:
                     it = self._mk_item('', editable=True)
                     self.table.setItem(r, c, it)
                 flags = it.flags()
@@ -805,453 +1189,270 @@ class PlatformLoadInformationPage(BasePage):
                     it.setBackground(QColor('#f2f2f2'))
 
     def _pick_result_excel(self):
-        default_path = self.result_excel_path or self.data_dir
-        path, _ = QFileDialog.getOpenFileName(self, '选择结果文件（Excel）', default_path, 'Excel Files (*.xlsx *.xlsm);;All Files (*)')
-        if path:
-            self.result_excel_path = path
+        start_dir = self.data_dir if os.path.exists(self.data_dir) else self.output_data_dir
+        path, _ = QFileDialog.getOpenFileName(self, '选择结果文件（Excel）', start_dir, 'Excel Files (*.xlsx *.xlsm);;All Files (*)')
+        if path: self.result_excel_path = path
 
     def _import_excel_to_current_row(self):
-        if self.red_field_mode != 'excel':
-            QMessageBox.information(self, '提示', '请先将“红色字段模式”切换为 Excel导入。')
-            return
-        if not self.result_excel_path:
-            QMessageBox.information(self, '提示', '请先点击“选择结果Excel”。')
-            return
+        if self.red_field_mode != 'excel': return
+        if not self.result_excel_path: return
         row = self.table.currentRow()
-        base_rows = 4
-        data_end = self._find_data_end_row()
-        if row < base_rows or row >= data_end:
-            QMessageBox.information(self, '提示', '请先在主表数据区选中一行（非表头/说明区）。')
-            return
+        if row < 4 or row >= self._find_data_end_row(): return
         try:
             values = self._read_result_excel_generic(self.result_excel_path)
-            if not values:
-                QMessageBox.warning(self, '导入失败', '未在Excel中解析到 Fx/Fy/Fz/Mx/My/Mz/操作工况/极端工况 字段。')
-                return
-            self._apply_excel_values_to_row(row, values)
-            QMessageBox.information(self, '完成', '已导入Excel数据到当前行（红色字段）。')
-        except Exception as e:
-            QMessageBox.warning(self, '导入失败', str(e))
+            if values:
+                self._apply_excel_values_to_row(row, values, bg_color=QColor("#e1f5fe"))
+                QMessageBox.information(self, '完成', '已导入Excel数据到当前行。')
+        except Exception as e: QMessageBox.warning(self, '导入失败', str(e))
 
-    def _apply_excel_values_to_row(self, row: int, values: Dict[str, object]):
+    def _apply_excel_values_to_row(self, row: int, values: Dict[str, object], bg_color: QColor = None):
         keys = ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz', '操作工况', '极端工况']
         cols = [9, 10, 11, 12, 13, 14, 15, 16]
+        red = QColor("#cc0000")
         for k, c in zip(keys, cols):
             v = values.get(k, '')
             it = self.table.item(row, c)
-            if it is None:
-                it = self._mk_item('', editable=False)
+            if not it:
+                it = self._mk_item('', editable=True)
                 self.table.setItem(row, c, it)
             it.setText('' if v is None else str(v))
+            if str(v).strip(): it.setForeground(red)
+            if bg_color: it.setBackground(bg_color)
+        self._auto_fit_main_table_columns()
 
     def _read_result_excel_generic(self, path: str) -> Dict[str, object]:
-        """通用Excel解析（没有样例文件前的兼容方案）：
-        A) 第一行含字段名(Fx/Fy/.../操作工况/极端工况)，取第二行值；
-        B) 表内出现字段名单元格，取右侧(优先)或下方。
-        """
         wb = openpyxl.load_workbook(path, data_only=True)
         ws = wb.active
         keys = ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz', '操作工况', '极端工况']
-        result: Dict[str, object] = {}
-        headers: Dict[str, int] = {}
-        for c in range(1, ws.max_column + 1):
-            v = ws.cell(1, c).value
-            if isinstance(v, str):
-                v = v.strip()
-                if v in keys:
-                    headers[v] = c
-        if headers:
-            for k, c in headers.items():
-                result[k] = ws.cell(2, c).value
-            return result
+        result = {}
         for r in range(1, ws.max_row + 1):
             for c in range(1, ws.max_column + 1):
                 v = ws.cell(r, c).value
-                if isinstance(v, str):
-                    v = v.strip()
-                    if v in keys:
-                        right = ws.cell(r, c + 1).value if c + 1 <= ws.max_column else None
-                        down = ws.cell(r + 1, c).value if r + 1 <= ws.max_row else None
-                        result[v] = right if right is not None else down
+                if isinstance(v, str) and v.strip() in keys:
+                    result[v.strip()] = ws.cell(r, c + 1).value or ws.cell(r + 1, c).value
         return result
 
-    def _on_import_result(self):
-        """读取结果文件：
-        - 如果选择的是 Excel（.xlsx/.xlsm），则按“导入当前行”的方式只写入当前选中行的红色字段；
-        - 如果选择的是 CSV，则沿用你原有的“按序号匹配多行回填”的逻辑（不改原功能）。
-        """
-        default_path = os.path.join(self.data_dir, self.DEMO_RESULT_CSV)
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择结果文件（CSV/Excel）",
-            default_path,
-            "CSV Files (*.csv);;Excel Files (*.xlsx *.xlsm);;All Files (*)"
-        )
-        if not path:
+    def _to_float(self, value: object) -> Optional[float]:
+        try: return float(str(value).strip())
+        except: return None
+
+    def _fmt_float(self, value: object) -> str:
+        fv = self._to_float(value)
+        return f"{fv:.6f}".rstrip("0").rstrip(".") if fv is not None else (str(value) if value else "")
+
+    # ---------------- 表格行操作（新增/删除） ----------------
+    def _insert_row_at(self, row: int):
+        """在数据区指定位置新增一行。"""
+        base_rows = 4
+        data_end = self._find_data_end_row()
+        insert_row = max(base_rows, min(row, data_end))
+        self.table.insertRow(insert_row)
+        
+        # 初始化新行的样式
+        cols = self.table.columnCount()
+        calc_bg = QColor("#d8ffcf")
+        red_cols = set(range(9, 17))
+        
+        for c in range(cols):
+            # 第0列是序号/单选，第7列是跳转重心，这两个不可直接编辑
+            editable = (c not in (0, 7))
+            bg = calc_bg if c == 7 else QColor("white")
+            it = self._mk_item("", bg=bg, editable=editable)
+            if c in red_cols:
+                it.setToolTip("双击可手动输入数据；右键点击可读取本行对应的分析结果文件。")
+            self.table.setItem(insert_row, c, it)
+            
+        self._refresh_table_layout_and_seq()
+
+    def _delete_checked_rows(self, rows: Optional[List[int]] = None):
+        """删除已勾选的数据行。"""
+        base_rows = 4
+        data_end = self._find_data_end_row()
+        target_rows = sorted(rows if rows is not None else self._checked_data_rows())
+
+        if not target_rows:
+            QMessageBox.information(self, "提示", "请先勾选要删除的行。")
+            return
+        if target_rows[0] < base_rows or target_rows[-1] >= data_end:
+            return
+        if len(target_rows) >= data_end - base_rows:
+            QMessageBox.information(self, "提示", "表格至少保留一条数据行。")
             return
 
-        ext = os.path.splitext(path)[1].lower()
-        try:
-            if ext in [".xlsx", ".xlsm", ".xls"]:
-                # Excel：只导入当前行（红色字段）
-                row = self.table.currentRow()
-                base_rows = 4
-                data_end = self._find_data_end_row()
-                if row < base_rows or row >= data_end:
-                    QMessageBox.information(self, "提示", "请先在主表数据区选中一行（非表头/说明区）。")
-                    return
-                values = self._read_result_excel_generic(path)
-                if not values:
-                    QMessageBox.warning(self, "读取失败", "未在Excel中解析到 Fx/Fy/Fz/Mx/My/Mz/操作工况/极端工况 字段。")
-                    return
-                self._apply_excel_values_to_row(row, values)
-                QMessageBox.information(self, "读取结果文件", "已从Excel导入并写入当前行（红色字段）。")
-            else:
-                # CSV：保留原逻辑（按序号匹配全表回填）
-                self._apply_result_file(path)
-                QMessageBox.information(self, "读取结果文件", "结果文件已回填到红色字段列。")
-        except Exception as e:
-            QMessageBox.warning(self, "读取失败", f"读取或解析失败：{e}")
+        ret = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定删除选中的 {len(target_rows)} 行信息吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if ret != QMessageBox.Yes:
+            return
 
-    def _apply_result_file(self, csv_path: str):
-        """
-        结果文件格式（CSV，含表头）：
-            序号,Fx,Fy,Fz,Mx,My,Mz,操作工况,极端工况
-        其中“序号”用于匹配主表数据区的序号列（0/1/2/3...）
-        """
-        mapping: Dict[str, Dict[str, str]] = {}
-        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.DictReader(f)
-            required = ["序号", "Fx", "Fy", "Fz", "Mx", "My", "Mz", "操作工况", "极端工况"]
-            for k in required:
-                if k not in reader.fieldnames:
-                    raise ValueError(f"缺少字段：{k}（需要：{required}）")
+        for row in reversed(target_rows):
+            self.table.removeRow(row)
 
-            for row in reader:
-                seq = str(row.get("序号", "")).strip()
-                if not seq:
-                    continue
-                mapping[seq] = row
+        self._refresh_table_layout_and_seq()
 
+    def _refresh_table_layout_and_seq(self):
+        """统一刷新序号、单选框、行高及表格总高度。"""
         base_rows = 4
         data_end = self._find_data_end_row()
+        
+        # 1. 重新设置序号（连续编号）
+        for idx, row_idx in enumerate(range(base_rows, data_end)):
+            it = self.table.item(row_idx, 0)
+            if it: it.setText(str(idx))
+            self.table.setRowHeight(row_idx, 44)
+            
+        # 2. 重新构建复选框
+        self._rebuild_row_checkbox_selectors(base_rows, data_end)
+        
+        # 3. 重新计算总高度
+        total_rows = self.table.rowCount()
+        data_n = data_end - base_rows
+        if data_n <= self.MAX_EXPAND_ROWS:
+            self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            total_h = sum(self.table.rowHeight(r) for r in range(total_rows))
+            self.table.setFixedHeight(total_h + 2)
+        else:
+            self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.table.setFixedHeight(-1)
+            self.table.setMinimumHeight(300)
+            
+        self._auto_fit_main_table_columns()
 
-        red = QColor("#cc0000")
-        red_col_map = {
-            "Fx": 9, "Fy": 10, "Fz": 11, "Mx": 12, "My": 13, "Mz": 14,
-            "操作工况": 15, "极端工况": 16
-        }
+    def _extract_numbers(self, text: str) -> List[float]:
+        return [float(s) for s in re.findall(self._num_pat, text or "") if self._to_float(s) is not None]
 
-        for r in range(base_rows, data_end):
-            it_seq = self.table.item(r, 0)
-            if it_seq is None:
-                continue
-            seq = it_seq.text().strip()
-            if seq not in mapping:
-                continue
+    def _read_text_file_with_fallback(self, path: str) -> str:
+        for enc in ["utf-8", "gb18030", "gbk", "latin-1"]:
+            try:
+                with open(path, "r", encoding=enc) as f: return f.read()
+            except: continue
+        return ""
 
-            src = mapping[seq]
-            for key, col in red_col_map.items():
-                val = str(src.get(key, "")).strip()
-                it = self.table.item(r, col)
-                if it is None:
-                    it = self._mk_item(val, editable=True)
-                    self.table.setItem(r, col, it)
-                else:
-                    it.setText(val)
-                it.setForeground(red)
+    def _result_inp_search_roots(self) -> List[str]:
+        roots = [self.data_dir, *existing_dirs("upload")]
+        return list(dict.fromkeys(roots))
 
-    # ---------------- 曲线页面：从主表数据生成 ----------------
+    def _find_result_inp_by_seq(self, seq_text: str) -> Optional[str]:
+        seq = str(seq_text).strip()
+        roots = self._result_inp_search_roots()
+        for root in roots:
+            for dir_path, _, file_names in os.walk(root):
+                for fn in file_names:
+                    if fn.lower() == f"{seq}.inp" or fn.lower() == f"row_{seq}.inp":
+                        return os.path.normpath(os.path.join(dir_path, fn))
+        return None
+
+    def _extract_loads_from_text(self, text: str) -> Dict[str, str]:
+        loads = {}
+        for key in ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]:
+            m = re.search(rf"(?i)\b{key}\b.*?\b({self._num_pat})\b", text)
+            if m: loads[key] = self._fmt_float(m.group(1))
+        return loads
+
+    def _extract_safety_from_text(self, text: str) -> Dict[str, str]:
+        out = {}
+        m_op = re.search(rf"(?im)操作工况.*?({self._num_pat})", text)
+        if m_op: out["操作工况"] = self._fmt_float(m_op.group(1))
+        m_ex = re.search(rf"(?im)极端工况.*?({self._num_pat})", text)
+        if m_ex: out["极端工况"] = self._fmt_float(m_ex.group(1))
+        return out
+
+    def _read_result_inp_generic(self, path: str) -> Dict[str, object]:
+        text = self._read_text_file_with_fallback(path)
+        res = {}
+        res.update(self._extract_loads_from_text(text))
+        res.update(self._extract_safety_from_text(text))
+        return res
+
     def _collect_series_for_curve(self) -> Dict[str, List[float]]:
-        base_rows = 4
-        data_end = self._find_data_end_row()
-
-        def to_float(s: str) -> Optional[float]:
-            try:
-                return float(str(s).strip())
-            except Exception:
-                return None
-
-        idxs: List[float] = []
-        weight: List[float] = []
-        cgx: List[float] = []
-        cgy: List[float] = []
-        fx: List[float] = []
-        fy: List[float] = []
-        fz: List[float] = []
-        mx: List[float] = []
-        my: List[float] = []
-        mz: List[float] = []
-
+        base_rows, data_end = 4, self._find_data_end_row()
+        idxs, weight, cgx, cgy, fx, fy, fz, mx, my, mz = [], [], [], [], [], [], [], [], [], []
         for r in range(base_rows, data_end):
-            seq_item = self.table.item(r, 0)
-            if seq_item is None or not seq_item.text().strip():
-                continue
-            # 只要是数字序号就纳入
-            try:
-                _ = int(float(seq_item.text().strip()))
-            except Exception:
-                continue
-
-            idxs.append(len(idxs))  # x轴用改建次数：0,1,2,...
-
-            w = to_float(self._cell_text(r, 4))  # 操作重量
-            weight.append(w if w is not None else 0.0)
-
-            xyz = self._cell_text(r, 7)
-            x, y = 0.0, 0.0
-            parts = [p.strip() for p in str(xyz).split(",")]
-            if len(parts) >= 2:
-                x = to_float(parts[0]) or 0.0
-                y = to_float(parts[1]) or 0.0
-            cgx.append(x)
-            cgy.append(y)
-
-            fx.append(to_float(self._cell_text(r, 9)) or 0.0)
-            fy.append(to_float(self._cell_text(r, 10)) or 0.0)
-            fz.append(to_float(self._cell_text(r, 11)) or 0.0)
-            mx.append(to_float(self._cell_text(r, 12)) or 0.0)
-            my.append(to_float(self._cell_text(r, 13)) or 0.0)
-            mz.append(to_float(self._cell_text(r, 14)) or 0.0)
-
-        return {
-            "idx": idxs,
-            "weight": weight, "cgx": cgx, "cgy": cgy,
-            "fx": fx, "fy": fy, "fz": fz,
-            "mx": mx, "my": my, "mz": mz
-        }
+            seq = self._cell_text(r, 0).strip()
+            if not seq.isdigit(): continue
+            idxs.append(len(idxs))
+            weight.append(self._to_float(self._cell_text(r, 4)) or 0.0)
+            xyz = self._cell_text(r, 7).split(",")
+            cgx.append(self._to_float(xyz[0]) if len(xyz)>0 else 0.0)
+            cgy.append(self._to_float(xyz[1]) if len(xyz)>1 else 0.0)
+            fx.append(self._to_float(self._cell_text(r, 9)) or 0.0)
+            fy.append(self._to_float(self._cell_text(r, 10)) or 0.0)
+            fz.append(self._to_float(self._cell_text(r, 11)) or 0.0)
+            mx.append(self._to_float(self._cell_text(r, 12)) or 0.0)
+            my.append(self._to_float(self._cell_text(r, 13)) or 0.0)
+            mz.append(self._to_float(self._cell_text(r, 14)) or 0.0)
+        return {"idx": idxs, "weight": weight, "cgx": cgx, "cgy": cgy, "fx": fx, "fy": fy, "fz": fz, "mx": mx, "my": my, "mz": mz}
 
     def _cell_text(self, row: int, col: int) -> str:
         it = self.table.item(row, col)
         return it.text() if it else ""
 
-    # ---------------- 点击重量/重心：跳转到分项目计算表并回填 ----------------
     def _on_main_cell_clicked(self, row: int, col: int):
-        base_rows = 4
-        data_end = self._find_data_end_row()
-
-        # 仅数据区有效
-        if not (base_rows <= row < data_end):
-            return
-
-        # 仅“上部组块总操作重量/重心”两列触发跳转（与示意图一致）
-        if col not in (4, 7):
-            return
-
-        self._open_upper_block_subproject_page(src_row=row)
+        if 4 <= row < self._find_data_end_row() and col == 7:
+            self._open_upper_block_subproject_page(src_row=row)
 
     def _open_upper_block_subproject_page(self, src_row: int):
         mw = self.window()
-        if not hasattr(mw, "tab_widget"):
-            QMessageBox.information(self, "提示", "未检测到主窗口Tab组件，无法打开分项目计算表页面。")
-            return
-
-        # 去重：同一行只开一个
+        if not hasattr(mw, "tab_widget"): return
         key = f"uppercalc::{src_row}"
-        if hasattr(mw, "page_tab_map") and key in mw.page_tab_map:
-            w = mw.page_tab_map[key]
-            idx = mw.tab_widget.indexOf(w)
-            if idx != -1:
-                mw.tab_widget.setCurrentIndex(idx)
-                return
-
-        # 行上下文：用于回填到主表的定位
-        row_data = {c: (self.table.item(src_row, c).text() if self.table.item(src_row, c) else "")
-                    for c in range(self.table.columnCount())}
-
+        if key in getattr(mw, "page_tab_map", {}):
+            idx = mw.tab_widget.indexOf(mw.page_tab_map[key])
+            if idx != -1: mw.tab_widget.setCurrentIndex(idx); return
+        
+        row_data = {c: self._cell_text(src_row, c) for c in range(self.table.columnCount())}
         page = UpperBlockSubprojectCalculationTablePage(main_window=mw, parent=mw)
         page.set_context(source_row=src_row, source_row_data=row_data)
+        if src_row in self._uppercalc_saved_data: page.load_table_data(self._uppercalc_saved_data[src_row])
         page.saved.connect(self._on_upper_page_saved)
-
-        # tab 标题：优先展示改扩建项目名称
-        proj = row_data.get(1, "") or f"序号{row_data.get(0, src_row)}"
-        title = f"{proj}-上部组块分项目计算表"
-
+        title = f"{(row_data.get(1) or '序号'+str(src_row))}-上部组块分项目计算表"
         idx = mw.tab_widget.addTab(page, title)
         mw.tab_widget.setCurrentIndex(idx)
-        if hasattr(mw, "page_tab_map"):
-            mw.page_tab_map[key] = page
+        if hasattr(mw, "page_tab_map"): mw.page_tab_map[key] = page
 
     def _on_upper_page_saved(self, payload: dict):
-        """子页面保存后回填主表。
-
-        兼容两种 payload：
-        1) 新版（推荐）：{"source_row": int, "write_back": {4: w, 7: "x,y,z", ...}}
-        2) 旧版：{"source_row": int, "op_total_w": ..., "op_cg": ...}
-        """
         src_row = payload.get("source_row")
-        if src_row is None:
-            return
-
-        def _fmt_num(v):
-            try:
-                fv = float(v)
-                return f"{fv:.6f}".rstrip("0").rstrip(".")
-            except Exception:
-                return str(v) if v is not None else ""
-
-        # ---------- 1) 新版 write_back ----------
-        wb = payload.get("write_back")
-        if isinstance(wb, dict) and wb:
-            for col, val in wb.items():
-                try:
-                    c = int(col)
-                except Exception:
-                    continue
-                it = self.table.item(src_row, c)
-                if it is None:
-                    # 由分项目计算表回填的列默认只读
-                    it = self._mk_item("", editable=False)
-                    self.table.setItem(src_row, c, it)
-                it.setText(str(val) if val is not None else "")
-            return
-
-        # ---------- 2) 旧版字段 ----------
-        op_w = payload.get("op_total_w", "")
-        op_cg = payload.get("op_cg", "")
-
-        if isinstance(op_cg, (list, tuple)) and len(op_cg) == 3:
-            cg_txt = ",".join(_fmt_num(x) for x in op_cg)
-        else:
-            cg_txt = str(op_cg) if op_cg is not None else ""
-
-        it_w = self.table.item(src_row, 4)
-        if it_w is None:
-            it_w = self._mk_item("", editable=False)
-            self.table.setItem(src_row, 4, it_w)
-        it_w.setText(_fmt_num(op_w))
-
-        it_cg = self.table.item(src_row, 7)
-        if it_cg is None:
-            it_cg = self._mk_item("", editable=False)
-            self.table.setItem(src_row, 7, it_cg)
-        it_cg.setText(cg_txt)
-
-
+        if src_row is None: return
+        if "table_data" in payload: self._uppercalc_saved_data[src_row] = payload["table_data"]
+        calc_bg = QColor("#d8ffcf")
+        wb = payload.get("write_back", {})
+        for col, val in wb.items():
+            it = self.table.item(src_row, int(col))
+            if not it:
+                it = self._mk_item("", editable=(int(col)!=7))
+                self.table.setItem(src_row, int(col), it)
+            it.setText(str(val))
+            if int(col) == 7: it.setBackground(calc_bg)
+        self._auto_fit_main_table_columns()
 
     def _open_curve_page(self):
-        facility_code = self._get_top_value("设施编码") or "XXXX"
-        title = f"{facility_code}平台重量中心变化曲线"
-        series = self._collect_series_for_curve()
-
+        code = self._get_top_value("设施编码") or "XXXX"
         mw = self.window()
-        if hasattr(mw, "tab_widget"):
-            # 去重：同一个设施编码只开一个
-            key = f"curve::{facility_code}"
-            if hasattr(mw, "page_tab_map") and key in mw.page_tab_map:
-                w = mw.page_tab_map[key]
-                idx = mw.tab_widget.indexOf(w)
-                if idx != -1:
-                    mw.tab_widget.setCurrentIndex(idx)
-                    return
+        if not hasattr(mw, "tab_widget"): return
+        key = f"curve::{code}"
+        if key in getattr(mw, "page_tab_map", {}):
+            idx = mw.tab_widget.indexOf(mw.page_tab_map[key])
+            if idx != -1: mw.tab_widget.setCurrentIndex(idx); return
+        page = PlatformWeightCenterCurvePage(code, self._collect_series_for_curve(), mw)
+        idx = mw.tab_widget.addTab(page, f"{code}平台重量中心变化曲线")
+        if hasattr(mw, "page_tab_map"): mw.page_tab_map[key] = page
+        mw.tab_widget.setCurrentIndex(idx)
 
-            page = PlatformWeightCenterCurvePage(facility_code, series, mw)
-            idx = mw.tab_widget.addTab(page, title)
-            mw.tab_widget.setCurrentIndex(idx)
-            if hasattr(mw, "page_tab_map"):
-                mw.page_tab_map[key] = page
-        else:
-            QMessageBox.information(self, "提示", "未检测到主窗口Tab组件，无法打开曲线页面。")
-
-    # ---------------- demo files ----------------
     def _ensure_demo_files(self):
-        os.makedirs(self.data_dir, exist_ok=True)
-        main_path = os.path.join(self.data_dir, self.DEMO_MAIN_CSV)
-        if not os.path.exists(main_path):
-            cols = self._columns()
-            rows = self._generate_mock_rows(n=7, seed=202505)
-            with open(main_path, "w", encoding="utf-8-sig", newline="") as f:
-                w = csv.writer(f)
-                w.writerow(cols)
-                w.writerows(rows)
+        # 打包环境下演示数据位于 _internal/data，无需在 exe 同级预创建空 data 目录。
+        return
 
-        # 结果文件 demo（红色字段）
-        res_path = os.path.join(self.data_dir, self.DEMO_RESULT_CSV)
-        if not os.path.exists(res_path):
-            self._generate_demo_result_csv(res_path, n=7, seed=7788)
-
-    def _generate_demo_result_csv(self, out_path: str, n: int = 7, seed: int = 0):
-        rnd = random.Random(seed)
-        with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(["序号", "Fx", "Fy", "Fz", "Mx", "My", "Mz", "操作工况", "极端工况"])
-            # 生成 0..(n-1) 对应主表“序号”
-            for i in range(n):
-                fx = rnd.uniform(9000, 18000)
-                fy = rnd.uniform(9000, 18000)
-                fz = rnd.uniform(9000, 18000)
-                mx = rnd.uniform(190000, 220000)
-                my = rnd.uniform(190000, 220000)
-                mz = rnd.uniform(190000, 220000)
-                op = rnd.uniform(1.10, 2.60)
-                ex = rnd.uniform(1.10, 2.60)
-                w.writerow([
-                    i,
-                    f"{fx:.2f}", f"{fy:.2f}", f"{fz:.2f}",
-                    f"{mx:.2f}", f"{my:.2f}", f"{mz:.2f}",
-                    f"{op:.2f}", f"{ex:.2f}"
-                ])
-
-    def _generate_mock_rows(self, n: int = 7, seed: int = 0) -> List[List[str]]:
-        rnd = random.Random(seed)
-        rows: List[List[str]] = []
-
-        # 先放两行：0/1（我们后面会在 _apply_data 替换成“提示行”，但这里仍生成占位）
-        for i in range(2):
-            rows.append([""] * len(self._columns()))
-
-        # 从 2 开始生成真实数据
-        for i in range(2, n):
-            mod_type = rnd.choice(["新增设备", "扩建", "改造加固"])
-            mod_time = f"20{rnd.randint(10, 23):02d}-{rnd.randint(1, 12):02d}"
-            mod_content = rnd.choice(["新增井口设备", "生活楼扩建", "甲板加固", "新增工艺模块"])
-
-            w_total = rnd.randint(5000, 18000)
-            cg_total = rnd.uniform(8000, 26000)
-            dw = rnd.uniform(-120, 320)
-            # 为了曲线更像截图，x、y 做成随次数变化
-            x = (i - 2) * rnd.uniform(0.4, 0.9)
-            y = (i - 2) * rnd.uniform(0.2, 0.7)
-            z = rnd.uniform(-0.5, 0.5)
-            cg_xyz = f"{x:.2f},{y:.2f},{z:.2f}"
-            r_no = rnd.uniform(5.0, 20.0)
-
-            # 红色字段先空（由用户输入/结果文件回填）
-            rows.append([
-                str(i), mod_type, mod_time, mod_content,
-                f"{w_total:.0f}",
-                f"{cg_total:.2f}",
-                f"{dw:.2f}",
-                cg_xyz,
-                f"{r_no:.2f}",
-                "", "", "", "", "", "",
-                "", "",  # 操作工况/极端工况
-                rnd.choice(["是", "否"]),
-                rnd.choice(["中海油研究总院", "第三方评估机构A", "第三方评估机构B"]),
-            ])
-        return rows
-
-    # ---------------- actions ----------------
-    def _on_save(self):
-        QMessageBox.information(self, "保存", "示例：保存（后续接真实存储逻辑）。")
+    def _on_save(self): QMessageBox.information(self, "保存", "数据已保存（模拟）。")
 
     def _on_export(self):
-        export_path = os.path.join(self.data_dir, "platform_load_information_export.csv")
-        base_rows = 4
-        data_end = self._find_data_end_row()
-
-        if data_end <= base_rows:
-            QMessageBox.information(self, "导出数据", "当前无数据可导出。")
-            return
-
-        with open(export_path, "w", encoding="utf-8-sig", newline="") as f:
+        os.makedirs(self.output_data_dir, exist_ok=True)
+        path = os.path.join(self.output_data_dir, "platform_load_information_export.csv")
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
             w = csv.writer(f)
             w.writerow(self._columns())
-            for r in range(base_rows, data_end):
-                row = []
-                for c in range(self.table.columnCount()):
-                    it = self.table.item(r, c)
-                    row.append(it.text() if it else "")
-                w.writerow(row)
-
-        QMessageBox.information(self, "导出数据", f"已导出：{export_path}")
+            for r in range(4, self._find_data_end_row()):
+                w.writerow([self._cell_text(r, c) for c in range(self.table.columnCount())])
+        QMessageBox.information(self, "导出数据", f"已导出：{path}")

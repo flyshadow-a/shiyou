@@ -31,6 +31,32 @@ NAV_CONFIG = [
         "text": "个人中心","page": PersonalCenterPage
     },
     {
+        "text": "平台载荷管理",
+        "children": [
+            {
+                "text": "油气田信息","page": OilfieldWaterLevelPage
+                # "children": [
+                #
+                #     {"text": "油气田信息", "page": OilfieldWaterLevelPage},
+                #     {
+                #         "text": "平台基本结构信息","page":PlatformStructureInfoPage}
+                        
+                            #{"text":"基本信息","page":PlatformBasicInfoPage}
+                # ],
+            },
+            {"text": "载荷信息",
+             "children":[
+                 {"text":"汇总信息表","page":SummaryInformationTablePage},
+                 {"text":"平台载荷信息表","page":PlatformLoadInformationPage}
+             ]},
+            {"text": "状态监测（结构和腐蚀性检测）",},
+            {"text": "结构强度/改造可行性评估","page":PlatformStrengthPage},
+
+            {"text": "特检策略","page": SpecialInspectionStrategy},
+            # 后续可以在这里继续增加其他功能菜单
+        ],
+    },
+    {
         "text": "文件管理",
         "children": [
             {"text": "汇总信息","page":PlatformSummaryPage},
@@ -39,28 +65,10 @@ NAV_CONFIG = [
                 "page": ConstructionDocsPage,
             },
             {"text": "历史改造文件", "page": HistoryRebuildFilesPage},
-            {"text": "检测记录", "page": HistoryEventsInspectionPage},
+            {"text": "\u5386\u53f2\u4e8b\u4ef6\u53ca\u68c0\u6d4b", "page": HistoryEventsInspectionPage},
             {"text": "模型文件", "page": ModelFilesPage},
         ],
-    },
+    }
 
     # 还可以继续增加「文件管理」等大类
-    {
-        "text": "平台载荷管理",
-        "children": [
-            {
-                "text": "海洋环境","page": OilfieldWaterLevelPage
-            },
-            {"text": "载荷信息",
-             "children":[
-                 {"text":"汇总信息","page":SummaryInformationTablePage},
-                 {"text":"平台载荷信息","page":PlatformLoadInformationPage}
-             ]},
-            {"text": "状态监测（结构和腐蚀性检测）", "disabled": True},
-            {"text": "结构强度/改造可行性评估","page":PlatformStrengthPage},
-
-            {"text": "特检策略","page": SpecialInspectionStrategy},
-            # 后续可以在这里继续增加其他功能菜单
-        ],
-    },
 ]

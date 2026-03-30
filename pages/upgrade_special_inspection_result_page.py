@@ -81,13 +81,17 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
     def __init__(self, facility_code: str, parent=None):
         self.facility_code = facility_code
-        super().__init__(f"{facility_code}更新风险结果", parent)
+        super().__init__("", parent)
         self._build_ui()
         self._fill_demo()
 
     def _build_ui(self):
         self.setStyleSheet("""
-            QWidget { background: #e6eef7; }
+            QWidget { 
+                background: #e6eef7; 
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+            }
             QFrame#Card { background: #e6eef7; border: 1px solid #c7d2e3; }
 
             QTabWidget::pane { border: 1px solid #4a4a4a; background: #e6eef7; }
@@ -98,20 +102,24 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 padding: 6px 16px;
                 min-width: 110px;
                 font-weight: bold;
+                font-size: 12pt;
             }
             QTabBar::tab:selected { background: #d6f0d0; }
 
             /* 表格（网格线明显） */
             QTableWidget {
-                background: #f7fbff;
-                gridline-color: #7b8798;
-                border: 1px solid #7b8798;
+                background: #ffffff;
+                gridline-color: #d0d0d0;
+                border: 1px solid #d0d0d0;
+                font-size: 12pt;
             }
             QHeaderView::section {
-                background: #d9e6f5;
-                border: 1px solid #7b8798;
+                background: #f3f6fb;
+                color: #000000;
+                border: 1px solid #e6e6e6;
                 padding: 4px 6px;
-                font-weight: bold;
+                font-weight: normal;
+                font-size: 12pt;
             }
 
             QPushButton#ReportBtn {
@@ -120,7 +128,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 border: 1px solid #0a5f7a;
                 border-radius: 8px;
                 min-height: 46px;
-                font-size: 18px;
+                font-size: 12pt;
                 font-weight: bold;
             }
             QPushButton#ReportBtn:hover { background: #00b6f2; }
@@ -173,7 +181,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         comp_l.setContentsMargins(0, 0, 0, 0)
         comp_l.setSpacing(10)
         self.table_comp = self._make_detail_table(is_node=False)
-        self.summary_comp = self._make_summary_table()
+        self.summary_comp = self._make_summary_table(is_node=False)
 
         comp_l.addWidget(self.table_comp, 0)
         comp_l.addWidget(self.summary_comp, 1)
@@ -184,7 +192,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         node_l.setContentsMargins(0, 0, 0, 0)
         node_l.setSpacing(10)
         self.table_node = self._make_detail_table(is_node=True)
-        self.summary_node = self._make_summary_table()
+        self.summary_node = self._make_summary_table(is_node=True)
         node_l.addWidget(self.table_node, 0)
         node_l.addWidget(self.summary_node, 1)
 
@@ -228,7 +236,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         #t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
         # ---- row 0: group headers ----
-        hdr_bg = QColor("#d9e6f5")
+        hdr_bg = QColor("#f3f6fb")
         bold = True
         # 基本信息：0..3
         t.setSpan(0, 0, 1, 4)
@@ -252,19 +260,20 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         # ====== 核心修复：列宽自适应与横向滚动条 ======
         t.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-        # 让 Qt 根据刚填入的 0 行和 1 行（表头文字）自动计算所需宽度
-        t.resizeColumnsToContents()
-
         header = t.horizontalHeader()
         for c in range(cols):
-            # 设置为 Interactive，允许生成滚动条且允许用户拖拽列宽
-            header.setSectionResizeMode(c, QHeaderView.Interactive)
-            ideal_width = t.columnWidth(c)
-            # 给出 80 的保底宽度，并为长文字加上 25 像素的舒适留白
-            t.setColumnWidth(c, max(80, ideal_width + 25))
+            # 将所有列均设为根据内容自适应，包括最后一列“风险等级”
+            header.setSectionResizeMode(c, QHeaderView.ResizeToContents)
 
-        # 最后一列“风险等级”自动拉伸填满右侧空白
-        header.setStretchLastSection(True)
+        # 确保列宽不仅贴合内容，还留有最小安全边距
+        t.resizeColumnsToContents()
+        for c in range(cols):
+            w = t.columnWidth(c)
+            # 在自适应宽度基础上，强行再增加 10 像素的安全边距
+            t.setColumnWidth(c, max(80, w + 10))
+
+        # 禁用自动拉伸最后一列，以防破坏已计算好的宽度
+        header.setStretchLastSection(False)
         # ============================================
 
         # row heights
@@ -290,7 +299,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         table.setItem(r, c, it)
 
     # ---------------- Summary big table (tagged) ----------------
-    def _make_summary_table(self) -> QTableWidget:
+    def _make_summary_table(self, is_node: bool = False) -> QTableWidget:
         """
         汇总表：顶部 1 行标签（合并单元格），下面每个年份 3 行：
         - 年份标签 + 风险等级颜色条
@@ -307,7 +316,11 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         t.setGridStyle(Qt.SolidLine)
         t.setSelectionMode(QTableWidget.NoSelection)
         t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        t.setStyleSheet("QTableWidget{background:#dfe9f6;}")
+        t.setStyleSheet("QTableWidget{background:#ffffff;}")
+
+        # 取消滚动条以完全显示
+        t.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        t.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         # Tag row
         # t.setSpan(0, 0, 1, cols)
@@ -315,7 +328,10 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         green = QColor("#cfe6b8")
         for r in range(len(self.SUMMARY_YEARS)):
             t.setSpan(r * 4, 0, 1, 6)
-            self._set_cell(t, r * 4, 0, self.SUMMARY_YEARS[r], green, True)
+            text = self.SUMMARY_YEARS[r]
+            if is_node and r == 0 and text == "构件":
+                text = "节点"
+            self._set_cell(t, r * 4, 0, text, green, True)
 
 
 
@@ -362,7 +378,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             t.setRowHeight(base_r + 2, 24)
 
         t.setRowHeight(0, 26)
-        t.setMinimumHeight(430)
+        
+        # 动态计算表格实际需要的高度并固定死
+        total_h = t.frameWidth() * 2 + 2
+        for r in range(t.rowCount()):
+            total_h += t.rowHeight(r)
+        t.setFixedHeight(total_h)
+        
         return t
 
     # ---------------- Right ----------------

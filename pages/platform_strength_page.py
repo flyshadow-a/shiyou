@@ -2,10 +2,12 @@
 # pages/platform_strength_page.py
 
 import os
-from typing import Dict, List, Tuple
+import re
+import math
+from typing import Dict, List, Tuple, Optional
 
 from PyQt5.QtCore import Qt, QRectF
-from PyQt5.QtGui import QFontMetrics, QColor, QPen
+from PyQt5.QtGui import QColor, QFont, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -20,12 +22,14 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QGraphicsView,
-    QGraphicsScene, QMessageBox, QGridLayout, QPushButton, QComboBox, QHeaderView,
+    QGraphicsScene, QMessageBox, QPushButton, QHeaderView,
 )
 
+from app_paths import first_existing_path
 from base_page import BasePage
 from dropdown_bar import DropdownBar
 from pages.feasibility_assessment_page import FeasibilityAssessmentPage
+from pages.read_table_xls import ReadTableXls
 
 
 class InpWireframeView(QGraphicsView):
@@ -41,11 +45,19 @@ class InpWireframeView(QGraphicsView):
         self.setStyleSheet("background:#0b0f14; border: 1px solid #2f3a4a;")
         self.setFrameShape(QFrame.NoFrame)
         self.setAlignment(Qt.AlignCenter)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
 
         self._nodes: Dict[int, Tuple[float, float, float]] = {}
         self._edges: List[Tuple[int, int]] = []
         self._proj_pts: Dict[int, Tuple[float, float]] = {}
         self._loaded_path: str = ""
+        self._user_view_changed: bool = False
+        self._yaw_deg: float = 0.0
+        self._pitch_deg: float = 0.0
+        self._rotate_dragging: bool = False
+        self._rotate_last_pos = None
 
     def clear_view(self, message: str = ""):
         self.scene().clear()
@@ -53,6 +65,10 @@ class InpWireframeView(QGraphicsView):
         self._edges = []
         self._proj_pts = {}
         self._loaded_path = ""
+        self._user_view_changed = False
+        self._rotate_dragging = False
+        self._rotate_last_pos = None
+        self.resetTransform()
 
         if message:
             t = self.scene().addText(message)
@@ -65,6 +81,11 @@ class InpWireframeView(QGraphicsView):
         nodes, edges = self._parse_inp_nodes_elements(file_path)
         self._nodes = nodes
         self._edges = edges
+        self._user_view_changed = False
+        self._yaw_deg = 0.0
+        self._pitch_deg = 0.0
+        self._rotate_dragging = False
+        self._rotate_last_pos = None
 
         if not self._nodes or not self._edges:
             self.clear_view("未解析到 NODE/ELEMENT 数据")
@@ -74,14 +95,83 @@ class InpWireframeView(QGraphicsView):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # 窗口变化时重新拟合
         if self._nodes and self._edges:
-            self._render()
+            if not self._user_view_changed:
+                rect = self.sceneRect()
+                if rect.isValid() and (rect.width() > 0) and (rect.height() > 0):
+                    self.fitInView(rect, Qt.KeepAspectRatio)
         else:
             # 让提示文字居中
             for it in self.scene().items():
                 if hasattr(it, "toPlainText"):
                     self._center_text_item(it)
+
+    def wheelEvent(self, event):
+        if not (self._nodes and self._edges):
+            super().wheelEvent(event)
+            return
+
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+
+        factor = 1.15 if delta > 0 else 1.0 / 1.15
+        cur_scale = self.transform().m11()
+        new_scale = cur_scale * factor
+        if (new_scale < 0.03) or (new_scale > 300):
+            return
+
+        self.scale(factor, factor)
+        self._user_view_changed = True
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if (event.button() == Qt.RightButton) and self._nodes and self._edges:
+            self._rotate_dragging = True
+            self._rotate_last_pos = event.pos()
+            self._user_view_changed = True
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+
+        if event.button() in (Qt.LeftButton, Qt.MiddleButton, Qt.RightButton):
+            self._user_view_changed = True
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._rotate_dragging and self._rotate_last_pos is not None and self._nodes and self._edges:
+            dx = event.pos().x() - self._rotate_last_pos.x()
+            dy = event.pos().y() - self._rotate_last_pos.y()
+
+            sens = 0.45
+            self._yaw_deg += dx * sens
+            self._pitch_deg += dy * sens
+            self._pitch_deg = max(-85.0, min(85.0, self._pitch_deg))
+
+            self._rotate_last_pos = event.pos()
+            self._render(reset_camera=False)
+            event.accept()
+            return
+
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.RightButton and self._rotate_dragging:
+            self._rotate_dragging = False
+            self._rotate_last_pos = None
+            self.setCursor(Qt.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if self._nodes and self._edges:
+            self._yaw_deg = 0.0
+            self._pitch_deg = 0.0
+            self._render(reset_camera=True)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def _center_text_item(self, item):
         br = item.boundingRect()
@@ -90,18 +180,41 @@ class InpWireframeView(QGraphicsView):
         item.setPos((w - br.width()) / 2, (h - br.height()) / 2)
 
     # --------- 渲染（2D 投影） ----------
-    def _render(self):
+    def _render(self, reset_camera: bool = True):
         self.scene().clear()
 
-        # 1) 投影：等轴测（可按需调参）
-        # x2d = (x - y)
-        # y2d = (x + y) * 0.5 - z * z_scale
-        z_scale = 0.9
+        # 1) 3D -> 2D：垂直切面正对视角（默认）+ 可交互旋转
+        #    yaw: 绕 Z 轴（平面内旋转）
+        #    pitch: 上下俯仰（保持 Z 为主要竖向）
+        if not self._nodes:
+            self.clear_view("无可显示数据")
+            return
+
+        cx3 = sum(v[0] for v in self._nodes.values()) / len(self._nodes)
+        cy3 = sum(v[1] for v in self._nodes.values()) / len(self._nodes)
+        cz3 = sum(v[2] for v in self._nodes.values()) / len(self._nodes)
+
+        yaw = math.radians(self._yaw_deg)
+        pitch = math.radians(self._pitch_deg)
+        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+        cos_p, sin_p = math.cos(pitch), math.sin(pitch)
+
         proj = {}
         xs, ys = [], []
         for nid, (x, y, z) in self._nodes.items():
-            px = (x - y)
-            py = (x + y) * 0.5 - z * z_scale
+            x0 = x - cx3
+            y0 = y - cy3
+            z0 = z - cz3
+
+            # yaw: around Z
+            x1 = x0 * cos_y - y0 * sin_y
+            depth = x0 * sin_y + y0 * cos_y
+
+            # pitch: vertical keeps z-dominant, depth contributes with tilt
+            y2 = z0 * cos_p + depth * sin_p
+
+            px = x1
+            py = -y2
             proj[nid] = (px, py)
             xs.append(px)
             ys.append(py)
@@ -115,29 +228,12 @@ class InpWireframeView(QGraphicsView):
         spanx = max(1e-6, maxx - minx)
         spany = max(1e-6, maxy - miny)
 
-        # 2) 拟合到视口
-        vw = max(10, self.viewport().width())
-        vh = max(10, self.viewport().height())
-        margin = 20
-        sx = (vw - 2 * margin) / spanx
-        sy = (vh - 2 * margin) / spany
-        s = max(0.1, min(sx, sy))
-
-        # 将模型中心移到视口中心
-        cx = (minx + maxx) / 2.0
-        cy = (miny + maxy) / 2.0
-        vx = vw / 2.0
-        vy = vh / 2.0
-
-        def map_pt(p):
-            x, y = p
-            return (vx + (x - cx) * s, vy + (y - cy) * s)
-
-        self._proj_pts = {nid: map_pt(p) for nid, p in proj.items()}
+        self._proj_pts = proj
 
         # 3) 画线
         pen = QPen(QColor("#62ff62"))
-        pen.setWidth(1)
+        pen.setWidth(0)
+        pen.setCosmetic(True)
 
         for n1, n2 in self._edges:
             p1 = self._proj_pts.get(n1)
@@ -146,89 +242,292 @@ class InpWireframeView(QGraphicsView):
                 continue
             self.scene().addLine(p1[0], p1[1], p2[0], p2[1], pen)
 
-        # 4) 设置 sceneRect 以便 view 正常工作
-        self.scene().setSceneRect(QRectF(0, 0, vw, vh))
+        # 4) 设置 sceneRect 并自动拟合（首次加载）
+        margin = max(2.0, 0.05 * max(spanx, spany))
+        rect = QRectF(minx - margin, miny - margin, spanx + 2 * margin, spany + 2 * margin)
+        self.scene().setSceneRect(rect)
+        if reset_camera:
+            self.resetTransform()
+            self.fitInView(rect, Qt.KeepAspectRatio)
+            self._user_view_changed = False
 
     # --------- INP 解析 ----------
     def _parse_inp_nodes_elements(self, file_path: str):
         """
-        解析：
-        - *NODE: id, x, y, z
-        - *ELEMENT: 取前两个节点作为线段（适配 B31/beam/2节点单元的可视化）
+        解析优先级：
+        1) Abaqus INP: *NODE / *ELEMENT
+        2) SACS INP: JOINT / MEMBER（简化）
         """
         nodes: Dict[int, Tuple[float, float, float]] = {}
         edges: List[Tuple[int, int]] = []
 
+        lines = self._read_lines_with_fallback(file_path)
         in_node = False
         in_elem = False
 
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith("**"):
+                continue
+
+            if line.startswith("*"):
+                u = line.upper()
+                in_node = u.startswith("*NODE")
+                in_elem = u.startswith("*ELEMENT")
+                continue
+
+            if in_node:
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 4:
+                    continue
+                try:
+                    nid = int(float(parts[0]))
+                    x = float(parts[1])
+                    y = float(parts[2])
+                    z = float(parts[3])
+                except Exception:
+                    continue
+                nodes[nid] = (x, y, z)
+                continue
+
+            if in_elem:
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 3:
+                    continue
+                try:
+                    n1 = int(float(parts[1]))
+                    n2 = int(float(parts[2]))
+                except Exception:
+                    continue
+                edges.append((n1, n2))
+                continue
+
+        # Abaqus 未解析到时，尝试 SACS（JOINT/MEMBER）
+        if not nodes or not edges:
+            nodes, edges = self._parse_sacs_joints_members(lines)
+
+        return nodes, edges
+
+    def _read_lines_with_fallback(self, file_path: str) -> List[str]:
+        encodings = ["utf-8", "utf-8-sig", "gb18030", "gbk", "latin-1"]
+        for enc in encodings:
+            try:
+                with open(file_path, "r", encoding=enc) as f:
+                    return f.readlines()
+            except UnicodeDecodeError:
+                continue
+            except Exception:
+                break
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line:
-                    continue
-                if line.startswith("**"):
-                    continue
+            return f.readlines()
 
-                if line.startswith("*"):
-                    u = line.upper()
-                    in_node = u.startswith("*NODE")
-                    in_elem = u.startswith("*ELEMENT")
-                    continue
+    def _parse_sacs_joints_members(self, lines: List[str]):
+        nodes: Dict[int, Tuple[float, float, float]] = {}
+        edges: List[Tuple[int, int]] = []
+        edge_set = set()
+        id_map: Dict[str, int] = {}
+        member_lines: List[str] = []
+        plate_lines: List[str] = []
+        num_pat = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
 
-                if in_node:
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) < 4:
-                        continue
-                    try:
-                        nid = int(float(parts[0]))
-                        x = float(parts[1])
-                        y = float(parts[2])
-                        z = float(parts[3])
-                    except Exception:
-                        continue
-                    nodes[nid] = (x, y, z)
-                    continue
+        def add_edge(n1: Optional[int], n2: Optional[int]):
+            if (n1 is None) or (n2 is None) or (n1 == n2):
+                return
+            a, b = (n1, n2) if n1 < n2 else (n2, n1)
+            if (a, b) in edge_set:
+                return
+            edge_set.add((a, b))
+            edges.append((n1, n2))
 
-                if in_elem:
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) < 3:
-                        continue
-                    try:
-                        # eid = int(float(parts[0]))  # 不需要
-                        n1 = int(float(parts[1]))
-                        n2 = int(float(parts[2]))
-                    except Exception:
-                        continue
-                    edges.append((n1, n2))
+        def nid(token: str) -> Optional[int]:
+            t = (token or "").strip().upper()
+            if not t:
+                return None
+            if t in id_map:
+                return id_map[t]
+            try:
+                v = int(float(t))
+            except Exception:
+                v = 1000000 + len(id_map) + 1
+            id_map[t] = v
+            return v
+
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith("$") or line.startswith("!") or line.startswith("**"):
+                continue
+
+            # JOINT：用正则抽取前三个数字坐标，兼容固定列导致的数字粘连
+            m_joint = re.match(r"^\s*JOINT\s+(\S+)\s*(.*)$", line, re.IGNORECASE)
+            if m_joint:
+                j_tok = m_joint.group(1).strip().upper()
+                nums = num_pat.findall(m_joint.group(2) or "")
+                if len(nums) < 3:
                     continue
+                try:
+                    x = float(nums[0])
+                    y = float(nums[1])
+                    z = float(nums[2])
+                except Exception:
+                    continue
+                j = nid(j_tok)
+                if j is None:
+                    continue
+                nodes[j] = (x, y, z)
+                continue
+
+            if re.match(r"^\s*MEMBER\b", line, re.IGNORECASE):
+                if re.match(r"^\s*MEMBER\s+OFFSETS\b", line, re.IGNORECASE):
+                    continue
+                member_lines.append(line)
+                continue
+
+            if re.match(r"^\s*PLATE\b", line, re.IGNORECASE):
+                if re.match(r"^\s*PLATE\s+OFFSETS\b", line, re.IGNORECASE):
+                    continue
+                plate_lines.append(line)
+                continue
+
+        token_set = set(id_map.keys())
+        token_lens = sorted({len(t) for t in token_set}, reverse=True)
+
+        def split_member_pair_token(token: str) -> Optional[Tuple[str, str]]:
+            t = (token or "").strip().upper()
+            if not t:
+                return None
+
+            for sep in ("-", "/", "_", ","):
+                if sep in t:
+                    a, b = t.split(sep, 1)
+                    if (a in token_set) and (b in token_set):
+                        return a, b
+
+            for i in range(1, len(t)):
+                a = t[:i]
+                b = t[i:]
+                if (a in token_set) and (b in token_set):
+                    return a, b
+
+            # 常见 SACS 紧凑写法：两个 4 字符节点拼接
+            if len(t) >= 8:
+                a = t[:4]
+                b = t[4:8]
+                if (a in token_set) and (b in token_set):
+                    return a, b
+            return None
+
+        def extract_joint_tokens(text: str, max_count: int = 4) -> List[str]:
+            s = "".join(ch for ch in (text or "").upper() if ch.isalnum())
+            out: List[str] = []
+            i = 0
+            while i < len(s) and len(out) < max_count:
+                found = None
+                for ln in token_lens:
+                    if i + ln > len(s):
+                        continue
+                    cand = s[i:i + ln]
+                    if cand in token_set:
+                        found = cand
+                        break
+                if found is not None:
+                    out.append(found)
+                    i += len(found)
+                else:
+                    i += 1
+            return out
+
+        for line in member_lines:
+            parts = [p for p in line.replace(",", " ").split() if p]
+            if len(parts) < 2:
+                continue
+
+            fields = parts[1:]
+            pair: Optional[Tuple[str, str]] = None
+
+            # 形式1：MEMBER J1 J2 ...
+            f0 = fields[0].upper() if len(fields) >= 1 else ""
+            f1 = fields[1].upper() if len(fields) >= 2 else ""
+            if len(fields) >= 2 and (f0 in token_set) and (f1 in token_set):
+                pair = (f0, f1)
+            else:
+                # 形式2：MEMBER J1J2 ...（紧凑拼接）
+                for fld in fields[:3]:
+                    pair = split_member_pair_token(fld)
+                    if pair:
+                        break
+
+            if not pair:
+                continue
+
+            n1 = id_map.get(pair[0])
+            n2 = id_map.get(pair[1])
+            add_edge(n1, n2)
+
+        for line in plate_lines:
+            m_plate = re.match(r"^\s*PLATE\s+\S+\s+(.*)$", line, re.IGNORECASE)
+            if not m_plate:
+                continue
+
+            conn_text = (m_plate.group(1) or "")[:80]
+            joints = extract_joint_tokens(conn_text, max_count=4)
+            if len(joints) < 3:
+                continue
+
+            node_ids = [id_map.get(jt) for jt in joints]
+            node_ids = [nid_v for nid_v in node_ids if nid_v is not None]
+            if len(node_ids) < 3:
+                continue
+
+            node_ids = node_ids[:4]
+            for i in range(len(node_ids) - 1):
+                add_edge(node_ids[i], node_ids[i + 1])
+            add_edge(node_ids[-1], node_ids[0])
 
         return nodes, edges
 
 
 class PlatformStrengthPage(BasePage):
-    """
-    菜单：结构强度 -> 平台强度
+    """结构强度 -> 平台强度页面。"""
 
-    需求实现：
-    1) 右侧图层：直接显示 INP 文件线框（无需任何按钮/点击）
-    2) “是否水平”行：点击单元格在 ✓/× 之间切换（避免用户输入）
-    """
-
-    # ---------- 顶部下拉条（同平台基本信息） ----------
-    fields = [
-        {"key": "branch", "label": "分公司", "options": ["湛江分公司"], "default": "湛江分公司"},
-        {"key": "op_company", "label": "作业公司", "options": ["文昌油田群作业公司"],
-         "default": "文昌油田群作业公司"},
-        {"key": "oilfield", "label": "油气田", "options": ["文昌19-1油田"], "default": "文昌19-1油田"},
-        {"key": "facility_code", "label": "设施编码", "options": ["WC19-1WHPC"], "default": "WC19-1WHPC"},
-        {"key": "facility_name", "label": "设施名称", "options": ["文昌19-1WHPC井口平台"],
-         "default": "文昌19-1WHPC井口平台"},
-        {"key": "basic_model", "label": "基础模型", "options": ["竣工/第1次改造"], "default": "竣工/第1次改造"},
-        {"key": "rebuild_time", "label": "改建时间", "options": ["2008-06-26"], "default": "2008-06-26"},
-        # 操作列只作为占位，实际会在下面替换为按钮
-        {"key": "operation", "label": "操作", "options": [""], "default": ""},
+    TOP_FIELDS: List[Tuple[str, str]] = [
+        ("分公司", "湛江分公司"),
+        ("作业公司", "文昌油田群作业公司"),
+        ("油气田", "文昌19-1油田"),
+        ("设施编码", "WC19-1WHPC"),
+        ("设施名称", "文昌19-1WHPC井口平台"),
+        ("设施类型", "平台"),
+        ("分类", "井口平台"),
+        ("投产时间", "2013-07-15"),
+        ("设计年限", "15"),
     ]
+
+    KEY_TO_FIELD: Dict[str, str] = {
+        "branch": "分公司",
+        "op_company": "作业公司",
+        "oilfield": "油气田",
+        "facility_code": "设施编码",
+        "facility_name": "设施名称",
+        "facility_type": "设施类型",
+        "category": "分类",
+        "start_time": "投产时间",
+        "design_life": "设计年限",
+    }
+    FIELD_TO_KEY: Dict[str, str] = {v: k for k, v in KEY_TO_FIELD.items()}
+    TOP_KEY_ORDER: List[str] = [
+        "branch", "op_company", "oilfield", "facility_code", "facility_name",
+        "facility_type", "category", "start_time", "design_life",
+    ]
+
+    @staticmethod
+    def _songti_small_four_font(bold: bool = False) -> QFont:
+        font = QFont("SimSun")
+        font.setPointSize(12)
+        font.setBold(bold)
+        return font
 
     def __init__(self, main_window, parent=None):
         if parent is None:
@@ -236,202 +535,341 @@ class PlatformStrengthPage(BasePage):
         super().__init__("", parent)
         self.main_window = main_window
 
+        self.data_dir = first_existing_path("data")
+        self.upload_dir = first_existing_path("upload")
+        self.model_files_root = first_existing_path("upload", "model_files")
+
+        self._excel_provider = ReadTableXls()
+        self._excel_loaded = False
+        try:
+            self._excel_provider.load()
+            self._excel_loaded = True
+        except Exception:
+            self._excel_loaded = False
+
+        self._top_records: List[Dict[str, str]] = self._load_top_records_from_excel()
+        self._top_cascade_enabled: bool = len(self._top_records) > 0
+        self._top_cascade_lock: bool = False
+        self._model_signature_cache: Dict[str, Tuple[float, bool]] = {}
+
         self._build_ui()
         self._autoload_inp_to_view()
 
+    # ---------------- 顶部下拉 ----------------
+    def _normalize_top_value(self, value: object) -> str:
+        txt = "" if value is None else str(value).strip()
+        if (not txt) or (txt.lower() == "nan"):
+            return ""
+        if txt.endswith(".0") and txt[:-2].isdigit():
+            return txt[:-2]
+        return txt
+
+    def _load_top_records_from_excel(self) -> List[Dict[str, str]]:
+        if (not self._excel_loaded) or (not hasattr(self._excel_provider, "df")):
+            return []
+
+        df = self._excel_provider.df
+        if df is None:
+            return []
+
+        fields = [f for f, _ in self.TOP_FIELDS]
+        resolved: Dict[str, str] = {}
+        for field in fields:
+            col = self._excel_provider._resolve_col(field) if hasattr(self._excel_provider, "_resolve_col") else None
+            if not col:
+                return []
+            resolved[field] = col
+
+        rows: List[Dict[str, str]] = []
+        seen = set()
+        for _, row in df.iterrows():
+            rec: Dict[str, str] = {}
+            for field, col in resolved.items():
+                raw = self._excel_provider._clean(row[col]) if hasattr(self._excel_provider, "_clean") else row[col]
+                rec[field] = self._normalize_top_value(raw)
+
+            if not any(rec.get(k) for k in ("分公司", "作业公司", "油气田", "设施编码", "设施名称")):
+                continue
+
+            sig = tuple(rec.get(f, "") for f in fields)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            rows.append(rec)
+
+        return rows
+
+    def _unique_record_values(self, records: List[Dict[str, str]], field: str) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for rec in records:
+            v = self._normalize_top_value(rec.get(field, ""))
+            if (not v) or (v in seen):
+                continue
+            seen.add(v)
+            out.append(v)
+        return out
+
+    def _pick_option(self, options: List[str], preferred: str = "") -> str:
+        p = self._normalize_top_value(preferred)
+        if p and p in options:
+            return p
+        return options[0] if options else ""
+
+    def _mock_top_options(self, field: str, default: str) -> List[str]:
+        options_map = {
+            "分公司": ["湛江分公司", "深圳分公司", "上海分公司", "海南分公司", "天津分公司"],
+            "作业公司": ["文昌油田群作业公司", "涠洲作业公司", "珠江作业公司", "渤海作业公司"],
+            "油气田": ["文昌19-1油田", "文昌19-2油田", "涠洲油田", "珠江口油田"],
+            "设施编码": ["WC19-1WHPC", "WC19-2WHPC", "WC9-7DPP", "WC19-1DPPA"],
+            "设施名称": ["文昌19-1WHPC井口平台", "文昌19-2WHPC井口平台", "WC9-7DPP井口平台"],
+            "设施类型": ["平台", "导管架", "浮式"],
+            "分类": ["井口平台", "生产平台", "生活平台"],
+            "投产时间": ["2013-07-15", "2008-06-26", "2010-03-10"],
+            "设计年限": ["10", "15", "20", "25", "30"],
+        }
+        opts = options_map.get(field, [default])
+        return opts if default in opts else [default] + opts
+
+    def _build_top_dropdown_fields(self) -> List[Dict]:
+        fallback_defaults = {k: v for k, v in self.TOP_FIELDS}
+        stretch_map = {
+            "branch": 1,
+            "op_company": 2,
+            "oilfield": 2,
+            "facility_code": 2,
+            "facility_name": 3,
+            "facility_type": 1,
+            "category": 1,
+            "start_time": 1,
+            "design_life": 1,
+        }
+        fields: List[Dict] = []
+        for key in self.TOP_KEY_ORDER:
+            label = self.KEY_TO_FIELD[key]
+            fallback = fallback_defaults.get(label, "")
+            if self._top_cascade_enabled:
+                opts = self._unique_record_values(self._top_records, label)
+                default = opts[0] if opts else fallback
+            else:
+                opts = self._mock_top_options(label, fallback)
+                default = fallback
+            fields.append({
+                "key": key,
+                "label": label,
+                "options": opts,
+                "default": default,
+                "stretch": stretch_map.get(key, 1),
+            })
+
+        # 最后一列：操作（下方单元格将替换为“快速评估”按钮）
+        fields.append({
+            "key": "operation",
+            "label": "操作",
+            "options": [""],
+            "default": "",
+            "stretch": 1,
+        })
+        return fields
+
+    def _embed_operation_button_in_dropdown(self):
+        if not hasattr(self, "dropdown_bar"):
+            return
+        combo = self.dropdown_bar.get_combo("operation")
+        if combo is None:
+            return
+
+        outer_layout = self.dropdown_bar.layout()
+        if outer_layout is None or outer_layout.count() == 0:
+            return
+        grid = outer_layout.itemAt(0).layout()
+        if grid is None:
+            return
+
+        idx = grid.indexOf(combo)
+        if idx < 0:
+            return
+        row, col, row_span, col_span = grid.getItemPosition(idx)
+
+        self.evaluate_btn = QPushButton("快速评估")
+        self.evaluate_btn.setFont(self._songti_small_four_font(bold=True))
+        self.evaluate_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.evaluate_btn.setMinimumHeight(max(32, combo.sizeHint().height()))
+        self.evaluate_btn.setStyleSheet("""
+            QPushButton {
+                background: #f6a24a;
+                border: 1px solid #2f3a4a;
+                border-radius: 3px;
+                padding: 6px 16px;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #ffb86b; }
+            QPushButton:pressed { background: #e68a00; }
+        """)
+        self.evaluate_btn.clicked.connect(self.on_quick_evaluate)
+
+        grid.removeWidget(combo)
+        combo.hide()
+        combo.deleteLater()
+        if hasattr(self.dropdown_bar, "_combos"):
+            self.dropdown_bar._combos.pop("operation", None)
+
+        grid.addWidget(self.evaluate_btn, row, col, row_span, col_span)
+
+    def _apply_top_cascade(self, changed_key: Optional[str] = None, changed_value: str = ""):
+        if (not self._top_cascade_enabled) or (not hasattr(self, "dropdown_bar")):
+            return
+
+        records = self._top_records
+        current = {k: self.dropdown_bar.get_value(k) for k in self.TOP_KEY_ORDER}
+        if changed_key:
+            current[changed_key] = self._normalize_top_value(changed_value)
+
+        reset_downstream = {
+            "branch": {"op_company", "oilfield", "facility_code", "facility_name"},
+            "op_company": {"oilfield", "facility_code", "facility_name"},
+            "oilfield": {"facility_code", "facility_name"},
+            "facility_code": {"facility_name"},
+            "facility_name": {"facility_code"},
+        }
+        reset = reset_downstream.get(changed_key or "", set())
+
+        branches = self._unique_record_values(records, "分公司")
+        branch = self._pick_option(branches, current.get("branch", ""))
+        branch_rows = [r for r in records if r.get("分公司", "") == branch] if branch else list(records)
+
+        op_opts = self._unique_record_values(branch_rows, "作业公司")
+        op_pref = "" if "op_company" in reset else current.get("op_company", "")
+        op_company = self._pick_option(op_opts, op_pref)
+        op_rows = [r for r in branch_rows if r.get("作业公司", "") == op_company] if op_company else list(branch_rows)
+
+        oil_opts = self._unique_record_values(op_rows, "油气田")
+        oil_pref = "" if "oilfield" in reset else current.get("oilfield", "")
+        oilfield = self._pick_option(oil_opts, oil_pref)
+        oil_rows = [r for r in op_rows if r.get("油气田", "") == oilfield] if oilfield else list(op_rows)
+
+        code_opts = self._unique_record_values(oil_rows, "设施编码")
+        name_opts = self._unique_record_values(oil_rows, "设施名称")
+
+        selected_row: Optional[Dict[str, str]] = None
+        if changed_key == "facility_name":
+            name_pref = current.get("facility_name", "")
+            selected_name = self._pick_option(name_opts, name_pref)
+            for rec in oil_rows:
+                if rec.get("设施名称", "") == selected_name:
+                    selected_row = rec
+                    break
+        else:
+            code_pref = "" if "facility_code" in reset else current.get("facility_code", "")
+            selected_code = self._pick_option(code_opts, code_pref)
+            for rec in oil_rows:
+                if rec.get("设施编码", "") == selected_code:
+                    selected_row = rec
+                    break
+
+        if selected_row is None and oil_rows:
+            selected_row = oil_rows[0]
+
+        selected_code = self._normalize_top_value((selected_row or {}).get("设施编码", ""))
+        selected_name = self._normalize_top_value((selected_row or {}).get("设施名称", ""))
+
+        fixed_map = {
+            "facility_type": "设施类型",
+            "category": "分类",
+            "start_time": "投产时间",
+            "design_life": "设计年限",
+        }
+
+        self._top_cascade_lock = True
+        try:
+            self.dropdown_bar.set_options("branch", branches, branch)
+            self.dropdown_bar.set_options("op_company", op_opts, op_company)
+            self.dropdown_bar.set_options("oilfield", oil_opts, oilfield)
+            self.dropdown_bar.set_options("facility_code", code_opts, selected_code)
+            self.dropdown_bar.set_options("facility_name", name_opts, selected_name)
+
+            for key, field_cn in fixed_map.items():
+                val = self._normalize_top_value((selected_row or {}).get(field_cn, ""))
+                self.dropdown_bar.set_options(key, [val] if val else [], val)
+        finally:
+            self._top_cascade_lock = False
+
+    def _on_top_key_changed(self, key: str, txt: str):
+        if self._top_cascade_enabled:
+            if self._top_cascade_lock:
+                return
+            self._apply_top_cascade(changed_key=key, changed_value=txt)
+
+        if key in {"branch", "op_company", "oilfield", "facility_code", "facility_name"}:
+            self._autoload_inp_to_view()
+
+    def _get_top_value(self, key: str) -> str:
+        if not hasattr(self, "dropdown_bar"):
+            return ""
+        try:
+            return (self.dropdown_bar.get_value(key) or "").strip()
+        except Exception:
+            return ""
 
     # ---------------- UI ----------------
     def _build_ui(self):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(8)
 
+        top_wrap = QWidget(self)
+        top_layout = QHBoxLayout(top_wrap)
+        top_layout.setContentsMargins(8, 8, 8, 0)
+        top_layout.setSpacing(0)
 
-        self.dropdown_bar = DropdownBar(self.fields, parent=self)
-        self.main_layout.addWidget(self.dropdown_bar, 0)
+        self.dropdown_bar = DropdownBar(self._build_top_dropdown_fields(), parent=self)
+        self.dropdown_bar.valueChanged.connect(self._on_top_key_changed)
+        if self._top_cascade_enabled:
+            self._apply_top_cascade()
+        top_layout.addWidget(self.dropdown_bar, 1)
+        self._embed_operation_button_in_dropdown()
 
-        # 获取dropdown_bar中的布局，替换最后一列
-        self._replace_operation_with_button()
+        self.main_layout.addWidget(top_wrap, 0)
 
-        # ---------- 中部：左右分栏 ----------
-        center = QWidget()
+        center = QWidget(self)
         center_layout = QHBoxLayout(center)
         center_layout.setContentsMargins(8, 0, 8, 8)
-        center_layout.setSpacing(10)
+        center_layout.setSpacing(12)
         self.main_layout.addWidget(center, 1)
 
-        # 左侧（滚动）：结构模型信息 + 三个标签表格
-        left_scroll = QScrollArea()
+        # 左侧加滚动容器：小分辨率时自动滚动，不截断
+        left_scroll = QScrollArea(center)
         left_scroll.setWidgetResizable(True)
         left_scroll.setFrameShape(QFrame.NoFrame)
-        center_layout.addWidget(left_scroll, 6)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-        left_container = QWidget()
-        left_scroll.setWidget(left_container)
-        left_layout = QVBoxLayout(left_container)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_frame = QFrame()
+        left_frame.setStyleSheet(".QFrame { background:#ffffff; border:1px solid #b9c6d6; }")
+        left_layout = QVBoxLayout(left_frame)
+        left_layout.setContentsMargins(8, 6, 8, 8)
         left_layout.setSpacing(10)
 
-        self._build_structure_model_box(left_layout)
-        self._build_left_tables(left_layout)
-        left_layout.addStretch(1)
+        struct_box = self._build_structure_model_box()
+        splash_box, pile_box, marine_box = self._build_left_tables()
+        left_layout.addWidget(struct_box, 0)
+        left_layout.addWidget(splash_box, 0)
+        left_layout.addWidget(pile_box, 0)
+        left_layout.addWidget(marine_box, 1)
 
-        # 右侧：INP 线框视图（自动加载）
+        left_scroll.setWidget(left_frame)
+        center_layout.addWidget(left_scroll, 7)
+
         right = self._build_inp_view_panel()
         center_layout.addWidget(right, 4)
 
-    # 找到顶部表格最后一列，改为按钮
-    def _replace_operation_with_button(self):
-        """找到下拉条中的操作列下拉框，替换为按钮"""
-        # 方法1：直接查找并替换最后一个QComboBox
-        self._find_and_replace_combo()
-
-        # 方法2：如果方法1失败，使用备用方法
-        if not hasattr(self, 'evaluate_btn') or self.evaluate_btn is None:
-            self._add_button_after_dropdown()
-
-    def _find_and_replace_combo(self):
-        """在dropdown_bar中查找并替换最后一个下拉框"""
-        try:
-            # 获取dropdown_bar的布局
-            outer_layout = self.dropdown_bar.layout()
-            if outer_layout is None:
-                return
-
-            # 查找GridLayout（通常在第0个位置）
-            for i in range(outer_layout.count()):
-                item = outer_layout.itemAt(i)
-                if isinstance(item, QGridLayout):
-                    grid_layout = item
-                    break
-            else:
-                return  # 没找到GridLayout
-
-            # 查找最后一列（第7列）的第1行（控件行）的widget
-            # 总列数等于fields的数量（8列）
-            last_col = 7  # 从0开始计数，最后一列是第7列
-
-            # 获取第1行最后一列的下拉框
-            combo_item = grid_layout.itemAtPosition(1, last_col)
-            if combo_item and combo_item.widget():
-                combo_widget = combo_item.widget()
-
-                if isinstance(combo_widget, QComboBox):
-                    # 创建按钮
-                    self.evaluate_btn = QPushButton("快速评估")
-                    #self.evaluate_btn.setFixedSize(150, 30)  # 匹配下拉框高度
-                    # ========== 修改后 ==========
-                    # 移除 setFixedSize，设置尺寸策略为自动扩展，并给定一个最小高度保证不被压得太扁
-                    self.evaluate_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                    self.evaluate_btn.setMinimumHeight(30)
-                    self.evaluate_btn.setStyleSheet("""
-                        QPushButton {
-                            background-color: #efefef;
-                            color: black;
-                            border: none;
-                            border-radius: 3px;
-                            font-weight: bold;
-                            font-size: 12px;
-                            padding: 4px 8px;
-                            margin: 1px 2px;
-                        }
-                        QPushButton:hover {
-                            background-color: #40a9ff;
-                        }
-                        QPushButton:pressed {
-                            background-color: #096dd9;
-                        }
-                    """)
-
-                    # 连接点击事件
-                    self.evaluate_btn.clicked.connect(self.on_quick_evaluate)
-
-                    # 从布局中移除原下拉框
-                    grid_layout.removeWidget(combo_widget)
-                    combo_widget.deleteLater()
-
-                    # 添加按钮到相同位置
-                    grid_layout.addWidget(self.evaluate_btn, 1, last_col)
-
-                    print("成功将最后一列替换为按钮")
-                    return
-
-        except Exception as e:
-            print(f"替换下拉框为按钮时出错: {e}")
-
-    def _add_button_after_dropdown(self):
-        """备用方法：在dropdown_bar后面添加按钮"""
-        # 创建水平布局容器
-        container = QWidget()
-        container_layout = QHBoxLayout(container)
-        container_layout.setContentsMargins(0, 0, 0, 0)
-        container_layout.setSpacing(0)
-
-        # 将原dropdown_bar添加到容器
-        container_layout.addWidget(self.dropdown_bar)
-
-        # 创建并添加按钮
-        self.evaluate_btn = QPushButton("快速评估")
-        #self.evaluate_btn.setFixedSize(120, 30)
-        # ========== 修改后 ==========
-        # 移除 setFixedSize，设置尺寸策略为自动扩展，并给定一个最小高度保证不被压得太扁
-        self.evaluate_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.evaluate_btn.setMinimumHeight(30)
-        self.evaluate_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #1890ff;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 13px;
-                padding: 5px 10px;
-                margin-left: 10px;
-            }
-            QPushButton:hover {
-                background-color: #40a9ff;
-            }
-            QPushButton:pressed {
-                background-color: #096dd9;
-            }
-        """)
-        self.evaluate_btn.clicked.connect(self.on_quick_evaluate)
-        container_layout.addWidget(self.evaluate_btn)
-
-        # 从主布局中移除原dropdown_bar
-        self.main_layout.removeWidget(self.dropdown_bar)
-
-        # 添加容器到主布局
-        self.main_layout.insertWidget(0, container)
-
-    def _get_dropdown_value(self, key: str) -> str:
-        """兼容不同 DropdownBar 实现的取值方式。"""
-        if not hasattr(self, "dropdown_bar"):
-            return ""
-        bar = self.dropdown_bar
-        if hasattr(bar, "get_value"):
-            try:
-                v = bar.get_value(key)
-                return (v or "").strip()
-            except Exception:
-                pass
-        if hasattr(bar, "values") and isinstance(bar.values, dict):
-            return (bar.values.get(key, "") or "").strip()
-        # 兜底：尝试在 bar 内部找同名 combobox
-        for attr in ("combos", "combo_boxes", "widgets"):
-            d = getattr(bar, attr, None)
-            if isinstance(d, dict) and key in d and isinstance(d[key], QComboBox):
-                return d[key].currentText().strip()
-        return ""
-
     def on_quick_evaluate(self):
-        """快速评估 - 跳转到可行性评估页面"""
-
         facility_code = self._get_top_value("facility_code") or "XXXX"
         title = f"{facility_code}平台强度/改造可行性评估"
 
         mw = self.window()
         if hasattr(mw, "tab_widget"):
-            # 去重：同一个设施编码只开一个
             key = f"platform::{facility_code}"
             if hasattr(mw, "page_tab_map") and key in mw.page_tab_map:
                 w = mw.page_tab_map[key]
@@ -448,168 +886,270 @@ class PlatformStrengthPage(BasePage):
         else:
             QMessageBox.information(self, "提示", "未检测到主窗口Tab组件，无法打开页面。")
 
-
-    def _get_top_value(self, field: str) -> str:
-        """获取顶部 DropdownBar 当前值（field 为中文表头名，如“设施编码”）。"""
-        """获取用户当前选择的设施名称"""
-        try:
-            if hasattr(self, 'dropdown_bar'):
-                # 方法1: 直接使用get_value方法
-                facility_code = self.dropdown_bar.get_value(field)
-                if facility_code:
-                    return facility_code
-        except Exception as e:
-            print(f"通过key获取设施名称失败: {e}")
-
-    # ---------------- 右侧 INP 视图 ----------------
+    # ---------------- 右侧模型 ----------------
     def _build_inp_view_panel(self) -> QWidget:
-        frame = QFrame()
-        frame.setStyleSheet("""
-            QFrame { background: #ffffff; border: 1px solid #b9c6d6; }
-        """)
+        frame = QFrame(self)
+        frame.setStyleSheet("QFrame { background: #ffffff; border: 1px solid #b9c6d6; }")
         lay = QVBoxLayout(frame)
         lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(10)
+        lay.setSpacing(8)
 
-        title = QLabel("INP 模型线框预览（自动加载）")
+        title = QLabel("结构模型线框预览（读取导入的 SACS INP）")
         title.setStyleSheet("font-weight: bold; color: #1d2b3a;")
         lay.addWidget(title, 0)
 
-        self.inp_view = InpWireframeView()
+        hint = QLabel("左键拖动平移，滚轮缩放，右键拖动旋转，双击复位")
+        hint.setStyleSheet("color:#5d6f85; font-size:12px;")
+        lay.addWidget(hint, 0)
+
+        self.inp_path_label = QLabel("")
+        self.inp_path_label.setWordWrap(True)
+        self.inp_path_label.setStyleSheet("color:#4a5b70; font-size:12px;")
+        lay.addWidget(self.inp_path_label, 0)
+
+        self.inp_view = InpWireframeView(frame)
         self.inp_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         lay.addWidget(self.inp_view, 1)
-
         return frame
 
+    def _sacinp_name_score(self, file_name: str) -> int:
+        """按文件名判断是否为 SACS 结构模型文件，并返回命名匹配分。"""
+        name = (file_name or "").strip().lower()
+        if not name:
+            return 0
+
+        stem, ext = os.path.splitext(name)
+        # 首选：前缀 sacinp*
+        if stem.startswith("sacinp"):
+            return 300
+        # 兼容：*.sacinp
+        if ext == ".sacinp":
+            return 220
+        # 兼容：名称中带独立标识 token（如 xx_sacinp_xx）
+        tokens = [t for t in re.split(r"[^a-z0-9]+", stem) if t]
+        if "sacinp" in tokens:
+            return 160
+        return 0
+
+    def _scan_model_signature(self, file_path: str) -> bool:
+        markers_joint = False
+        markers_member = False
+        encodings = ["utf-8", "utf-8-sig", "gb18030", "gbk", "latin-1"]
+
+        def _scan(fp) -> bool:
+            nonlocal markers_joint, markers_member
+            for raw in fp:
+                line = raw.strip().upper()
+                if not line:
+                    continue
+                if line.startswith("*NODE") or line.startswith("*ELEMENT"):
+                    return True
+                if line.startswith("JOINT"):
+                    markers_joint = True
+                elif line.startswith("MEMBER"):
+                    markers_member = True
+                if markers_joint and markers_member:
+                    return True
+            return False
+
+        for enc in encodings:
+            try:
+                with open(file_path, "r", encoding=enc) as f:
+                    if _scan(f):
+                        return True
+            except UnicodeDecodeError:
+                continue
+            except Exception:
+                return False
+
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                return _scan(f)
+        except Exception:
+            return False
+
+    def _file_has_model_signature(self, file_path: str) -> bool:
+        try:
+            mtime = os.path.getmtime(file_path)
+        except OSError:
+            return False
+
+        cached = self._model_signature_cache.get(file_path)
+        if cached and cached[0] == mtime:
+            return cached[1]
+
+        ok = self._scan_model_signature(file_path)
+        self._model_signature_cache[file_path] = (mtime, ok)
+        return ok
+
+    def _find_best_inp_file(self, facility_code: str) -> str:
+        roots = [self.model_files_root, self.upload_dir]
+        code = (facility_code or "").strip().lower()
+
+        candidates: List[Tuple[int, float, str]] = []
+        seen = set()
+        for root in roots:
+            if not os.path.isdir(root):
+                continue
+
+            for dir_path, _, file_names in os.walk(root):
+                for fn in file_names:
+                    name_score = self._sacinp_name_score(fn)
+                    if name_score <= 0:
+                        continue
+
+                    full = os.path.normpath(os.path.join(dir_path, fn))
+                    if full in seen:
+                        continue
+                    seen.add(full)
+
+                    name_low = fn.lower()
+                    path_low = full.lower()
+                    score = 0
+                    if code and code in name_low:
+                        score += 200
+                    if "model_files" in path_low:
+                        score += 60
+                    if ("静力" in full) or ("static" in path_low):
+                        score += 25
+                    if "demo_platform_jacket" in name_low:
+                        score -= 200
+
+                    has_signature = self._file_has_model_signature(full)
+                    if not has_signature:
+                        continue
+
+                    score += name_score
+                    score += 120
+
+                    try:
+                        mtime = os.path.getmtime(full)
+                    except OSError:
+                        mtime = 0.0
+                    candidates.append((score, mtime, full))
+
+        if not candidates:
+            return ""
+
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return candidates[0][2]
+
+    def _parse_mud_level_from_sacinp(self, file_path: str) -> Optional[str]:
+        """从 SACS INP 文件读取 LDOPT 卡片的泥面高程字段。"""
+        lines = self.inp_view._read_lines_with_fallback(file_path)
+        for line in lines:
+            if line.upper().startswith("LDOPT"):
+                # 根据 SACS 固定格式，泥面高程通常在 33-40 列 (index 32-40)
+                if len(line) >= 40:
+                    val_str = line[32:40].strip()
+                    try:
+                        val_float = float(val_str)
+                        return f"{val_float:.3f}"
+                    except ValueError:
+                        pass
+        return None
+
     def _autoload_inp_to_view(self):
-        """
-        自动加载示例/默认 INP。
-        你只需要把文件放到项目目录的以下任一位置（优先级从高到低）：
-        1) data/demo_platform_jacket.inp
-        2) upload/demo_platform_jacket.inp
-        3) pages/../upload/demo_platform_jacket.inp
-        4) pages/../pict/demo_platform_jacket.inp
-        5) 当前运行目录下的 demo_platform_jacket.inp
-        """
-        here = os.path.dirname(os.path.abspath(__file__))
+        if not hasattr(self, "inp_view"):
+            return
 
-        candidates = [
-            os.path.join(os.getcwd(), "data", "demo_platform_jacket.inp"),
-            os.path.join(os.getcwd(), "upload", "demo_platform_jacket.inp"),
-            os.path.normpath(os.path.join(here, "..", "upload", "demo_platform_jacket.inp")),
-            os.path.normpath(os.path.join(here, "..", "pict", "demo_platform_jacket.inp")),
-            os.path.join(os.getcwd(), "demo_platform_jacket.inp"),
-        ]
-
-        path = next((p for p in candidates if os.path.exists(p)), "")
+        facility_code = self._get_top_value("facility_code")
+        path = self._find_best_inp_file(facility_code)
         if not path:
-            self.inp_view.clear_view("未找到 INP：demo_platform_jacket.inp\n请放到 data/ 或 upload/ 目录")
+            self.inp_path_label.setText("未找到可解析的 SACS 结构模型文件")
+            self.inp_view.clear_view(
+                "未找到可解析的 SACS 结构模型文件\n"
+                "请先上传文件名以 sacinp 开头（或扩展名为 .sacinp）的模型文件"
+            )
             return
 
         try:
             self.inp_view.load_inp(path)
+            self.inp_path_label.setText(f"当前模型文件：{path}")
+            
+            # 解析泥面高程并回填
+            mud_level = self._parse_mud_level_from_sacinp(path)
+            if mud_level and hasattr(self, "edt_mud_level"):
+                self.edt_mud_level.setText(mud_level)
         except Exception as e:
+            self.inp_path_label.setText("模型加载失败")
             self.inp_view.clear_view(f"INP 加载失败：\n{e}")
 
-    # ---------------- 结构模型信息（含表格✓/×点击切换） ----------------
+    # ---------------- 左侧表格 ----------------
     def _build_structure_model_kv_table(self) -> QTableWidget:
-        tbl = QTableWidget(2, 3)
-
+        tbl = QTableWidget(3, 3)
         tbl.setFocusPolicy(Qt.NoFocus)
-
-        # 复用你现有的统一表格风格（保证和下面大表格一致）
         self._init_table_common(tbl, show_vertical_header=False)
 
-        # 列宽更像“表单表格”
-        tbl.setColumnWidth(0, 240)
+        tbl.horizontalHeader().setVisible(False)
+        tbl.verticalHeader().setVisible(False)
+        tbl.setWordWrap(False)
+
+        tbl.setColumnWidth(0, 280)
         tbl.setColumnWidth(1, 160)
-        tbl.setColumnWidth(2, 60)
+        tbl.setColumnWidth(2, 70)
 
-        # 第0行：泥面高层
-        item0 = QTableWidgetItem("泥面高层")
-        item0.setTextAlignment(Qt.AlignCenter)
-        item0.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        tbl.setItem(0, 0, item0)
-
-        self.edt_mud_level = QLineEdit()
-        self.edt_mud_level.setText("-122.4")
-        self.edt_mud_level.setMaximumWidth(140)
+        self._set_center_item(tbl, 0, 0, "泥面高程", editable=False)
+        self.edt_mud_level = QLineEdit("") # 初始为空，由模型加载后回填
+        self.edt_mud_level.setFont(self._songti_small_four_font())
         tbl.setCellWidget(0, 1, self.edt_mud_level)
+        self._set_center_item(tbl, 0, 2, "m", editable=False)
 
-        unit0 = QTableWidgetItem("m")  # ✅补单位
-        unit0.setTextAlignment(Qt.AlignCenter)
-        unit0.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        tbl.setItem(0, 2, unit0)
-
-        # 第1行：水平层节点数量限制
-        item1 = QTableWidgetItem("水平层高层节点数量限制")
-        item1.setTextAlignment(Qt.AlignCenter)
-        item1.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        tbl.setItem(1, 0, item1)
-
-        self.edt_node_limit = QLineEdit()
-        self.edt_node_limit.setText("40")
-        self.edt_node_limit.setMaximumWidth(140)
+        self._set_center_item(tbl, 1, 0, "水平层高程节点数量限制", editable=False)
+        self.edt_node_limit = QLineEdit("40") # 默认值 40
+        self.edt_node_limit.setFont(self._songti_small_four_font())
         tbl.setCellWidget(1, 1, self.edt_node_limit)
+        self._set_center_item(tbl, 1, 2, "", editable=False)
 
-        unit1 = QTableWidgetItem("")  # 这里不需要单位就留空
-        unit1.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        tbl.setItem(1, 2, unit1)
+        self._set_center_item(tbl, 2, 0, "工作平面高程Workpoint", editable=False)
+        self.edt_workpoint = QLineEdit("") # 用户输入，初始为空
+        self.edt_workpoint.setFont(self._songti_small_four_font())
+        tbl.setCellWidget(2, 1, self.edt_workpoint)
+        self._set_center_item(tbl, 2, 2, "m", editable=False)
 
-        # 行高更像表单
-        tbl.setRowHeight(0, 28)
-        tbl.setRowHeight(1, 28)
+        for r in range(3):
+            tbl.setRowHeight(r, 30)
 
-        tbl.horizontalHeader().setVisible(False)  # 隐藏列头（“1”“2”…）
-        tbl.verticalHeader().setVisible(False)  # 隐藏行头（左侧行号）
-
-        # 1. 给足第一列宽度
-        tbl.setColumnWidth(0, 240)
-
-        # 2. 强制禁止自动换行，保证所有字都在一行显示
-        tbl.setWordWrap(False)
-
-        # 3. 设置表格整体的固定高度（2行28px + 上下边框预留4px = 60px）
-        #    并设置最小宽度，防止被外部布局强行挤压
-        # tbl.setFixedHeight(60)
-        # tbl.setMinimumWidth(480)
-
-        # ========== 替换 _build_structure_model_kv_table 末尾的尺寸设置 ==========
-        # 1. 给足第一列宽度
-        tbl.setColumnWidth(0, 240)
-        # 2. 强制禁止自动换行
-        tbl.setWordWrap(False)
-
-        # 3. 严格计算总宽高（240+160+60+边框4 = 464），关闭自身所有滚动条
-        tbl.setFixedSize(464, 60)
         tbl.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        #tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
+        tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        tbl.setFixedHeight(96)
         return tbl
 
-    def _build_structure_model_box(self, left_layout: QVBoxLayout):
+    def _build_structure_model_box(self) -> QGroupBox:
         box = QGroupBox("结构模型信息")
+        box.setStyleSheet("""
+            QGroupBox {
+                font-size: 12pt;
+                font-weight: bold;
+                margin-top: 12px;
+                border: none;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                left: 8px;
+                padding: 0 6px;
+                background-color: #ffffff;
+            }
+        """)
         box_layout = QVBoxLayout(box)
-        box_layout.setContentsMargins(10, 8, 10, 10)
-        box_layout.setSpacing(8)
+        box_layout.setContentsMargins(10, 8, 10, 8)
+        box_layout.setSpacing(6)
 
         kv_tbl = self._build_structure_model_kv_table()
-        box_layout.addWidget(kv_tbl)
+        box_layout.addWidget(kv_tbl, 0)
 
-        row3 = QHBoxLayout()
-        row3.setSpacing(8)
         lab_layers = QLabel("水平层高程")
-        lab_layers.setFixedWidth(120)
-        row3.addWidget(lab_layers)
-        row3.addStretch(1)
-        box_layout.addLayout(row3)
+        lab_layers.setFont(self._songti_small_four_font(bold=True))
+        lab_layers.setStyleSheet("color: #1d2b3a;")
+        box_layout.addWidget(lab_layers, 0)
 
         self.tbl_layers = QTableWidget(3, 10, box)
         self.tbl_layers.setFocusPolicy(Qt.NoFocus)
         self.tbl_layers.setHorizontalHeaderLabels(["编号"] + [str(i) for i in range(1, 10)])
         self._init_table_common(self.tbl_layers, show_vertical_header=False)
-        self.tbl_layers.setRowCount(3)
-        self.tbl_layers.setVerticalHeaderLabels(["Z(m)", "节点数量", "是否水平层"])
+        self.tbl_layers.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self._set_center_item(self.tbl_layers, 0, 0, "Z(m)", editable=False)
         self._set_center_item(self.tbl_layers, 1, 0, "节点数量", editable=False)
@@ -621,35 +1161,36 @@ class PlatformStrengthPage(BasePage):
         for i in range(9):
             self._set_center_item(self.tbl_layers, 0, i + 1, demo_z[i])
             self._set_center_item(self.tbl_layers, 1, i + 1, demo_n[i])
-            self._set_center_item(self.tbl_layers, 2, i + 1, demo_h[i])
+            self._set_center_item(self.tbl_layers, 2, i + 1, demo_h[i], editable=False)
 
-        for col in range(1, 10):
-            it = self.tbl_layers.item(2, col)
-            if it is None:
-                it = QTableWidgetItem("")
-                it.setTextAlignment(Qt.AlignCenter)
-                self.tbl_layers.setItem(2, col, it)
-            it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        for r in range(3):
+            self.tbl_layers.setRowHeight(r, 30)
 
         self.tbl_layers.cellClicked.connect(self._on_layers_cell_clicked)
-
-        self.tbl_layers.resizeColumnsToContents()
-        total_width = sum(self.tbl_layers.columnWidth(c) for c in range(self.tbl_layers.columnCount()))
-        self.tbl_layers.setMinimumWidth(total_width)
-
-        # 整体开启拉伸填满外框宽度
         self.tbl_layers.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl_layers.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.tbl_layers.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
 
-        # ====== 核心修改：精准固定表格高度，消除底部留白 ======
-        # 表头约 32px + 3行数据每行 28px + 上下边框 4px ≈ 120px，设为 122 防止误差截断
-        self.tbl_layers.setFixedHeight(122)
-        # 彻底关闭内部垂直滚动条，交给外层页面统一滚动
+        layer_header_h = self.tbl_layers.horizontalHeader().height() if not self.tbl_layers.horizontalHeader().isHidden() else 0
+        layer_rows_h = sum(self.tbl_layers.rowHeight(r) for r in range(self.tbl_layers.rowCount()))
+        layer_tbl_h = layer_header_h + layer_rows_h + self.tbl_layers.frameWidth() * 2 + 2
+        self.tbl_layers.setFixedHeight(layer_tbl_h + 2)
         self.tbl_layers.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # ======================================================
+        self.tbl_layers.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        box_layout.addWidget(self.tbl_layers, 1)
 
-        box_layout.addWidget(self.tbl_layers, 0)
-        left_layout.addWidget(box)
+        margins = box_layout.contentsMargins()
+        total_h = (
+            margins.top() + margins.bottom()
+            + kv_tbl.height()
+            + lab_layers.sizeHint().height()
+            + layer_tbl_h
+            + box_layout.spacing() * 2
+            + 18
+        )
+        box.setFixedHeight(total_h)
+        box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        return box
 
     def _on_layers_cell_clicked(self, row: int, col: int):
         if row != 2 or col < 1:
@@ -660,21 +1201,26 @@ class PlatformStrengthPage(BasePage):
             it.setTextAlignment(Qt.AlignCenter)
             it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             self.tbl_layers.setItem(row, col, it)
-
-        cur = (it.text() or "").strip()
-        it.setText("×" if cur == "✓" else "✓")
+        it.setText("×" if (it.text() or "").strip() == "✓" else "✓")
         self.tbl_layers.clearSelection()
 
-    # ---------------- 表格风格（同平台基本信息） ----------------
     def _init_table_common(self, table: QTableWidget, show_vertical_header: bool):
+        table.setFont(self._songti_small_four_font())
+        table.horizontalHeader().setFont(self._songti_small_four_font(bold=True))
+        table.verticalHeader().setFont(self._songti_small_four_font(bold=True))
         table.setEditTriggers(QAbstractItemView.AllEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectItems)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
         table.setAlternatingRowColors(True)
         table.setShowGrid(False)
-
         table.setStyleSheet("""
-            QTableWidget { background-color: #ffffff; gridline-color: #d0d0d0; }
+            QTableWidget {
+                background-color: #ffffff;
+                gridline-color: #d0d0d0;
+                border: 1px solid #d0d0d0;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+            }
             QTableWidget::item { border: 1px solid #e6e6e6; padding: 2px; }
             QTableWidget::item:selected { background-color: #dbe9ff; color: #000000; }
             QTableWidget::item:focus { outline: none; }
@@ -682,114 +1228,117 @@ class PlatformStrengthPage(BasePage):
                 background-color: #f3f6fb;
                 border: 1px solid #e6e6e6;
                 padding: 4px;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
                 font-weight: bold;
             }
         """)
-
         table.verticalHeader().setVisible(bool(show_vertical_header))
         table.horizontalHeader().setVisible(True)
-        # table.horizontalHeader().setStretchLastSection(True) 移除最后一列拉伸
         table.verticalHeader().setDefaultSectionSize(28)
 
-    def _set_center_item(self, table: QTableWidget, row: int, col: int, text: str, editable: bool=True):
+    def _set_center_item(self, table: QTableWidget, row: int, col: int, text: str, editable: bool = True):
         item = QTableWidgetItem(str(text))
+        item.setFont(table.font())
         item.setTextAlignment(Qt.AlignCenter)
         if not editable:
             item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         table.setItem(row, col, item)
 
-    def _auto_fit_columns_with_padding(self, table: QTableWidget, padding: int = 30):
-        fm = QFontMetrics(table.font())
-        cols = table.columnCount()
-        for c in range(cols):
-            max_w = 40
-            header = table.horizontalHeaderItem(c)
-            if header is not None:
-                max_w = max(max_w, fm.horizontalAdvance(header.text()) + padding)
+    def _build_left_tables(self) -> Tuple[QGroupBox, QGroupBox, QGroupBox]:
+        section_title_qss = """
+            QGroupBox {
+                font-size: 12pt;
+                font-weight: bold;
+                margin-top: 12px;
+                border: none;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                left: 8px;
+                padding: 0 6px;
+                background-color: #ffffff;
+            }
+        """
 
-            for r in range(table.rowCount()):
-                it = table.item(r, c)
-                if it is None:
-                    continue
-                max_w = max(max_w, fm.horizontalAdvance(it.text()) + padding)
-
-            table.setColumnWidth(c, max_w)
-
-    # ---------------- 其余三个表（保持与之前一致） ----------------
-    def _build_left_tables(self, left_layout: QVBoxLayout):
         # 飞溅区腐蚀余量
         splash_box = QGroupBox("飞溅区腐蚀余量")
+        splash_box.setStyleSheet(section_title_qss)
         splash_layout = QVBoxLayout(splash_box)
-        splash_layout.setContentsMargins(8, 6, 8, 8)
+        splash_layout.setContentsMargins(8, 8, 8, 8)
 
         tbl_splash = QTableWidget(1, 3, splash_box)
-        tbl_splash.setHorizontalHeaderLabels(["飞溅区上限 (m)", "飞溅区下限 (m)", "腐蚀余量 (mm/y)"])
+        tbl_splash.setHorizontalHeaderLabels(["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm/y)"])
         self._init_table_common(tbl_splash, show_vertical_header=False)
-        self._set_center_item(tbl_splash, 0, 0, "8.54")
-        self._set_center_item(tbl_splash, 0, 1, "3.75")
-        self._set_center_item(tbl_splash, 0, 2, "7.5")
-
-        tbl_splash.resizeColumnsToContents()
-        total_width = sum(tbl_splash.columnWidth(c) for c in range(tbl_splash.columnCount()))
-        tbl_splash.setMinimumWidth(total_width)
+        for c in range(3):
+            self._set_center_item(tbl_splash, 0, c, "")
         tbl_splash.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        tbl_splash.horizontalHeader().setStretchLastSection(False)
+        tbl_splash.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tbl_splash.setRowHeight(0, 32)
+        splash_header_h = tbl_splash.horizontalHeader().height() if not tbl_splash.horizontalHeader().isHidden() else 0
+        splash_rows_h = sum(tbl_splash.rowHeight(r) for r in range(tbl_splash.rowCount()))
+        splash_tbl_h = splash_header_h + splash_rows_h + tbl_splash.frameWidth() * 2 + 6
+        tbl_splash.setMinimumHeight(splash_tbl_h)
+        tbl_splash.setMaximumHeight(splash_tbl_h)
+        tbl_splash.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        tbl_splash.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        tbl_splash.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        splash_layout.addWidget(tbl_splash, 1)
 
-        # ====== 核心修改：固定高度 (1行表头32 + 1行数据28 + 边框 ≈ 64) ======
-        header_h = self.tbl_layers.horizontalHeader().height() if not self.tbl_layers.horizontalHeader().isHidden() else 0
-        row_h = self.tbl_layers.verticalHeader().length()
-        self.tbl_layers.setFixedHeight(header_h + row_h + 6)
-        self.tbl_layers.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # ====================================================================
-
-        splash_layout.addWidget(tbl_splash)
-        left_layout.addWidget(splash_box)
+        splash_margins = splash_layout.contentsMargins()
+        splash_box_h = splash_margins.top() + splash_margins.bottom() + splash_tbl_h + 18
+        splash_box.setMinimumHeight(splash_box_h)
+        splash_box.setMaximumHeight(splash_box_h)
+        splash_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         # 桩基信息
         pile_box = QGroupBox("桩基信息")
+        pile_box.setStyleSheet(section_title_qss)
         pile_layout = QVBoxLayout(pile_box)
-        pile_layout.setContentsMargins(8, 6, 8, 8)
+        pile_layout.setContentsMargins(8, 8, 8, 8)
 
         tbl_pile = QTableWidget(1, 4, pile_box)
-        tbl_pile.setHorizontalHeaderLabels(
-            ["基础冲刷(m)", "桩基础抗压承载能力(t)", "桩基础抗拔承载能力(t)", "单根桩泥下自重(t)"])
+        tbl_pile.setHorizontalHeaderLabels(["基础冲刷(m)", "桩基础抗压承载能力(t)", "桩基础抗拔承载能力(t)", "单根桩泥下自重(t)"])
         self._init_table_common(tbl_pile, show_vertical_header=False)
         for c in range(4):
             self._set_center_item(tbl_pile, 0, c, "")
-
-        tbl_pile.resizeColumnsToContents()
-        total_width = sum(tbl_pile.columnWidth(c) for c in range(tbl_pile.columnCount()))
-        tbl_pile.setMinimumWidth(total_width)
-        tbl_pile.horizontalHeader().setStretchLastSection(False)
         tbl_pile.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-
-        # ====== 核心修改：固定高度 (1行表头32 + 1行数据28 + 边框 ≈ 64) ======
-        header_h = tbl_pile.horizontalHeader().height() if not tbl_pile.horizontalHeader().isHidden() else 0
-        row_h = tbl_pile.verticalHeader().length()
-        tbl_pile.setFixedHeight(header_h + row_h + 6)
+        tbl_pile.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tbl_pile.setRowHeight(0, 32)
+        pile_header_h = tbl_pile.horizontalHeader().height() if not tbl_pile.horizontalHeader().isHidden() else 0
+        pile_rows_h = sum(tbl_pile.rowHeight(r) for r in range(tbl_pile.rowCount()))
+        pile_tbl_h = pile_header_h + pile_rows_h + tbl_pile.frameWidth() * 2 + 6
+        tbl_pile.setMinimumHeight(pile_tbl_h)
+        tbl_pile.setMaximumHeight(pile_tbl_h)
+        tbl_pile.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         tbl_pile.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # ====================================================================
+        tbl_pile.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        pile_layout.addWidget(tbl_pile, 1)
 
-        pile_layout.addWidget(tbl_pile)
-        left_layout.addWidget(pile_box)
+        pile_margins = pile_layout.contentsMargins()
+        pile_box_h = pile_margins.top() + pile_margins.bottom() + pile_tbl_h + 18
+        pile_box.setMinimumHeight(pile_box_h)
+        pile_box.setMaximumHeight(pile_box_h)
+        pile_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        # 海生物信息（示意）
+        # 海生物信息
         marine_box = QGroupBox("海生物信息")
+        marine_box.setStyleSheet(section_title_qss)
         marine_layout = QVBoxLayout(marine_box)
-        marine_layout.setContentsMargins(8, 6, 8, 8)
+        marine_layout.setContentsMargins(8, 8, 8, 8)
 
         tbl_marine = QTableWidget(5, 12, marine_box)
         self._init_table_common(tbl_marine, show_vertical_header=False)
         tbl_marine.horizontalHeader().setVisible(False)
         tbl_marine.verticalHeader().setVisible(False)
+        tbl_marine.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # 第一行
         tbl_marine.setSpan(0, 0, 1, 3)
         self._set_center_item(tbl_marine, 0, 0, "层数", editable=False)
         for i in range(9):
             self._set_center_item(tbl_marine, 0, 3 + i, str(i + 1))
 
-        # 第二行
         tbl_marine.setSpan(1, 0, 2, 2)
         self._set_center_item(tbl_marine, 1, 0, "高度区域", editable=False)
         self._set_center_item(tbl_marine, 1, 2, "上限(m)", editable=False)
@@ -801,7 +1350,6 @@ class PlatformStrengthPage(BasePage):
             self._set_center_item(tbl_marine, 1, 3 + i, upper[i])
             self._set_center_item(tbl_marine, 2, 3 + i, lower[i])
 
-        # 第三行（合并了三、四行）
         tbl_marine.setSpan(3, 0, 1, 2)
         self._set_center_item(tbl_marine, 3, 0, "海生物", editable=False)
         self._set_center_item(tbl_marine, 3, 2, "厚度(mm)", editable=False)
@@ -810,26 +1358,30 @@ class PlatformStrengthPage(BasePage):
             self._set_center_item(tbl_marine, 3, 3 + i, thickness[i])
         self._set_center_item(tbl_marine, 3, 11, "1.4")
 
-        # 第5行
         tbl_marine.setSpan(4, 0, 1, 3)
         tbl_marine.setSpan(4, 3, 1, 9)
         self._set_center_item(tbl_marine, 4, 0, "海生物密度（t/m^3）", editable=False)
         self._set_center_item(tbl_marine, 4, 3, "1.4")
 
-        tbl_marine.resizeColumnsToContents()
-        total_width = sum(tbl_marine.columnWidth(c) for c in range(tbl_marine.columnCount()))
-        tbl_marine.setMinimumWidth(total_width)
-        tbl_marine.horizontalHeader().setStretchLastSection(False)
         tbl_marine.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         tbl_marine.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         tbl_marine.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         tbl_marine.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        tbl_marine.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        for r in range(tbl_marine.rowCount()):
+            tbl_marine.setRowHeight(r, 28)
 
-        # ====== 核心修改：固定高度 (无隐藏表头，纯5行数据 5x28 + 边框 ≈ 144) ======
-        row_h = tbl_marine.verticalHeader().length()
-        tbl_marine.setFixedHeight(row_h + 6)
+        marine_rows_h = sum(tbl_marine.rowHeight(r) for r in range(tbl_marine.rowCount()))
+        marine_tbl_h = marine_rows_h + tbl_marine.frameWidth() * 2 + 8
+        tbl_marine.setMinimumHeight(marine_tbl_h)
+        tbl_marine.setMaximumHeight(marine_tbl_h)
         tbl_marine.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # ==========================================================================
+        tbl_marine.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        marine_layout.addWidget(tbl_marine)
-        left_layout.addWidget(marine_box)
+        marine_layout.addWidget(tbl_marine, 1)
+        marine_margins = marine_layout.contentsMargins()
+        marine_box_h = marine_margins.top() + marine_margins.bottom() + marine_tbl_h + 12
+        marine_box.setMinimumHeight(marine_box_h)
+        marine_box.setMaximumHeight(marine_box_h)
+        marine_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        return splash_box, pile_box, marine_box

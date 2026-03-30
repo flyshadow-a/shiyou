@@ -19,33 +19,21 @@ class _CombinedHistoryHomeWidget(ConstructionDocsWidget):
 
     def _build_folder_tree(self):
         return {
-            "\u5386\u53f2\u6539\u9020\u4fe1\u606f": {"type": "folder", "children": {}},
-            "\u7279\u68c0\u5ef6\u5bff": {"type": "folder", "children": {}},
-            "\u53f0\u98ce&\u635f\u4f24": {"type": "folder", "children": {}},
             "\u5b8c\u5de5\u68c0\u6d4b": {"type": "folder", "children": {}},
-            "\u7b2c\u4e00\u6b21\u68c0\u6d4b": {"type": "folder", "children": {}},
-            "\u7b2cN\u6b21\u68c0\u6d4b": {"type": "folder", "children": {}},
-            "\u5386\u53f2\u62bd\u68c0\u8bb0\u5f55": {"type": "folder", "children": {}},
+            "\u5b9a\u671f\u68c0\u6d4b1-N": {"type": "folder", "children": {}},
+            "\u7279\u6b8a\u4e8b\u4ef6\u68c0\u6d4b\uff08\u53f0\u98ce\u3001\u78b0\u649e\u7b49\uff09": {"type": "folder", "children": {}},
         }
 
     def _build_demo_file_records(self):
         return {}
 
     def _on_folder_clicked(self, folder_name: str):
-        events = {
-            "\u5386\u53f2\u6539\u9020\u4fe1\u606f",
-            "\u7279\u68c0\u5ef6\u5bff",
-            "\u53f0\u98ce&\u635f\u4f24",
-        }
         inspection = {
             "\u5b8c\u5de5\u68c0\u6d4b": "complete",
-            "\u7b2c\u4e00\u6b21\u68c0\u6d4b": "first",
-            "\u7b2cN\u6b21\u68c0\u6d4b": "nth",
-            "\u5386\u53f2\u62bd\u68c0\u8bb0\u5f55": "history_sampling",
+            "\u5b9a\u671f\u68c0\u6d4b1-N": "periodic",
+            "\u7279\u6b8a\u4e8b\u4ef6\u68c0\u6d4b\uff08\u53f0\u98ce\u3001\u78b0\u649e\u7b49\uff09": "history_sampling",
         }
-        if folder_name in events:
-            self.folderSelected.emit("events", folder_name)
-        elif folder_name in inspection:
+        if folder_name in inspection:
             self.folderSelected.emit("inspection", inspection[folder_name])
 
 
@@ -155,6 +143,8 @@ class HistoryEventsInspectionPage(BasePage):
         self.home_widget.folderSelected.connect(self._open_folder)
         self.page_events.goHomeRequested.connect(self._go_home)
         self.page_inspection.goHomeRequested.connect(self._go_home)
+        self.dropdown_bar.valueChanged.connect(self.on_filter_changed)
+        self._sync_platform_ui()
 
     def _open_folder(self, group: str, key: str):
         self._set_dropdown_visible(False)
@@ -176,3 +166,15 @@ class HistoryEventsInspectionPage(BasePage):
         else:
             self.dropdown_bar.setVisible(False)
             self.dropdown_bar.setFixedHeight(0)
+
+    def on_filter_changed(self, key: str, value: str):
+        self._sync_platform_ui()
+
+    def _sync_platform_ui(self):
+        platform_name = self.dropdown_bar.get_value("facility_name")
+        window = self.window()
+        if hasattr(window, "set_current_platform_name"):
+            window.set_current_platform_name(platform_name)
+
+    def get_current_platform_name(self):
+        return self.dropdown_bar.get_value("facility_name")
