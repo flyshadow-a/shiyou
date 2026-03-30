@@ -1,0 +1,259 @@
+Rem Avars = 153, 150, 14, 184, 181, 155, 152, 186, 183, 180, 157, 154, 151, 185, 182, 179, 156
+
+Rem AnalysisTypeCategory=3
+Rem AnalysisTypeIndex=3
+Rem AnalTyp 303
+
+Rem AVARFile 130 InpFile SACS Model File~~0~2~1~JCKFIL~0~5
+Rem AVARFile 14 InpFile Fatigue Input File~ftginp.19-1d WJT WITH RING~0~14~1~STDIN~0~1
+Rem AVARFile 14 InpFile First Common Solution File~..\..\3.response\1\saccsf.1~0~2~3~PSTFIL~5~3
+Rem AVARFile 179 InpFile First Seastate Input File~..\..\3.response\1\seainp.01~0~1~1~SEAINP~0~4
+Rem AVARFile 235 InpFile Fatigue Damage Input File~~0~14~36~DMGIN~0~37
+
+Rem AVARFile 36 InpFile Postvue Data Base Directory~~0~21~25~POSTVIN~0~39
+
+Rem AVARFile 150 OutFile Fatigue Extraction File~ftgext.d~0~14~19~EXTFIL~12~35
+Rem AVARFile 130 OutFile Redesigned Structural Data File~~0~14~7~FTGOCI~0~36
+Rem AVARFile 236 OutFile Fatigue Damage Output File~~0~14~37~DMGOUT~0~38
+Rem AVARFile 230 OutFile Fatigue Data Message File~~0~14~42~ST-CYL~0~40
+// Multiple solution Files
+Rem AVARFile 151 InpFile Second Common Solution File~..\..\3.response\2\saccsf.2~0~2~3~PSTFIL1~0~5
+Rem AVARFile 180 InpFile Second Seastate Input File~..\..\3.response\2\seainp.02~0~1~1~SEAINP1~0~6
+Rem AVARFile 152 InpFile Third Common Solution File~..\..\3.response\3\saccsf.3~0~2~3~PSTFIL2~0~7
+Rem AVARFile 181 InpFile Third Seastate Input File~..\..\3.response\3\seainp.03~0~1~1~SEAINP2~0~8
+Rem AVARFile 153 InpFile Fourth Common Solution File~..\..\3.response\4\saccsf.4~0~2~3~PSTFIL3~0~9
+Rem AVARFile 182 InpFile Fourth Seastate Input File~..\..\3.response\4\seainp.04~0~1~1~SEAINP3~0~10
+Rem AVARFile 154 InpFile Fifth Common Solution File~..\..\3.response\5\saccsf.5~0~2~3~PSTFIL4~0~11
+Rem AVARFile 183 InpFile Fifth Seastate Input File~..\..\3.response\5\seainp.05~0~1~1~SEAINP4~0~12
+Rem AVARFile 155 InpFile Sixth Common Solution File~..\..\3.response\6\saccsf.6~0~2~3~PSTFIL5~0~13
+Rem AVARFile 184 InpFile Sixth Seastate Input File~..\..\3.response\6\seainp.06~0~1~1~SEAINP5~0~14
+Rem AVARFile 156 InpFile Seventh Common Solution File~..\..\3.response\7\saccsf.7~0~2~3~PSTFIL6~0~15
+Rem AVARFile 185 InpFile Seventh Seastate Input File~..\..\3.response\7\seainp.07~0~1~1~SEAINP6~0~16
+Rem AVARFile 157 InpFile Eighth Common Solution File~..\..\3.response\8\saccsf.8~0~2~3~PSTFIL7~0~17
+Rem AVARFile 186 InpFile Eighth Seastate Input File~..\..\3.response\8\seainp.08~0~1~1~SEAINP7~0~18
+Rem AVARFile 158 InpFile Ninth Common Solution File~~0~2~3~PSTFIL8~0~19
+Rem AVARFile 187 InpFile Ninth Seastate Input File~~0~1~1~SEAINP8~0~20
+Rem AVARFile 159 InpFile Tenth Common Solution File~~0~2~3~PSTFIL9~0~21
+Rem AVARFile 188 InpFile Tenth Seastate Input File~~0~1~1~SEAINP9~0~22
+Rem AVARFile 160 InpFile Eleventh Common Solution File~~0~2~3~PSTFILA~0~23
+Rem AVARFile 189 InpFile Eleventh Seastate Input File~~0~1~1~SEAINPA~0~24
+Rem AVARFile 161 InpFile Twelfth Common Solution File~~0~2~3~PSTFILB~0~25
+Rem AVARFile 190 InpFile Twelfth Seastate Input File~~0~1~1~SEAINPB~0~26
+Rem AVARFile 162 InpFile Thirteenth Common Solution File~~0~2~3~PSTFILC~0~27
+Rem AVARFile 191 InpFile Thirteenth Seastate Input File~~0~1~1~SEAINPC~0~28
+Rem AVARFile 163 InpFile Fourteenth Common Solution File~~0~2~3~PSTFILD~0~29
+Rem AVARFile 192 InpFile Fourteenth Seastate Input File~~0~1~1~SEAINPD~0~30
+Rem AVARFile 164 InpFile Fifteenth Common Solution File~~0~2~3~PSTFILE~0~31
+Rem AVARFile 193 InpFile Fifteenth Seastate Input File~~0~1~1~SEAINPE~0~32
+Rem AVARFile 165 InpFile Sixteenth Common Solution File~~0~2~3~PSTFILF~0~33
+Rem AVARFile 194 InpFile Sixteenth Seastate Input File~~0~1~1~SEAINPF~0~34
+
+//
+Rem ConcatFile=ftglst.d
+
+//  Format for aaaIexe Line
+// required =  module is required to run for this analysis type 
+//				0 - required module, can adjust options
+//				1 - optional module, can adjust options
+//				2 - required module, cannot adjust options
+//				3 - optional module, cannot adjust options
+//				4 - don't display this, cannot adjust options
+// Prereq   =  This module is required to be run, in order to run the aaaIexe module
+// Mutex    =  If specified aaaIexe module is on, then this module is disabled, and vice versa.
+// DefaultOn = The initial value of the execute flag for this module when first loaded
+// No concat listfile name = the default file name for when the list file concat is off...
+//  aaaIxee Module exe~pgm~required~prerequisite pgm~Mutually Exclusive Program~DefaultOn~No Concat Listfile 
+			
+Rem aaaIexe SACWFTG~14~0~0~0~0~ftglst.d~
+
+IF CONCAT GOTO SKIPCAT1
+    IF EXIST "ftglst.d" DEL "ftglst.d"
+:SKIPCAT1
+IF NOT CONCAT GOTO SKIPCAT2
+    IF EXIST "ftglst.d" DEL "ftglst.d"
+:SKIPCAT2
+
+echo SACS Fatigue Damage Started
+
+IF EXIST *.EDI DEL *.EDI
+IF EXIST ?### DEL ?###
+SET SACOPT=XXXXNCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+SET SACMSG=sacmsg.tmp
+
+SET PSTFIL=..\..\3.response\1\saccsf.1
+IF NOT AVAR 179 GOTO SKIP4
+	SET SEAINP=..\..\3.response\1\seainp.01
+:SKIP4	
+IF NOT AVAR 151 GOTO SKIP5
+	SET PSTFIL1=..\..\3.response\2\saccsf.2
+:SKIP5	
+IF NOT AVAR 180 GOTO SKIP6
+	SET SEAINP1=..\..\3.response\2\seainp.02
+:SKIP6	
+IF NOT AVAR 152 GOTO SKIP7
+	SET PSTFIL2=..\..\3.response\3\saccsf.3
+:SKIP7	
+IF NOT AVAR 181 GOTO SKIP8
+	SET SEAINP2=..\..\3.response\3\seainp.03
+:SKIP8	
+IF NOT AVAR 153 GOTO SKIP9
+	SET PSTFIL3=..\..\3.response\4\saccsf.4
+:SKIP9	
+IF NOT AVAR 182 GOTO SKIP10
+	SET SEAINP3=..\..\3.response\4\seainp.04
+:SKIP10	
+IF NOT AVAR 154 GOTO SKIP11
+	SET PSTFIL4=..\..\3.response\5\saccsf.5
+:SKIP11	
+IF NOT AVAR 183 GOTO SKIP12
+	SET SEAINP4=..\..\3.response\5\seainp.05
+:SKIP12	
+IF NOT AVAR 155 GOTO SKIP13
+	SET PSTFIL5=..\..\3.response\6\saccsf.6
+:SKIP13	
+IF NOT AVAR 184 GOTO SKIP14
+	SET SEAINP5=..\..\3.response\6\seainp.06
+:SKIP14	
+IF NOT AVAR 156 GOTO SKIP15
+	SET PSTFIL6=..\..\3.response\7\saccsf.7
+:SKIP15	
+IF NOT AVAR 185 GOTO SKIP16
+	SET SEAINP6=..\..\3.response\7\seainp.07
+:SKIP16	
+IF NOT AVAR 157 GOTO SKIP17
+	SET PSTFIL7=..\..\3.response\8\saccsf.8
+:SKIP17	
+IF NOT AVAR 186 GOTO SKIP18
+	SET SEAINP7=..\..\3.response\8\seainp.08
+:SKIP18	
+IF NOT AVAR 158 GOTO SKIP19
+	SET PSTFIL8=
+:SKIP19	
+IF NOT AVAR 187 GOTO SKIP20
+	SET SEAINP8=
+:SKIP20	
+IF NOT AVAR 159 GOTO SKIP21
+	SET PSTFIL9=
+:SKIP21	
+IF NOT AVAR 188 GOTO SKIP22
+	SET SEAINP9=
+:SKIP22	
+IF NOT AVAR 160 GOTO SKIP23
+	SET PSTFILA=
+:SKIP23	
+IF NOT AVAR 189 GOTO SKIP24
+	SET SEAINPA=
+:SKIP24	
+IF NOT AVAR 161 GOTO SKIP25
+	SET PSTFILB=
+:SKIP25	
+IF NOT AVAR 190 GOTO SKIP26
+	SET SEAINPB=
+:SKIP26	
+IF NOT AVAR 162 GOTO SKIP27
+	SET PSTFILC=
+:SKIP27	
+IF NOT AVAR 191 GOTO SKIP28
+	SET SEAINPC=
+:SKIP28	
+IF NOT AVAR 163 GOTO SKIP29
+	SET PSTFILD=
+:SKIP29	
+IF NOT AVAR 192 GOTO SKIP30
+	SET SEAINPD=
+:SKIP30	
+IF NOT AVAR 164 GOTO SKIP31
+	SET PSTFILE=
+:SKIP31	
+IF NOT AVAR 193 GOTO SKIP32
+	SET SEAINPE=
+:SKIP32	
+IF NOT AVAR 165 GOTO SKIP33
+	SET PSTFILF=
+:SKIP33	
+IF NOT AVAR 194 GOTO SKIP34
+	SET SEAINPF=
+:SKIP34	
+//
+IF NOT AVAR 150 GOTO SKIP1
+     IF EXIST ftgext.d DEL ftgext.d
+     SET EXTFIL=ftgext.d
+:SKIP1
+IF NOT AVAR 130 GOTO SKIP2
+     IF EXIST  DEL 
+     SET FTGOCI=
+     SET JCKFIL=
+:SKIP2
+IF NOT AVAR 36 GOTO SKIP3
+     SET POSTVIN=
+:SKIP3
+
+IF AVAR 235 SET DMGIN=
+
+IF NOT AVAR 236 GOTO SKIP236
+	IF EXIST  DEL 
+	SET DMGOUT=
+:SKIP236
+
+IF NOT AVAR 230 GOTO SKIP230
+	IF EXIST  DEL 
+	SET ST-CYL=
+:SKIP230
+
+SACTIM SACWFTG STARTED AT
+run ~sacsprog~SACWFTG < ftginp.19-1d WJT WITH RING >> ftglst.d
+IF ERRORLEVEL 1 GOTO ERR
+SACTIM SACWFTG FINISHED AT
+
+echo SACS Fatigue Damage Finished
+GOTO EXIT
+:ERR
+ECHO *** ERROR in SACS Execution ***
+ECHO Please check output listing files for additional error messages
+:EXIT
+RESET PSTFIL=
+RESET SEAINP=
+RESET PSTFIL1=
+RESET SEAINP1=
+RESET PSTFIL2=
+RESET SEAINP2=
+RESET PSTFIL3=
+RESET SEAINP3=
+RESET PSTFIL4=
+RESET SEAINP4=
+RESET PSTFIL5=
+RESET SEAINP5=
+RESET PSTFIL6=
+RESET SEAINP6=
+RESET PSTFIL7=
+RESET SEAINP7=
+RESET PSTFIL8=
+RESET SEAINP8=
+RESET PSTFIL9=
+RESET SEAINP9=
+RESET PSTFILA=
+RESET SEAINPA=
+RESET PSTFILB=
+RESET SEAINPB=
+RESET PSTFILC=
+RESET SEAINPC=
+RESET PSTFILD=
+RESET SEAINPD=
+RESET PSTFILE=
+RESET SEAINPE=
+RESET PSTFILF=
+RESET SEAINPF=
+RESET EXTFIL=
+RESET POSTVIN=
+RESET JCKFIL=
+RESET FTGOCI=
+RESET PVONLY=
+RESET SACOPT=
+RESET SACMSG=
+RESET STDIN=
+RESET DMGIN=
+RESET DMGOUT=
+
+IF EXIST *.TMP DEL *.TMP
+IF EXIST *.EDI DEL *.EDI
+IF EXIST lf90.eer DEL lf90.eer

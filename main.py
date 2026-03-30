@@ -25,7 +25,34 @@ from PyQt5.QtWidgets import QHeaderView
 from PyQt5.QtWidgets import QStatusBar
 
 
+# ==========================================
+def get_resource_path(relative_path):
+    """
+    获取资源的绝对路径。
+    开发环境：使用当前文件所在目录 + 相对路径
+    打包环境：使用 sys._MEIPASS + 相对路径
+    """
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller 打包后的临时解压目录
+        base_path = sys._MEIPASS
+    else:
+        # 开发环境：使用当前 main.py 所在的目录
+        base_path = os.path.dirname(os.path.abspath(__file__))
 
+    return os.path.join(base_path, relative_path)
+
+# ==========================================
+
+def get_external_path(relative_path):
+    if getattr(sys, 'frozen', False):
+        #如果是打包后的 exe，使用 exe 所在的真实目录
+        base_path = os.path.dirname(sys.executable)
+    else:
+        # 开发环境
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+# ==========================================
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -262,8 +289,7 @@ class MainWindow(QMainWindow):
 
         # logo
         logo_label = QLabel()
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        logo_path = os.path.join(base_dir, "pict", "logo.png")
+        logo_path = get_resource_path(os.path.join("pict", "logo.png"))
         if os.path.exists(logo_path):
             pixmap = QPixmap(logo_path)
             if not pixmap.isNull():

@@ -1,0 +1,5 @@
+WROPT  MNPSL  ALL ES                            -1                                                                      
+PLTTF                      BS                      PRS                                                                  
+*TFLCAS   1  55                                                                                                         
+DAMP      2.0                                                                                                           
+END                                                                                                                     

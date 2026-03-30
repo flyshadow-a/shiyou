@@ -1,0 +1,7 @@
+Rem RunParallel
+Rem Runmulti file Multi.runx
+Echo "Running D:\平台模型\fatigue\3.response\6\wvr6.runx"
+call D:\平台模型\fatigue\3.response\6\wvr6.runx
+Echo "Running D:\平台模型\fatigue\3.response\8\wvr8.runx"
+call D:\平台模型\fatigue\3.response\8\wvr8.runx
+PAUSE

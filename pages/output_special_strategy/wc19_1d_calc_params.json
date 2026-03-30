@@ -1,0 +1,648 @@
+{
+  "model_path": "C:\\Users\\chtsh\\OneDrive\\SACS模型\\sacinp.JKnew",
+  "region": "中国南海",
+  "global_level_tag": "L-1",
+  "collapse_a_const": 0.272,
+  "collapse_b_const": 0.158,
+  "min_leg_od": 610.0,
+  "x_angle_deviation": 15.0,
+  "wp_z": 10.0,
+  "no_legs": 8,
+  "work_points": [
+    [
+      -24.0,
+      -8.0
+    ],
+    [
+      -8.0,
+      -8.0
+    ],
+    [
+      8.0,
+      -8.0
+    ],
+    [
+      24.0,
+      -8.0
+    ],
+    [
+      -24.0,
+      8.0
+    ],
+    [
+      -8.0,
+      8.0
+    ],
+    [
+      8.0,
+      8.0
+    ],
+    [
+      24.0,
+      8.0
+    ]
+  ],
+  "fatigue_merge": [
+    {
+      "file_path": "D:\\2025.3.16文昌19-1D平台\\wc19-1d\\fatigue\\WJT\\ftglst",
+      "default_factor": 5.0,
+      "factor_map": {
+        "511X": 10.0,
+        "521X": 10.0,
+        "531X": 10.0,
+        "541X": 10.0,
+        "611W": 2.0,
+        "612W": 2.0,
+        "613W": 2.0,
+        "614W": 2.0,
+        "615W": 2.0,
+        "616W": 2.0,
+        "621W": 2.0,
+        "622W": 2.0,
+        "623W": 2.0,
+        "624W": 2.0,
+        "625W": 2.0,
+        "626W": 2.0,
+        "627W": 2.0,
+        "628W": 2.0,
+        "631W": 2.0,
+        "632W": 2.0,
+        "633W": 2.0,
+        "634W": 2.0,
+        "635W": 2.0,
+        "636W": 2.0,
+        "637W": 2.0,
+        "638W": 2.0,
+        "511W": 2.0,
+        "512W": 2.0,
+        "513W": 2.0,
+        "514W": 2.0,
+        "515W": 2.0,
+        "516W": 2.0,
+        "521W": 2.0,
+        "522W": 2.0,
+        "523W": 2.0,
+        "524W": 2.0,
+        "525W": 2.0,
+        "526W": 2.0,
+        "527W": 2.0,
+        "528W": 2.0,
+        "531W": 2.0,
+        "532W": 2.0,
+        "533W": 2.0,
+        "534W": 2.0,
+        "535W": 2.0,
+        "536W": 2.0,
+        "537W": 2.0,
+        "538W": 2.0,
+        "411W": 2.0,
+        "412W": 2.0,
+        "413W": 2.0,
+        "414W": 2.0,
+        "421W": 2.0,
+        "422W": 2.0,
+        "423W": 2.0,
+        "424W": 2.0,
+        "431W": 2.0,
+        "432W": 2.0,
+        "433W": 2.0,
+        "434W": 2.0,
+        "311W": 2.0,
+        "312W": 2.0,
+        "313W": 2.0,
+        "314W": 2.0,
+        "321W": 2.0,
+        "322W": 2.0,
+        "323W": 2.0,
+        "324W": 2.0,
+        "331W": 2.0,
+        "332W": 2.0,
+        "333W": 2.0,
+        "334W": 2.0,
+        "211W": 2.0,
+        "212W": 2.0,
+        "213W": 2.0,
+        "214W": 2.0,
+        "221W": 2.0,
+        "222W": 2.0,
+        "223W": 2.0,
+        "224W": 2.0,
+        "231W": 2.0,
+        "232W": 2.0,
+        "233W": 2.0,
+        "234W": 2.0,
+        "611K": 2.0,
+        "623K": 2.0,
+        "612K": 2.0,
+        "613K": 2.0,
+        "614K": 2.0,
+        "615K": 2.0,
+        "616K": 2.0,
+        "617K": 2.0,
+        "511K": 2.0,
+        "512K": 2.0,
+        "513K": 2.0,
+        "514K": 2.0,
+        "515K": 2.0,
+        "516K": 2.0,
+        "413K": 2.0,
+        "414K": 2.0,
+        "415K": 2.0,
+        "416K": 2.0
+      },
+      "selectors": []
+    },
+    {
+      "file_path": "D:\\2025.3.16文昌19-1D平台\\wc19-1d\\fatigue\\WJT WITH RING\\ftglst",
+      "default_factor": 5.0,
+      "factor_map": {},
+      "selectors": [
+        "101L102L",
+        "101L1101",
+        "101L111X",
+        "102L101L",
+        "102L103L",
+        "102L1A1X",
+        "103L102L",
+        "103L104L",
+        "104L103L",
+        "104L1401",
+        "104L141X",
+        "105L106L",
+        "105L1101",
+        "105L112X",
+        "106L105L",
+        "106L107L",
+        "106L1B1X",
+        "107L106L",
+        "107L108L",
+        "107L1B2X",
+        "108L107L",
+        "108L1401",
+        "108L142X",
+        "161L111X",
+        "161L1A1X",
+        "164L141X",
+        "164L1A2X",
+        "165L112X",
+        "165L1B1X",
+        "168L142X",
+        "168L1B2X",
+        "306L205L",
+        "306L407L",
+        "307L208L",
+        "307L306L"
+      ]
+    },
+    {
+      "file_path": "D:\\2025.3.16文昌19-1D平台\\wc19-1d\\fatigue\\WJ1\\ftglst",
+      "default_factor": 5.0,
+      "factor_map": {},
+      "selectors": [
+        "407L306L"
+      ]
+    },
+    {
+      "file_path": "D:\\2025.3.16文昌19-1D平台\\wc19-1d\\fatigue\\WJ1 WITH RING\\ftglst",
+      "default_factor": 5.0,
+      "factor_map": {},
+      "selectors": [
+        "102L101L",
+        "103L104L",
+        "106L105L",
+        "107L108L"
+      ]
+    },
+    {
+      "file_path": "D:\\2025.3.16文昌19-1D平台\\wc19-1d\\fatigue\\D\\ftglst.d",
+      "default_factor": 2.0,
+      "factor_map": {},
+      "selectors": [
+        "171L201L",
+        "174L204L",
+        "175L205L",
+        "178L208L",
+        "512L522L",
+        "513L523L",
+        "516L526L",
+        "517L527L",
+        "611L621L",
+        "612L622L",
+        "613L623L",
+        "614L624L",
+        "615L625L",
+        "616L626L",
+        "617L627L",
+        "618L628L"
+      ]
+    }
+  ],
+  "risk_pack": {
+    "rm": {
+      "prob_upper": [
+        1e-05,
+        0.0001,
+        0.001,
+        0.01,
+        1.0
+      ],
+      "prob_thresholds": [
+        0.0,
+        1e-05,
+        0.0001,
+        0.001,
+        0.01
+      ],
+      "possibility_values": [
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "risk_rows": [
+        {
+          "consequence": 1,
+          "possibility": 1,
+          "grade": "一"
+        },
+        {
+          "consequence": 1,
+          "possibility": 2,
+          "grade": "一"
+        },
+        {
+          "consequence": 1,
+          "possibility": 3,
+          "grade": "二"
+        },
+        {
+          "consequence": 1,
+          "possibility": 4,
+          "grade": "三"
+        },
+        {
+          "consequence": 1,
+          "possibility": 5,
+          "grade": "三"
+        },
+        {
+          "consequence": 2,
+          "possibility": 1,
+          "grade": "一"
+        },
+        {
+          "consequence": 2,
+          "possibility": 2,
+          "grade": "二"
+        },
+        {
+          "consequence": 2,
+          "possibility": 3,
+          "grade": "二"
+        },
+        {
+          "consequence": 2,
+          "possibility": 4,
+          "grade": "三"
+        },
+        {
+          "consequence": 2,
+          "possibility": 5,
+          "grade": "四"
+        },
+        {
+          "consequence": 3,
+          "possibility": 1,
+          "grade": "二"
+        },
+        {
+          "consequence": 3,
+          "possibility": 2,
+          "grade": "二"
+        },
+        {
+          "consequence": 3,
+          "possibility": 3,
+          "grade": "三"
+        },
+        {
+          "consequence": 3,
+          "possibility": 4,
+          "grade": "四"
+        },
+        {
+          "consequence": 3,
+          "possibility": 5,
+          "grade": "四"
+        },
+        {
+          "consequence": 4,
+          "possibility": 1,
+          "grade": "三"
+        },
+        {
+          "consequence": 4,
+          "possibility": 2,
+          "grade": "三"
+        },
+        {
+          "consequence": 4,
+          "possibility": 3,
+          "grade": "四"
+        },
+        {
+          "consequence": 4,
+          "possibility": 4,
+          "grade": "四"
+        },
+        {
+          "consequence": 4,
+          "possibility": 5,
+          "grade": "五"
+        },
+        {
+          "consequence": 5,
+          "possibility": 1,
+          "grade": "三"
+        },
+        {
+          "consequence": 5,
+          "possibility": 2,
+          "grade": "四"
+        },
+        {
+          "consequence": 5,
+          "possibility": 3,
+          "grade": "四"
+        },
+        {
+          "consequence": 5,
+          "possibility": 4,
+          "grade": "五"
+        },
+        {
+          "consequence": 5,
+          "possibility": 5,
+          "grade": "五"
+        }
+      ]
+    },
+    "A": 0.272,
+    "B": 0.158,
+    "c_delta": 0.3,
+    "c_a": 0.73,
+    "c_b": 0.3,
+    "m": 4.0
+  },
+  "policy_strict": {
+    "一": {
+      "cycle": 5,
+      "times": {
+        "N": "Level IV",
+        "N+5": "Level IV",
+        "N+10": "Level IV",
+        "N+15": "Level IV"
+      },
+      "dist": {
+        "N": {
+          "I": 1.0
+        },
+        "N+5": {
+          "I": 1.0
+        },
+        "N+10": {
+          "I": 1.0
+        },
+        "N+15": {
+          "I": 1.0
+        }
+      },
+      "note": "100%level IV"
+    },
+    "二": {
+      "cycle": 5,
+      "times": {
+        "N": "Level III",
+        "N+5": "Level IV",
+        "N+10": "Level III",
+        "N+15": "Level IV"
+      },
+      "dist": {
+        "N": {
+          "III": 0.8,
+          "I": 0.2
+        },
+        "N+5": {
+          "III": 0.8,
+          "I": 0.2
+        },
+        "N+10": {
+          "III": 0.8,
+          "I": 0.2
+        },
+        "N+15": {
+          "III": 0.8,
+          "I": 0.2
+        }
+      },
+      "note": "80%level III+20%level IV（抽检）"
+    },
+    "三": {
+      "cycle": 10,
+      "times": {
+        "N": "Level II/III",
+        "N+5": "Level II/III",
+        "N+10": "Level II/III",
+        "N+15": "Level II/III"
+      },
+      "dist": {
+        "N": {
+          "III": 1.0
+        },
+        "N+5": {
+          "III": 1.0
+        },
+        "N+10": {
+          "III": 1.0
+        },
+        "N+15": {
+          "III": 1.0
+        }
+      },
+      "note": "20%level III（抽检）"
+    },
+    "四": {
+      "cycle": 10,
+      "times": {
+        "N": "Level II",
+        "N+5": "Level II",
+        "N+10": "Level II",
+        "N+15": "Level II"
+      },
+      "dist": {
+        "N": {
+          "II": 1.0
+        },
+        "N+5": {
+          "II": 1.0
+        },
+        "N+10": {
+          "II": 1.0
+        },
+        "N+15": {
+          "II": 1.0
+        }
+      },
+      "note": ""
+    },
+    "五": {
+      "cycle": 15,
+      "times": {
+        "N": "Level II",
+        "N+5": "Level II",
+        "N+10": "Level II",
+        "N+15": "Level II"
+      },
+      "dist": {
+        "N": {
+          "II": 1.0
+        },
+        "N+5": {
+          "II": 1.0
+        },
+        "N+10": {
+          "II": 1.0
+        },
+        "N+15": {
+          "II": 1.0
+        }
+      },
+      "note": ""
+    }
+  },
+  "policy_loose": {
+    "I": {
+      "cycle": 5,
+      "times": {
+        "N": "Level III",
+        "N+5": "Level IV",
+        "N+10": "Level III",
+        "N+15": "Level IV"
+      },
+      "dist": {
+        "N": {
+          "III": 1.0
+        },
+        "N+5": {
+          "IV": 1.0
+        },
+        "N+10": {
+          "III": 1.0
+        },
+        "N+15": {
+          "IV": 1.0
+        }
+      },
+      "note": ""
+    },
+    "II": {
+      "cycle": 5,
+      "times": {
+        "N": "Level III",
+        "N+5": "Level III",
+        "N+10": "Level III",
+        "N+15": "Level III"
+      },
+      "dist": {
+        "N": {
+          "III": 1.0
+        },
+        "N+5": {
+          "III": 1.0
+        },
+        "N+10": {
+          "III": 1.0
+        },
+        "N+15": {
+          "III": 1.0
+        }
+      },
+      "note": ""
+    },
+    "III": {
+      "cycle": 10,
+      "times": {
+        "N": "Level II",
+        "N+5": "",
+        "N+10": "Level III",
+        "N+15": ""
+      },
+      "dist": {
+        "N": {
+          "II": 1.0
+        },
+        "N+5": {
+          "": 1.0
+        },
+        "N+10": {
+          "III": 1.0
+        },
+        "N+15": {
+          "": 1.0
+        }
+      },
+      "note": ""
+    },
+    "IV": {
+      "cycle": 10,
+      "times": {
+        "N": "Level II",
+        "N+5": "",
+        "N+10": "Level II",
+        "N+15": ""
+      },
+      "dist": {
+        "N": {
+          "II": 1.0
+        },
+        "N+5": {
+          "": 1.0
+        },
+        "N+10": {
+          "II": 1.0
+        },
+        "N+15": {
+          "": 1.0
+        }
+      },
+      "note": ""
+    },
+    "": {
+      "cycle": null,
+      "times": {
+        "N": "",
+        "N+5": "",
+        "N+10": "",
+        "N+15": ""
+      },
+      "dist": {
+        "N": {
+          "": 1.0
+        },
+        "N+5": {
+          "": 1.0
+        },
+        "N+10": {
+          "": 1.0
+        },
+        "N+15": {
+          "": 1.0
+        }
+      },
+      "note": ""
+    }
+  },
+  "design_life": 26.0,
+  "served_years": 1.0
+}

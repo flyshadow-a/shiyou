@@ -1,0 +1,178 @@
+Rem Avars = 5, 2, 1005, 203, 132, 177, 21, 1, 1021, 1001, 3
+
+Rem AnalysisTypeCategory=2
+Rem AnalysisTypeIndex=1
+@ECHO OFF
+echo SACS Extract Mode Shapes Started
+Rem AnalTyp 400
+
+// AVAR 1 is use seastate. Set in UI
+Rem AVARFile 1,1001 InpFile Seastate Input File~seainp.19-1d~0~1~1~STDIN~0~1
+// AVAR 2 is model file. Set in UI
+Rem AVARFile 2 InpFile SACS Model File~..\1SUP\seaoci~0~2~1~JCKFIL~0~3
+// Set import SE from UI
+Rem AVARFile 132 InpFile Superelement File~..\1SUP\dynsef~0~9~10~SUBIN~7~132
+Rem AVARFile 5,1005 InpFile Dynpac Input File~dyninp.19-1d~0~5~1~STDIN~0~13
+Rem AVARFile 5 OutFile Dynpac Modal Solution File~dynmod~0~5~32~MODEFIL~5~15
+Rem AVARFile 5 OutFile Dynpac Mass File~dynmas~0~5~15~MASSFIL~9~16
+Rem AVARFile 21 OutFile Postvue Data Base Directory~psvdb~0~21~25~POSTVIN~0~26
+Rem AVARFile 1 DelFile Output Structural Data File~seaoci~0~1~7~SPDATA~1~6
+Rem AVARFile 133 OutFile Dynamic Superelement Data File~~0~56~49~DYNSUPELEMDAT~1~133
+Rem AVARFile 133 OutFile Dynamic Superelement Transformation File~~0~56~50~DYNSUPELEMTRS~1~134
+
+// Seastate and PVI are optional
+
+Rem ConcatFile=dynlst.DYN
+
+Rem aaaIexe SACWSEA~1~1~0~0~0~dynlst.DYN~
+Rem aaaIexe SACWPRE~2~0~0~0~0~dynlst.DYN~
+Rem aaaIexe SACWSLV~3~0~0~0~0~dynlst.DYN~
+Rem aaaIexe SACWDYN~5~0~0~0~0~dynlst.DYN~
+Rem aaaIexe SACWPVI~21~1~2~0~1~dynlst.DYN~
+
+IF CONCAT GOTO SKIPCAT1
+    IF EXIST "dynlst.DYN" DEL "dynlst.DYN"
+    IF EXIST "dynlst.DYN" DEL "dynlst.DYN"
+    IF EXIST "dynlst.DYN" DEL "dynlst.DYN"
+    IF EXIST "dynlst.DYN" DEL "dynlst.DYN"
+    IF EXIST "dynlst.DYN" DEL "dynlst.DYN"
+:SKIPCAT1
+IF NOT CONCAT GOTO SKIPCAT2
+    IF EXIST "dynlst.DYN" DEL "dynlst.DYN"
+:SKIPCAT2
+
+IF EXIST *.EDI DEL *.EDI
+IF EXIST ?### DEL ?###
+SET SACOPT=DYSINCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+SET SACMSG=sacmsg.tmp
+SET SMEMFL=$sacsdata\china.sec
+//
+// Seastate
+IF NOT AVAR 1 GOTO SKIP1
+
+SET SEAOPT=DYMXXXXXXXXXXXXXX
+	IF NOT AVAR 1001 GOTO SEASKIPJCKFIL
+		SET JCKFIL=..\1SUP\seaoci
+	:SEASKIPJCKFIL
+	
+    IF EXIST "seaoci" DEL "seaoci"
+    SET SPDATA=seaoci
+    SACTIM SACWSEA STARTED AT
+    
+    IF NOT AVAR 1001 GOTO SEASKIPINPUTSEA
+	    run ~sacsprog~SACWSEA < seainp.19-1d >> dynlst.DYN
+	:SEASKIPINPUTSEA
+	
+    IF AVAR 1001 GOTO SEASKIPINPUTMODEL
+	    run ~sacsprog~SACWSEA < ..\1SUP\seaoci >> dynlst.DYN
+	:SEASKIPINPUTMODEL
+    
+    
+    IF ERRORLEVEL 1 GOTO ERR
+    SACTIM SACWSEA FINISHED AT
+:SKIP1
+
+IF AVAR 1 GOTO PRESACSINMODEL
+	SET SACSIN=..\1SUP\seaoci
+:PRESACSINMODEL
+
+IF NOT AVAR 1 GOTO PRESACSINLOADS
+	SET SACSIN=seaoci
+:PRESACSINLOADS	   
+
+// PRE and Solve
+SET PREOUT=SACOBF.TMP
+SET PSTFIL=SACPCS.TMP
+IF NOT AVAR 132 GOTO SKIPSUBIN
+	SET SUBIN=..\1SUP\dynsef
+:SKIPSUBIN	
+SACTIM SACWPRE STARTED AT
+
+IF NOT AVAR 1001 GOTO PREINPUTLOAD
+	run ~sacsprog~SACWPRE < seaoci >> dynlst.DYN
+:PREINPUTLOAD
+
+IF AVAR 1001 GOTO PREINPUTMODEL
+	run ~sacsprog~SACWPRE < ..\1SUP\seaoci >> dynlst.DYN
+:PREINPUTMODEL    
+
+IF ERRORLEVEL 1 GOTO ERR
+SACTIM SACWPRE FINISHED AT
+SET TRISTIF=SLVTRI.TMP
+SACTIM SACWSLV STARTED AT
+run ~sacsprog~SACWSLV >> dynlst.DYN
+IF ERRORLEVEL 1 GOTO ERR
+SACTIM SACWSLV FINISHED AT
+
+//Dynpac
+SETTMP DYN=
+IF EXIST "dynmod" DEL "dynmod"
+SET MODEFIL=dynmod
+IF EXIST "dynmas" DEL "dynmas"
+SET MASSFIL=dynmas
+
+IF NOT AVAR 133 GOTO SKIP133
+	SET DYNSUPELEMDAT=
+	SET DYNSUPELEMTRS=
+:SKIP133
+
+SACTIM SACWDYN STARTED AT
+run ~sacsprog~SACWDYN < dyninp.19-1d >> dynlst.DYN
+IF ERRORLEVEL 1 GOTO ERR
+SACTIM SACWDYN FINISHED AT
+
+//Postvue
+IF NOT AVAR 21 GOTO SKIP21
+
+	 IF AVAR 1021 GOTO MODELINPUT
+		SET SACSIN=..\1SUP\seaoci
+	 :MODELINPUT
+
+     SET PSTFIL=dynmod
+     IF EXIST "psvdb" DEL "psvdb"
+     SET POSTVIN=psvdb
+// Include only modal displacements
+SET MODSTR=NO
+//     IF AVAR 177 SET MODSTR=NO
+//     IF NOT AVAR 177 SET MODSTR=YES
+     SET PVONLY=YES
+     SACTIM SACWPVI STARTED AT
+     run ~sacsprog~SACWPVI >> dynlst.DYN
+     IF ERRORLEVEL 1 GOTO ERR
+     SACTIM SACWPVI FINISHED AT
+:SKIP21
+DEL SACOBF.TMP
+DEL SACPCS.TMP
+DEL SLVTRI.TMP
+Echo File list for Extract Mode Shapes
+echo SACS Extract Mode Shapes Finished
+GOTO EXIT
+:ERR
+ECHO *** ERROR in SACS Execution ***
+ECHO Please check output listing files for additional error messages
+:EXIT
+IF EXIST *.TMP DEL *.TMP
+IF EXIST *.EDI DEL *.EDI
+
+IF EXIST lf90.eer DEL lf90.eer
+RESET JCKFIL=
+RESET SPDATA=
+RESET SMEMFL=
+RESET SACSIN=
+RESET PREOUT=
+RESET PSTFIL=
+RESET SUBIN=
+RESET TRISTIF=
+RESET MODEFIL=
+RESET MASSFIL=
+RESET PSTFIL=
+RESET POSTVIN=
+RESET SACSIN=
+RESET MODSTR=
+RESET PVONLY=
+RESET SACOPT=
+RESET SEAOPT=
+RESET SACMSG=
+RESET DYNSUPELEMDAT=
+RESET DYNSUPELEMTRS=
+DEL "seaoci"

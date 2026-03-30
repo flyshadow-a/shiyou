@@ -1,0 +1,45 @@
+{
+  "template_xlsm": "d:/pyproject/shiyou/pages/output_special_strategy/wc9_7_compare_source.xlsm",
+  "config_xlsm": "d:/pyproject/shiyou/pages/output_special_strategy/wc9_7_compare_source.xlsm",
+  "params_json": "d:/pyproject/shiyou/pages/output_special_strategy/wc9_7_calc_params.json",
+  "report_template": "d:/pyproject/shiyou/pages/output_special_strategy/xxx平台风险评级及检测策略报告.docx",
+  "output_report": "d:/pyproject/shiyou/pages/output_special_strategy/wc9_7_user_paths_report.docx",
+  "intermediate_workbook": "d:/pyproject/shiyou/pages/output_special_strategy/wc9_7_user_paths_report.pipeline.xlsx",
+  "policy": "strict",
+  "enable_topology_inference": false,
+  "interactive_manual_fill": true,
+  "manual_fill_workbook": "d:/pyproject/shiyou/pages/output_special_strategy/manual_fill.xlsx",
+  "appendix_a_file": "d:/pyproject/shiyou/pages/output_special_strategy/附件A 节点风险等级计算表.pdf",
+  "appendix_b_file": "d:/pyproject/shiyou/pages/output_special_strategy/附件B 构件风险等级计算表.pdf",
+  "appendix_c_dirs": [
+    "d:/pyproject/shiyou/pages/output_special_strategy/附件C.1 服役第5年的检验节点构件位置",
+    "d:/pyproject/shiyou/pages/output_special_strategy/附件C.2 服役第10年的检验节点构件位置",
+    "d:/pyproject/shiyou/pages/output_special_strategy/附件C.3 服役第15年的检验节点构件位置",
+    "d:/pyproject/shiyou/pages/output_special_strategy/附件C.4 服役第20年的检验节点构件位置",
+    "d:/pyproject/shiyou/pages/output_special_strategy/附件C.5 服役第25年的检验节点构件位置"
+  ],
+  "include_word_plan_detail_tables": false,
+  "platform_name": "{{platform_name}}",
+  "report_date": "{{report_date}}",
+  "model": "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7static/static model/sacinp.WC9-7 DPP",
+  "clplog": [
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7pushover/0度/clplog",
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7pushover/58度/clplog",
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7pushover/270/clplog",
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7pushover/315/clplog"
+  ],
+  "ftglst": [
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7fatigue/4-1.ftg with WJT/ftglst.wjt",
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7fatigue/4-2.ftg with WJT_ring/ftglst.wjt_ring",
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7fatigue/4-3.ftg with WJ1/ftglst.wj1",
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7fatigue/4-4.ftg with WJ1_ring/ftglst.wj1_ring",
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7fatigue/4-5.ftg with D/ftglst.d"
+  ],
+  "ftginp": [
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7fatigue/4-1.ftg with WJT/ftginp.WC9-7 DPP wjt",
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7fatigue/4-2.ftg with WJT_ring/ftginp.WC9-7 DPP wjt_ring",
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7fatigue/4-3.ftg with WJ1/ftginp.WC9-7 DPP wj1",
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7fatigue/4-4.ftg with WJ1_ring/ftginp.WC9-7 DPP wj1_ring",
+    "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7fatigue/4-5.ftg with D/ftginp.WC9-7 DPP d"
+  ]
+}

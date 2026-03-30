@@ -1,0 +1,324 @@
+Rem Avars = 79, 144, 2, 1013, 4, 21, 1, 1021, 134, 1001, 12, 3
+
+Rem AnalysisTypeCategory=1
+Rem AnalysisTypeIndex=3
+@ECHO OFF
+echo SACS Linear Static Analysis Started
+Rem AnalTyp 503
+
+// AVAR 1 is use seastate.
+Rem AVARFile 1,1001 InpFile Seastate Input File~seainp.sup~0~1~1~STDIN~0~1
+// AVAR 2 is Pre, Solve.
+Rem AVARFile 2 InpFile SACS Model File~..\sacinp.JKnew fatigue~0~2~1~JCKFIL~0~3
+// AVAR 132 is import SE.  Set in UI or from model file 
+Rem AVARFile 132 InpFile Superelement File~~0~9~10~SUBIN~7~132
+// AVAR 4 is use PSI Set in UI and mutually exclusive with Gap
+Rem AVARFile 4 InpFile PSI Input File~psiinp.19-1d sup~0~4~1~STDIN~0~13
+// AVAR 13 is joint can.  Set in UI
+// AVAR 13 is joint can.  Set in UI
+Rem AVARFile 13,1013 InpFile Joint Can Input File~jcntmp.tmp~0~13~1~STDIN~0~20
+// AVAR 138 is use a Post input file if post is on.  Set in UI
+Rem AVARFile 12,138 InpFile Post Processor Input File~~0~12~1~STDIN~0~21
+
+Rem AVARFile 1 OutFile Linear Static Load File~seaoci~0~1~7~SPDATA~1~4
+Rem AVARFile 2 OutFile SACS Common Solution File~psicsf~0~4~3~PSTFIL~5~15
+Rem AVARFile 4,144 OutFile Foundation Plot File~psinpf~0~4~5~NPCFIL~0~17
+Rem AVARFile 4,144 OutFile Foundation Neutral Chart File~psincf~0~4~39~SNCFIL~0~150
+Rem AVARFile 4,134 OutFile Foundation Superelement File~dynsef~0~4~10~PILSEF~0~19
+Rem AVARFile 4,1134 OutFile Foundation Superelement File~~0~4~10~PILSEF~0~22
+Rem AVARFile 171 OutFile 2nd Foundation Superelement File~~0~4~10~PILSEF1~0~14
+Rem AVARFile 174 OutFile Pile Solution File~~0~17~3~PILCSF~0~24
+Rem AVARFile 21 OutFile Postvue Data Base Directory~psvdb~0~21~25~POSTVIN~0~26
+Rem AVARFile 130 OutFile Redesigned SACS Input Data File~~0~12~7~OUTRDZ~0~23
+Rem AVARFile 12,140 OutFile Supplemental Post File~~0~12~11~PSVIEW~0~30
+Rem AVARFile 178 OutFile Seastate Plot File~~0~1~5~SEANPF~0~28
+Rem AVARFile 178 OutFile Seastate Neutral Chart File~~0~1~39~SNCFIL~0~29
+Rem AVARFile 50 OutFile SACS Reports Data Base~~0~50~40~POSTVIN~0~27
+Rem AVARFile 212 OutFile ISO Unity Check Data File~~0~12~48~ISOUB~0~31
+
+// List of possible executables and corresponding listinf filenames to run with this runfile
+//  Format for aaaIexe Line
+// required =  module is required to run for this analysis type 
+//				0 - required module, can adjust options
+//				1 - optional module, can adjust options
+//				2 - required module, cannot adjust options
+//				3 - optional module, cannot adjust options
+//				4 - don't display this, cannot adjust options
+// Prereq   =  This module is required to be run, in order to run the aaaIexe module
+// Mutex    =  If specified aaaIexe module is on, then this module is disabled, and vice versa.
+// DefaultOn = The initial value of the execute flag for this module when first loaded
+// No concat listfile name = the default file name for when the list file concat is off...
+//  aaaIxee Module exe~pgm~required~prerequisite pgm~Mutually Exclusive Program~DefaultOn~No Concat Listfile 
+
+Rem ConcatFile=psilst.
+
+Rem aaaIexe SACWSEA~1~1~0~0~0~psilst.~
+Rem aaaIexe SACWPRE~2~0~0~0~1~psilst.~
+Rem aaaIexe SACWSLV~3~0~0~0~1~psilst.~
+Rem aaaIexe SACWPSI~4~0~2~6~1~psilst.~
+Rem aaaIexe SACWPST~12~1~2~0~1~psilst.~
+Rem aaaIexe SACWJCN~13~1~2~0~0~psilst.~
+Rem aaaIexe SACWPVI~21~1~2~0~1~psilst.~
+Rem aaaIexe SACWDB~50~3~21~0~0~psilst.~
+
+IF CONCAT GOTO SKIPCAT1
+    IF EXIST "psilst." DEL "psilst."
+    IF EXIST "psilst." DEL "psilst."
+    IF EXIST "psilst." DEL "psilst."
+    IF EXIST "psilst." DEL "psilst."
+    IF EXIST "psilst." DEL "psilst."
+    IF EXIST "psilst." DEL "psilst."
+    IF EXIST "psilst." DEL "psilst."
+:SKIPCAT1
+IF NOT CONCAT GOTO SKIPCAT2
+    IF EXIST "psilst." DEL "psilst."
+:SKIPCAT2
+
+IF EXIST *.EDI DEL *.EDI
+IF EXIST ?### DEL ?###
+SET SACOPT=PIXXNCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+SET SACMSG=sacmsg.tmp
+SET SMEMFL=$sacsdata\china.sec
+
+// SACS Database Reports
+IF NOT AVAR 50 GOTO SKIPSACSDBINIT
+
+	IF EXIST "" DEL ""
+    SET SACSDBPATH=
+	SET TASKID=1
+
+:SKIPSACSDBINIT
+
+// Seastate
+IF NOT AVAR 1 GOTO SKIP1
+
+SET SEAOPT=XXXCMBXXXXXXXXXXX
+	IF NOT AVAR 1001 GOTO SEASKIPJCKFIL
+		SET JCKFIL=..\sacinp.JKnew fatigue
+	:SEASKIPJCKFIL
+	
+	IF NOT AVAR 178 GOTO SKIP178
+        IF EXIST "" DEL ""
+        SET SEANPF=
+        IF EXIST "" DEL ""
+        SET SNCFIL=
+    :SKIP178
+	
+    IF EXIST "seaoci" DEL "seaoci"
+    SET SPDATA=seaoci
+    SACTIM SACWSEA STARTED AT
+    
+    IF NOT AVAR 1001 GOTO SEASKIPINPUTSEA
+	    run ~sacsprog~SACWSEA < seainp.sup >> psilst.
+	:SEASKIPINPUTSEA
+	
+    IF AVAR 1001 GOTO SEASKIPINPUTMODEL
+	    run ~sacsprog~SACWSEA < ..\sacinp.JKnew fatigue >> psilst.
+	:SEASKIPINPUTMODEL
+        
+    IF ERRORLEVEL 1 GOTO ERR
+    SACTIM SACWSEA FINISHED AT
+:SKIP1
+
+
+// Pre
+IF NOT AVAR 2 GOTO SKIPZ
+
+	IF AVAR 1 GOTO PRESACSINMODEL
+		SET SACSIN=..\sacinp.JKnew fatigue
+	:PRESACSINMODEL
+	
+	IF NOT AVAR 1 GOTO PRESACSINLOADS
+		SET SACSIN=seaoci
+	:PRESACSINLOADS
+    
+    SET PREOUT=SACOBF.TMP
+    IF EXIST "psicsf" DEL "psicsf"
+    SET PSTFIL=psicsf
+    IF NOT AVAR 4 GOTO SKIPPSTFIL
+		SET PSTFIL=SACPCS.TMP
+	:SKIPPSTFIL		
+    IF NOT AVAR 6 GOTO SKIPPSTFIL2
+		SET PSTFIL=SACCSF.TMP
+	:SKIPPSTFIL2		
+    IF NOT AVAR 132 GOTO SKIPSUBIN
+		SET SUBIN=
+	:SKIPSUBIN
+    SACTIM SACWPRE STARTED AT
+    
+    IF NOT AVAR 1001 GOTO PREINPUTLOAD
+		run ~sacsprog~SACWPRE < seaoci >> psilst.
+    :PREINPUTLOAD
+    
+    IF AVAR 1001 GOTO PREINPUTMODEL
+		run ~sacsprog~SACWPRE < ..\sacinp.JKnew fatigue >> psilst.
+	:PREINPUTMODEL  
+	  
+    IF ERRORLEVEL 1 GOTO ERR
+    SACTIM SACWPRE FINISHED AT
+
+//Solve
+    IF NOT AVAR 4 GOTO SKIPTRISTIF
+		SET TRISTIF=SLVTRI.TMP
+	:SKIPTRISTIF		
+    SACTIM SACWSLV STARTED AT
+    rundll ~sacsprog~SACWSLV >> psilst.
+    IF ERRORLEVEL 1 GOTO ERR
+    SACTIM SACWSLV FINISHED AT
+
+//PSI
+    IF NOT AVAR 4 GOTO SKIP5
+SET PSIOPT=XXXX
+SET PILSUP=
+        SET PSTPSI=psicsf
+        SET SUBSAV=PSIRST.TMP
+        IF NOT AVAR 144 GOTO SKIPA
+            IF EXIST "psinpf" DEL "psinpf"
+            SET NPCFIL=psinpf
+            IF EXIST "psincf" DEL "psincf"
+            SET SNCFIL=psincf
+        :SKIPA
+        
+        IF NOT AVAR 134 GOTO SKIP134
+            IF EXIST "dynsef" DEL "dynsef"
+            SET PILSEF=dynsef
+        :SKIP134
+        
+        IF NOT AVAR 1134 GOTO SKIP1134
+            IF EXIST "" DEL ""
+            SET PILSEF=
+        :SKIP1134        
+
+        IF NOT AVAR 171 GOTO SKIP171
+            IF EXIST "" DEL ""
+            SET PILSEF1=
+        :SKIP171
+       
+        IF NOT AVAR 174 GOTO SKIP174
+			IF EXIST "" DEL ""
+			SET PILCSF=
+        :SKIP174
+      
+        SACTIM SACWPSI STARTED AT
+        run ~sacsprog~SACWPSI < psiinp.19-1d sup >> psilst.
+        IF ERRORLEVEL 1 GOTO ERR
+        SACTIM SACWPSI FINISHED AT
+        SET PSTFIL=psicsf
+    :SKIP5
+//Post
+    IF NOT AVAR 12 GOTO SKIP6
+   		IF NOT AVAR 130 GOTO SKIPOUTRDZ
+			IF EXIST "" DEL ""
+			SET OUTRDZ=
+		:SKIPOUTRDZ
+		
+		IF NOT AVAR 140 GOTO SKIPPSVIEW
+			IF EXIST " DEL "
+			SET PSVIEW=
+		:SKIPPSVIEW
+
+		IF NOT AVAR 212 GOTO SKIPISOUB
+			IF EXIST "" DEL ""
+			SET ISOUB=
+		:SKIPISOUB
+
+        IF NOT AVAR 138 GOTO SKIPPOSTIN
+			SET POSTIN=
+			IF NOT AVAR 21 GOTO SKIPPVONLY
+				SET PVONLY=NO
+	            SET NEWPST=PSTCSF.TMP
+			:SKIPPVONLY
+		:SKIPPOSTIN	
+        SACTIM SACWPST STARTED AT
+        run ~sacsprog~SACWPST >> psilst.
+        IF ERRORLEVEL 1 GOTO ERR
+        SACTIM SACWPST FINISHED AT
+    :SKIP6
+
+//Joint Can
+    IF NOT AVAR 13 GOTO SKIP7
+		SETTMP JCN=
+        SACTIM SACWJCN STARTED AT
+        run ~sacsprog~SACWJCN < jcntmp.tmp >> psilst.
+        IF ERRORLEVEL 1 GOTO ERR
+        SACTIM SACWJCN FINISHED AT
+    :SKIP7
+
+//Postvue DB
+    IF NOT AVAR 21 GOTO SKIP8
+    
+    	IF AVAR 1021 GOTO MODELINPUT
+			SET SACSIN=..\sacinp.JKnew fatigue
+		:MODELINPUT
+    
+        IF AVAR 12 GOTO SKIPC
+	        IF NOT AVAR 138 GOTO SKIPPOSTIN2
+				SET POSTIN=
+				SET NEWPST=PSTCSF.TMP
+				SET PVONLY=TEMP
+				SACTIM SACWPST STARTED AT
+				run ~sacsprog~SACWPST <  >> psilst.
+				IF ERRORLEVEL 1 GOTO ERR
+				SACTIM SACWPST FINISHED AT
+			:SKIPPOSTIN2
+        :SKIPC
+        
+        IF NOT AVAR 138 GOTO SKIPSETPSTFIL
+			SET PSTFIL=PSTCSF.TMP
+		:SKIPSETPSTFIL
+        
+        IF EXIST "psvdb" DEL "psvdb"
+		SET POSTVIN=psvdb
+SET MODSTR=YES
+        SET PVONLY=YES
+        SACTIM SACWPVI STARTED AT
+        run ~sacsprog~SACWPVI >> psilst.
+        IF ERRORLEVEL 1 GOTO ERR
+
+		IF NOT AVAR 4 GOTO SKIPCOPYPSIPSVDB
+			COPY "psiinp.19-1d sup" "psvdb\psiinp.psi"
+		:SKIPCOPYPSIPSVDB
+
+        SACTIM SACWPVI FINISHED AT
+    :SKIP8
+:SKIPZ
+
+REM **********
+Echo File list for Linear Static Analysis
+echo SACS Linear Static Analysis Finished
+GOTO EXIT
+:ERR
+ECHO *** ERROR in SACS Execution ***
+ECHO Please check output listing files for additional error messages
+:EXIT
+IF EXIST *.TMP DEL *.TMP
+IF EXIST *.EDI DEL *.EDI
+IF EXIST *.TMZ DEL *.TMZ
+IF EXIST lf90.eer DEL lf90.eer
+RESET POSTIN=
+RESET JCKFIL=
+RESET SPDATA=
+RESET SMEMFL=
+RESET SACSIN=
+RESET PREOUT=
+RESET PSTFIL=
+RESET SUBIN=
+RESET TRISTIF=
+RESET PSTPSI=
+RESET SUBSAV=
+RESET PILSEF=
+RESET PILSEF1=
+RESET CMBIN=
+RESET PRIMARY=
+RESET NPCFIL=
+RESET PSTFIL=
+RESET POSTVIN=
+RESET MODSTR=
+RESET PVONLY=
+RESET SACOPT=
+RESET PSIOPT=
+RESET SACMSG=
+RESET PILSUP=
+RESET SNCFIL=
+IF EXIST *.TMP DEL *.TMP
+IF EXIST *.EDI DEL *.EDI

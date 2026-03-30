@@ -1,0 +1,196 @@
+Rem Avars = 79, 144, 2, 4, 1, 1001, 26, 3
+
+Rem AnalysisTypeCategory=1
+Rem AnalysisTypeIndex=6
+@ECHO OFF
+Rem Project= 1 Version= 5 WorkFile= c:\program files\sacs51\samples\samples.wsh
+echo SACS Full Plastic Collapse Analysis Started
+Rem AnalTyp 504
+
+// AVAR 1 is use seastate. Set in UI
+Rem AVARFile 1,1001 InpFile Seastate Input File~..\seainp.pushover~0~1~1~STDIN~0~1
+// AVAR 2 is model file. Set in UI
+Rem AVARFile 2 InpFile SACS Model File~..\sacinp.JKnew_Pushover~0~2~1~JCKFIL~0~3
+Rem AVARFile 26 InpFile Collapse Input File~clpinp.231~0~26~1~STDIN~11~15
+// Set whether PSI from UI
+Rem AVARFile 4 InpFile PSI Input File~..\psiinp.19-1d~0~4~1~PSIINP~0~13
+// AVAR 132 is import SE.  Set in UI or from model file 
+Rem AVARFile 132 InpFile Superelement File~~0~9~10~SUBIN~7~132
+//Rem OutFile SACS Output Listing File~saclst.gap~0~1~2~STOUT~2~2
+Rem AVARFile 1 DelFile Output Structural Data File~seaoci~0~1~7~SPDATA~1~4
+//Rem OutFile SACS Output Listing File~Collapse.list~0~26~2~CLPLST~0~16
+Rem AVARFile 26 OutFile Collapse History Log File~clplog~0~26~24~CLPHIST~0~17
+
+Rem AVARFile 26,260 OutFile Collapse Troubleshooting Log File~~0~26~52~CLPTRBL~0~21
+Rem AVARFile 26,-260 OutFile Collvue Results Data File~clprst~0~26~17~CLPRST~0~18
+Rem AVARFile 213 OutFile Collapse Common Solution File~~0~26~3~PSTCLP~5~19
+
+Rem AVARFile 26,260 OutFile Collapse Data Base Directory~~0~26~51~CLPDB~0~20  //** CREATE NEW FILE TYPES FOR DB AND TRBLOG FILES
+
+
+//  Format for aaaIexe Line
+// required =  module is required to run for this analysis type 
+//				0 - required module, can adjust options
+//				1 - optional module, can adjust options
+//				2 - required module, cannot adjust options
+//				3 - optional module, cannot adjust options
+//				4 - don't display this, cannot adjust options
+// Prereq   =  This module is required to be run, in order to run the aaaIexe module
+// Mutex    =  If specified aaaIexe module is on, then this module is disabled, and vice versa.
+// DefaultOn = The initial value of the execute flag for this module when first loaded
+// No concat listfile name = the default file name for when the list file concat is off...
+//  aaaIxee Module exe~pgm~required~prerequisite pgm~Mutually Exclusive Program~DefaultOn~No Concat Listfile 
+
+Rem ConcatFile=clplst.
+Rem aaaIexe SACWSEA~1~1~0~0~0~clplst.~
+Rem aaaIexe SACWPRE~2~2~0~0~1~clplst.~
+Rem aaaIexe SACWSLV~3~0~0~0~1~clplst.~
+Rem aaaIexe SACWPSI~4~3~2~0~0~
+Rem aaaIexe SACWCLP~26~0~2~0~1~clplst.~
+
+IF EXIST *.EDI DEL *.EDI
+IF EXIST ?### DEL ?###
+SET SACOPT=NPNINCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+SET SACMSG=sacmsg.tmp
+SET SMEMFL=$sacsdata\china.sec
+
+IF NOT CONCAT GOTO SKIPCONCAT1
+    IF EXIST "clplst." DEL "clplst."
+:SKIPCONCAT1
+IF CONCAT GOTO SKIPCONCAT2
+    IF EXIST "clplst." DEL "clplst."
+    IF EXIST "clplst." DEL "clplst."
+    IF EXIST "clplst." DEL "clplst."
+    IF EXIST "%List04" DEL "%List04"
+    IF EXIST "clplst." DEL "clplst."
+:SKIPCONCAT2
+
+// Seastate
+IF NOT AVAR 1 GOTO SKIP1
+SET SEAOPT=XXXCMBXXXXXXXXXXX
+	IF NOT AVAR 1001 GOTO SEASKIPJCKFIL
+		SET JCKFIL=..\sacinp.JKnew_Pushover
+	:SEASKIPJCKFIL
+	
+    IF EXIST "seaoci" DEL "seaoci"
+    SET SPDATA=seaoci
+    SACTIM SACWSEA STARTED AT
+    
+    IF NOT AVAR 1001 GOTO SEASKIPINPUTSEA
+	    run ~sacsprog~SACWSEA < ..\seainp.pushover >> clplst.
+	:SEASKIPINPUTSEA
+	
+    IF AVAR 1001 GOTO SEASKIPINPUTMODEL
+	    run ~sacsprog~SACWSEA < ..\sacinp.JKnew_Pushover >> clplst.
+	:SEASKIPINPUTMODEL
+        
+    IF ERRORLEVEL 1 GOTO ERR
+    SACTIM SACWSEA FINISHED AT
+:SKIP1
+
+
+//Pre
+IF NOT AVAR 2 GOTO SKIPA
+    
+	IF AVAR 1 GOTO PRESACSINMODEL
+		SET SACSIN=..\sacinp.JKnew_Pushover
+	:PRESACSINMODEL
+	
+	IF NOT AVAR 1 GOTO PRESACSINLOADS
+		SET SACSIN=seaoci
+	:PRESACSINLOADS	   
+    
+    SET PREOUT=SACOBF.TMP
+    IF EXIST SACCSF.tmp DEL SACCSF.tmp
+    SET PSTFIL=SACCSF.tmp
+    IF EXIST SACPCS.tmp DEL SACPCS.tmp
+    SET PSTFIL=SACPCS.tmp
+    SACTIM SACWPRE STARTED AT
+   
+    IF NOT AVAR 132 GOTO SKIPSUBIN
+	:SKIPSUBIN
+
+    IF NOT AVAR 1001 GOTO PREINPUTLOAD
+		run ~sacsprog~SACWPRE < seaoci >> clplst.
+    :PREINPUTLOAD
+    
+    IF AVAR 1001 GOTO PREINPUTMODEL
+		run ~sacsprog~SACWPRE < ..\sacinp.JKnew_Pushover >> clplst.
+	:PREINPUTMODEL    
+    
+    IF ERRORLEVEL 1 GOTO ERR
+    SACTIM SACWPRE FINISHED AT
+
+    IF EXIST SLVTRI.tmp DEL SLVTRI.tmp
+    SET TRISTIF=SLVTRI.tmp
+    SACTIM SACWSLV STARTED AT
+    rundll ~sacsprog~SACWSLV >> clplst.
+    IF ERRORLEVEL 1 GOTO ERR
+    SACTIM SACWSLV FINISHED AT
+:SKIPA
+
+IF NOT AVAR 26 GOTO SKIPB
+    IF NOT AVAR 4 GOTO SKIPPSIINP
+		SET PSIINP=..\psiinp.19-1d
+	:SKIPPSIINP
+SET CLPLST=
+    IF EXIST clplog DEL clplog
+    SET CLPHIST=clplog
+
+	IF AVAR 260 GOTO SKIPCLPRESTART
+		IF EXIST clprst DEL clprst
+		SET CLPRST=clprst
+	:SKIPCLPRESTART
+
+	IF NOT AVAR 260 GOTO SKIPCLPDBFOLDER
+		IF EXIST  DEL 
+		SET CLPDB=
+		IF EXIST  DEL 
+		SET CLPTRBL=
+	:SKIPCLPDBFOLDER
+
+    IF NOT AVAR 213 GOTO CLPCSF
+		IF EXIST  DEL 
+		SET PSTCLP=
+	:CLPCSF
+	
+    SACTIM SACWCLP STARTED AT
+
+	IF AVAR 260 GOTO SKIPRUNNEWCLP
+		run ~sacsprog~SACWCLP < clpinp.231
+	:SKIPRUNNEWCLP
+
+	IF NOT AVAR 260 GOTO SKIPRUNOLDCLP
+		run ~sacsprog~SACWPHX < clpinp.231
+	:SKIPRUNOLDCLP
+
+    SACTIM SACWCLP FINISHED AT
+:SKIPB
+
+Echo File list for Full Plastic Collapse Analysis
+echo SACS Full Plastic Collapse Analysis Finished
+GOTO EXIT
+:ERR
+ECHO *** ERROR in SACS Execution ***
+ECHO Please check output listing files for additional error messages
+:EXIT
+RESET JCKFIL=
+RESET SPDATA=
+RESET SMEMFL=
+RESET SACSIN=
+RESET PREOUT=
+RESET PSTFIL=
+RESET TRISTIF=
+RESET PSIINP=
+RESET CLPLST=
+RESET CLPHIST=
+RESET CLPRST=
+RESET SACOPT=
+RESET SEAOPT=
+RESET SACMSG=
+RESET SUBIN=
+IF EXIST *.TMZ DEL *.TMZ
+IF EXIST *.TMP DEL *.TMP
+IF EXIST *.EDI DEL *.EDI
+IF EXIST lf90.eer DEL lf90.eer
+DEL "seaoci"

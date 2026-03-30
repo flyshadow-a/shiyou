@@ -1,0 +1,27 @@
+原始模型
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\Static\sacinp.JKnew
+
+倒塌分析结果：
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\pushover\90\clplog						
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\pushover\128\clplog						
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\pushover\180\clplog						
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\pushover\231\clplog						
+						
+
+
+疲劳list路径：
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\fatigue\4.1WJT\ftglst	
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\fatigue\4.2WJT WITH RING\ftglst	
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\fatigue\4.3WJ1\ftglst	
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\fatigue\4.4WJ1 WITH RING\ftglst	
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\fatigue\4.5D\ftglst.d
+
+疲劳ftginp路径：
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\fatigue\4.1WJT\ftginp.19-1d WJT	
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\fatigue\4.2WJT WITH RING\ftginp.19-1d WJT WITH RING	
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\fatigue\4.3WJ1\ftginp.19-1d WJ1	
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\fatigue\4.4WJ1 WITH RING\ftginp.19-1d WJ1 WITH RING	
+D:\desk\横向\WC9-7&191D检测策略1103\WC19-1D检测策略1103\模型\fatigue\4.5D\ftginp.19-1d D
+
+
+python d:\pyproject\shiyou\pages\output_special_strategy\run_sacs_report_from_config.py --config d:\pyproject\shiyou\pages\output_special_strategy\wc19_1d_run_config.json

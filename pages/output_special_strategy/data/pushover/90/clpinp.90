@@ -1,0 +1,36 @@
+CLPOPT     20  8 40        CNPPLBJFPPJS            2U    0.1 0.01  0.11000.0.002                                        
+CLPRPT P1R1M0MP    SMMS         100.                                                                                    
+LDSEQ L000          EL13   1         1.0 LE3  40   1.0   5.0                                                            
+JSOPT     R   7.5                                                                                                       
+****bargebumper**                                                                                                       
+GRPELA         BB1 BS1                                                                                                  
+****conductor**                                                                                                         
+GRPELA         C01 C02 C03 C11 C12 C13 C21 C22 C23 CA1 CA2 CB1 CB2 CC1 CC2                                              
+GRPELA         CD1 CD2 CE1 CE2 C31 C32 C33                                                                              
+****CASSION***                                                                                                          
+GRPELA         K11 K12 K13 K21 K22 K23 K32 K33 K34 K41 K42 K43 K44 K51 K52                                              
+GRPELA         K53 K54 K61 K62 K63 K64 KS1 KS2 KS3 KS4                                                                  
+*****OBERBOARD**                                                                                                        
+*GRPELA         O11 O12 O13 O21 O22 O23 O31 O32 O41 O42 O51 O52 O61 O62 O71                                             
+*GRPELA         O72 O73 OS1 OS2 OS3 OS4 OS5 OS6 OS7 OS8                                                                 
+****j-tube**                                                                                                            
+*GRPELA         J11 J21 J31 JA1 JA2 JA3 JS1 JS2 JS3                                                                     
+*****riser***                                                                                                           
+*GRPELA         R11 R12 R21 R22 R31 R32 R41 R42 R51 R52 RA1 RA2 RA3 RA4 RS1                                             
+*GRPELA         RS2 RS3 RS4 RS5                                                                                         
+****deck**                                                                                                              
+GRPELA         CR1 CR2 CR3 CR4 CR5 CR9 CRB CRC CRD CR0                                                                  
+GRPELA         H30 H44 H58 H70 LL1 LM1 LM2                                                                              
+GRPELA             LQL     LS1 LS2 LS3 LS4 LS5         LU4 LU5 P12 P15 P16                                              
+GRPELA         P18 P90                     S30 S40 T41 T51 T52 T61 T62 T76                                              
+GRPELA         T78 T91                                                                                                  
+****Appurtenance******                                                                                                  
+GRPELA         G21 G41 G92 F61 F51 F5A F43 F3A F00 F2C F11                                                              
+GRPELA         D33 D44 D58 D70 D90                                                                                      
+****WISH BONE***                                                                                                        
+GRPELA         W.K W.B                                                                                                  
+****YOKE PLAET***                                                                                                       
+GRPELA         PQB PQT                                                                                                  
+****plate***                                                                                                            
+PGRELA     P45  P70  PL8                                                                                                
+END                                                                                                                     

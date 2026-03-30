@@ -1,0 +1,264 @@
+Rem Avars = 238, 2, 203, 132, 146, 7, 1007, 1, 1001, 145
+
+Rem AnalysisTypeCategory=2
+Rem AnalysisTypeIndex=17
+Rem AnalTyp 406
+@ECHO OFF
+echo SACS Wave Response Analysis Started
+
+// AVAR 1 is use seastate. Set in UI
+Rem AVARFile 1,1001 InpFile Seastate Input File~seainp.02~0~1~1~STDIN~0~1
+// AVAR 2 is model file. Set in UI
+Rem AVARFile 1|2 InpFile SACS Model File~..\..\sacinp.JKnew fatigue~0~2~1~JCKFIL~0~3
+
+// Need to set Static or Dynamic in UI (assume AVAR 203 is dynamic)
+Rem AVARFile 7,1007 InpFile Wave Response Input File~..\wvrinp.19-1d~0~7~1~STDIN~0~7
+Rem AVARFile 7 InpFile Dynpac Mode Shape File~..\..\2DYN\dynmod~0~5~32~MODEFIL~5~9
+Rem AVARFile 7 InpFile Dynpac Mass File~..\..\2DYN\dynmas~0~5~15~MASSFIL~9~10
+// AVAR 137 is standard PSI, set in UI
+Rem AVARFile 4 InpFile PSI Input File~~0~4~1~STDIN~0~13
+// AVAR 132 is import foundation SE, set in UI
+Rem AVARFile 2,132 InpFile Superelement File~..\..\1SUP\dynsef~0~9~10~SUBIN~7~132
+// AVAR 145 is create static load or EQS, set in UI or wvr input
+
+//Rem AVARFile 1 OutFile Output Structural Data File~{Linear Static.load}~0~1~7~SPDATA~1~24
+
+Rem AVARFile 145 DelFile Equivalent Static Model File~wvroci~0~1~7~SPDATA~1~4
+
+// AVAR 146 is dynamic plots, set in wvr input or UI
+Rem AVARFile 146 OutFile Dynamic Wave Response Plot File~wvrnpf.2~0~7~5~NPCFIL~0~25
+Rem AVARFile 146 OutFile Dynamic Wave Response Neutral Chart File~wvrncf.2~0~7~39~SNCFIL~0~15
+
+// AVAR 147 is Create Response File
+Rem AVARFile 147 OutFile Response File~~0~7~20~RESPONS~14~12
+
+Rem AVARFile 178 OutFile Static Wave Response Plot File~~0~1~5~SEANPF~0~11
+Rem AVARFile 178 OutFile Static Wave Response Neutral Chart File~~0~1~39~SNCFIL~0~17
+
+
+// AVAR 197 is solve loads, set in UI  -- ** changed to 2 for solve. ** 5/19/05
+Rem AVARFile 2 OutFile Wave Response Solution File~saccsf.2~0~2~3~PSTPSI~5~21
+// AVAR 174 is create Pile solution, set in UI or PSI input
+Rem AVARFile 196 OutFile SACS Common Solution File~~0~11~3~PSTFIL~5~127
+
+// Rem AVARFile 4,144 OutFile Pile Wave Response Plot File~{Foundation.plot}~0~4~5~NPCFIL~0~17
+// Rem AVARFile 4,144 OutFile Pile Wave Response Neutral Chart File~{Foundation.chart}~0~4~39~SNCFIL~0~16
+
+Rem AVARFile 4,134 OutFile Foundation Superelement File~~0~4~10~PILSEF~0~19
+Rem AVARFile 4,1134 OutFile Foundation Superelement File~~0~4~10~PILSEF~0~19
+Rem AVARFile 4,171 OutFile 2nd Foundation Superelement File~~0~4~10~PILSEF1~0~14
+Rem AVARFile 174 OutFile Pile Wave Response Solution File~~0~4~3~PILCSF~0~23
+
+
+// List of possible executables and corresponding listinf filenames to run with this runfile
+
+//  Format for aaaIexe Line
+// required =  module is required to run for this analysis type 
+//				0 - required module, can adjust options
+//				1 - optional module, can adjust options
+//				2 - required module, cannot adjust options
+//				3 - optional module, cannot adjust options
+//				4 - don't display this, cannot adjust options
+// Prereq   =  This module is required to be run, in order to run the aaaIexe module
+// Mutex    =  If specified aaaIexe module is on, then this module is disabled, and vice versa.
+// DefaultOn = The initial value of the execute flag for this module when first loaded
+// No concat listfile name = the default file name for when the list file concat is off...
+//  aaaIxee Module exe~pgm~required~prerequisite pgm~Mutually Exclusive Program~DefaultOn~No Concat Listfile 
+
+Rem ConcatFile=wvrlst.2
+
+Rem aaaIexe SACWSEA~1~0~0~0~0~wvrlst.2~
+Rem aaaIexe SACWSST~7~0~1~0~1~wvrlst.2~
+Rem aaaIexe SACWCMB~11~4~196~2~0~wvrlst.2~
+Rem aaaIexe SACWPRE~2~1~7~0~0~wvrlst.2~145
+Rem aaaIexe SACWSLV~3~1~7~0~0~wvrlst.2~145
+Rem aaaIexe SACWPSI~4~1~2~0~0~wvrlst.2~145
+
+IF CONCAT GOTO SKIPCAT1
+    IF EXIST "wvrlst.2" DEL "wvrlst.2"
+    IF EXIST "wvrlst.2" DEL "wvrlst.2"
+    IF EXIST "wvrlst.2" DEL "wvrlst.2"
+    IF EXIST "wvrlst.2" DEL "wvrlst.2"
+    IF EXIST "wvrlst.2" DEL "wvrlst.2"
+:SKIPCAT1
+IF NOT CONCAT GOTO SKIPCAT2
+    IF EXIST "wvrlst.2" DEL "wvrlst.2"
+:SKIPCAT2
+
+
+IF EXIST *.EDI DEL *.EDI
+IF EXIST ?### DEL ?###
+SET SACOPT=STSINCXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+SET SACMSG=sacmsg.tmp
+SET SMEMFL=$sacsdata\china.sec
+
+// Seastate
+SET SEAOPT=DYNXXXXXXXXXXXXXX
+IF NOT AVAR 1001 GOTO SEASKIPJCKFIL
+	SET JCKFIL=..\..\sacinp.JKnew fatigue
+:SEASKIPJCKFIL
+
+IF NOT AVAR 145 GOTO SKIPEQSLOAD
+	IF EXIST "wvroci" DEL "wvroci"
+	SET SPDATA=wvroci
+:SKIPEQSLOAD
+
+IF AVAR 145 GOTO SKIPSEALOAD
+	IF EXIST seaoci.tmp DEL seaoci.tmp
+	SET SPDATA=seaoci.tmp
+:SKIPSEALOAD
+
+SACTIM SACWSEA STARTED AT
+
+IF NOT AVAR 1001 GOTO SEASKIPINPUTSEA
+    run ~sacsprog~SACWSEA < seainp.02 >> wvrlst.2
+:SEASKIPINPUTSEA
+
+IF AVAR 1001 GOTO SEASKIPINPUTMODEL
+    run ~sacsprog~SACWSEA < ..\..\sacinp.JKnew fatigue >> wvrlst.2
+:SEASKIPINPUTMODEL
+
+IF ERRORLEVEL 1 GOTO ERR
+SACTIM SACWSEA FINISHED AT
+
+IF NOT AVAR 178 GOTO SKIPD
+     IF EXIST "" DEL ""
+     SET SEANPF=
+     IF EXIST "" DEL ""
+     SET SNCFIL=
+:SKIPD
+
+//Dynamics
+IF NOT AVAR 7 GOTO SKIP203
+	 SETTMP WVR=
+	 SET EQSTAT=wvroci
+     SET MODEFIL=..\..\2DYN\dynmod
+     SET MASSFIL=..\..\2DYN\dynmas
+     IF NOT AVAR 145 GOTO SKIPEQSTAT
+		SET EQSTAT=wvroci
+	 :SKIPEQSTAT	
+     IF NOT AVAR 146 GOTO SKIPB
+          IF EXIST "wvrnpf.2" DEL "wvrnpf.2"
+          SET NPCFIL=wvrnpf.2
+		  IF EXIST "wvrncf.2" DEL "wvrncf.2"
+		  SET SNCFIL=wvrncf.2
+     :SKIPB
+	 IF NOT AVAR 147 GOTO SKIPRESPONSE
+		IF EXIST "" DEL ""
+		SET RESPONS=
+	 :SKIPRESPONSE
+	 
+ 	 IF NOT AVAR 196 GOTO SKIPCOMBINEOUT
+		SET COMBIN=WVROCA.TMP
+	 :SKIPCOMBINEOUT
+
+     SACTIM SACWSST STARTED AT
+     run ~sacsprog~SACWSST < ..\wvrinp.19-1d >> wvrlst.2
+     IF ERRORLEVEL 1 GOTO ERR
+     SACTIM SACWSST FINISHED AT
+:SKIP203
+
+IF NOT AVAR 196 GOTO SKIPCOMBINE
+	SET PRIMARY=..\..\2DYN\dynmod
+	IF EXIST "" DEL ""
+	SET PSTFIL=
+	SACTIM SACWCMB STARTED AT
+	run ~sacsprog~SACWCMB < WVROCA.TMP >> wvrlst.2
+	IF ERRORLEVEL 1 GOTO ERR
+	SACTIM SACWCMB FINISHED AT
+:SKIPCOMBINE
+
+// Pre and Solve
+IF NOT AVAR 145 GOTO SKIP2
+	IF NOT AVAR 2 GOTO SKIPSLV
+		 IF NOT AVAR 132 GOTO SKIPSUBIN
+			SET SUBIN=..\..\1SUP\dynsef
+		 :SKIPSUBIN		
+		 SET SACSIN=wvroci
+		 SET PREOUT=SACOBF.TMP
+		 IF NOT AVAR 4 GOTO SKIPPSTFIL
+			SET PSTFIL=SACPCS.TMP
+		 :SKIPPSTFIL	
+		 IF AVAR 4 GOTO SKIP4A
+			  IF EXIST "saccsf.2" DEL "saccsf.2"
+			  SET PSTFIL=saccsf.2
+		 :SKIP4A
+		 SACTIM SACWPRE STARTED AT
+		 rundll ~sacsprog~SACWPRE < wvroci >> wvrlst.2
+		 IF ERRORLEVEL 1 GOTO ERR
+		 SACTIM SACWPRE FINISHED AT
+		 SET TRISTIF=SLVTRI.TMP
+		 SACTIM SACWSLV STARTED AT
+		 rundll ~sacsprog~SACWSLV >> wvrlst.2
+		 IF ERRORLEVEL 1 GOTO ERR
+		 SACTIM SACWSLV FINISHED AT
+	:SKIPSLV
+
+//PSI    
+    IF NOT AVAR 4 GOTO SKIP4
+SET PSIOPT=XXXX
+SET PILSUP=
+        SET PSTPSI=saccsf.2
+        SET SUBSAV=PSIRST.TMP
+        SET NPCFIL=
+        SET SNCFIL=
+        
+        IF NOT AVAR 134 GOTO SKIP134
+            IF EXIST "" DEL ""
+            SET PILSEF=
+        :SKIP134
+        
+        IF NOT AVAR 1134 GOTO SKIP1134
+            IF EXIST "" DEL ""
+            SET PILSEF=
+        :SKIP1134
+        
+        IF NOT AVAR 171 GOTO SKIP171
+            IF EXIST "" DEL ""
+            SET PILSEF1=
+        :SKIP171
+        
+        IF NOT AVAR 174 GOTO SKIP174
+			IF EXIST "" DEL ""
+			SET PILCSF=
+        :SKIP174
+        
+        SACTIM SACWPSI STARTED AT
+        run ~sacsprog~SACWPSI <  >> wvrlst.2
+        IF ERRORLEVEL 1 GOTO ERR
+        SACTIM SACWPSI FINISHED AT
+        SET PSTFIL={Linear Static.solution}
+    :SKIP4
+     
+:SKIP2
+echo SACS Wave Response Analysis Finished
+GOTO EXIT
+:ERR
+ECHO *** ERROR in SACS Execution ***
+ECHO Please check output listing files for additional error messages
+:EXIT
+RESET JCKFIL=
+RESET SPDATA=
+RESET DYDATA=
+RESET SMEMFL=
+RESET MODEFIL=
+RESET MASSFIL=
+RESET NPCFIL=
+RESET SACSIN=
+RESET PREOUT=
+RESET PSTFIL=
+RESET SACOPT=
+RESET SEAOPT=
+RESET SACMSG=
+RESET PSIOPT=
+RESET PILSUP=
+RESET PSTPSI=
+RESET SUBSAV=
+RESET PILSEF=
+RESET PILSEF1=
+RESET SNCFIL=
+RESET SUBIN=
+IF EXIST *.TMP DEL *.TMP
+IF EXIST *.EDI DEL *.EDI
+IF EXIST lf90.eer DEL lf90.eer
+DEL "wvroci"

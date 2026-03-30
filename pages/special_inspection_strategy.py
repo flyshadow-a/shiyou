@@ -4,7 +4,7 @@
 
 import os
 import csv
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 
 from base_page import BasePage
 from dropdown_bar import DropdownBar
+from pages.read_table_xls import ReadTableXls
 
 
 class SimpleTowerDiagram(QWidget):
@@ -81,6 +82,22 @@ class SpecialInspectionStrategy(BasePage):
     “特检策略”页面（顶部继承 DropdownBar 设计）
     """
 
+    TOP_FIELDS: List[Tuple[str, str]] = [
+        ("分公司", "湛江分公司"),
+        ("作业公司", "文昌油田群作业公司"),
+        ("油气田", "文昌19-1油田"),
+        ("设施编码", "WC19-1WHPC"),
+        ("设施名称", "文昌19-1WHPC井口平台"),
+    ]
+
+    KEY_TO_FIELD: Dict[str, str] = {
+        "branch": "分公司",
+        "op_company": "作业公司",
+        "oilfield": "油气田",
+        "facility_code": "设施编码",
+        "facility_name": "设施名称",
+    }
+
     def __init__(self, main_window, parent=None):
         if parent is None:
             parent = main_window
@@ -90,6 +107,18 @@ class SpecialInspectionStrategy(BasePage):
         self.data_dir = os.path.join(os.getcwd(), "data")
         self.current_year = "5年"
 
+        self._excel_provider = ReadTableXls()
+        self._excel_loaded = False
+        try:
+            self._excel_provider.load()
+            self._excel_loaded = True
+        except Exception:
+            self._excel_loaded = False
+
+        self._top_records: List[Dict[str, str]] = self._load_top_records_from_excel()
+        self._top_cascade_enabled: bool = len(self._top_records) > 0
+        self._top_cascade_lock: bool = False
+
         self.main_layout.setContentsMargins(10, 10, 10, 10)
         self.main_layout.setSpacing(8)
 
@@ -98,6 +127,209 @@ class SpecialInspectionStrategy(BasePage):
         # 初始：上表固定示例数据，下表按年份
         self._fill_component_demo_data()
         self._load_node_year_data(self.current_year)
+
+    # ---------------- 顶部下拉（样表驱动 + 级联） ----------------
+    def _normalize_top_value(self, value: object) -> str:
+        txt = "" if value is None else str(value).strip()
+        if (not txt) or (txt.lower() == "nan"):
+            return ""
+        if txt.endswith(".0") and txt[:-2].isdigit():
+            return txt[:-2]
+        return txt
+
+    def _load_top_records_from_excel(self) -> List[Dict[str, str]]:
+        if (not self._excel_loaded) or (not hasattr(self._excel_provider, "df")):
+            return []
+
+        df = self._excel_provider.df
+        if df is None:
+            return []
+
+        fields = [f for f, _ in self.TOP_FIELDS]
+        resolved: Dict[str, str] = {}
+        for field in fields:
+            col = self._excel_provider._resolve_col(field) if hasattr(self._excel_provider, "_resolve_col") else None
+            if not col:
+                return []
+            resolved[field] = col
+
+        rows: List[Dict[str, str]] = []
+        seen = set()
+        for _, row in df.iterrows():
+            rec: Dict[str, str] = {}
+            for field, col in resolved.items():
+                raw = self._excel_provider._clean(row[col]) if hasattr(self._excel_provider, "_clean") else row[col]
+                rec[field] = self._normalize_top_value(raw)
+
+            if not any(rec.get(k) for k in ("分公司", "作业公司", "油气田", "设施编码", "设施名称")):
+                continue
+
+            sig = tuple(rec.get(f, "") for f in fields)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            rows.append(rec)
+        return rows
+
+    def _unique_record_values(self, records: List[Dict[str, str]], field: str) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for rec in records:
+            v = self._normalize_top_value(rec.get(field, ""))
+            if (not v) or (v in seen):
+                continue
+            seen.add(v)
+            out.append(v)
+        return out
+
+    def _pick_option(self, options: List[str], preferred: str = "") -> str:
+        p = self._normalize_top_value(preferred)
+        if p and p in options:
+            return p
+        return options[0] if options else ""
+
+    def _mock_top_options(self, field: str, default: str) -> List[str]:
+        options_map = {
+            "分公司": ["湛江分公司", "深圳分公司", "上海分公司", "海南分公司", "天津分公司"],
+            "作业公司": ["文昌油田群作业公司", "涠洲作业公司", "珠江作业公司", "渤海作业公司"],
+            "油气田": ["文昌19-1油田", "文昌19-2油田", "涠洲油田", "珠江口油田"],
+            "设施编码": ["WC19-1WHPC", "WC19-2WHPC", "WC9-7DPP", "WC19-1DPPA"],
+            "设施名称": ["文昌19-1WHPC井口平台", "文昌19-2WHPC井口平台", "WC9-7DPP井口平台"],
+        }
+        opts = options_map.get(field, [default])
+        return opts if default in opts else [default] + opts
+
+    def _build_top_dropdown_fields(self) -> List[Dict]:
+        defaults = {
+            "branch": "湛江分公司",
+            "op_company": "文昌油田群作业公司",
+            "oilfield": "文昌19-1油田",
+            "facility_code": "WC19-1WHPC",
+            "facility_name": "文昌19-1WHPC井口平台",
+            "inspect_seq": "0",
+            "inspect_time": "2008-06-26",
+        }
+        stretch_map = {
+            "branch": 1,
+            "op_company": 2,
+            "oilfield": 2,
+            "facility_code": 2,
+            "facility_name": 3,
+            "inspect_seq": 1,
+            "inspect_time": 2,
+        }
+
+        fields: List[Dict] = []
+        dynamic_keys = ["branch", "op_company", "oilfield", "facility_code", "facility_name"]
+        for key in dynamic_keys:
+            label = self.KEY_TO_FIELD[key]
+            fallback = defaults[key]
+            if self._top_cascade_enabled:
+                opts = self._unique_record_values(self._top_records, label)
+                default = opts[0] if opts else fallback
+            else:
+                opts = self._mock_top_options(label, fallback)
+                default = fallback
+            fields.append({
+                "key": key,
+                "label": label,
+                "options": opts,
+                "default": default,
+                "stretch": stretch_map.get(key, 1),
+            })
+
+        fields.extend([
+            {
+                "key": "inspect_seq",
+                "label": "检测序号",
+                "options": ["0", "1", "2", "3"],
+                "default": defaults["inspect_seq"],
+                "stretch": stretch_map["inspect_seq"],
+            },
+            {
+                "key": "inspect_time",
+                "label": "检测时间",
+                "options": ["2008-06-26", "2008-07-12", "2008-08-21"],
+                "default": defaults["inspect_time"],
+                "stretch": stretch_map["inspect_time"],
+            },
+        ])
+        return fields
+
+    def _apply_top_cascade(self, changed_key: Optional[str] = None, changed_value: str = ""):
+        if (not self._top_cascade_enabled) or (not hasattr(self, "dropdown_bar")):
+            return
+
+        records = self._top_records
+        keys = ["branch", "op_company", "oilfield", "facility_code", "facility_name"]
+        current = {k: self.dropdown_bar.get_value(k) for k in keys}
+        if changed_key:
+            current[changed_key] = self._normalize_top_value(changed_value)
+
+        reset_downstream = {
+            "branch": {"op_company", "oilfield", "facility_code", "facility_name"},
+            "op_company": {"oilfield", "facility_code", "facility_name"},
+            "oilfield": {"facility_code", "facility_name"},
+            "facility_code": {"facility_name"},
+            "facility_name": {"facility_code"},
+        }
+        reset = reset_downstream.get(changed_key or "", set())
+
+        branches = self._unique_record_values(records, "分公司")
+        branch = self._pick_option(branches, current.get("branch", ""))
+        branch_rows = [r for r in records if r.get("分公司", "") == branch] if branch else list(records)
+
+        op_opts = self._unique_record_values(branch_rows, "作业公司")
+        op_pref = "" if "op_company" in reset else current.get("op_company", "")
+        op = self._pick_option(op_opts, op_pref)
+        op_rows = [r for r in branch_rows if r.get("作业公司", "") == op] if op else list(branch_rows)
+
+        oil_opts = self._unique_record_values(op_rows, "油气田")
+        oil_pref = "" if "oilfield" in reset else current.get("oilfield", "")
+        oilfield = self._pick_option(oil_opts, oil_pref)
+        oil_rows = [r for r in op_rows if r.get("油气田", "") == oilfield] if oilfield else list(op_rows)
+
+        code_opts = self._unique_record_values(oil_rows, "设施编码")
+        name_opts = self._unique_record_values(oil_rows, "设施名称")
+
+        selected_row: Optional[Dict[str, str]] = None
+        if changed_key == "facility_name":
+            name_pref = current.get("facility_name", "")
+            selected_name = self._pick_option(name_opts, name_pref)
+            for rec in oil_rows:
+                if rec.get("设施名称", "") == selected_name:
+                    selected_row = rec
+                    break
+        else:
+            code_pref = "" if "facility_code" in reset else current.get("facility_code", "")
+            selected_code = self._pick_option(code_opts, code_pref)
+            for rec in oil_rows:
+                if rec.get("设施编码", "") == selected_code:
+                    selected_row = rec
+                    break
+
+        if selected_row is None and oil_rows:
+            selected_row = oil_rows[0]
+
+        selected_code = self._normalize_top_value((selected_row or {}).get("设施编码", ""))
+        selected_name = self._normalize_top_value((selected_row or {}).get("设施名称", ""))
+
+        self._top_cascade_lock = True
+        try:
+            self.dropdown_bar.set_options("branch", branches, branch)
+            self.dropdown_bar.set_options("op_company", op_opts, op)
+            self.dropdown_bar.set_options("oilfield", oil_opts, oilfield)
+            self.dropdown_bar.set_options("facility_code", code_opts, selected_code)
+            self.dropdown_bar.set_options("facility_name", name_opts, selected_name)
+        finally:
+            self._top_cascade_lock = False
+
+    def _on_top_key_changed(self, key: str, txt: str):
+        if key in {"branch", "op_company", "oilfield", "facility_code", "facility_name"}:
+            if self._top_cascade_enabled:
+                if self._top_cascade_lock:
+                    return
+                self._apply_top_cascade(changed_key=key, changed_value=txt)
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -130,19 +362,12 @@ class SpecialInspectionStrategy(BasePage):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        # 左侧 4 列：DropdownBar 原样式
-        fields = [
-            {"key": "facility_code", "label": "设施编码",
-             "options": ["WC19-1WHPC", "WC19-2WHPC", "WC19-3WHPC"], "default": "WC19-1WHPC"},
-            {"key": "facility_name", "label": "设施名称",
-             "options": ["文昌19-1WHPC井口平台", "文昌19-2井口平台", "文昌19-3井口平台"], "default": "文昌19-1WHPC井口平台"},
-            {"key": "inspect_seq", "label": "检测序号",
-             "options": ["0", "1", "2", "3"], "default": "0"},
-            {"key": "inspect_time", "label": "检测时间",
-             "options": ["2008-06-26", "2008-07-12", "2008-08-21"], "default": "2008-06-26"},
-        ]
-        self.dropdown_bar = DropdownBar(fields, parent=self)
+        # 左侧：样表驱动 + 级联下拉
+        self.dropdown_bar = DropdownBar(self._build_top_dropdown_fields(), parent=self)
         self.dropdown_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.dropdown_bar.valueChanged.connect(self._on_top_key_changed)
+        if self._top_cascade_enabled:
+            self._apply_top_cascade()
 
         # DropdownBar 在不同 DPI/字体下可能需要更高的高度，否则第二行控件会被遮挡
         # 这里给一个可靠的最小高度，并在后面用真实 sizeHint 取最大值。
@@ -231,20 +456,31 @@ class SpecialInspectionStrategy(BasePage):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(10)
 
-        # 上表：构件检验汇总（固定示例数据）
+        # 1. 上表：构件检验汇总
         self.component_table = QTableWidget(6, 5)
-        self.component_table.setHorizontalHeaderLabels(["构件风险等级", "构件数量", "检验等级II", "检验等级III", "检验等级IV"])
+        self.component_table.setHorizontalHeaderLabels(
+            ["构件风险等级", "构件数量", "检验等级II", "检验等级III", "检验等级IV"])
         self._style_summary_table(self.component_table)
+
+        # ====== 召唤动态高度工具，拒绝写死像素 ======
+        self._lock_table_height_only(self.component_table)
         v.addWidget(self._wrap_with_title("构件检验汇总", self.component_table), 0)
 
-        # 年份切换条
+        # 2. 年份切换条
         v.addWidget(self._build_year_bar(), 0)
 
-        # 下表：节点风险等级汇总（随年份变化，并吃掉剩余高度）
+        # 3. 下表：节点风险等级汇总
         self.node_table = QTableWidget(6, 5)
-        self.node_table.setHorizontalHeaderLabels(["节点风险等级", "节点焊缝数量", "检验等级II", "检验等级III", "检验等级IV"])
+        self.node_table.setHorizontalHeaderLabels(
+            ["节点风险等级", "节点焊缝数量", "检验等级II", "检验等级III", "检验等级IV"])
         self._style_summary_table(self.node_table)
-        v.addWidget(self._wrap_with_title("节点风险等级汇总", self.node_table), 1)
+
+        # ====== 召唤动态高度工具，拒绝写死像素 ======
+        self._lock_table_height_only(self.node_table)
+        v.addWidget(self._wrap_with_title("节点风险等级汇总", self.node_table), 0)
+
+        # ====== 底部弹簧，吸收所有多余空间 ======
+        v.addStretch(1)
 
         return left
 
@@ -331,6 +567,21 @@ class SpecialInspectionStrategy(BasePage):
                 it = QTableWidgetItem("-")
                 it.setTextAlignment(Qt.AlignCenter)
                 table.setItem(r, c, it)
+
+    def _lock_table_height_only(self, table: QTableWidget):
+        """动态计算并锁死表格高度，完美适配 Win11 的 DPI 缩放"""
+        # 1. 根据当前系统字体高度，动态设定舒适的行高（字体高度 + 14像素留白）
+        base_row_h = table.fontMetrics().height() + 14
+        table.verticalHeader().setDefaultSectionSize(base_row_h)
+
+        # 2. 获取表头在当前系统下的真实渲染高度（sizeHint能获取到准确值）
+        header_h = table.horizontalHeader().sizeHint().height()
+        if header_h < 20:  # 极端情况兜底
+            header_h = base_row_h
+
+        # 3. 精准计算总高度：表头高度 + (行高 × 行数) + 上下边框(4px)
+        total_h = header_h + (base_row_h * table.rowCount()) + 4
+        table.setFixedHeight(total_h)
 
     # ---------------- data ----------------
     def _fill_component_demo_data(self):

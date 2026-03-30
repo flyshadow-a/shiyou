@@ -1,0 +1,114 @@
+LDOPT SF      +Z   1.025   7.850 -122.20  123.40GLOBMN          CMB                                                     
+LCSEL                                                                                                                   
+LCSEL DY        DKOP                                                                                                    
+FILE B                                                                                                                  
+*******************************************************************************                                         
+CDM                                                                                                                     
+CDM     2.00  0.50        2.00       0.800        2.00                                                                  
+CDM   500.00  0.50        2.00       0.800        2.00                                                                  
+*******************************************************************************                                         
+MGROV                                                                                                                   
+MGROV              43.40   4.000        2.5400-4   1.400                                                                
+MGROV      43.40   73.40   4.500        2.5400-4   1.400                                                                
+MGROV      73.40  123.40   10.00        2.5400-4   1.400                                                                
+*******************************************************************************                                         
+LOAD                                                                                                                   
+LOADCN  CO                                                                                                             
+INCWGT  CO                                                                                                             
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN  EL                                                                                                             
+INCWGT  EL                                                                                                             
+ACCEL                      1.0                                            N CEN1                                       
+LOADCNHVAC                                                                                                             
+INCWGT  HVAC                                                                                                           
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN  IN                                                                                                             
+INCWGT  IN                                                                                                             
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN  OU                                                                                                             
+INCWGT  OU                                                                                                             
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN  SA                                                                                                             
+INCWGT  SA                                                                                                             
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN  ST                                                                                                             
+INCWGT  ST                                                                                                             
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN BRG                                                                                                             
+INCWGT  BRG                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN FBD                                                                                                             
+INCWGT  FBD                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN FBO                                                                                                             
+INCWGT  FBO                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN MAD                                                                                                             
+INCWGT  MAD                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN MAO                                                                                                             
+INCWGT  MAO                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN PID                                                                                                             
+INCWGT  PID                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN PIO                                                                                                             
+INCWGT  PIO                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN UDD                                                                                                             
+INCWGT  UDD                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN UDO                                                                                                             
+INCWGT  UDO                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+LOADCNCORR                                                                                                             
+INCWGT  CORR                                                                                                           
+ACCEL                      1.0                                            N CEN1                                       
+LOADCNLIVE                                                                                                             
+INCWGT  LIVE                                                                                                           
+ACCEL                      1.0                                            N CEN1                                       
+LOADCNLVDS                                                                                                             
+INCWGT  LVDS                                                                                                           
+ACCEL                      1.0                                            N CEN1                                       
+LOADCNLVLQ                                                                                                             
+INCWGT  LVLQ                                                                                                           
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN LQO                                                                                                             
+INCWGT  LQO                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN LQD                                                                                                             
+INCWGT  LQD                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN DMO                                                                                                             
+INCWGT  DMO                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+LOADCN DMD                                                                                                             
+INCWGT  DMD                                                                                                            
+ACCEL                      1.0                                            N CEN1                                       
+****                                                                                                                   
+****************DEAD LOAD INPUT************************************************                                        
+LOADCNJGPH                                                                                                             
+LOADLBJGPHJACKET WEIGHT FOR OPERATION MSL WATER LEVEL                                                                  
+DEAD                                                                                                                   
+DEAD      -Z          123.40                M                                                                          
+*********************WAVE & CURRENT LOAD - OPERATING CONDITION*****************                                        
+LOADCNOWL1                                                                                                             
+LOADLBOWL11-YR CENTER-OF-DAMAGE FOR LOW WATER LEVEL@ 0 DEG                                                             
+WAVE                                                                                                                   
+WAVE1.00STRN 5.456123.40 8.424                    D  -90.0    5.  72MS10 1 1 3                                         
+LOADCNOWL3                                                                                                             
+LOADLBOWL31-YR CENTER-OF-DAMAGE FOR LOW WATER LEVEL@ 90 DEG                                                            
+WAVE                                                                                                                   
+WAVE1.00STRN 5.456123.40 8.424         90.00      D  -90.0    5.  72MS10 1 1 3                                         
+*******************************************************************************                                        
+LCOMB                                                                                                                  
+LCOMB DRY    CO  1.00  EL  1.00  IN  1.00  OU  1.00  SA  1.00  ST  1.00                                                
+LCOMB DRY  HVAC  1.00CORR  1.00                                                                                        
+LCOMB TEXH  MAO  0.75 PIO  0.75 UDO  0.75 FBO  0.75                                                                    
+LCOMB TEXH  MAD  0.25 PID  0.25 UDD  0.25 FBD  0.25                                                                    
+LCOMB EXH   DRY  1.00TEXH  1.00LIVE 0.375JKTW  1.05JKTB -1.00                                                           
+*********LQ\DSM\DES EXTREME LOAD *****************************************                                             
+LCOMB E05A DE37  1.00DS15  1.00ELQ5  1.00                                                                              
+LCOMB DKOP  EXH 1.000E05A  1.05                                                                                        
+*******************************************************************************                                         
+END                                                                                                                     

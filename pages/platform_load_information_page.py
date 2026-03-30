@@ -196,11 +196,11 @@ class PlatformLoadInformationPage(BasePage):
         # === 红色字段 Excel 导入（仅当前行）===
         self.result_excel_path: Optional[str] = None
         self.red_field_mode: str = 'manual'  # 'manual' or 'excel'
-        # 从《平台汇总信息样表.xls》加载下拉选项（失败则回退到原 mock 逻辑）
+        # 从《platform_total.xls》加载下拉选项（失败则回退到原 mock 逻辑）
         self._excel_provider = ReadTableXls()
         self._excel_loaded = False
         try:
-            self._excel_provider.load()  # 默认路径：data/平台汇总信息样表.xls
+            self._excel_provider.load()  # 默认路径：data/platform_total.xls
             self._excel_loaded = True
         except Exception:
             self._excel_loaded = False
@@ -249,7 +249,7 @@ class PlatformLoadInformationPage(BasePage):
 
         top_layout.setAlignment(Qt.AlignTop)
         # 顶部下拉条（样式与“平台基本信息”一致：DropdownBar）
-                # 顶部下拉条：选项从《平台汇总信息样表.xls》提取（若读取失败则用内置 mock）
+                # 顶部下拉条：选项从《platform_total.xls》提取（若读取失败则用内置 mock）
         def _opts(field_cn: str, fallback_default: str):
             if getattr(self, "_excel_loaded", False):
                 opts = self._excel_provider.options_for(field_cn)
