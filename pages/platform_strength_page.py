@@ -3,10 +3,14 @@
 
 import os
 import re
-import math
+
+import numpy as np
+import pyvista as pv
+from pyvistaqt import QtInteractor
+
 from typing import Dict, List, Tuple, Optional
 
-from PyQt5.QtCore import Qt, QRectF
+from PyQt5.QtCore import Qt, QRectF,QEvent
 from PyQt5.QtGui import QColor, QFont, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -22,7 +26,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QGraphicsView,
-    QGraphicsScene, QMessageBox, QPushButton, QHeaderView,
+    QGraphicsScene, QMessageBox, QPushButton, QHeaderView,QSlider,
 )
 
 from app_paths import first_existing_path
@@ -32,283 +36,307 @@ from pages.feasibility_assessment_page import FeasibilityAssessmentPage
 from pages.read_table_xls import ReadTableXls
 
 
-class InpWireframeView(QGraphicsView):
-    """
-    用 QGraphicsScene 渲染 Abaqus .inp（*NODE + *ELEMENT）线框的 2D 投影。
-    说明：这是“先能看见”的简化显示，不是完整三维交互渲染。
-    """
+class PyVistaSacsView(QFrame):
+    COLOR_SCHEME = {
+        "background": "white",
+        "main_structure": "#E9D012",   # 原结构：暖黄色
+        "leg_joint": "#B22222",        # 主腿节点：深红
+        "tubular_joint": "#2A7F9E",    # 核心管节点：湖蓝
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setScene(QGraphicsScene(self))
-        self.setRenderHints(self.renderHints())
-        self.setStyleSheet("background:#0b0f14; border: 1px solid #2f3a4a;")
-        self.setFrameShape(QFrame.NoFrame)
-        self.setAlignment(Qt.AlignCenter)
-        self.setDragMode(QGraphicsView.ScrollHandDrag)
-        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
 
-        self._nodes: Dict[int, Tuple[float, float, float]] = {}
-        self._edges: List[Tuple[int, int]] = []
-        self._proj_pts: Dict[int, Tuple[float, float]] = {}
-        self._loaded_path: str = ""
-        self._user_view_changed: bool = False
-        self._yaw_deg: float = 0.0
-        self._pitch_deg: float = 0.0
-        self._rotate_dragging: bool = False
-        self._rotate_last_pos = None
+        self._loaded_path = ""
+        self._nodes = {}
+        self._members = []
+        self._groups_od = {}
+
+        self._last_pan_x = 0
+        self._last_pan_y = 0
+
+        self._initial_camera_position = None
+        self._initial_camera_focal_point = None
+        self._initial_camera_up = None
+        self._initial_parallel_scale = None
+
+        self._slider_h = None
+        self._slider_v = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.plotter = QtInteractor(self)
+        self.plotter.installEventFilter(self)
+        layout.addWidget(self.plotter)
+
+        self.plotter.set_background(self.COLOR_SCHEME["background"])
+        self.plotter.add_axes()
 
     def clear_view(self, message: str = ""):
-        self.scene().clear()
-        self._nodes = {}
-        self._edges = []
-        self._proj_pts = {}
-        self._loaded_path = ""
-        self._user_view_changed = False
-        self._rotate_dragging = False
-        self._rotate_last_pos = None
-        self.resetTransform()
-
+        self.plotter.clear()
+        self.plotter.set_background(self.COLOR_SCHEME["background"])
+        self.plotter.add_axes()
         if message:
-            t = self.scene().addText(message)
-            t.setDefaultTextColor(QColor("#d7e3f0"))
-            # center later in resizeEvent
-            self._center_text_item(t)
+            self.plotter.add_text(message, position="upper_left", font_size=10)
+
+    def eventFilter(self, obj, event):
+        if obj is self.plotter and event.type() == QEvent.MouseButtonPress:
+            if event.button() == Qt.RightButton:
+                self.reset_to_initial_view()
+                return True
+        return super().eventFilter(obj, event)
+
+    def reset_to_initial_view(self):
+        if self._initial_camera_position is None:
+            return
+
+        cam = self.plotter.camera
+        cam.position = self._initial_camera_position
+        cam.focal_point = self._initial_camera_focal_point
+        cam.up = self._initial_camera_up
+
+        try:
+            cam.parallel_scale = self._initial_parallel_scale
+        except Exception:
+            pass
+
+        # 重置平移状态
+        self.reset_pan_state()
+
+        # 同步重置滑动条位置
+        if self._slider_h is not None:
+            self._slider_h.blockSignals(True)
+            self._slider_h.setValue(0)
+            self._slider_h.blockSignals(False)
+
+        if self._slider_v is not None:
+            self._slider_v.blockSignals(True)
+            self._slider_v.setValue(0)
+            self._slider_v.blockSignals(False)
+
+        self.plotter.render()
 
     def load_inp(self, file_path: str):
         self._loaded_path = file_path
-        nodes, edges = self._parse_inp_nodes_elements(file_path)
+
+        nodes, members, groups_od = self.parse_sacs_full_robust(file_path)
         self._nodes = nodes
-        self._edges = edges
-        self._user_view_changed = False
-        self._yaw_deg = 0.0
-        self._pitch_deg = 0.0
-        self._rotate_dragging = False
-        self._rotate_last_pos = None
+        self._members = members
+        self._groups_od = groups_od
 
-        if not self._nodes or not self._edges:
-            self.clear_view("未解析到 NODE/ELEMENT 数据")
+        if not self._nodes or not self._members:
+            self.clear_view("未解析到有效的 SACS JOINT/MEMBER 数据")
             return
 
-        self._render()
+        leg_joints, tubular_joints = self.apply_pdf_logic_diagnostic(
+            self._nodes, self._members, self._groups_od, target_z=8.5
+        )
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self._nodes and self._edges:
-            if not self._user_view_changed:
-                rect = self.sceneRect()
-                if rect.isValid() and (rect.width() > 0) and (rect.height() > 0):
-                    self.fitInView(rect, Qt.KeepAspectRatio)
-        else:
-            # 让提示文字居中
-            for it in self.scene().items():
-                if hasattr(it, "toPlainText"):
-                    self._center_text_item(it)
+        self.render_structure(self._nodes, self._members, leg_joints, tubular_joints)
 
-    def wheelEvent(self, event):
-        if not (self._nodes and self._edges):
-            super().wheelEvent(event)
-            return
+    def parse_sacs_full_robust(self, filepath):
+        nodes = {}
+        members = []
+        groups_od = {}
 
-        delta = event.angleDelta().y()
-        if delta == 0:
-            return
-
-        factor = 1.15 if delta > 0 else 1.0 / 1.15
-        cur_scale = self.transform().m11()
-        new_scale = cur_scale * factor
-        if (new_scale < 0.03) or (new_scale > 300):
-            return
-
-        self.scale(factor, factor)
-        self._user_view_changed = True
-        event.accept()
-
-    def mousePressEvent(self, event):
-        if (event.button() == Qt.RightButton) and self._nodes and self._edges:
-            self._rotate_dragging = True
-            self._rotate_last_pos = event.pos()
-            self._user_view_changed = True
-            self.setCursor(Qt.ClosedHandCursor)
-            event.accept()
-            return
-
-        if event.button() in (Qt.LeftButton, Qt.MiddleButton, Qt.RightButton):
-            self._user_view_changed = True
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._rotate_dragging and self._rotate_last_pos is not None and self._nodes and self._edges:
-            dx = event.pos().x() - self._rotate_last_pos.x()
-            dy = event.pos().y() - self._rotate_last_pos.y()
-
-            sens = 0.45
-            self._yaw_deg += dx * sens
-            self._pitch_deg += dy * sens
-            self._pitch_deg = max(-85.0, min(85.0, self._pitch_deg))
-
-            self._rotate_last_pos = event.pos()
-            self._render(reset_camera=False)
-            event.accept()
-            return
-
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.RightButton and self._rotate_dragging:
-            self._rotate_dragging = False
-            self._rotate_last_pos = None
-            self.setCursor(Qt.ArrowCursor)
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event):
-        if self._nodes and self._edges:
-            self._yaw_deg = 0.0
-            self._pitch_deg = 0.0
-            self._render(reset_camera=True)
-            event.accept()
-            return
-        super().mouseDoubleClickEvent(event)
-
-    def _center_text_item(self, item):
-        br = item.boundingRect()
-        w = max(10, self.viewport().width())
-        h = max(10, self.viewport().height())
-        item.setPos((w - br.width()) / 2, (h - br.height()) / 2)
-
-    # --------- 渲染（2D 投影） ----------
-    def _render(self, reset_camera: bool = True):
-        self.scene().clear()
-
-        # 1) 3D -> 2D：垂直切面正对视角（默认）+ 可交互旋转
-        #    yaw: 绕 Z 轴（平面内旋转）
-        #    pitch: 上下俯仰（保持 Z 为主要竖向）
-        if not self._nodes:
-            self.clear_view("无可显示数据")
-            return
-
-        cx3 = sum(v[0] for v in self._nodes.values()) / len(self._nodes)
-        cy3 = sum(v[1] for v in self._nodes.values()) / len(self._nodes)
-        cz3 = sum(v[2] for v in self._nodes.values()) / len(self._nodes)
-
-        yaw = math.radians(self._yaw_deg)
-        pitch = math.radians(self._pitch_deg)
-        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
-        cos_p, sin_p = math.cos(pitch), math.sin(pitch)
-
-        proj = {}
-        xs, ys = [], []
-        for nid, (x, y, z) in self._nodes.items():
-            x0 = x - cx3
-            y0 = y - cy3
-            z0 = z - cz3
-
-            # yaw: around Z
-            x1 = x0 * cos_y - y0 * sin_y
-            depth = x0 * sin_y + y0 * cos_y
-
-            # pitch: vertical keeps z-dominant, depth contributes with tilt
-            y2 = z0 * cos_p + depth * sin_p
-
-            px = x1
-            py = -y2
-            proj[nid] = (px, py)
-            xs.append(px)
-            ys.append(py)
-
-        if not xs or not ys:
-            self.clear_view("无可显示数据")
-            return
-
-        minx, maxx = min(xs), max(xs)
-        miny, maxy = min(ys), max(ys)
-        spanx = max(1e-6, maxx - minx)
-        spany = max(1e-6, maxy - miny)
-
-        self._proj_pts = proj
-
-        # 3) 画线
-        pen = QPen(QColor("#62ff62"))
-        pen.setWidth(0)
-        pen.setCosmetic(True)
-
-        for n1, n2 in self._edges:
-            p1 = self._proj_pts.get(n1)
-            p2 = self._proj_pts.get(n2)
-            if p1 is None or p2 is None:
-                continue
-            self.scene().addLine(p1[0], p1[1], p2[0], p2[1], pen)
-
-        # 4) 设置 sceneRect 并自动拟合（首次加载）
-        margin = max(2.0, 0.05 * max(spanx, spany))
-        rect = QRectF(minx - margin, miny - margin, spanx + 2 * margin, spany + 2 * margin)
-        self.scene().setSceneRect(rect)
-        if reset_camera:
-            self.resetTransform()
-            self.fitInView(rect, Qt.KeepAspectRatio)
-            self._user_view_changed = False
-
-    # --------- INP 解析 ----------
-    def _parse_inp_nodes_elements(self, file_path: str):
-        """
-        解析优先级：
-        1) Abaqus INP: *NODE / *ELEMENT
-        2) SACS INP: JOINT / MEMBER（简化）
-        """
-        nodes: Dict[int, Tuple[float, float, float]] = {}
-        edges: List[Tuple[int, int]] = []
-
-        lines = self._read_lines_with_fallback(file_path)
-        in_node = False
-        in_elem = False
-
-        for raw in lines:
-            line = raw.strip()
-            if not line:
-                continue
-            if line.startswith("**"):
-                continue
-
-            if line.startswith("*"):
-                u = line.upper()
-                in_node = u.startswith("*NODE")
-                in_elem = u.startswith("*ELEMENT")
-                continue
-
-            if in_node:
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) < 4:
-                    continue
+        lines = self._read_lines_with_fallback(filepath)
+        for line in lines:
+            if line.startswith('GRUP'):
+                gid = line[5:8].strip()
                 try:
-                    nid = int(float(parts[0]))
-                    x = float(parts[1])
-                    y = float(parts[2])
-                    z = float(parts[3])
+                    od_str = line[14:24].strip()
+                    od = float(od_str) if od_str else 0.0
+                    groups_od[gid] = od
+                except Exception:
+                    groups_od[gid] = 0.0
+
+            elif line.startswith('JOINT'):
+                try:
+                    nid = line[6:10].strip()
+                    x = float(line[11:18].strip())
+                    y = float(line[18:25].strip())
+                    z = float(line[25:32].strip())
+                    nodes[nid] = [x, y, z]
                 except Exception:
                     continue
-                nodes[nid] = (x, y, z)
-                continue
 
-            if in_elem:
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) < 3:
-                    continue
+            elif line.startswith('MEMBER'):
                 try:
-                    n1 = int(float(parts[1]))
-                    n2 = int(float(parts[2]))
+                    na = line[7:11].strip()
+                    nb = line[11:15].strip()
+                    gid = line[15:18].strip()
+                    members.append((na, nb, gid))
                 except Exception:
                     continue
-                edges.append((n1, n2))
-                continue
 
-        # Abaqus 未解析到时，尝试 SACS（JOINT/MEMBER）
-        if not nodes or not edges:
-            nodes, edges = self._parse_sacs_joints_members(lines)
+        return nodes, members, groups_od
 
-        return nodes, edges
+    def apply_pdf_logic_diagnostic(self, nodes, members, groups_od, target_z=8.5):
+        graph = {nid: [] for nid in nodes}
+        node_to_max_od = {nid: 0.0 for nid in nodes}
+
+        for na, nb, gid in members:
+            if na in nodes and nb in nodes:
+                od = groups_od.get(gid, 0.0)
+                node_to_max_od[na] = max(node_to_max_od[na], od)
+                node_to_max_od[nb] = max(node_to_max_od[nb], od)
+                graph[na].append(nb)
+                graph[nb].append(na)
+
+        tolerance = 1.0
+        elevation_nodes = {
+            nid: od for nid, od in node_to_max_od.items()
+            if abs(nodes[nid][2] - target_z) < tolerance
+        }
+
+        leg_joints = []
+        tubular_joints = []
+
+        if elevation_nodes:
+            local_max_od = max(elevation_nodes.values())
+            for nid in elevation_nodes:
+                if node_to_max_od[nid] >= local_max_od * 0.95:
+                    leg_joints.append(nodes[nid])
+
+        for nid, neighbors in graph.items():
+            if len(neighbors) >= 3:
+                tubular_joints.append(nodes[nid])
+
+        return leg_joints, tubular_joints
+
+    def render_structure(self, nodes, members, leg_joints, tubular_joints):
+        self.plotter.clear()
+        self.plotter.set_background(self.COLOR_SCHEME["background"])
+
+        node_list = list(nodes.keys())
+        id_map = {nid: i for i, nid in enumerate(node_list)}
+        points = np.array([nodes[nid] for nid in node_list], dtype=float)
+
+        if len(points) == 0:
+            self.clear_view("没有可显示的节点")
+            return
+
+        lines = []
+        for na, nb, _ in members:
+            if na in id_map and nb in id_map:
+                lines.extend([2, id_map[na], id_map[nb]])
+
+        mesh = pv.PolyData(points)
+        if lines:
+            mesh.lines = np.array(lines)
+
+        # 主结构：恢复为更好看的管状体效果
+        try:
+            structure = mesh.tube(radius=0.12, n_sides=8)
+            self.plotter.add_mesh(
+                structure,
+                color=self.COLOR_SCHEME["main_structure"],
+                opacity=0.85,
+                label="Main Structure"
+            )
+        except Exception:
+            self.plotter.add_mesh(
+                mesh,
+                color=self.COLOR_SCHEME["main_structure"],
+                line_width=1.2,
+                opacity=0.9,
+                label="Main Structure"
+            )
+
+        # 主腿节点：红色球
+        if leg_joints:
+            leg_cloud = pv.PolyData(np.array(leg_joints, dtype=float))
+            self.plotter.add_mesh(
+                leg_cloud.glyph(
+                    geom=pv.Sphere(radius=0.55, theta_resolution=12, phi_resolution=12),
+                    scale=False,
+                    orient=False
+                ),
+                color=self.COLOR_SCHEME["leg_joint"],
+                label="Leg Joint"
+            )
+
+        # 核心管节点：蓝色球
+        if tubular_joints:
+            tub_cloud = pv.PolyData(np.array(tubular_joints, dtype=float))
+            self.plotter.add_mesh(
+                tub_cloud.glyph(
+                    geom=pv.Sphere(radius=0.30, theta_resolution=10, phi_resolution=10),
+                    scale=False,
+                    orient=False
+                ),
+                color=self.COLOR_SCHEME["tubular_joint"],
+                label="Tubular Joint"
+            )
+
+        #self.plotter.add_legend(bcolor="white")
+        self.plotter.add_axes()
+        self.plotter.reset_camera()
+
+        # 记录“初始视图”
+        cam = self.plotter.camera
+        self._initial_camera_position = tuple(cam.position)
+        self._initial_camera_focal_point = tuple(cam.focal_point)
+        self._initial_camera_up = tuple(cam.up)
+
+        try:
+            self._initial_parallel_scale = cam.parallel_scale
+        except Exception:
+            self._initial_parallel_scale = None
+
+        self.plotter.render()
+
+    def pan_view(self, x_value: int, y_value: int):
+        dx_slider = x_value - self._last_pan_x
+        dy_slider = y_value - self._last_pan_y
+
+        self._last_pan_x = x_value
+        self._last_pan_y = y_value
+
+        if dx_slider == 0 and dy_slider == 0:
+            return
+
+        cam = self.plotter.camera
+
+        pos = np.array(cam.position, dtype=float)
+        focal = np.array(cam.focal_point, dtype=float)
+        up = np.array(cam.up, dtype=float)
+
+        forward = focal - pos
+        dist = np.linalg.norm(forward)
+        if dist < 1e-9:
+            return
+        forward = forward / dist
+
+        up = up / (np.linalg.norm(up) + 1e-12)
+        right = np.cross(forward, up)
+        right_norm = np.linalg.norm(right)
+        if right_norm < 1e-9:
+            return
+        right = right / right_norm
+
+        true_up = np.cross(right, forward)
+        true_up = true_up / (np.linalg.norm(true_up) + 1e-12)
+
+        # 用当前相机距离控制平移步长，放大后也不会一下子跳太远
+        step = max(dist * 0.02, 0.5)
+
+        shift = right * (dx_slider * step) + true_up * (dy_slider * step)
+
+        cam.position = tuple(pos + shift)
+        cam.focal_point = tuple(focal + shift)
+
+        self.plotter.render()
+
+    def reset_pan_state(self):
+        self._last_pan_x = 0
+        self._last_pan_y = 0
+
+    def bind_sliders(self, slider_h, slider_v):
+        self._slider_h = slider_h
+        self._slider_v = slider_v
 
     def _read_lines_with_fallback(self, file_path: str) -> List[str]:
         encodings = ["utf-8", "utf-8-sig", "gb18030", "gbk", "latin-1"]
@@ -322,173 +350,6 @@ class InpWireframeView(QGraphicsView):
                 break
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             return f.readlines()
-
-    def _parse_sacs_joints_members(self, lines: List[str]):
-        nodes: Dict[int, Tuple[float, float, float]] = {}
-        edges: List[Tuple[int, int]] = []
-        edge_set = set()
-        id_map: Dict[str, int] = {}
-        member_lines: List[str] = []
-        plate_lines: List[str] = []
-        num_pat = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
-
-        def add_edge(n1: Optional[int], n2: Optional[int]):
-            if (n1 is None) or (n2 is None) or (n1 == n2):
-                return
-            a, b = (n1, n2) if n1 < n2 else (n2, n1)
-            if (a, b) in edge_set:
-                return
-            edge_set.add((a, b))
-            edges.append((n1, n2))
-
-        def nid(token: str) -> Optional[int]:
-            t = (token or "").strip().upper()
-            if not t:
-                return None
-            if t in id_map:
-                return id_map[t]
-            try:
-                v = int(float(t))
-            except Exception:
-                v = 1000000 + len(id_map) + 1
-            id_map[t] = v
-            return v
-
-        for raw in lines:
-            line = raw.strip()
-            if not line:
-                continue
-            if line.startswith("$") or line.startswith("!") or line.startswith("**"):
-                continue
-
-            # JOINT：用正则抽取前三个数字坐标，兼容固定列导致的数字粘连
-            m_joint = re.match(r"^\s*JOINT\s+(\S+)\s*(.*)$", line, re.IGNORECASE)
-            if m_joint:
-                j_tok = m_joint.group(1).strip().upper()
-                nums = num_pat.findall(m_joint.group(2) or "")
-                if len(nums) < 3:
-                    continue
-                try:
-                    x = float(nums[0])
-                    y = float(nums[1])
-                    z = float(nums[2])
-                except Exception:
-                    continue
-                j = nid(j_tok)
-                if j is None:
-                    continue
-                nodes[j] = (x, y, z)
-                continue
-
-            if re.match(r"^\s*MEMBER\b", line, re.IGNORECASE):
-                if re.match(r"^\s*MEMBER\s+OFFSETS\b", line, re.IGNORECASE):
-                    continue
-                member_lines.append(line)
-                continue
-
-            if re.match(r"^\s*PLATE\b", line, re.IGNORECASE):
-                if re.match(r"^\s*PLATE\s+OFFSETS\b", line, re.IGNORECASE):
-                    continue
-                plate_lines.append(line)
-                continue
-
-        token_set = set(id_map.keys())
-        token_lens = sorted({len(t) for t in token_set}, reverse=True)
-
-        def split_member_pair_token(token: str) -> Optional[Tuple[str, str]]:
-            t = (token or "").strip().upper()
-            if not t:
-                return None
-
-            for sep in ("-", "/", "_", ","):
-                if sep in t:
-                    a, b = t.split(sep, 1)
-                    if (a in token_set) and (b in token_set):
-                        return a, b
-
-            for i in range(1, len(t)):
-                a = t[:i]
-                b = t[i:]
-                if (a in token_set) and (b in token_set):
-                    return a, b
-
-            # 常见 SACS 紧凑写法：两个 4 字符节点拼接
-            if len(t) >= 8:
-                a = t[:4]
-                b = t[4:8]
-                if (a in token_set) and (b in token_set):
-                    return a, b
-            return None
-
-        def extract_joint_tokens(text: str, max_count: int = 4) -> List[str]:
-            s = "".join(ch for ch in (text or "").upper() if ch.isalnum())
-            out: List[str] = []
-            i = 0
-            while i < len(s) and len(out) < max_count:
-                found = None
-                for ln in token_lens:
-                    if i + ln > len(s):
-                        continue
-                    cand = s[i:i + ln]
-                    if cand in token_set:
-                        found = cand
-                        break
-                if found is not None:
-                    out.append(found)
-                    i += len(found)
-                else:
-                    i += 1
-            return out
-
-        for line in member_lines:
-            parts = [p for p in line.replace(",", " ").split() if p]
-            if len(parts) < 2:
-                continue
-
-            fields = parts[1:]
-            pair: Optional[Tuple[str, str]] = None
-
-            # 形式1：MEMBER J1 J2 ...
-            f0 = fields[0].upper() if len(fields) >= 1 else ""
-            f1 = fields[1].upper() if len(fields) >= 2 else ""
-            if len(fields) >= 2 and (f0 in token_set) and (f1 in token_set):
-                pair = (f0, f1)
-            else:
-                # 形式2：MEMBER J1J2 ...（紧凑拼接）
-                for fld in fields[:3]:
-                    pair = split_member_pair_token(fld)
-                    if pair:
-                        break
-
-            if not pair:
-                continue
-
-            n1 = id_map.get(pair[0])
-            n2 = id_map.get(pair[1])
-            add_edge(n1, n2)
-
-        for line in plate_lines:
-            m_plate = re.match(r"^\s*PLATE\s+\S+\s+(.*)$", line, re.IGNORECASE)
-            if not m_plate:
-                continue
-
-            conn_text = (m_plate.group(1) or "")[:80]
-            joints = extract_joint_tokens(conn_text, max_count=4)
-            if len(joints) < 3:
-                continue
-
-            node_ids = [id_map.get(jt) for jt in joints]
-            node_ids = [nid_v for nid_v in node_ids if nid_v is not None]
-            if len(node_ids) < 3:
-                continue
-
-            node_ids = node_ids[:4]
-            for i in range(len(node_ids) - 1):
-                add_edge(node_ids[i], node_ids[i + 1])
-            add_edge(node_ids[-1], node_ids[0])
-
-        return nodes, edges
-
 
 class PlatformStrengthPage(BasePage):
     """结构强度 -> 平台强度页面。"""
@@ -886,30 +747,76 @@ class PlatformStrengthPage(BasePage):
         else:
             QMessageBox.information(self, "提示", "未检测到主窗口Tab组件，无法打开页面。")
 
+    def _build_custom_legend(self) -> QWidget:
+        w = QWidget(self)
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(14)
+
+        def make_item(color: str, text: str) -> QWidget:
+            item = QWidget(w)
+            item_lay = QHBoxLayout(item)
+            item_lay.setContentsMargins(0, 0, 0, 0)
+            item_lay.setSpacing(4)
+
+            dot = QLabel("●")
+            dot.setStyleSheet(f"color:{color}; font-size:14px;")
+            lab = QLabel(text)
+            lab.setStyleSheet("color:#4a5b70; font-size:12px;")
+
+            item_lay.addWidget(dot, 0)
+            item_lay.addWidget(lab, 0)
+            return item
+
+        lay.addStretch(1)
+        lay.addWidget(make_item("#E9D012", "Main Structure"), 0)
+        lay.addWidget(make_item("#B22222", "Leg Joint"), 0)
+        lay.addWidget(make_item("#2A7F9E", "Tubular Joint"), 0)
+
+        return w
     # ---------------- 右侧模型 ----------------
     def _build_inp_view_panel(self) -> QWidget:
         frame = QFrame(self)
         frame.setStyleSheet("QFrame { background: #ffffff; border: 1px solid #b9c6d6; }")
-        lay = QVBoxLayout(frame)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(8)
 
-        title = QLabel("结构模型线框预览（读取导入的 SACS INP）")
-        title.setStyleSheet("font-weight: bold; color: #1d2b3a;")
-        lay.addWidget(title, 0)
-
-        hint = QLabel("左键拖动平移，滚轮缩放，右键拖动旋转，双击复位")
-        hint.setStyleSheet("color:#5d6f85; font-size:12px;")
-        lay.addWidget(hint, 0)
+        outer = QVBoxLayout(frame)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(6)
 
         self.inp_path_label = QLabel("")
         self.inp_path_label.setWordWrap(True)
         self.inp_path_label.setStyleSheet("color:#4a5b70; font-size:12px;")
-        lay.addWidget(self.inp_path_label, 0)
+        outer.addWidget(self.inp_path_label, 0)
 
-        self.inp_view = InpWireframeView(frame)
+        outer.addWidget(self._build_custom_legend(), 0)
+
+        view_row = QHBoxLayout()
+        view_row.setContentsMargins(0, 0, 0, 0)
+        view_row.setSpacing(6)
+
+        self.inp_view = PyVistaSacsView(frame)
         self.inp_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        lay.addWidget(self.inp_view, 1)
+        view_row.addWidget(self.inp_view, 1)
+
+        self.slider_v = QSlider(Qt.Vertical)
+        self.slider_v.setRange(-100, 100)
+        self.slider_v.setValue(0)
+        self.slider_v.valueChanged.connect(
+            lambda v: self.inp_view.pan_view(self.slider_h.value(), v)
+        )
+        view_row.addWidget(self.slider_v, 0)
+
+        outer.addLayout(view_row, 1)
+
+        self.slider_h = QSlider(Qt.Horizontal)
+        self.slider_h.setRange(-100, 100)
+        self.slider_h.setValue(0)
+        self.slider_h.valueChanged.connect(
+            lambda v: self.inp_view.pan_view(v, self.slider_v.value())
+        )
+        outer.addWidget(self.slider_h, 0)
+        self.inp_view.bind_sliders(self.slider_h, self.slider_v)
+
         return frame
 
     def _sacinp_name_score(self, file_name: str) -> int:
@@ -942,8 +849,6 @@ class PlatformStrengthPage(BasePage):
                 line = raw.strip().upper()
                 if not line:
                     continue
-                if line.startswith("*NODE") or line.startswith("*ELEMENT"):
-                    return True
                 if line.startswith("JOINT"):
                     markers_joint = True
                 elif line.startswith("MEMBER"):
@@ -1065,9 +970,20 @@ class PlatformStrengthPage(BasePage):
 
         try:
             self.inp_view.load_inp(path)
+            self.inp_view.reset_pan_state()
+
+            if hasattr(self, "slider_h"):
+                self.slider_h.blockSignals(True)
+                self.slider_h.setValue(0)
+                self.slider_h.blockSignals(False)
+
+            if hasattr(self, "slider_v"):
+                self.slider_v.blockSignals(True)
+                self.slider_v.setValue(0)
+                self.slider_v.blockSignals(False)
+
             self.inp_path_label.setText(f"当前模型文件：{path}")
-            
-            # 解析泥面高程并回填
+
             mud_level = self._parse_mud_level_from_sacinp(path)
             if mud_level and hasattr(self, "edt_mud_level"):
                 self.edt_mud_level.setText(mud_level)

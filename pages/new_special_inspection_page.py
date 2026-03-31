@@ -17,7 +17,8 @@ from PyQt5.QtCore import Qt
 from app_paths import external_path, external_root, first_existing_path
 from base_page import BasePage
 from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
-from pages.platform_strength_page import InpWireframeView
+#from pages.platform_strength_page import InpWireframeView
+from pages.platform_strength_page import PyVistaSacsView
 
 
 class NewSpecialInspectionPage(BasePage):
