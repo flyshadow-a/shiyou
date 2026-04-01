@@ -51,12 +51,9 @@ class FeasibilityAssessmentPage(BasePage):
     WC19-1DPPA平台强度/改造可行性评估（feasibility_assessment_page）
     """
     CONNECT_OPTIONS = ["焊接", "无连接", "导向连接"]
-<<<<<<< HEAD
-    ELEVATIONS1 = [36, 31, 27, 23, 18, 7, -12, -34, -58, -83, -109]
-    ELEVATIONS2 = [7, -12, -34, -58, -83, -109, -122.4]
-=======
+
     # ELEVATIONS = [27, 23, 18, 7, -12, -34, -58]
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
+
 
     # 表头颜色
     HEADER_BG = QColor("#cfe4b5")   # 浅绿
@@ -423,14 +420,9 @@ class FeasibilityAssessmentPage(BasePage):
             self.tbl1.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
 
         start = base_cols
-<<<<<<< HEAD
-        for i, elevation in enumerate(self.ELEVATIONS1):
-            default = "焊接" if elevation in (27, 23, 18) else "无连接"
-            self._set_combo_cell(self.tbl1, row, start + i, default=default)
-=======
+
         for i, elevation in enumerate(self.elevations):
             self._set_combo_cell(self.tbl1, row, start + i, default=None)
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
 
     def _populate_table2_row(self, row: int):
         base_cols = 1 + 2 + 2 + 2 + 2
@@ -439,14 +431,10 @@ class FeasibilityAssessmentPage(BasePage):
             self.tbl2.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
 
         start = base_cols
-<<<<<<< HEAD
-        for i, elevation in enumerate(self.ELEVATIONS2):
-            default = "焊接" if elevation in (27, 23) else "无连接"
-            self._set_combo_cell(self.tbl2, row, start + i, default=default)
-=======
+
         for i, elevation in enumerate(self.elevations):
             self._set_combo_cell(self.tbl2, row, start + i, default=None)
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
+
 
     def _populate_table3_row(self, row: int):
         self._set_cell(self.tbl3, row, 0, "", bg=QColor("#e9eef5"), editable=False)
@@ -788,11 +776,9 @@ class FeasibilityAssessmentPage(BasePage):
         # 列布局（与原型一致）
         # 编号 | 水平面坐标(X,Y) | 井槽尺寸(OD,WT) | 支撑结构(OD,WT) | 垂向载荷Fz | 高程及连接形式(7列)
         base_cols = 1 + 2 + 2 + 2 + 1
-<<<<<<< HEAD
-        cols = base_cols + len(self.ELEVATIONS1)
-=======
+
         cols = base_cols + len(self.elevations)
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
+
 
         self.tbl1 = QTableWidget(header_rows + data_rows, cols, box)
         self._init_table_common(self.tbl1)
@@ -818,15 +804,11 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl1, 0, c, "垂向载荷", bg=self.HEADER_BG, bold=True, editable=False)
         c += 1
 
-<<<<<<< HEAD
-        self.tbl1.setSpan(0, c, 1, len(self.ELEVATIONS1))
-        self._set_cell(self.tbl1, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
-        for k in range(1, len(self.ELEVATIONS1)):
-=======
+
         self.tbl1.setSpan(0, c, 1, len(self.elevations))
         self._set_cell(self.tbl1, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
         for k in range(1, len(self.elevations)):
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
+
             self._set_cell(self.tbl1, 0, c+k, "", bg=self.HEADER_BG, editable=False)
 
         # --- 第1行：子表头 ---
@@ -842,11 +824,9 @@ class FeasibilityAssessmentPage(BasePage):
 
         self._set_cell(self.tbl1, 1, c, "Fz(kN)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
 
-<<<<<<< HEAD
-        for e in self.ELEVATIONS1:
-=======
+
         for e in self.elevations:
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
+
             self._set_cell(self.tbl1, 1, c, str(e), bg=self.SUBHDR_BG, bold=True, editable=False)
             c += 1
 
@@ -866,11 +846,9 @@ class FeasibilityAssessmentPage(BasePage):
 
             # 连接形式下拉
             start = base_cols
-<<<<<<< HEAD
-            for i, e in enumerate(self.ELEVATIONS1):
-=======
+
             for i, e in enumerate(self.elevations):
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
+
                 col = start + i
                 self._set_combo_cell(self.tbl1, rr, col, default=None)
 
@@ -879,11 +857,8 @@ class FeasibilityAssessmentPage(BasePage):
             [1, 2],  # X, Y
             [3, 4],  # 井槽尺寸 OD, WT
             [5, 6],  # 支撑结构 OD, WT
-<<<<<<< HEAD
-            list(range(8, 8 + len(self.ELEVATIONS1)))  # 高程列（可选，使所有高程列等宽）
-=======
+
             list(range(8, 8 + len(self.elevations)))  # 高程列（可选，使所有高程列等宽）
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
         ]
         self._auto_fit_columns(self.tbl1, padding=18, equal_width_groups=groups_tbl1)
 
@@ -928,11 +903,9 @@ class FeasibilityAssessmentPage(BasePage):
 
         # 编号 | 工作平面坐标(2) | 立管/电缆尺寸(2) | 支撑结构(2) | 倾斜度(2) | 高程及连接形式(7)
         base_cols = 1 + 2 + 2 + 2 + 2
-<<<<<<< HEAD
-        cols = base_cols + len(self.ELEVATIONS2)
-=======
+
         cols = base_cols + len(self.elevations)
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
+
 
         self.tbl2 = QTableWidget(header_rows + data_rows, cols, box)
         self._init_table_common(self.tbl2)
@@ -961,15 +934,11 @@ class FeasibilityAssessmentPage(BasePage):
         # self.tbl2.setSpan(0, c, 2, 1)
         # self._set_cell(self.tbl2, 0, c, "倾斜度", bg=self.HEADER_BG, bold=True, editable=False); c += 1
 
-<<<<<<< HEAD
-        self.tbl2.setSpan(0, c, 1, len(self.ELEVATIONS2))
-        self._set_cell(self.tbl2, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
-        for k in range(1, len(self.ELEVATIONS2)):
-=======
+
         self.tbl2.setSpan(0, c, 1, len(self.elevations))
         self._set_cell(self.tbl2, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
         for k in range(1, len(self.elevations)):
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
+
             self._set_cell(self.tbl2, 0, c+k, "", bg=self.HEADER_BG, editable=False)
 
         # 第1行子表头
@@ -987,11 +956,9 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl2, 1, c, "Y方向", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
 
         c = base_cols
-<<<<<<< HEAD
-        for e in self.ELEVATIONS2:
-=======
+
         for e in self.elevations:
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
+
             self._set_cell(self.tbl2, 1, c, str(e), bg=self.SUBHDR_BG, bold=True, editable=False)
             c += 1
 
@@ -1007,11 +974,9 @@ class FeasibilityAssessmentPage(BasePage):
             for c in range(1, base_cols):
                 self._set_cell(self.tbl2, rr, c, demo[r][c], bg=self.DATA_BG, editable=True)
             start = base_cols
-<<<<<<< HEAD
-            for i, e in enumerate(self.ELEVATIONS2):
-=======
+
             for i, e in enumerate(self.elevations):
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
+
                 col = start + i
                 self._set_combo_cell(self.tbl2, rr, col, default=None)
 
@@ -1021,11 +986,9 @@ class FeasibilityAssessmentPage(BasePage):
             [3, 4],  # 立管/电缆尺寸 OD, WT
             [5, 6],  # 支撑结构 OD, WT
             [7, 8],  # 倾斜度 X方向, Y方向
-<<<<<<< HEAD
-            list(range(9, 9 + len(self.ELEVATIONS2)))  # 高程列
-=======
+
             list(range(9, 9 + len(self.elevations)))  # 高程列
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
+
         ]
         self._auto_fit_columns(self.tbl2, padding=18, equal_width_groups=groups_tbl2)
 
