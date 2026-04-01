@@ -830,13 +830,25 @@ class PlatformStrengthPage(BasePage):
 
         if hasattr(self, "edt_workpoint"):
             self.edt_workpoint.editingFinished.connect(self._autoload_inp_to_view)
+
     def on_quick_evaluate(self):
         facility_code = self._get_top_value("facility_code") or "XXXX"
         title = f"{facility_code}平台强度/改造可行性评估"
 
+        # 直接使用当前页面已经统计好的水平层高程
+        levels = self._compute_horizontal_levels()
+        elevations = [z for z, occ, selected in levels]
+
         mw = self.window()
         if hasattr(mw, "tab_widget"):
+<<<<<<< HEAD
             key = f"feasibility_assessment::{facility_code}"
+=======
+            # 关键：把高程也放进 key，避免同一平台复用旧 tab
+            elev_key = ",".join(str(z) for z in elevations)
+            key = f"platform::{facility_code}::{elev_key}"
+
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
             if hasattr(mw, "page_tab_map") and key in mw.page_tab_map:
                 w = mw.page_tab_map[key]
                 idx = mw.tab_widget.indexOf(w)
@@ -844,9 +856,10 @@ class PlatformStrengthPage(BasePage):
                     mw.tab_widget.setCurrentIndex(idx)
                     return
 
-            page = FeasibilityAssessmentPage(mw, facility_code)
+            page = FeasibilityAssessmentPage(mw, facility_code, elevations=elevations)
             idx = mw.tab_widget.addTab(page, title)
             mw.tab_widget.setCurrentIndex(idx)
+
             if hasattr(mw, "page_tab_map"):
                 mw.page_tab_map[key] = page
         else:

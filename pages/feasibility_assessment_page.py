@@ -51,8 +51,12 @@ class FeasibilityAssessmentPage(BasePage):
     WC19-1DPPA平台强度/改造可行性评估（feasibility_assessment_page）
     """
     CONNECT_OPTIONS = ["焊接", "无连接", "导向连接"]
+<<<<<<< HEAD
     ELEVATIONS1 = [36, 31, 27, 23, 18, 7, -12, -34, -58, -83, -109]
     ELEVATIONS2 = [7, -12, -34, -58, -83, -109, -122.4]
+=======
+    # ELEVATIONS = [27, 23, 18, 7, -12, -34, -58]
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
 
     # 表头颜色
     HEADER_BG = QColor("#cfe4b5")   # 浅绿
@@ -89,7 +93,7 @@ class FeasibilityAssessmentPage(BasePage):
             }
         """
 
-    def __init__(self, main_window,facility_code, parent=None):
+    def __init__(self, main_window, facility_code, elevations=None, parent=None):
         if parent is None:
             parent = main_window
         super().__init__("", parent)
@@ -98,6 +102,10 @@ class FeasibilityAssessmentPage(BasePage):
         self._hover_combo_boxes = []
         self._combo_hover_meta = {}
         self._dynamic_table_meta = {}
+
+        # 动态高程，优先使用上一个页面传来的
+        self.elevations = list(elevations) if elevations is not None else []
+
         self._build_ui()
 
     # ---------------- UI ----------------
@@ -148,11 +156,16 @@ class FeasibilityAssessmentPage(BasePage):
         # body_layout.addStretch(1)
 
         # ========== 修改后 ==========
-        body_layout.addWidget(self._build_table_1(), 1)  # 权重设为1，允许表格组块纵向伸展填满留白
-        body_layout.addWidget(self._build_table_2(), 1)
-        body_layout.addWidget(self._build_table_3(), 1)
-
+        # body_layout.addWidget(self._build_table_1(), 1)  # 权重设为1，允许表格组块纵向伸展填满留白
+        # body_layout.addWidget(self._build_table_2(), 1)
+        # body_layout.addWidget(self._build_table_3(), 1)
+        #
+        # body_layout.addWidget(self._build_bottom_actions(), 0)
+        body_layout.addWidget(self._build_table_1(), 0)
+        body_layout.addWidget(self._build_table_2(), 0)
+        body_layout.addWidget(self._build_table_3(), 0)
         body_layout.addWidget(self._build_bottom_actions(), 0)
+        body_layout.addStretch(1)
 
     # ---------------- 通用表格风格 ----------------
     def _init_table_common(self, table: QTableWidget):
@@ -201,7 +214,7 @@ class FeasibilityAssessmentPage(BasePage):
         table.setItem(r, c, it)
         return it
 
-    def _set_combo_cell(self, table: QTableWidget, row: int, col: int, default: str = "无连接"):
+    def _set_combo_cell(self, table: QTableWidget, row: int, col: int, default: Optional[str] = None):
         cell_wrap = QWidget()
         cell_wrap.setStyleSheet("background: #ffffff; border: 1px solid #e6e6e6;")
         cell_lay = QHBoxLayout(cell_wrap)
@@ -211,12 +224,17 @@ class FeasibilityAssessmentPage(BasePage):
         combo = QComboBox(cell_wrap)
         combo.addItems(self.CONNECT_OPTIONS)
         combo.setFont(self._songti_small_four_font())
-        if default in self.CONNECT_OPTIONS:
+
+        if default and default in self.CONNECT_OPTIONS:
             combo.setCurrentText(default)
+        else:
+            combo.setCurrentIndex(-1)  # 不默认选中任何项
+
         combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         combo.setMinimumContentsLength(6)
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         combo.setProperty("showDropdownIndicator", False)
+
         arrow_btn = QPushButton("▼", cell_wrap)
         arrow_btn.setFixedWidth(18)
         arrow_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -234,15 +252,18 @@ class FeasibilityAssessmentPage(BasePage):
             """
         )
         arrow_btn.hide()
+
         combo.installEventFilter(self)
         cell_wrap.installEventFilter(self)
         arrow_btn.installEventFilter(self)
         combo.view().installEventFilter(self)
+
         self._hover_combo_boxes.append(combo)
         self._combo_hover_meta[combo] = {
             "wrap": cell_wrap,
             "button": arrow_btn,
         }
+
         self._apply_combo_hover_style(combo, show_indicator=False)
         cell_lay.addWidget(combo)
         cell_lay.addWidget(arrow_btn)
@@ -400,20 +421,32 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl1, row, 0, "", bg=QColor("#e9eef5"), editable=False)
         for col in range(1, base_cols):
             self.tbl1.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
+
         start = base_cols
+<<<<<<< HEAD
         for i, elevation in enumerate(self.ELEVATIONS1):
             default = "焊接" if elevation in (27, 23, 18) else "无连接"
             self._set_combo_cell(self.tbl1, row, start + i, default=default)
+=======
+        for i, elevation in enumerate(self.elevations):
+            self._set_combo_cell(self.tbl1, row, start + i, default=None)
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
 
     def _populate_table2_row(self, row: int):
         base_cols = 1 + 2 + 2 + 2 + 2
         self._set_cell(self.tbl2, row, 0, "", bg=QColor("#e9eef5"), editable=False)
         for col in range(1, base_cols):
             self.tbl2.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
+
         start = base_cols
+<<<<<<< HEAD
         for i, elevation in enumerate(self.ELEVATIONS2):
             default = "焊接" if elevation in (27, 23) else "无连接"
             self._set_combo_cell(self.tbl2, row, start + i, default=default)
+=======
+        for i, elevation in enumerate(self.elevations):
+            self._set_combo_cell(self.tbl2, row, start + i, default=None)
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
 
     def _populate_table3_row(self, row: int):
         self._set_cell(self.tbl3, row, 0, "", bg=QColor("#e9eef5"), editable=False)
@@ -427,6 +460,23 @@ class FeasibilityAssessmentPage(BasePage):
         table = meta["table"]
         row = table.rowCount()
         self._insert_dynamic_row_at(table_key, row)
+
+    def _refresh_table_scroll_height(self, table_key: str, max_height: int = 210):
+        meta = self._dynamic_table_meta.get(table_key)
+        if not meta:
+            return
+
+        scroll = meta.get("scroll")
+        table = meta.get("table")
+        if scroll is None or table is None:
+            return
+
+        hbar_h = scroll.horizontalScrollBar().sizeHint().height()
+        content_h = self._table_content_height(table) + hbar_h + 4
+        visible_h = min(content_h, max_height)
+
+        scroll.setMinimumHeight(visible_h)
+        scroll.setMaximumHeight(visible_h)
 
     def _insert_dynamic_row_at(self, table_key: str, row: int):
         meta = self._dynamic_table_meta.get(table_key)
@@ -450,6 +500,8 @@ class FeasibilityAssessmentPage(BasePage):
         self._renumber_dynamic_rows(table_key)
         self._update_hover_panel_position(table_key)
 
+        self._refresh_table_scroll_height(table_key)
+
     def _remove_dynamic_row(self, table_key: str):
         meta = self._dynamic_table_meta.get(table_key)
         if not meta:
@@ -461,6 +513,8 @@ class FeasibilityAssessmentPage(BasePage):
         table.removeRow(table.rowCount() - 1)
         self._renumber_dynamic_rows(table_key)
         self._update_hover_panel_position(table_key)
+
+        self._refresh_table_scroll_height(table_key)
 
     def _remove_dynamic_row_at(self, table_key: str, row: int):
         meta = self._dynamic_table_meta.get(table_key)
@@ -488,6 +542,8 @@ class FeasibilityAssessmentPage(BasePage):
         meta["context_row"] = None
         self._renumber_dynamic_rows(table_key)
         self._update_hover_panel_position(table_key)
+
+        self._refresh_table_scroll_height(table_key)
 
     def _show_row_context_menu(self, table_key: str, pos):
         meta = self._dynamic_table_meta.get(table_key)
@@ -655,6 +711,32 @@ class FeasibilityAssessmentPage(BasePage):
         print(f"表格 {id(table)} 总宽度 = {total_width}")
         print("=== 列宽计算完成 ===\n")
 
+    def _table_content_height(self, table: QTableWidget) -> int:
+        return sum(table.rowHeight(r) for r in range(table.rowCount())) + table.frameWidth() * 2 + 6
+
+    def _wrap_table_in_scroll(self, table: QTableWidget, max_height: int = 210) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setWidgetResizable(False)
+
+        # 滚动条由外层 scroll area 负责，不让 table 自己再出一套
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        scroll.setWidget(table)
+
+        hbar_h = scroll.horizontalScrollBar().sizeHint().height()
+        content_h = self._table_content_height(table) + hbar_h + 4
+        visible_h = min(content_h, max_height)
+
+        scroll.setMinimumHeight(visible_h)
+        scroll.setMaximumHeight(visible_h)
+        return scroll
+
     def _make_save_button(self) -> QPushButton:
         btn = QPushButton("保存")
         btn.setFixedSize(90, 28)
@@ -706,7 +788,11 @@ class FeasibilityAssessmentPage(BasePage):
         # 列布局（与原型一致）
         # 编号 | 水平面坐标(X,Y) | 井槽尺寸(OD,WT) | 支撑结构(OD,WT) | 垂向载荷Fz | 高程及连接形式(7列)
         base_cols = 1 + 2 + 2 + 2 + 1
+<<<<<<< HEAD
         cols = base_cols + len(self.ELEVATIONS1)
+=======
+        cols = base_cols + len(self.elevations)
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
 
         self.tbl1 = QTableWidget(header_rows + data_rows, cols, box)
         self._init_table_common(self.tbl1)
@@ -732,9 +818,15 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl1, 0, c, "垂向载荷", bg=self.HEADER_BG, bold=True, editable=False)
         c += 1
 
+<<<<<<< HEAD
         self.tbl1.setSpan(0, c, 1, len(self.ELEVATIONS1))
         self._set_cell(self.tbl1, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
         for k in range(1, len(self.ELEVATIONS1)):
+=======
+        self.tbl1.setSpan(0, c, 1, len(self.elevations))
+        self._set_cell(self.tbl1, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
+        for k in range(1, len(self.elevations)):
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
             self._set_cell(self.tbl1, 0, c+k, "", bg=self.HEADER_BG, editable=False)
 
         # --- 第1行：子表头 ---
@@ -750,7 +842,11 @@ class FeasibilityAssessmentPage(BasePage):
 
         self._set_cell(self.tbl1, 1, c, "Fz(kN)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
 
+<<<<<<< HEAD
         for e in self.ELEVATIONS1:
+=======
+        for e in self.elevations:
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
             self._set_cell(self.tbl1, 1, c, str(e), bg=self.SUBHDR_BG, bold=True, editable=False)
             c += 1
 
@@ -770,17 +866,24 @@ class FeasibilityAssessmentPage(BasePage):
 
             # 连接形式下拉
             start = base_cols
+<<<<<<< HEAD
             for i, e in enumerate(self.ELEVATIONS1):
+=======
+            for i, e in enumerate(self.elevations):
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
                 col = start + i
-                default = "焊接" if e in (27, 23, 18) else "无连接"
-                self._set_combo_cell(self.tbl1, rr, col, default=default)
+                self._set_combo_cell(self.tbl1, rr, col, default=None)
 
         # 在 _build_table_1 中，调用 _auto_fit_columns 之前定义分组
         groups_tbl1 = [
             [1, 2],  # X, Y
             [3, 4],  # 井槽尺寸 OD, WT
             [5, 6],  # 支撑结构 OD, WT
+<<<<<<< HEAD
             list(range(8, 8 + len(self.ELEVATIONS1)))  # 高程列（可选，使所有高程列等宽）
+=======
+            list(range(8, 8 + len(self.elevations)))  # 高程列（可选，使所有高程列等宽）
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
         ]
         self._auto_fit_columns(self.tbl1, padding=18, equal_width_groups=groups_tbl1)
 
@@ -795,10 +898,17 @@ class FeasibilityAssessmentPage(BasePage):
         # lay.addWidget(table_scroll, 1)  # 原来 lay.addWidget(self.tbl1, 1) 替换为滚动区域
 
         # === 2. 替换为直接添加表格，并明确启用表格自身的滚动条 ===
-        self.tbl1.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.tbl1.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # self.tbl1.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # self.tbl1.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # self._install_row_hover_actions(self.tbl1, "tbl1", header_rows)
+        # lay.addWidget(self.tbl1, 1)
         self._install_row_hover_actions(self.tbl1, "tbl1", header_rows)
-        lay.addWidget(self.tbl1, 1)
+
+        tbl1_scroll = self._wrap_table_in_scroll(self.tbl1, max_height=210)
+        lay.addWidget(tbl1_scroll, 0)
+
+        # 保存一下，后面新增/删除行时可以刷新高度
+        self._dynamic_table_meta["tbl1"]["scroll"] = tbl1_scroll
 
         #lay.addWidget(self.tbl1, 1)
         return box
@@ -818,7 +928,11 @@ class FeasibilityAssessmentPage(BasePage):
 
         # 编号 | 工作平面坐标(2) | 立管/电缆尺寸(2) | 支撑结构(2) | 倾斜度(2) | 高程及连接形式(7)
         base_cols = 1 + 2 + 2 + 2 + 2
+<<<<<<< HEAD
         cols = base_cols + len(self.ELEVATIONS2)
+=======
+        cols = base_cols + len(self.elevations)
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
 
         self.tbl2 = QTableWidget(header_rows + data_rows, cols, box)
         self._init_table_common(self.tbl2)
@@ -847,9 +961,15 @@ class FeasibilityAssessmentPage(BasePage):
         # self.tbl2.setSpan(0, c, 2, 1)
         # self._set_cell(self.tbl2, 0, c, "倾斜度", bg=self.HEADER_BG, bold=True, editable=False); c += 1
 
+<<<<<<< HEAD
         self.tbl2.setSpan(0, c, 1, len(self.ELEVATIONS2))
         self._set_cell(self.tbl2, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
         for k in range(1, len(self.ELEVATIONS2)):
+=======
+        self.tbl2.setSpan(0, c, 1, len(self.elevations))
+        self._set_cell(self.tbl2, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
+        for k in range(1, len(self.elevations)):
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
             self._set_cell(self.tbl2, 0, c+k, "", bg=self.HEADER_BG, editable=False)
 
         # 第1行子表头
@@ -867,7 +987,11 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl2, 1, c, "Y方向", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
 
         c = base_cols
+<<<<<<< HEAD
         for e in self.ELEVATIONS2:
+=======
+        for e in self.elevations:
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
             self._set_cell(self.tbl2, 1, c, str(e), bg=self.SUBHDR_BG, bold=True, editable=False)
             c += 1
 
@@ -883,10 +1007,13 @@ class FeasibilityAssessmentPage(BasePage):
             for c in range(1, base_cols):
                 self._set_cell(self.tbl2, rr, c, demo[r][c], bg=self.DATA_BG, editable=True)
             start = base_cols
+<<<<<<< HEAD
             for i, e in enumerate(self.ELEVATIONS2):
+=======
+            for i, e in enumerate(self.elevations):
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
                 col = start + i
-                default = "焊接" if e in (27, 23) else "无连接"
-                self._set_combo_cell(self.tbl2, rr, col, default=default)
+                self._set_combo_cell(self.tbl2, rr, col, default=None)
 
 
         groups_tbl2 = [
@@ -894,7 +1021,11 @@ class FeasibilityAssessmentPage(BasePage):
             [3, 4],  # 立管/电缆尺寸 OD, WT
             [5, 6],  # 支撑结构 OD, WT
             [7, 8],  # 倾斜度 X方向, Y方向
+<<<<<<< HEAD
             list(range(9, 9 + len(self.ELEVATIONS2)))  # 高程列
+=======
+            list(range(9, 9 + len(self.elevations)))  # 高程列
+>>>>>>> cfc0c65 (更新页面并新增渲染脚本)
         ]
         self._auto_fit_columns(self.tbl2, padding=18, equal_width_groups=groups_tbl2)
 
@@ -907,10 +1038,17 @@ class FeasibilityAssessmentPage(BasePage):
         # lay.addWidget
 
         # === 2. 替换为直接添加表格，并明确启用表格自身的滚动条 ===
-        self.tbl2.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.tbl2.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # self.tbl2.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # self.tbl2.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # self._install_row_hover_actions(self.tbl2, "tbl2", header_rows)
+        # lay.addWidget(self.tbl2, 1)
+
         self._install_row_hover_actions(self.tbl2, "tbl2", header_rows)
-        lay.addWidget(self.tbl2, 1)
+
+        tbl2_scroll = self._wrap_table_in_scroll(self.tbl2, max_height=210)
+        lay.addWidget(tbl2_scroll, 0)
+
+        self._dynamic_table_meta["tbl2"]["scroll"] = tbl2_scroll
         #lay.addWidget(self.tbl2, 1)
         return box
 
@@ -1214,3 +1352,4 @@ class FeasibilityAssessmentPage(BasePage):
 
     def _open_local_file(self, path: str) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
