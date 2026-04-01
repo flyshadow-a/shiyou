@@ -836,7 +836,7 @@ class PlatformStrengthPage(BasePage):
 
         mw = self.window()
         if hasattr(mw, "tab_widget"):
-            key = f"platform::{facility_code}"
+            key = f"feasibility_assessment::{facility_code}"
             if hasattr(mw, "page_tab_map") and key in mw.page_tab_map:
                 w = mw.page_tab_map[key]
                 idx = mw.tab_widget.indexOf(w)

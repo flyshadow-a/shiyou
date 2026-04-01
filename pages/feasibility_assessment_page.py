@@ -51,7 +51,8 @@ class FeasibilityAssessmentPage(BasePage):
     WC19-1DPPA平台强度/改造可行性评估（feasibility_assessment_page）
     """
     CONNECT_OPTIONS = ["焊接", "无连接", "导向连接"]
-    ELEVATIONS = [27, 23, 18, 7, -12, -34, -58]
+    ELEVATIONS1 = [36, 31, 27, 23, 18, 7, -12, -34, -58, -83, -109]
+    ELEVATIONS2 = [7, -12, -34, -58, -83, -109, -122.4]
 
     # 表头颜色
     HEADER_BG = QColor("#cfe4b5")   # 浅绿
@@ -400,7 +401,7 @@ class FeasibilityAssessmentPage(BasePage):
         for col in range(1, base_cols):
             self.tbl1.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
         start = base_cols
-        for i, elevation in enumerate(self.ELEVATIONS):
+        for i, elevation in enumerate(self.ELEVATIONS1):
             default = "焊接" if elevation in (27, 23, 18) else "无连接"
             self._set_combo_cell(self.tbl1, row, start + i, default=default)
 
@@ -410,7 +411,7 @@ class FeasibilityAssessmentPage(BasePage):
         for col in range(1, base_cols):
             self.tbl2.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
         start = base_cols
-        for i, elevation in enumerate(self.ELEVATIONS):
+        for i, elevation in enumerate(self.ELEVATIONS2):
             default = "焊接" if elevation in (27, 23) else "无连接"
             self._set_combo_cell(self.tbl2, row, start + i, default=default)
 
@@ -705,7 +706,7 @@ class FeasibilityAssessmentPage(BasePage):
         # 列布局（与原型一致）
         # 编号 | 水平面坐标(X,Y) | 井槽尺寸(OD,WT) | 支撑结构(OD,WT) | 垂向载荷Fz | 高程及连接形式(7列)
         base_cols = 1 + 2 + 2 + 2 + 1
-        cols = base_cols + len(self.ELEVATIONS)
+        cols = base_cols + len(self.ELEVATIONS1)
 
         self.tbl1 = QTableWidget(header_rows + data_rows, cols, box)
         self._init_table_common(self.tbl1)
@@ -731,9 +732,9 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl1, 0, c, "垂向载荷", bg=self.HEADER_BG, bold=True, editable=False)
         c += 1
 
-        self.tbl1.setSpan(0, c, 1, len(self.ELEVATIONS))
+        self.tbl1.setSpan(0, c, 1, len(self.ELEVATIONS1))
         self._set_cell(self.tbl1, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
-        for k in range(1, len(self.ELEVATIONS)):
+        for k in range(1, len(self.ELEVATIONS1)):
             self._set_cell(self.tbl1, 0, c+k, "", bg=self.HEADER_BG, editable=False)
 
         # --- 第1行：子表头 ---
@@ -749,7 +750,7 @@ class FeasibilityAssessmentPage(BasePage):
 
         self._set_cell(self.tbl1, 1, c, "Fz(kN)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
 
-        for e in self.ELEVATIONS:
+        for e in self.ELEVATIONS1:
             self._set_cell(self.tbl1, 1, c, str(e), bg=self.SUBHDR_BG, bold=True, editable=False)
             c += 1
 
@@ -769,7 +770,7 @@ class FeasibilityAssessmentPage(BasePage):
 
             # 连接形式下拉
             start = base_cols
-            for i, e in enumerate(self.ELEVATIONS):
+            for i, e in enumerate(self.ELEVATIONS1):
                 col = start + i
                 default = "焊接" if e in (27, 23, 18) else "无连接"
                 self._set_combo_cell(self.tbl1, rr, col, default=default)
@@ -779,7 +780,7 @@ class FeasibilityAssessmentPage(BasePage):
             [1, 2],  # X, Y
             [3, 4],  # 井槽尺寸 OD, WT
             [5, 6],  # 支撑结构 OD, WT
-            list(range(8, 8 + len(self.ELEVATIONS)))  # 高程列（可选，使所有高程列等宽）
+            list(range(8, 8 + len(self.ELEVATIONS1)))  # 高程列（可选，使所有高程列等宽）
         ]
         self._auto_fit_columns(self.tbl1, padding=18, equal_width_groups=groups_tbl1)
 
@@ -817,7 +818,7 @@ class FeasibilityAssessmentPage(BasePage):
 
         # 编号 | 工作平面坐标(2) | 立管/电缆尺寸(2) | 支撑结构(2) | 倾斜度(2) | 高程及连接形式(7)
         base_cols = 1 + 2 + 2 + 2 + 2
-        cols = base_cols + len(self.ELEVATIONS)
+        cols = base_cols + len(self.ELEVATIONS2)
 
         self.tbl2 = QTableWidget(header_rows + data_rows, cols, box)
         self._init_table_common(self.tbl2)
@@ -846,9 +847,9 @@ class FeasibilityAssessmentPage(BasePage):
         # self.tbl2.setSpan(0, c, 2, 1)
         # self._set_cell(self.tbl2, 0, c, "倾斜度", bg=self.HEADER_BG, bold=True, editable=False); c += 1
 
-        self.tbl2.setSpan(0, c, 1, len(self.ELEVATIONS))
+        self.tbl2.setSpan(0, c, 1, len(self.ELEVATIONS2))
         self._set_cell(self.tbl2, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
-        for k in range(1, len(self.ELEVATIONS)):
+        for k in range(1, len(self.ELEVATIONS2)):
             self._set_cell(self.tbl2, 0, c+k, "", bg=self.HEADER_BG, editable=False)
 
         # 第1行子表头
@@ -866,7 +867,7 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl2, 1, c, "Y方向", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
 
         c = base_cols
-        for e in self.ELEVATIONS:
+        for e in self.ELEVATIONS2:
             self._set_cell(self.tbl2, 1, c, str(e), bg=self.SUBHDR_BG, bold=True, editable=False)
             c += 1
 
@@ -882,7 +883,7 @@ class FeasibilityAssessmentPage(BasePage):
             for c in range(1, base_cols):
                 self._set_cell(self.tbl2, rr, c, demo[r][c], bg=self.DATA_BG, editable=True)
             start = base_cols
-            for i, e in enumerate(self.ELEVATIONS):
+            for i, e in enumerate(self.ELEVATIONS2):
                 col = start + i
                 default = "焊接" if e in (27, 23) else "无连接"
                 self._set_combo_cell(self.tbl2, rr, col, default=default)
@@ -893,7 +894,7 @@ class FeasibilityAssessmentPage(BasePage):
             [3, 4],  # 立管/电缆尺寸 OD, WT
             [5, 6],  # 支撑结构 OD, WT
             [7, 8],  # 倾斜度 X方向, Y方向
-            list(range(9, 9 + len(self.ELEVATIONS)))  # 高程列
+            list(range(9, 9 + len(self.ELEVATIONS2)))  # 高程列
         ]
         self._auto_fit_columns(self.tbl2, padding=18, equal_width_groups=groups_tbl2)
 
@@ -1167,8 +1168,14 @@ class FeasibilityAssessmentPage(BasePage):
         mw = self.window()
         if hasattr(mw, "tab_widget"):
             # 去重：同一个设施编码只开一个
-            key = f"platform::{self.facility_code}"
-
+            key = f"feasibility_results::{self.facility_code}"
+            #补全去重跳转逻辑，防止多次点击"查看结果"打开无数个重复的 Tab
+            if hasattr(mw, "page_tab_map") and key in mw.page_tab_map:
+                w = mw.page_tab_map[key]
+                idx = mw.tab_widget.indexOf(w)
+                if idx != -1:
+                    mw.tab_widget.setCurrentIndex(idx)
+                    return
             page = FeasibilityAssessmentResultsPage(mw, self.facility_code)
             idx = mw.tab_widget.addTab(page, title)
             mw.tab_widget.setCurrentIndex(idx)
