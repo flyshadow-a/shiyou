@@ -34,7 +34,7 @@ from base_page import BasePage
 from dropdown_bar import DropdownBar
 from pages.feasibility_assessment_page import FeasibilityAssessmentPage
 from pages.read_table_xls import ReadTableXls
-
+from collections import Counter
 
 class PyVistaSacsView(QFrame):
     COLOR_SCHEME = {
@@ -118,7 +118,7 @@ class PyVistaSacsView(QFrame):
 
         self.plotter.render()
 
-    def load_inp(self, file_path: str):
+    def load_inp(self, file_path: str, target_z: float = 9.1):
         self._loaded_path = file_path
 
         nodes, members, groups_od = self.parse_sacs_full_robust(file_path)
@@ -131,7 +131,7 @@ class PyVistaSacsView(QFrame):
             return
 
         leg_joints, tubular_joints = self.apply_pdf_logic_diagnostic(
-            self._nodes, self._members, self._groups_od, target_z=8.5
+            self._nodes, self._members, self._groups_od, target_z=target_z
         )
 
         self.render_structure(self._nodes, self._members, leg_joints, tubular_joints)
@@ -674,6 +674,106 @@ class PlatformStrengthPage(BasePage):
         except Exception:
             return ""
 
+    def _safe_int(self, text: str, default: int) -> int:
+        try:
+            return int(float((text or "").strip()))
+        except Exception:
+            return default
+
+    def _safe_float(self, text: str, default: float) -> float:
+        try:
+            return float((text or "").strip())
+        except Exception:
+            return default
+
+    def _get_level_threshold(self) -> int:
+        if not hasattr(self, "edt_node_limit"):
+            return 40
+        return self._safe_int(self.edt_node_limit.text(), 40)
+
+    def _get_workpoint_value(self) -> float:
+        if not hasattr(self, "edt_workpoint"):
+            return 9.1
+        return self._safe_float(self.edt_workpoint.text(), 9.1)
+
+    def _compute_horizontal_levels(self) -> List[Tuple[float, int, bool]]:
+        """
+        返回 [(z, occurrence, selected), ...]
+        """
+        nodes = getattr(self.inp_view, "_nodes", {}) if hasattr(self, "inp_view") else {}
+        if not nodes:
+            return []
+
+        threshold = self._get_level_threshold()
+
+        # 为了避免浮点微小误差，把 Z 统一到 3 位小数
+        counter = Counter()
+        for coord in nodes.values():
+            if coord is None or len(coord) < 3:
+                continue
+            z = coord[2]
+            if z is None:
+                continue
+            z_key = round(float(z), 3)
+            counter[z_key] += 1
+
+        # 这里保持和你前面 VBA/Python 思路一致：节点数大于阈值才算水平层
+        levels = [(z, occ, True) for z, occ in counter.items() if occ > threshold]
+        levels.sort(key=lambda x: x[0], reverse=True)
+        return levels
+
+    def _refresh_layers_table(self):
+        if not hasattr(self, "tbl_layers"):
+            return
+
+        levels = self._compute_horizontal_levels()
+
+        col_count = max(1, len(levels) + 1)  # 第0列是行标题
+        self.tbl_layers.setColumnCount(col_count)
+
+        headers = ["编号"] + [str(i) for i in range(1, col_count)]
+        self.tbl_layers.setHorizontalHeaderLabels(headers)
+
+        self._set_center_item(self.tbl_layers, 0, 0, "Z(m)", editable=False)
+        self._set_center_item(self.tbl_layers, 1, 0, "节点数量", editable=False)
+        self._set_center_item(self.tbl_layers, 2, 0, "是否水平层", editable=False)
+
+        # 清空旧数据
+        for c in range(1, col_count):
+            for r in range(3):
+                self._set_center_item(self.tbl_layers, r, c, "", editable=(r != 2))
+
+        # 回填动态结果
+        for i, (z, occ, selected) in enumerate(levels, start=1):
+            z_text = f"{z:.3f}".rstrip("0").rstrip(".")
+            self._set_center_item(self.tbl_layers, 0, i, z_text)
+            self._set_center_item(self.tbl_layers, 1, i, str(occ))
+            self._set_center_item(self.tbl_layers, 2, i, "✓" if selected else "×", editable=False)
+
+        # ===== 自适应列宽：少列铺满，多列滚动 =====
+        self.tbl_layers.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
+
+        first_col_width = 95  # 左侧标题列
+        base_data_width = 78  # 之前你想保留的列宽感觉
+        self.tbl_layers.setColumnWidth(0, first_col_width)
+
+        data_cols = col_count - 1
+        if data_cols > 0:
+            # 当前表格可用宽度
+            available_width = self.tbl_layers.viewport().width() - first_col_width - 4
+
+            # 如果按“基础宽度”能放下，就把多余空间均分给每一列，减少空白
+            if data_cols * base_data_width <= available_width and available_width > 0:
+                auto_width = max(base_data_width, available_width // data_cols)
+                for c in range(1, col_count):
+                    self.tbl_layers.setColumnWidth(c, auto_width)
+            else:
+                # 放不下时，恢复基础宽度，交给横向滚动条
+                for c in range(1, col_count):
+                    self.tbl_layers.setColumnWidth(c, base_data_width)
+
+        self.tbl_layers.viewport().update()
+
     # ---------------- UI ----------------
     def _build_ui(self):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -725,6 +825,11 @@ class PlatformStrengthPage(BasePage):
         right = self._build_inp_view_panel()
         center_layout.addWidget(right, 4)
 
+        if hasattr(self, "edt_node_limit"):
+            self.edt_node_limit.editingFinished.connect(self._refresh_layers_table)
+
+        if hasattr(self, "edt_workpoint"):
+            self.edt_workpoint.editingFinished.connect(self._autoload_inp_to_view)
     def on_quick_evaluate(self):
         facility_code = self._get_top_value("facility_code") or "XXXX"
         title = f"{facility_code}平台强度/改造可行性评估"
@@ -966,10 +1071,12 @@ class PlatformStrengthPage(BasePage):
                 "未找到可解析的 SACS 结构模型文件\n"
                 "请先上传文件名以 sacinp 开头（或扩展名为 .sacinp）的模型文件"
             )
+            self._refresh_layers_table()
             return
 
         try:
-            self.inp_view.load_inp(path)
+            target_z = self._get_workpoint_value()
+            self.inp_view.load_inp(path, target_z=target_z)
             self.inp_view.reset_pan_state()
 
             if hasattr(self, "slider_h"):
@@ -984,12 +1091,18 @@ class PlatformStrengthPage(BasePage):
 
             self.inp_path_label.setText(f"当前模型文件：{path}")
 
+            # 泥面高程：默认从模型读取，但用户仍可手改
             mud_level = self._parse_mud_level_from_sacinp(path)
             if mud_level and hasattr(self, "edt_mud_level"):
                 self.edt_mud_level.setText(mud_level)
+
+            # 动态生成水平层高程表
+            self._refresh_layers_table()
+
         except Exception as e:
             self.inp_path_label.setText("模型加载失败")
             self.inp_view.clear_view(f"INP 加载失败：\n{e}")
+            self._refresh_layers_table()
 
     # ---------------- 左侧表格 ----------------
     def _build_structure_model_kv_table(self) -> QTableWidget:
@@ -1018,7 +1131,7 @@ class PlatformStrengthPage(BasePage):
         self._set_center_item(tbl, 1, 2, "", editable=False)
 
         self._set_center_item(tbl, 2, 0, "工作平面高程Workpoint", editable=False)
-        self.edt_workpoint = QLineEdit("") # 用户输入，初始为空
+        self.edt_workpoint = QLineEdit("9.1") # 用户输入，初始为空
         self.edt_workpoint.setFont(self._songti_small_four_font())
         tbl.setCellWidget(2, 1, self.edt_workpoint)
         self._set_center_item(tbl, 2, 2, "m", editable=False)
@@ -1061,48 +1174,42 @@ class PlatformStrengthPage(BasePage):
         lab_layers.setStyleSheet("color: #1d2b3a;")
         box_layout.addWidget(lab_layers, 0)
 
-        self.tbl_layers = QTableWidget(3, 10, box)
+        self.tbl_layers = QTableWidget(3, 1, box)
         self.tbl_layers.setFocusPolicy(Qt.NoFocus)
-        self.tbl_layers.setHorizontalHeaderLabels(["编号"] + [str(i) for i in range(1, 10)])
         self._init_table_common(self.tbl_layers, show_vertical_header=False)
-        self.tbl_layers.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.tbl_layers.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self._set_center_item(self.tbl_layers, 0, 0, "Z(m)", editable=False)
         self._set_center_item(self.tbl_layers, 1, 0, "节点数量", editable=False)
         self._set_center_item(self.tbl_layers, 2, 0, "是否水平层", editable=False)
 
-        demo_z = ["36", "31", "27", "23", "18", "7", "10", "15", "20"]
-        demo_n = ["1", "412", "191", "456", "289", "85", "74", "62", "87"]
-        demo_h = ["✓", "✓", "✓", "✓", "✓", "✓", "✓", "✓", "✓"]
-        for i in range(9):
-            self._set_center_item(self.tbl_layers, 0, i + 1, demo_z[i])
-            self._set_center_item(self.tbl_layers, 1, i + 1, demo_n[i])
-            self._set_center_item(self.tbl_layers, 2, i + 1, demo_h[i], editable=False)
-
         for r in range(3):
             self.tbl_layers.setRowHeight(r, 30)
 
         self.tbl_layers.cellClicked.connect(self._on_layers_cell_clicked)
-        self.tbl_layers.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tbl_layers.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+
+        # 关键：允许横向滚动
+        self.tbl_layers.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tbl_layers.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        self.tbl_layers.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.tbl_layers.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
 
-        layer_header_h = self.tbl_layers.horizontalHeader().height() if not self.tbl_layers.horizontalHeader().isHidden() else 0
-        layer_rows_h = sum(self.tbl_layers.rowHeight(r) for r in range(self.tbl_layers.rowCount()))
-        layer_tbl_h = layer_header_h + layer_rows_h + self.tbl_layers.frameWidth() * 2 + 2
-        self.tbl_layers.setFixedHeight(layer_tbl_h + 2)
-        self.tbl_layers.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.tbl_layers.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 高度要给滚动条留空间
+        self.tbl_layers.setFixedHeight(140)
+
         box_layout.addWidget(self.tbl_layers, 1)
 
         margins = box_layout.contentsMargins()
+        layer_tbl_h = self.tbl_layers.height()
+
         total_h = (
-            margins.top() + margins.bottom()
-            + kv_tbl.height()
-            + lab_layers.sizeHint().height()
-            + layer_tbl_h
-            + box_layout.spacing() * 2
-            + 18
+                margins.top() + margins.bottom()
+                + kv_tbl.height()
+                + lab_layers.sizeHint().height()
+                + layer_tbl_h
+                + box_layout.spacing() * 2
+                + 18
         )
         box.setFixedHeight(total_h)
         box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
