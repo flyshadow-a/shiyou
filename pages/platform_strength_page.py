@@ -841,14 +841,12 @@ class PlatformStrengthPage(BasePage):
 
         mw = self.window()
         if hasattr(mw, "tab_widget"):
-<<<<<<< HEAD
-            key = f"feasibility_assessment::{facility_code}"
-=======
+
             # 关键：把高程也放进 key，避免同一平台复用旧 tab
             elev_key = ",".join(str(z) for z in elevations)
             key = f"platform::{facility_code}::{elev_key}"
 
->>>>>>> cfc0c65 (更新页面并新增渲染脚本)
+
             if hasattr(mw, "page_tab_map") and key in mw.page_tab_map:
                 w = mw.page_tab_map[key]
                 idx = mw.tab_widget.indexOf(w)
