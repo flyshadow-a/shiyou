@@ -54,9 +54,8 @@ class FeasibilityAssessmentPage(BasePage):
     WC19-1DPPA平台强度/改造可行性评估（feasibility_assessment_page）
     """
     CONNECT_OPTIONS = ["焊接", "无连接", "导向连接"]
-
-    # ELEVATIONS = [27, 23, 18, 7, -12, -34, -58]
-
+    LEGACY_ELEVATIONS1 = [36, 31, 27, 23, 18, 7, -12, -34, -58, -83, -109]
+    LEGACY_ELEVATIONS2 = [7, -12, -34, -58, -83, -109, -122.4]
 
     # 表头颜色
     HEADER_BG = QColor("#cfe4b5")   # 浅绿
@@ -112,6 +111,14 @@ class FeasibilityAssessmentPage(BasePage):
         ).strip()
 
         self.elevations = list(elevations) if elevations is not None else []
+        self._use_dynamic_elevations = bool(elevations)
+        if self._use_dynamic_elevations:
+            dynamic_elevations = list(elevations or [])
+            self.table1_elevations = dynamic_elevations
+            self.table2_elevations = list(dynamic_elevations)
+        else:
+            self.table1_elevations = list(self.LEGACY_ELEVATIONS1)
+            self.table2_elevations = list(self.LEGACY_ELEVATIONS2)
 
         self._build_ui()
 
@@ -430,9 +437,11 @@ class FeasibilityAssessmentPage(BasePage):
             self.tbl1.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
 
         start = base_cols
-
-        for i, elevation in enumerate(self.elevations):
-            self._set_combo_cell(self.tbl1, row, start + i, default=None)
+        for i, elevation in enumerate(self.table1_elevations):
+            default = None
+            if not self._use_dynamic_elevations:
+                default = "焊接" if elevation in (27, 23, 18) else "无连接"
+            self._set_combo_cell(self.tbl1, row, start + i, default=default)
 
     def _populate_table2_row(self, row: int):
         base_cols = 1 + 2 + 2 + 2 + 2
@@ -441,10 +450,11 @@ class FeasibilityAssessmentPage(BasePage):
             self.tbl2.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
 
         start = base_cols
-
-        for i, elevation in enumerate(self.elevations):
-            self._set_combo_cell(self.tbl2, row, start + i, default=None)
-
+        for i, elevation in enumerate(self.table2_elevations):
+            default = None
+            if not self._use_dynamic_elevations:
+                default = "焊接" if elevation in (27, 23) else "无连接"
+            self._set_combo_cell(self.tbl2, row, start + i, default=default)
 
     def _populate_table3_row(self, row: int):
         self._set_cell(self.tbl3, row, 0, "", bg=QColor("#e9eef5"), editable=False)
@@ -724,11 +734,11 @@ class FeasibilityAssessmentPage(BasePage):
         scroll.setWidgetResizable(False)
 
         # 滚动条由外层 scroll area 负责，不让 table 自己再出一套
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         scroll.setWidget(table)
@@ -792,9 +802,7 @@ class FeasibilityAssessmentPage(BasePage):
         # 列布局（与原型一致）
         # 编号 | 水平面坐标(X,Y) | 井槽尺寸(OD,WT) | 支撑结构(OD,WT) | 垂向载荷Fz | 高程及连接形式(7列)
         base_cols = 1 + 2 + 2 + 2 + 1
-
-        cols = base_cols + len(self.elevations)
-
+        cols = base_cols + len(self.table1_elevations)
 
         self.tbl1 = QTableWidget(header_rows + data_rows, cols, box)
         self._init_table_common(self.tbl1)
@@ -820,11 +828,9 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl1, 0, c, "垂向载荷", bg=self.HEADER_BG, bold=True, editable=False)
         c += 1
 
-
-        self.tbl1.setSpan(0, c, 1, len(self.elevations))
+        self.tbl1.setSpan(0, c, 1, len(self.table1_elevations))
         self._set_cell(self.tbl1, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
-        for k in range(1, len(self.elevations)):
-
+        for k in range(1, len(self.table1_elevations)):
             self._set_cell(self.tbl1, 0, c+k, "", bg=self.HEADER_BG, editable=False)
 
         # --- 第1行：子表头 ---
@@ -840,9 +846,7 @@ class FeasibilityAssessmentPage(BasePage):
 
         self._set_cell(self.tbl1, 1, c, "Fz(kN)", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
 
-
-        for e in self.elevations:
-
+        for e in self.table1_elevations:
             self._set_cell(self.tbl1, 1, c, str(e), bg=self.SUBHDR_BG, bold=True, editable=False)
             c += 1
 
@@ -862,19 +866,19 @@ class FeasibilityAssessmentPage(BasePage):
 
             # 连接形式下拉
             start = base_cols
-
-            for i, e in enumerate(self.elevations):
-
+            for i, e in enumerate(self.table1_elevations):
                 col = start + i
-                self._set_combo_cell(self.tbl1, rr, col, default=None)
+                default = None
+                if not self._use_dynamic_elevations:
+                    default = "焊接" if e in (27, 23, 18) else "无连接"
+                self._set_combo_cell(self.tbl1, rr, col, default=default)
 
         # 在 _build_table_1 中，调用 _auto_fit_columns 之前定义分组
         groups_tbl1 = [
             [1, 2],  # X, Y
             [3, 4],  # 井槽尺寸 OD, WT
             [5, 6],  # 支撑结构 OD, WT
-
-            list(range(8, 8 + len(self.elevations)))  # 高程列（可选，使所有高程列等宽）
+            list(range(8, 8 + len(self.table1_elevations)))  # 高程列（可选，使所有高程列等宽）
         ]
         self._auto_fit_columns(self.tbl1, padding=18, equal_width_groups=groups_tbl1)
 
@@ -919,9 +923,7 @@ class FeasibilityAssessmentPage(BasePage):
 
         # 编号 | 工作平面坐标(2) | 立管/电缆尺寸(2) | 支撑结构(2) | 倾斜度(2) | 高程及连接形式(7)
         base_cols = 1 + 2 + 2 + 2 + 2
-
-        cols = base_cols + len(self.elevations)
-
+        cols = base_cols + len(self.table2_elevations)
 
         self.tbl2 = QTableWidget(header_rows + data_rows, cols, box)
         self._init_table_common(self.tbl2)
@@ -950,11 +952,9 @@ class FeasibilityAssessmentPage(BasePage):
         # self.tbl2.setSpan(0, c, 2, 1)
         # self._set_cell(self.tbl2, 0, c, "倾斜度", bg=self.HEADER_BG, bold=True, editable=False); c += 1
 
-
-        self.tbl2.setSpan(0, c, 1, len(self.elevations))
+        self.tbl2.setSpan(0, c, 1, len(self.table2_elevations))
         self._set_cell(self.tbl2, 0, c, "高程及连接形式", bg=self.HEADER_BG, bold=True, editable=False)
-        for k in range(1, len(self.elevations)):
-
+        for k in range(1, len(self.table2_elevations)):
             self._set_cell(self.tbl2, 0, c+k, "", bg=self.HEADER_BG, editable=False)
 
         # 第1行子表头
@@ -972,9 +972,7 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl2, 1, c, "Y方向", bg=self.SUBHDR_BG, bold=True, editable=False); c += 1
 
         c = base_cols
-
-        for e in self.elevations:
-
+        for e in self.table2_elevations:
             self._set_cell(self.tbl2, 1, c, str(e), bg=self.SUBHDR_BG, bold=True, editable=False)
             c += 1
 
@@ -990,11 +988,12 @@ class FeasibilityAssessmentPage(BasePage):
             for c in range(1, base_cols):
                 self._set_cell(self.tbl2, rr, c, demo[r][c], bg=self.DATA_BG, editable=True)
             start = base_cols
-
-            for i, e in enumerate(self.elevations):
-
+            for i, e in enumerate(self.table2_elevations):
                 col = start + i
-                self._set_combo_cell(self.tbl2, rr, col, default=None)
+                default = None
+                if not self._use_dynamic_elevations:
+                    default = "焊接" if e in (27, 23) else "无连接"
+                self._set_combo_cell(self.tbl2, rr, col, default=default)
 
 
         groups_tbl2 = [
@@ -1002,9 +1001,7 @@ class FeasibilityAssessmentPage(BasePage):
             [3, 4],  # 立管/电缆尺寸 OD, WT
             [5, 6],  # 支撑结构 OD, WT
             [7, 8],  # 倾斜度 X方向, Y方向
-
-            list(range(9, 9 + len(self.elevations)))  # 高程列
-
+            list(range(9, 9 + len(self.table2_elevations)))  # 高程列
         ]
         self._auto_fit_columns(self.tbl2, padding=18, equal_width_groups=groups_tbl2)
 

@@ -17,14 +17,11 @@ from PyQt5.QtCore import Qt
 from app_paths import external_path, external_root, first_existing_path
 from base_page import BasePage
 from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
-#from pages.platform_strength_page import InpWireframeView
-from pages.platform_strength_page import PyVistaSacsView
 
 
 class NewSpecialInspectionPage(BasePage):
     """
     新增检测策略打开的页面：
-    - 右侧：黑底模型图（仅一个，不重复创建）
     - 左侧：上半（结构模型信息 + 设置倒塌分析结果文件）
            下半（用户设置：风险等级参数 + 按钮）
     - 整体支持滚轮滚动（ScrollArea）
@@ -127,15 +124,15 @@ class NewSpecialInspectionPage(BasePage):
         container = QWidget()
         scroll.setWidget(container)
 
-        # 依旧是：左（内容） + 右（黑底模型图）
+        # 保留右侧模型展示区域，但暂时不接入实际渲染，避免页面打不开
         content = QFrame()
         content.setObjectName("Card")
         lay = QHBoxLayout(content)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(12)
 
-        left = self._build_left_panel()     # 上半 + 下半都在这里
-        right = self._build_right_panel()   # 黑底模型图（只创建一次）
+        left = self._build_left_panel()
+        right = self._build_right_panel()
 
         lay.addWidget(left, 3)
         lay.addWidget(right, 2)
@@ -392,36 +389,38 @@ class NewSpecialInspectionPage(BasePage):
 
         return block
 
-    # ---------------- 右侧：黑底模型图（只保留一个） ----------------
+    # ---------------- 右侧：黑色模型展示区（当前占位，不渲染模型） ----------------
     def _build_right_panel(self) -> QFrame:
         panel = QFrame()
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(8)
 
-        title = QLabel("结构模型线框预览（复用平台强度页）")
+        title = QLabel("结构模型预览")
         title.setObjectName("SectionTitle")
         v.addWidget(title)
 
-        hint = QLabel("左键拖动平移，滚轮缩放，右键拖动旋转，双击复位")
+        hint = QLabel("当前已暂时关闭模型渲染，先保留展示区域，后续可继续接入模型图显示。")
+        hint.setWordWrap(True)
         hint.setStyleSheet("color:#5d6f85; font-size:14px;")
         v.addWidget(hint, 0)
 
-        self.inp_path_label = QLabel("")
-        self.inp_path_label.setWordWrap(True)
-        self.inp_path_label.setStyleSheet("color:#4a5b70; font-size:14px;")
-        v.addWidget(self.inp_path_label, 0)
+        placeholder = QFrame()
+        placeholder.setStyleSheet("background: #0b0b0b; border: 1px solid #1f2a36;")
+        placeholder.setMinimumHeight(320)
 
-        img_frame = QFrame()
-        img_frame.setStyleSheet("background: #ffffff; border: 1px solid #c7d2e3;")
-        img_lay = QVBoxLayout(img_frame)
-        img_lay.setContentsMargins(6, 6, 6, 6)
+        placeholder_lay = QVBoxLayout(placeholder)
+        placeholder_lay.setContentsMargins(12, 12, 12, 12)
+        placeholder_lay.setSpacing(8)
 
-        self.inp_view = InpWireframeView(img_frame)
-        self.inp_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        img_lay.addWidget(self.inp_view, 1)
+        info = QLabel("模型图区域已保留\n当前暂不加载渲染组件")
+        info.setAlignment(Qt.AlignCenter)
+        info.setStyleSheet("color:#c7d2e3; font-size:12pt; background: transparent;")
+        placeholder_lay.addStretch(1)
+        placeholder_lay.addWidget(info)
+        placeholder_lay.addStretch(1)
 
-        v.addWidget(img_frame, 1)
+        v.addWidget(placeholder, 1)
         return panel
 
     # ---------------- actions ----------------
@@ -922,30 +921,7 @@ class NewSpecialInspectionPage(BasePage):
         self._refresh_files_table()
 
     def _refresh_model_preview(self):
-        if not hasattr(self, "inp_view"):
-            return
-
-        path = ""
-        for p in self.model_files:
-            if os.path.exists(p):
-                path = p
-                break
-
-        if not path:
-            fallback = self._db_fetch_file_records(self.CATEGORY_MODEL)
-            path = fallback[0] if fallback else ""
-
-        if not path:
-            self.inp_path_label.setText("未找到可预览的模型文件")
-            self.inp_view.clear_view("未找到可预览的模型文件\n请先导入或提取模型")
-            return
-
-        try:
-            self.inp_view.load_inp(path)
-            self.inp_path_label.setText(f"当前模型文件：{path}")
-        except Exception as e:
-            self.inp_path_label.setText("模型加载失败")
-            self.inp_view.clear_view(f"模型加载失败：\n{e}")
+        return
 
     def _create_title_row_widget(self, title_text: str, buttons_info: list) -> QWidget:
         """创建一个内嵌于表格标题行的自定义 Widget，包含标题文字和对应按钮"""

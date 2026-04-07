@@ -911,9 +911,8 @@ class PlatformStrengthPage(BasePage):
 
         mw = self.window()
         if hasattr(mw, "tab_widget"):
-            key = f"platform::{facility_code}"
-
-            # 这里建议不要直接复用旧页，否则你改了 workpoint/阈值后可能还是旧数据
+            elev_key = ",".join(str(z) for z in elevations)
+            key = f"feasibility_assessment::{facility_code}::{elev_key}"
             if hasattr(mw, "page_tab_map") and key in mw.page_tab_map:
                 old_page = mw.page_tab_map[key]
                 old_idx = mw.tab_widget.indexOf(old_page)
