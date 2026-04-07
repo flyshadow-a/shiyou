@@ -34,6 +34,9 @@ from base_page import BasePage
 from dropdown_bar import DropdownBar
 from pages.feasibility_assessment_page import FeasibilityAssessmentPage
 from pages.read_table_xls import ReadTableXls
+
+from pages.sacs_import_service import import_model_bundle_to_db
+
 from collections import Counter
 
 class PyVistaSacsView(QFrame):
@@ -696,6 +699,57 @@ class PlatformStrengthPage(BasePage):
             return 9.1
         return self._safe_float(self.edt_workpoint.text(), 9.1)
 
+    def _get_mysql_url(self) -> str:
+        url = os.environ.get("MYSQL_URL", "mysql+pymysql://root:ljm020918**@127.0.0.1:3306/SACS_new?charset=utf8mb4").strip()
+        if not url:
+            raise ValueError("MYSQL_URL 未配置")
+        return url
+
+    def _find_matching_sea_file(self, model_path: str) -> Optional[str]:
+        if not model_path:
+            return None
+
+        folder = os.path.dirname(model_path)
+        if not os.path.isdir(folder):
+            return None
+
+        candidates = []
+        for fn in os.listdir(folder):
+            low = fn.lower()
+            if low.startswith("seainp"):
+                full = os.path.join(folder, fn)
+                try:
+                    mtime = os.path.getmtime(full)
+                except OSError:
+                    mtime = 0.0
+                candidates.append((mtime, full))
+
+        if not candidates:
+            return None
+
+        candidates.sort(reverse=True)
+        return candidates[0][1]
+
+    def _prepare_current_model_job(self, model_path: str, facility_code: str) -> str:
+        mysql_url = self._get_mysql_url()
+        job_name = facility_code
+
+        workpoint = self._get_workpoint_value()
+        level_threshold = self._get_level_threshold()
+        sea_file = self._find_matching_sea_file(model_path)
+
+        import_model_bundle_to_db(
+            mysql_url=mysql_url,
+            job_name=job_name,
+            model_file=model_path,
+            sea_file=sea_file,
+            workpoint=workpoint,
+            level_threshold=level_threshold,
+            overwrite_job=True,
+        )
+
+        return job_name
+
     def _compute_horizontal_levels(self) -> List[Tuple[float, int, bool]]:
         """
         返回 [(z, occurrence, selected), ...]
@@ -835,26 +889,48 @@ class PlatformStrengthPage(BasePage):
         facility_code = self._get_top_value("facility_code") or "XXXX"
         title = f"{facility_code}平台强度/改造可行性评估"
 
-        # 直接使用当前页面已经统计好的水平层高程
+        # 当前页面动态水平层高程
         levels = self._compute_horizontal_levels()
         elevations = [z for z, occ, selected in levels]
 
+        if not elevations:
+            elevations = [27, 23, 18, 7, -12, -34, -58]
+
+        # 当前模型文件
+        model_path = self._find_best_inp_file(facility_code)
+        if not model_path:
+            QMessageBox.warning(self, "提示", "未找到当前设施对应的 sacinp 模型文件，无法打开评估页。")
+            return
+
+        try:
+            # 跳转前先把当前模型导入数据库
+            job_name = self._prepare_current_model_job(model_path, facility_code)
+        except Exception as e:
+            QMessageBox.critical(self, "模型导入失败", f"导入当前 sacinp 到数据库失败：\n{e}")
+            return
+
         mw = self.window()
         if hasattr(mw, "tab_widget"):
+            key = f"platform::{facility_code}"
 
-            # 关键：把高程也放进 key，避免同一平台复用旧 tab
-            elev_key = ",".join(str(z) for z in elevations)
-            key = f"platform::{facility_code}::{elev_key}"
-
-
+            # 这里建议不要直接复用旧页，否则你改了 workpoint/阈值后可能还是旧数据
             if hasattr(mw, "page_tab_map") and key in mw.page_tab_map:
-                w = mw.page_tab_map[key]
-                idx = mw.tab_widget.indexOf(w)
-                if idx != -1:
-                    mw.tab_widget.setCurrentIndex(idx)
-                    return
+                old_page = mw.page_tab_map[key]
+                old_idx = mw.tab_widget.indexOf(old_page)
+                if old_idx != -1:
+                    mw.tab_widget.removeTab(old_idx)
+                try:
+                    old_page.deleteLater()
+                except Exception:
+                    pass
+                del mw.page_tab_map[key]
 
             page = FeasibilityAssessmentPage(mw, facility_code, elevations=elevations)
+
+            # 保证保存按钮和后续创建新模型都用同一个 job_name / mysql_url
+            page.job_name = job_name
+            page.mysql_url = self._get_mysql_url()
+
             idx = mw.tab_widget.addTab(page, title)
             mw.tab_widget.setCurrentIndex(idx)
 
@@ -936,22 +1012,33 @@ class PlatformStrengthPage(BasePage):
         return frame
 
     def _sacinp_name_score(self, file_name: str) -> int:
-        """按文件名判断是否为 SACS 结构模型文件，并返回命名匹配分。"""
+        """按文件名判断是否为 SACS 结构模型文件，并优先原模型 JKnew。"""
         name = (file_name or "").strip().lower()
         if not name:
             return 0
 
         stem, ext = os.path.splitext(name)
-        # 首选：前缀 sacinp*
+
+        # 明确优先级：
+        # 1) sacinp.JKnew —— 当前原模型
+        # 2) 其他 sacinp*
+        # 3) sacinp.M1 —— 改造后模型，不应该在平台强度首页优先显示
+        if stem == "sacinp" and ext == ".jknew":
+            return 1200
+
+        if stem == "sacinp" and ext == ".m1":
+            return 100
+
         if stem.startswith("sacinp"):
             return 300
-        # 兼容：*.sacinp
+
         if ext == ".sacinp":
             return 220
-        # 兼容：名称中带独立标识 token（如 xx_sacinp_xx）
+
         tokens = [t for t in re.split(r"[^a-z0-9]+", stem) if t]
         if "sacinp" in tokens:
             return 160
+
         return 0
 
     def _scan_model_signature(self, file_path: str) -> bool:
@@ -1027,14 +1114,29 @@ class PlatformStrengthPage(BasePage):
                     name_low = fn.lower()
                     path_low = full.lower()
                     score = 0
+                    score = 0
+
                     if code and code in name_low:
                         score += 200
+
                     if "model_files" in path_low:
                         score += 60
+
                     if ("静力" in full) or ("static" in path_low):
                         score += 25
+
                     if "demo_platform_jacket" in name_low:
                         score -= 200
+
+                    # 明确偏向“当前原模型”
+                    if path_low.endswith("sacinp.jknew"):
+                        score += 800
+
+                    if path_low.endswith("sacinp.m1"):
+                        score -= 400
+
+                    if "当前模型" in path_low:
+                        score += 300
 
                     has_signature = self._file_has_model_signature(full)
                     if not has_signature:
@@ -1142,7 +1244,7 @@ class PlatformStrengthPage(BasePage):
         self._set_center_item(tbl, 1, 2, "", editable=False)
 
         self._set_center_item(tbl, 2, 0, "工作平面高程Workpoint", editable=False)
-        self.edt_workpoint = QLineEdit("9.1") # 用户输入，初始为空
+        self.edt_workpoint = QLineEdit("") # 用户输入，初始为空
         self.edt_workpoint.setFont(self._songti_small_four_font())
         tbl.setCellWidget(2, 1, self.edt_workpoint)
         self._set_center_item(tbl, 2, 2, "m", editable=False)
