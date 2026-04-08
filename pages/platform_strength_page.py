@@ -930,6 +930,8 @@ class PlatformStrengthPage(BasePage):
             page.job_name = job_name
             page.mysql_url = self._get_mysql_url()
 
+            page.model_files_root = self.model_files_root
+
             idx = mw.tab_widget.addTab(page, title)
             mw.tab_widget.setCurrentIndex(idx)
 

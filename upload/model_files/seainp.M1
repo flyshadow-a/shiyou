@@ -2358,4 +2358,45 @@ LOAD   M06L                    -7.72                       GLOB JOIN   STWN22
 LOAD   M07L                    -8.91                       GLOB JOIN   STWN23
 LOAD   M08L                   -10.09                       GLOB JOIN   STWN24
 
+
+** ----------------------------
+** NEW DEAD LOADS
+** ----------------------------
+LOAD   CN20                  -1000.0                       GLOB JOIN   SLOT1
+LOAD   CN48                  -1000.0                       GLOB JOIN   SLOT2
+LOAD   CN68                  -1000.0                       GLOB JOIN   SLOT3
+LOAD   CN84                  -1000.0                       GLOB JOIN   SLOT4
+LOAD   CO01                  -1000.0                       GLOB JOIN   SLOT5
+LOAD   CO17                  -1000.0                       GLOB JOIN   SLOT6
+LOAD   CO33                  -1000.0                       GLOB JOIN   SLOT7
+LOAD   CO49                  -1000.0                       GLOB JOIN   SLOT8
+LOAD   CO65                  -1000.0                       GLOB JOIN   SLOT9
+LOAD   CO81                  -1000.0                       GLOB JOIN   SLOT10
+LOAD   CO97                  -1000.0                       GLOB JOIN   SLOT11
+LOAD   CP14                  -1000.0                       GLOB JOIN   SLOT12
+LOAD   601L                    -1.25                       GLOB JOIN   STWN1
+LOAD   602L                    -1.25                       GLOB JOIN   STWN2
+LOAD   603L                    -1.25                       GLOB JOIN   STWN3
+LOAD   604L                    -1.25                       GLOB JOIN   STWN4
+LOAD   605L                    -1.25                       GLOB JOIN   STWN5
+LOAD   606L                    -1.25                       GLOB JOIN   STWN6
+LOAD   607L                    -1.25                       GLOB JOIN   STWN7
+LOAD   608L                    -1.25                       GLOB JOIN   STWN8
+LOAD   L01L                    -0.66                       GLOB JOIN   STWN9
+LOAD   L02L                    -0.84                       GLOB JOIN   STWN10
+LOAD   L03L                    -1.03                       GLOB JOIN   STWN11
+LOAD   L04L                    -1.22                       GLOB JOIN   STWN12
+LOAD   L05L                    -1.28                       GLOB JOIN   STWN13
+LOAD   L06L                    -1.47                       GLOB JOIN   STWN14
+LOAD   L07L                    -1.66                       GLOB JOIN   STWN15
+LOAD   L08L                    -1.84                       GLOB JOIN   STWN16
+LOAD   M01L                     0.59                       GLOB JOIN   STWN17
+LOAD   M02L                    -0.59                       GLOB JOIN   STWN18
+LOAD   M03L                    -1.78                       GLOB JOIN   STWN19
+LOAD   M04L                    -2.97                       GLOB JOIN   STWN20
+LOAD   M05L                    -6.53                       GLOB JOIN   STWN21
+LOAD   M06L                    -7.72                       GLOB JOIN   STWN22
+LOAD   M07L                    -8.91                       GLOB JOIN   STWN23
+LOAD   M08L                   -10.09                       GLOB JOIN   STWN24
+
 END                                                                                                                     

@@ -13,7 +13,7 @@ import shutil
 import subprocess
 from typing import List, Optional, cast
 
-from PyQt5.QtCore import QEvent, QTimer, Qt, QUrl
+from PyQt5.QtCore import QEvent, QTimer, Qt, QUrl,QProcess
 from PyQt5.QtGui import QBrush, QColor, QFont, QFontMetrics, QMouseEvent
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -41,10 +41,10 @@ from PyQt5.QtGui import QDesktopServices
 from sqlalchemy import create_engine, text
 
 from base_page import BasePage
-from dropdown_bar import DropdownBar
+
 from pages.feasibility_assessment_results_page import FeasibilityAssessmentResultsPage
 from pages.sacs_create_model_service import create_new_model_files
-from pages.sacs_compare_view import SacsComparePanel
+from app_paths import first_existing_path
 
 SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
 
@@ -120,7 +120,19 @@ class FeasibilityAssessmentPage(BasePage):
             self.table1_elevations = list(self.LEGACY_ELEVATIONS1)
             self.table2_elevations = list(self.LEGACY_ELEVATIONS2)
 
+        # SACS 运行相关路径（统一指向 upload/model_files）
+        self.model_files_root = first_existing_path("upload", "model_files")
+        self.current_model_dir = self.model_files_root
+        self.current_runx_file = ""
+        self.current_bat_file = ""
+        self.current_result_file = ""
+        self.current_stdout_log = ""
+        self.current_exitcode_file = ""
+
+        self.analysis_process = None
+
         self._build_ui()
+        self._refresh_runtime_paths_from_disk()
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -1202,7 +1214,6 @@ class FeasibilityAssessmentPage(BasePage):
     # ---------------- 业务按钮：占位实现（后续你定格式后再替换） ----------------
     def _on_create_model(self):
         try:
-            # 先把三张表当前内容重新落库，避免用户修改后没点“保存”就直接点“创建新模型”
             self._save_well_slots_to_db()
             self._save_risers_to_db()
             self._save_topside_weights_to_db()
@@ -1217,13 +1228,24 @@ class FeasibilityAssessmentPage(BasePage):
                 mysql_url=self.mysql_url,
                 job_name=self.job_name,
                 overwrite_job=True,
-                generate_bat=False,  # 先不自动生成 bat；如果你要也可以改成 True
+                generate_bat=False,  # 这里只保留“创建模型”，不生成 bat
             )
 
             export_info = result.get("export", {})
-            new_model_file = export_info.get("new_model_file", "")
-            new_sea_file = export_info.get("new_sea_file", "")
-            bat_file = export_info.get("bat_file", "")
+
+            self.current_model_dir = export_info.get("model_dir", "").strip() or self.model_files_root
+            self.current_runx_file = export_info.get("runx_file", "").strip()
+            if not self.current_runx_file:
+                self.current_runx_file = self._find_first_existing_file(
+                    self.current_model_dir,
+                    ["psiFACTOR.runx", "psifactor.runx"]
+                )
+
+            # 创建新模型阶段不生成 bat
+            self.current_bat_file = ""
+
+            new_model_file = export_info.get("new_model_file", "").strip()
+            new_sea_file = export_info.get("new_sea_file", "").strip()
 
             msg_lines = ["创建新模型完成。"]
 
@@ -1237,8 +1259,8 @@ class FeasibilityAssessmentPage(BasePage):
             else:
                 msg_lines.append("新海况文件：未生成")
 
-            if bat_file:
-                msg_lines.append(f"批处理文件：{bat_file}")
+            if self.current_runx_file:
+                msg_lines.append(f"RUNX文件：{self.current_runx_file}")
 
             QMessageBox.information(self, "创建完成", "\n".join(msg_lines))
 
@@ -1263,29 +1285,203 @@ class FeasibilityAssessmentPage(BasePage):
             lines.append("** " + " | ".join(row_vals))
         return "\n".join(lines) + "\n"
 
-    def _on_run_analysis(self):
-        model_path, _ = QFileDialog.getOpenFileName(self, "选择需要分析的模型文件", "", "All Files (*)")
-        if not model_path:
+    def _refresh_runtime_paths_from_disk(self):
+        root = getattr(self, "model_files_root", "") or first_existing_path("upload", "model_files")
+        self.current_model_dir = root
+
+        if not os.path.isdir(root):
+            self.current_runx_file = ""
+            self.current_bat_file = ""
+            self.current_result_file = ""
             return
 
-        exe = os.environ.get("SACS_ENGINEANALYSIS", "").strip()
-        if (not exe) or (not os.path.exists(exe)):
-            exe, _ = QFileDialog.getOpenFileName(self, "选择 SACS engineanalysis 可执行文件", "", "All Files (*)")
-            if not exe:
+        self.current_runx_file = self._find_first_existing_file(
+            root,
+            ["psiFACTOR.runx", "psifactor.runx"]
+        )
+
+        self.current_bat_file = self._find_first_existing_file(
+            root,
+            ["Autorun.bat"]
+        )
+
+        self.current_result_file = self._find_result_file(root)
+
+    def _find_first_existing_file(self, root: str, candidate_names: list) -> str:
+        for name in candidate_names:
+            p = os.path.join(root, name)
+            if os.path.exists(p):
+                return p
+        return ""
+
+    def _find_result_file(self, root: str) -> str:
+        if not os.path.isdir(root):
+            return ""
+
+        preferred = [
+            "psilst.factor",
+            "psilst.lst",
+            "psilst",
+        ]
+        for name in preferred:
+            p = os.path.join(root, name)
+            if os.path.exists(p):
+                return p
+
+        # 兜底：找常见结果文件
+        candidates = []
+        for fn in os.listdir(root):
+            low = fn.lower()
+            if (
+                    low.startswith("psilst")
+                    or low.endswith(".lst")
+                    or low.endswith(".lis")
+                    or low.endswith(".listing")
+                    or low.endswith(".factor")
+            ):
+                full = os.path.join(root, fn)
+                try:
+                    mtime = os.path.getmtime(full)
+                except OSError:
+                    mtime = 0
+                candidates.append((mtime, full))
+
+        if not candidates:
+            return ""
+
+        candidates.sort(reverse=True)
+        return candidates[0][1]
+
+    def _find_engineanalysis_exe(self) -> str:
+        candidates = []
+
+        env_exe = os.environ.get("SACS_ENGINEANALYSIS", "").strip()
+        if env_exe:
+            candidates.append(env_exe)
+
+        sacs_home = os.environ.get("SACS_HOME", "").strip()
+        if sacs_home:
+            candidates.append(os.path.join(sacs_home, "AnalysisEngine.exe"))
+
+        # 默认安装路径兜底
+        candidates.extend([
+            r"D:\Bentley SACS 2023\AnalysisEngine.exe",
+            r"C:\Bentley SACS 2023\AnalysisEngine.exe",
+            r"C:\Program Files\Bentley\SACS 2023\AnalysisEngine.exe",
+        ])
+
+        for p in candidates:
+            if p and os.path.exists(p):
+                return os.path.normpath(p)
+
+        exe, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 AnalysisEngine.exe",
+            "",
+            "Executable (*.exe);;All Files (*)"
+        )
+        return exe.strip()
+
+    def _build_bat_text(self, exe_path: str, runx_path: str, work_dir: str) -> str:
+        exe_path = os.path.normpath(exe_path)
+        runx_path = os.path.normpath(runx_path)
+        work_dir = os.path.normpath(work_dir)
+        sacs_home = os.path.dirname(exe_path)
+
+        return rf"""@echo off
+    setlocal
+
+    set "MODEL_DIR={work_dir}"
+    set "SACS_EXE={exe_path}"
+    set "SACS_HOME={sacs_home}"
+    set "RUNX_FILE={runx_path}"
+
+    cd /d "%MODEL_DIR%"
+
+    "%SACS_EXE%" "%RUNX_FILE%" "%SACS_HOME%"
+
+    endlocal
+    exit /b %errorlevel%
+    """
+
+    def _ensure_analysis_bat(self, work_dir: str, runx_path: str) -> str:
+        exe_path = self._find_engineanalysis_exe()
+        if not exe_path:
+            raise ValueError(
+                "未找到 AnalysisEngine.exe。\n"
+                "请设置环境变量 SACS_ENGINEANALYSIS 或 SACS_HOME。"
+            )
+
+        if not runx_path or not os.path.exists(runx_path):
+            raise ValueError("未找到 psiFACTOR.runx，无法生成 bat。")
+
+        bat_path = os.path.join(work_dir, "Autorun.bat")
+        content = self._build_bat_text(exe_path, runx_path, work_dir)
+
+        with open(bat_path, "w", encoding="utf-8", newline="\r\n") as f:
+            f.write(content)
+
+        return bat_path
+
+    def _on_run_analysis(self):
+        try:
+            self._refresh_runtime_paths_from_disk()
+
+            work_dir = getattr(self, "current_model_dir", "").strip() or self.model_files_root
+            if not work_dir or not os.path.isdir(work_dir):
+                QMessageBox.warning(self, "提示", "未找到 model_files 目录，请先创建新模型。")
                 return
 
-        try:
-            proc = subprocess.run([exe, model_path], capture_output=True, text=True, timeout=60 * 30)
-            ok = (proc.returncode == 0)
-            title = "分析完成" if ok else "分析失败"
-            detail = (proc.stdout or "")[-3000:] + ("\n" + (proc.stderr or "")[-3000:] if proc.stderr else "")
-            if not detail.strip():
-                detail = "(无输出)"
-            self._show_text_dialog(title, detail)
-        except subprocess.TimeoutExpired:
-            QMessageBox.warning(self, "超时", "engineanalysis 运行超时（30分钟）。")
+            runx_path = getattr(self, "current_runx_file", "").strip()
+            if not runx_path or not os.path.exists(runx_path):
+                QMessageBox.warning(self, "提示", "未找到 psiFACTOR.runx，请先创建新模型。")
+                return
+
+            # 只保留这一个 bat：Autorun.bat
+            bat_path = os.path.join(work_dir, "Autorun.bat")
+            bat_path = self._ensure_analysis_bat(work_dir, runx_path)
+            self.current_bat_file = bat_path
+
+            if self.analysis_process is not None:
+                QMessageBox.information(self, "提示", "当前已有计算任务正在运行。")
+                return
+
+            self.btn_run.setEnabled(False)
+            self.btn_run.setText("计算中...")
+
+            process = QProcess(self)
+            self.analysis_process = process
+            process.setWorkingDirectory(work_dir)
+            process.setProgram("cmd")
+            process.setArguments(["/c", bat_path])
+            process.setProcessChannelMode(QProcess.MergedChannels)
+
+            def on_finished(exit_code, exit_status):
+                self.btn_run.setEnabled(True)
+                self.btn_run.setText("计算分析")
+                self.analysis_process = None
+
+                if exit_code == 0:
+                    QMessageBox.information(self, "提示", "计算完成。")
+                else:
+                    QMessageBox.critical(self, "提示", f"计算失败，退出码：{exit_code}")
+
+            def on_error(_err):
+                err_text = process.errorString()
+                self.btn_run.setEnabled(True)
+                self.btn_run.setText("计算分析")
+                self.analysis_process = None
+                QMessageBox.critical(self, "运行失败", f"启动计算进程失败：\n{err_text}")
+
+            process.finished.connect(on_finished)
+            process.errorOccurred.connect(on_error)
+            process.start()
+
         except Exception as e:
-            QMessageBox.critical(self, "运行失败", f"调用 engineanalysis 失败：\n{e}")
+            self.btn_run.setEnabled(True)
+            self.btn_run.setText("计算分析")
+            self.analysis_process = None
+            QMessageBox.critical(self, "运行失败", f"调用 bat 计算失败：\n{e}")
 
     # def _on_view_result(self):
     #     path, _ = QFileDialog.getOpenFileName(self, "选择分析结果文件（psilst）", "", "All Files (*)")
