@@ -14,7 +14,7 @@ import os
 from typing import Dict, List, Tuple
 
 from app_paths import first_existing_path
-from PyQt5.QtCore import Qt, QRectF
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QPen, QBrush, QFontMetrics
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -38,6 +38,10 @@ from PyQt5.QtWidgets import (
 )
 
 from base_page import BasePage
+
+from sqlalchemy import create_engine, text
+from pages.sacs_compare_view import SacsComparePanel
+
 from dropdown_bar import DropdownBar
 
 
@@ -216,16 +220,22 @@ class FeasibilityAssessmentResultsPage(BasePage):
         ["P308", "110887", "117019", "6864.3", "OL22", "32245.5", "-", "-", "2.84", "-"],
     ]
 
-    def __init__(self, main_window,facility_code, parent=None):
+    def __init__(self, main_window, facility_code, job_name="", mysql_url="", parent=None):
         if parent is None:
             parent = main_window
         super().__init__("", parent)
+
         self.main_window = main_window
         self.facility_code = facility_code
+        self.job_name = job_name or facility_code
+        self.mysql_url = (mysql_url or os.environ.get(
+            "MYSQL_URL",
+            "mysql+pymysql://root:ljm020918**@127.0.0.1:3306/SACS_new?charset=utf8mb4"
+        )).strip()
         self.current_tab = "构件"
 
         self._build_ui()
-        self._autoload_inp_to_view()
+        QTimer.singleShot(0, self.reload_model_view)
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -275,36 +285,33 @@ class FeasibilityAssessmentResultsPage(BasePage):
     def _build_inp_view_panel(self) -> QWidget:
         frame = QFrame()
         frame.setStyleSheet("QFrame { background: #ffffff; border: 1px solid #b9c6d6; }")
+
         lay = QVBoxLayout(frame)
         lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(10)
+        lay.setSpacing(6)
 
-        title = QLabel("三维模型（INP线框预览）")
-        title.setStyleSheet("font-weight: normal; color: #1d2b3a; font-size: 16px;")
-        lay.addWidget(title, 0)
+        self.model_panel = SacsComparePanel(frame)
+        lay.addWidget(self.model_panel, 1)
 
-        self.inp_view = InpWireframeView()
-        self.inp_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        lay.addWidget(self.inp_view, 1)
         return frame
 
-    def _autoload_inp_to_view(self):
-        here = os.path.dirname(os.path.abspath(__file__))
-        candidates = [
-            first_existing_path("data", "demo_platform_jacket.inp"),
-            first_existing_path("upload", "demo_platform_jacket.inp"),
-            os.path.normpath(os.path.join(here, "..", "data", "demo_platform_jacket.inp")),
-            os.path.normpath(os.path.join(here, "..", "upload", "demo_platform_jacket.inp")),
-            first_existing_path("demo_platform_jacket.inp"),
-        ]
-        path = next((p for p in candidates if os.path.exists(p)), "")
-        if not path:
-            self.inp_view.clear_view("未找到 INP：demo_platform_jacket.inp\n请放到 data/ 或 upload/ 目录")
-            return
-        try:
-            self.inp_view.load_inp(path)
-        except Exception as e:
-            self.inp_view.clear_view(f"INP 加载失败：\n{e}")
+    # def _autoload_inp_to_view(self):
+    #     here = os.path.dirname(os.path.abspath(__file__))
+    #     candidates = [
+    #         first_existing_path("data", "demo_platform_jacket.inp"),
+    #         first_existing_path("upload", "demo_platform_jacket.inp"),
+    #         os.path.normpath(os.path.join(here, "..", "data", "demo_platform_jacket.inp")),
+    #         os.path.normpath(os.path.join(here, "..", "upload", "demo_platform_jacket.inp")),
+    #         first_existing_path("demo_platform_jacket.inp"),
+    #     ]
+    #     path = next((p for p in candidates if os.path.exists(p)), "")
+    #     if not path:
+    #         self.inp_view.clear_view("未找到 INP：demo_platform_jacket.inp\n请放到 data/ 或 upload/ 目录")
+    #         return
+    #     try:
+    #         self.inp_view.load_inp(path)
+    #     except Exception as e:
+    #         self.inp_view.clear_view(f"INP 加载失败：\n{e}")
 
     # ---------------- 表格通用样式 ----------------
     def _init_table_common(self, table: QTableWidget):
@@ -724,6 +731,16 @@ class FeasibilityAssessmentResultsPage(BasePage):
                     align_center = ("名称" not in header_text)
                     self._set_cell(current_tbl, r, c, "", bg=None, align_center=align_center)
 
+    def closeEvent(self, event):
+        try:
+            if hasattr(self, "model_panel") and self.model_panel is not None:
+                self.model_panel.safe_close()
+                self.model_panel.deleteLater()
+                self.model_panel = None
+        except Exception:
+            pass
+        super().closeEvent(event)
+
     def _on_row_limit_changed(self, text):
         """下拉框数值改变时触发"""
         self._update_current_table_rows()
@@ -762,6 +779,42 @@ class FeasibilityAssessmentResultsPage(BasePage):
         lay.addWidget(btn, 0, Qt.AlignLeft)
         lay.addStretch(1)
         return wrap
+
+    def _get_engine(self):
+        if not self.mysql_url:
+            raise ValueError("MYSQL_URL 未配置")
+        return create_engine(self.mysql_url, future=True, pool_pre_ping=True)
+
+    def _fetch_model_paths(self):
+        sql = text("""
+            SELECT model_file, new_model_file, workpoint
+            FROM wizard_model_info
+            WHERE job_name = :job_name
+            ORDER BY id DESC
+            LIMIT 1
+        """)
+
+        engine = self._get_engine()
+        with engine.begin() as conn:
+            row = conn.execute(sql, {"job_name": self.job_name}).mappings().first()
+
+        if row is None:
+            raise ValueError(f"wizard_model_info 中未找到 job_name={self.job_name} 的记录")
+
+        old_file = str(row["model_file"] or "").strip()
+        new_file = str(row["new_model_file"] or "").strip()
+        workpoint = float(row["workpoint"]) if row["workpoint"] is not None else 9.1
+
+        return old_file, new_file, workpoint
+
+    def reload_model_view(self):
+        try:
+            old_file, new_file, workpoint = self._fetch_model_paths()
+            self.model_panel.load_files(old_file, new_file, target_z=workpoint)
+        except Exception as e:
+            if hasattr(self, "model_panel"):
+                self.model_panel.path_label.setText("模型加载失败")
+                self.model_panel.compare_view.clear_view(f"右侧模型加载失败：\n{e}")
 
     def _on_generate_report(self):
         QMessageBox.information(self, "生成评估报告", "已点击“生成评估报告”。\n\n后续可在此处按你定义的格式生成报告文件（Word/PDF/Excel）。")

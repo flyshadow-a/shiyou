@@ -4,6 +4,13 @@
 import sys
 import os
 
+from vtkmodules.vtkCommonCore import vtkObject, vtkLogger
+
+# 关闭 VTK 全局 warning/error 显示
+vtkObject.GlobalWarningDisplayOff()
+# 关闭写到 stderr 的 VTK 日志
+vtkLogger.SetStderrVerbosity(vtkLogger.VERBOSITY_OFF)
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QFontDatabase, QColor, QBrush
 from PyQt5.QtWidgets import (

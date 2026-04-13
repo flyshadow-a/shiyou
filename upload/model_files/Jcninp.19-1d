@@ -1,0 +1,126 @@
+*****19-1D ******                                                                                                       
+JCNOPT API MN         7.5      B  C  NID          MA FLUC0.95PTPTPTPT                                                   
+MAXANG         165.0                                                                                                    
+*CONDUCTOR GUIDES OF EL.(+)9.1M                                                                                         
+JMOD       W611 W612 W613 W614                                                                                          
+JMOD       W621 W622 W623 W624                                                                                          
+JMOD       W631 W632 W633 W634                                                                                          
+JMOD       W641 W642 W643 W644                                                                                          
+JMOD       W651 W652 W653 W654                                                                                          
+*CONDUCTOR GUIDES OF EL.(-)14.0M                                                                                        
+JMOD       W511 W512 W513 W514                                                                                          
+JMOD       W521 W522 W523 W524                                                                                          
+JMOD       W531 W532 W533 W534                                                                                          
+JMOD       W541 W542 W543 W544                                                                                          
+JMOD       W551 W552 W553 W554                                                                                          
+*CONDUCTOR GUIDES OF EL.(-)38.0M                                                                                        
+JMOD       W411 W412 W413 W414                                                                                          
+JMOD       W421 W422 W423 W424                                                                                          
+JMOD       W431 W432 W433 W434                                                                                          
+JMOD       W441 W442 W443 W444                                                                                          
+JMOD       W451 W452 W453 W454                                                                                          
+*CONDUCTOR GUIDES OF EL.(-)64.0M                                                                                        
+JMOD       W311 W312 W313 W314                                                                                          
+JMOD       W321 W322 W323 W324                                                                                          
+JMOD       W331 W332 W333 W334                                                                                          
+JMOD       W341 W342 W343 W344                                                                                          
+JMOD       W351 W352 W353 W354                                                                                          
+*CONDUCTOR GUIDES OF EL.(-)92.0M                                                                                        
+JMOD       W211 W212 W213 W214                                                                                          
+JMOD       W221 W222 W223 W224                                                                                          
+JMOD       W231 W232 W233 W234                                                                                          
+JMOD       W241 W242 W243 W244                                                                                          
+JMOD       W251 W252 W253 W254                                                                                          
+*CAISSON GUIDES OF EL.(-)14.0M                                                                                          
+JMOD       WK12 WK22 WK32 WK42 WK52 WK62                                                                                
+*CAISSON GUIDES OF EL.(-)38.0M                                                                                          
+JMOD       WK35 WK45 WK55 WK65 
+**FLARE BOOM***
+JMOD       F000 F001 F002 F003 F005 F006 F007 F008 F009 F010 F011 F012 F013 F014 
+JMOD       F014 F015 F016 F017 F018 F019 F020 F021 F022 F023 F024 F025 F026 F027 
+JMOD       F028 F029 F030 F031 F032 F033 F034 F035 F036 F037 F038 F039 F040 F041
+JMOD       F042 F043 F044 F045 F046 F047 F048 F049                                                                       
+** CORRECTION OF CHORD EFFECTIVE LENGTH AND NOMINAL THICKNESS                                                           
+************ JOINTS AT KINK POINTS EL.(+)9.1M ************                                                              
+BRCOVR 601L 502L   3.506   3.45   7.25                                                                                  
+BRCOVR 601L 511X   4.254   3.45   7.25                                                                                  
+BRCOVR 601L 623K   6.353   3.45   7.25                                                                                  
+BRCOVR 601L 6101   6.633   3.45   7.25                                                                                  
+*                                                                                                                       
+BRCOVR 602L 521X   2.878   3.05   7.25                                                                                  
+BRCOVR 602L 612K   4.703   3.05   7.25                                                                                  
+BRCOVR 602L 6A01   4.898   3.05   7.25                                                                                  
+BRCOVR 602L 6201   5.250   3.05   7.25                                                                                  
+*                                                                                                                       
+BRCOVR 603L 502L   3.697   3.05   7.25                                                                                  
+BRCOVR 603L 531X   4.678   3.05   7.25                                                                                  
+BRCOVR 603L 6A01   6.698   3.05   7.25                                                                                  
+BRCOVR 603L 6A02   6.500   3.05   7.25                                                                                  
+BRCOVR 603L 6301   7.050   3.05   7.25                                                                                  
+*                                                                                                                       
+BRCOVR 604L 503L   3.506   3.45   7.25                                                                                  
+BRCOVR 604L 541X   4.254   3.45   7.25                                                                                  
+BRCOVR 604L 6A03   6.353   3.45   7.25                                                                                  
+BRCOVR 604L 6401   6.633   3.45   7.25                                                                                  
+*                                                                                                                       
+BRCOVR 605L 506L   3.507   3.45   7.25                                                                                  
+BRCOVR 605L 511X   4.254   3.45   7.25                                                                                  
+BRCOVR 605L 617K   6.353   3.45   7.25                                                                                  
+BRCOVR 605L 6102   6.633   3.45   7.25                                                                                  
+*                                                                                                                       
+BRCOVR 606L 521X   2.862   3.05   7.25                                                                                  
+BRCOVR 606L 617K   4.702   3.05   7.25                                                                                  
+BRCOVR 606L 6B01   4.898   3.05   7.25                                                                                  
+BRCOVR 606L 614K   5.235   3.05   7.25                                                                                  
+*                                                                                                                       
+BRCOVR 607L 506L   3.700   3.05   7.25                                                                                  
+BRCOVR 607L 531X   4.662   3.05   7.25                                                                                  
+BRCOVR 607L 6B01   6.698   3.05   7.25                                                                                  
+BRCOVR 607L 6304   7.035   3.05   7.25                                                                                  
+BRCOVR 607L 6B02   6.502   3.05   7.25                                                                                  
+*                                                                                                                       
+BRCOVR 608L 507L   3.507   3.45   7.25                                                                                  
+BRCOVR 608L 541X   4.254   3.45   7.25                                                                                  
+BRCOVR 608L 6B03   6.353   3.45   7.25                                                                                  
+BRCOVR 608L 6403   6.633   3.45   7.25                                                                                  
+*                                                                                                                       
+************ JOINTS AT EL.(-)17.0M ************                                                                         
+*                                                                                                                       
+BRCOVR 6303 6B01   1.854   1.90   3.20                                                                                  
+BRCOVR 6303 6A01   1.854   1.90   3.20                                                                                  
+************ JOINTS AT EL.(-)17.0M ************                                                                         
+*                                                                                                                       
+BRCOVR 5303 5203   2.034   2.20   4.50                                                                                  
+BRCOVR 5303 5201   2.029   2.20   4.50                                                                                  
+*                                                                                                                       
+************ JOINTS AT EL.(-)121.5M ***********                                                                         
+*                                                                                                                       
+BRCOVR 101L 1A1X   4.929   5.00   8.50                                                                                  
+BRCOVR 101L 111X   4.490   5.00   8.50                                                                                  
+*                                                                                                                       
+BRCOVR 104L 1A2X   4.929   5.00   8.50                                                                                  
+BRCOVR 104L 141X   4.490   5.00   8.50                                                                                  
+*                                                                                                                       
+BRCOVR 105L 1B1X   4.898   5.00   8.50                                                                                  
+BRCOVR 105L 112X   4.490   5.00   8.50                                                                                  
+*                                                                                                                       
+BRCOVR 108L 1B2X   4.898   5.00   8.50                                                                                  
+BRCOVR 108L 142X   4.490   5.00   8.50                                                                                  
+*                                                                                                                       
+************ JOINTS AT CAISSON POINTS EL.(+)9.1M ************                                                           
+BRCOVR K103 611K   1.500   1.75   2.75                                                                                  
+BRCOVR K103 613K   1.500   1.75   2.75                                                                                  
+BRCOVR K203 612K   1.500   1.75   2.75                                                                                  
+BRCOVR K303 623K   1.500   1.75   2.75                                                                                  
+BRCOVR K403 617K   1.500   1.75   2.75                                                                                  
+BRCOVR K403 614K   1.500   1.75   2.75                                                                                  
+BRCOVR K403 K503   1.500   1.75   2.75                                                                                  
+BRCOVR K503 K403   1.500   1.75   2.75                                                                                  
+BRCOVR K503 615K   1.500   1.75   2.75                                                                                  
+BRCOVR K503 K603   1.500   1.75   2.75                                                                                  
+BRCOVR K603 616K   1.500   1.75   2.75                                                                                  
+BRCOVR K603 K503   1.500   1.75   2.75                                                                                  
+*                                                                                                                       
+END                                                                                                                     
+                                                                                                                        
+                                                                                                                        
