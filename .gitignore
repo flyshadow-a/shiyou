@@ -18,7 +18,9 @@ pages/output_special_strategy/img_test_*/
 pages/output_special_strategy/pdf_test_*/
 pages/output_special_strategy/write_test_*/
 pages/output_special_strategy/*.pipeline.xlsx
+pages/output_special_strategy/*.pipeline.manual_fill.csv
 pages/output_special_strategy/*.docx
 pages/output_special_strategy/*.preview.json
 pages/output_special_strategy/*.preview.xlsx
+pages/output_special_strategy/*.preview.pipeline.xlsx
 pages/output_special_strategy/*.preview.docx
