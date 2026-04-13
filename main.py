@@ -704,24 +704,34 @@ class MainWindow(QMainWindow):
 
         tab_title = f"{facility_code} - 特检策略"
         page = NewSpecialInspectionPage(facility_code, self)
+        if hasattr(page, "strategy_calculated"):
+            page.strategy_calculated.connect(self._on_special_strategy_calculated)
         index = self.tab_widget.addTab(page, tab_title)
         # self.tab_widget.setTabIcon(index, QIcon('./pict/logo.png'))
         self.tab_widget.setCurrentIndex(index)
         self._sync_current_platform_from_widget(page)
 
     # ================== 业务：风险更新结果 ================== #
-    def open_upgrade_special_inspection_result_tab(self, facility_code: str):
+    def open_upgrade_special_inspection_result_tab(self, facility_code: str, run_id: int | None = None):
         # 切换到 Tab 区域
         if self.right_stack is not None and self.tab_widget is not None:
             self.right_stack.setCurrentWidget(self.tab_widget)
 
         tab_title = f"{facility_code}更新风险结果"
-        page = UpgradeSpecialInspectionResultPage(facility_code, self)
+        page = UpgradeSpecialInspectionResultPage(facility_code, self, run_id=run_id)
         index = self.tab_widget.addTab(page, tab_title)
         self.tab_widget.setCurrentIndex(index)
         self._sync_current_platform_from_widget(page)
 
     # 供子页面调用，关闭当前 Tab
+    def _on_special_strategy_calculated(self, facility_code: str, run_id: object = None):
+        for widget in self.page_tab_map.values():
+            if widget.__class__.__name__ != "SpecialInspectionStrategy":
+                continue
+            refresh = getattr(widget, "refresh_runtime_summary", None)
+            if callable(refresh):
+                refresh(facility_code=facility_code, run_id=run_id, sync_dropdown=True)
+
     def close_current_tab(self):
         current_index = self.tab_widget.currentIndex()
         if current_index >= 0:

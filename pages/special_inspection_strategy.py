@@ -11,13 +11,32 @@ from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QComboBox, QPushButton, QScrollArea, QSizePolicy, QLabel
+    QComboBox, QPushButton, QScrollArea, QSizePolicy, QLabel,
+    QDialog, QAbstractItemView, QMessageBox
 )
 
 from app_paths import first_existing_path
 from base_page import BasePage
 from dropdown_bar import DropdownBar
+from pages.file_management_platforms import FILE_MANAGEMENT_PLATFORMS, default_platform, find_platform, sync_platform_dropdowns
 from pages.read_table_xls import ReadTableXls
+from pages.special_strategy_history_dialog import SpecialStrategyHistoryDialog as SpecialStrategyHistoryDialogView
+from special_strategy_services import (
+    NodeYearLabelMapper,
+    SpecialStrategyResultService,
+    SpecialStrategySummaryBuilder,
+)
+
+
+NODE_YEAR_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]
+NODE_YEAR_CONTEXT_MAP = {
+    "当前": "当前",
+    "+5年": "第5年",
+    "+10年": "第10年",
+    "+15年": "第15年",
+    "+20年": "第20年",
+    "+25年": "第25年",
+}
 
 
 class SimpleTowerDiagram(QWidget):
@@ -78,6 +97,141 @@ class SimpleTowerDiagram(QWidget):
         p.end()
 
 
+class SpecialStrategyHistoryDialog(QDialog):
+    def __init__(self, facility_code: str, parent=None):
+        super().__init__(parent)
+        self.facility_code = facility_code
+        self.selected_run_id: int | None = None
+        self.selected_action = "summary"
+        self._result_service = SpecialStrategyResultService()
+        self.setWindowTitle(f"{facility_code}特检策略历史记录")
+        self.resize(760, 420)
+        self._build_ui()
+        self._load_rows()
+
+    def _build_ui(self) -> None:
+        self.setStyleSheet("""
+            QDialog {
+                background: #e6eef7;
+                font-family: "SimSun", "NSimSun", "瀹嬩綋", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+            }
+            QTableWidget {
+                background: #ffffff;
+                gridline-color: #d0d0d0;
+                border: 1px solid #d0d0d0;
+            }
+            QHeaderView::section {
+                background: #f3f6fb;
+                color: #000000;
+                border: 1px solid #e6e6e6;
+                padding: 4px 6px;
+                font-weight: normal;
+            }
+            QPushButton {
+                background: #efefef;
+                border: 1px solid #666;
+                min-height: 32px;
+                padding: 4px 12px;
+            }
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        hint = QLabel(f"当前仅显示平台 {self.facility_code} 的历史计算记录")
+        layout.addWidget(hint)
+
+        self.table = QTableWidget(0, 5, self)
+        self.table.setHorizontalHeaderLabels(["记录ID", "平台编码", "计算时间", "报告时间", "状态"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.itemDoubleClicked.connect(self._accept_result_view)
+        layout.addWidget(self.table, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+
+        self.btn_refresh = QPushButton("刷新")
+        self.btn_load_summary = QPushButton("加载到主页")
+        self.btn_view_result = QPushButton("查看结果")
+        self.btn_close = QPushButton("关闭")
+
+        self.btn_refresh.clicked.connect(self._load_rows)
+        self.btn_load_summary.clicked.connect(self._accept_summary_view)
+        self.btn_view_result.clicked.connect(self._accept_result_view)
+        self.btn_close.clicked.connect(self.reject)
+
+        for button in (self.btn_refresh, self.btn_load_summary, self.btn_view_result, self.btn_close):
+            btn_row.addWidget(button)
+        layout.addLayout(btn_row)
+
+    def _load_rows(self) -> None:
+        rows = self._result_service.list_history(self.facility_code, limit=100)
+        self.table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            values = [
+                str(row.run_id),
+                row.facility_code,
+                row.updated_at,
+                row.report_generated_at,
+                row.status,
+            ]
+            for col_index, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignCenter)
+                if col_index == 0:
+                    item.setData(Qt.UserRole, row.run_id)
+                self.table.setItem(row_index, col_index, item)
+        if rows:
+            self.table.selectRow(0)
+
+    @staticmethod
+    def _display_time(value: object) -> str:
+        if value is None:
+            return ""
+        if hasattr(value, "strftime"):
+            try:
+                return value.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return str(value)
+        return str(value)
+
+    def _selected_id(self) -> int | None:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        if item is None:
+            return None
+        value = item.data(Qt.UserRole)
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    def _accept_summary_view(self, *_args) -> None:
+        run_id = self._selected_id()
+        if run_id is None:
+            QMessageBox.information(self, "提示", "请先选择一条历史记录。")
+            return
+        self.selected_run_id = run_id
+        self.selected_action = "summary"
+        self.accept()
+
+    def _accept_result_view(self, *_args) -> None:
+        run_id = self._selected_id()
+        if run_id is None:
+            QMessageBox.information(self, "提示", "请先选择一条历史记录。")
+            return
+        self.selected_run_id = run_id
+        self.selected_action = "result"
+        self.accept()
+
+
 class SpecialInspectionStrategy(BasePage):
     """
     “特检策略”页面（顶部继承 DropdownBar 设计）
@@ -106,7 +260,13 @@ class SpecialInspectionStrategy(BasePage):
         self.main_window = main_window
 
         self.data_dir = first_existing_path("data")
-        self.current_year = "5年"
+        self._result_service = SpecialStrategyResultService()
+        self._year_mapper = NodeYearLabelMapper()
+        self._summary_builder = SpecialStrategySummaryBuilder(self._year_mapper)
+        self.current_year = "当前"
+        self._active_run_id: int | None = None
+        self._active_facility_code = ""
+        self.current_year = self._year_mapper.default_display_label()
 
         self._excel_provider = ReadTableXls()
         self._excel_loaded = False
@@ -117,17 +277,14 @@ class SpecialInspectionStrategy(BasePage):
             self._excel_loaded = False
 
         self._top_records: List[Dict[str, str]] = self._load_top_records_from_excel()
-        self._top_cascade_enabled: bool = len(self._top_records) > 0
+        self._top_cascade_enabled: bool = False
         self._top_cascade_lock: bool = False
 
         self.main_layout.setContentsMargins(10, 10, 10, 10)
         self.main_layout.setSpacing(8)
 
         self._build_ui()
-
-        # 初始：上表固定示例数据，下表按年份
-        self._fill_component_demo_data()
-        self._load_node_year_data(self.current_year)
+        self._sync_platform_ui()
 
     # ---------------- 顶部下拉（样表驱动 + 级联） ----------------
     def _normalize_top_value(self, value: object) -> str:
@@ -331,6 +488,7 @@ class SpecialInspectionStrategy(BasePage):
                 if self._top_cascade_lock:
                     return
                 self._apply_top_cascade(changed_key=key, changed_value=txt)
+            self._sync_platform_ui(changed_key=key)
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -410,7 +568,7 @@ class SpecialInspectionStrategy(BasePage):
         tl.setContentsMargins(0, 0, 0, 0)
         tl.setSpacing(8)
 
-        for t in ["检测策略", "节点检测历史", "操作"]:
+        for t in ["结果查看", "历史记录", "操作"]:
             lab = QLabel(t)
             lab.setAlignment(Qt.AlignCenter)
             lab.setMinimumWidth(90)
@@ -425,9 +583,9 @@ class SpecialInspectionStrategy(BasePage):
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(8)
 
-        self.btn_view_strategy = QPushButton("查看")
-        self.btn_view_history = QPushButton("查看")
-        self.btn_add = QPushButton("新增检测策略")
+        self.btn_view_strategy = QPushButton("查看结果")
+        self.btn_view_history = QPushButton("查看历史")
+        self.btn_add = QPushButton("新增特检策略")
         self.btn_add.setObjectName("AddBtn")
 
         for b in [self.btn_view_strategy, self.btn_view_history]:
@@ -510,8 +668,8 @@ class SpecialInspectionStrategy(BasePage):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        years = ["5年", "10年", "15年", "20年", "25年"]
         self.year_buttons = []
+        years = self._year_mapper.display_labels()
 
         for y in years:
             btn = QPushButton(y)
@@ -535,7 +693,7 @@ class SpecialInspectionStrategy(BasePage):
             self.year_buttons.append(btn)
 
         lay.addStretch(1)
-        self._sync_year_buttons("5年")
+        self._sync_year_buttons(self.current_year)
         return bar
 
     # ---------------- helpers ----------------
@@ -621,32 +779,72 @@ class SpecialInspectionStrategy(BasePage):
         table.setFixedHeight(total_h)
 
     # ---------------- data ----------------
-    def _fill_component_demo_data(self):
-        comp = [
-            ("2",   "-",  "-",  "-"),
-            ("6",   "-",  "-",  "5"),
-            ("188", "151", "37", "-"),
-            ("758", "758", "-",  "-"),
-            ("0",   "0",   "-",  "-"),
-            ("954", "909", "42", "3"),
-        ]
-        self._fill_rows(self.component_table, comp)
+    def _sync_platform_ui(self, changed_key: str | None = None):
+        platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
+        facility_code = platform["facility_code"]
+        platform_name = platform["facility_name"]
+        window = self.window()
+        if hasattr(window, "set_current_platform_name"):
+            window.set_current_platform_name(platform_name)
+        self._load_runtime_summary(facility_code)
 
-    def _load_node_year_data(self, year: str):
-        if year == "5年":
-            node = [
-                ("30",  "-",  "-",  "30"),
-                ("64",  "-",  "52", "12"),
-                ("226", "181", "45", "-"),
-                ("422", "422", "-",  "-"),
-                ("0",   "0",   "-",  "-"),
-                ("742", "603", "97", "42"),
-            ]
-            self._fill_rows(self.node_table, node)
+    def _select_facility_code(self, facility_code: str) -> None:
+        platform = find_platform(facility_code=facility_code)
+        facility_codes = [item["facility_code"] for item in FILE_MANAGEMENT_PLATFORMS]
+        facility_names = [item["facility_name"] for item in FILE_MANAGEMENT_PLATFORMS]
+        self.dropdown_bar.set_options("facility_code", facility_codes, platform["facility_code"])
+        self.dropdown_bar.set_options("facility_name", facility_names, platform["facility_name"])
+        sync_platform_dropdowns(self.dropdown_bar, changed_key="facility_code")
+
+    def refresh_runtime_summary(
+        self,
+        facility_code: str | None = None,
+        run_id: object = None,
+        *,
+        sync_dropdown: bool = False,
+    ) -> None:
+        target_facility = (facility_code or self._get_dropdown_value("facility_code") or self._active_facility_code).strip()
+        if not target_facility:
+            return
+        normalized_run_id: int | None
+        try:
+            normalized_run_id = int(run_id) if run_id not in ("", None) else None
+        except Exception:
+            normalized_run_id = None
+        if sync_dropdown:
+            self._select_facility_code(target_facility)
+        self._load_runtime_summary(target_facility, normalized_run_id)
+
+    @staticmethod
+    def _display_cell(value: object) -> str:
+        if value in ("", None):
+            return "-"
+        return str(value)
+
+    def _clear_summary_table(self, table: QTableWidget):
+        blank_rows = [("-", "-", "-", "-") for _ in range(6)]
+        self._fill_rows(table, blank_rows)
+
+    def _load_runtime_summary(self, facility_code: str, run_id: int | None = None):
+        bundle = self._result_service.load_result_bundle(facility_code, run_id)
+        if not bundle:
+            self._clear_summary_table(self.component_table)
+            self._clear_summary_table(self.node_table)
+            self._active_facility_code = facility_code
+            self._active_run_id = run_id
             return
 
-        node_csv = os.path.join(self.data_dir, f"node_risk_summary_{year}_years.csv")
-        self._fill_table_from_csv(self.node_table, node_csv, start_col=1)
+        context = bundle["context"]
+        self._active_facility_code = facility_code
+        self._active_run_id = run_id
+        self._fill_component_from_context(context)
+        self._fill_node_from_context(context, self.current_year)
+
+    def _fill_component_from_context(self, context: Dict):
+        self._fill_rows(self.component_table, self._summary_builder.build_component_inspection_rows(context))
+
+    def _fill_node_from_context(self, context: Dict, year: str):
+        self._fill_rows(self.node_table, self._summary_builder.build_node_inspection_rows(context, year))
 
     def _fill_rows(self, table: QTableWidget, rows: List[Tuple[str, str, str, str]]):
         for r, row in enumerate(rows):
@@ -692,8 +890,7 @@ class SpecialInspectionStrategy(BasePage):
     def _on_year_changed(self, year: str):
         self.current_year = year
         self._sync_year_buttons(year)
-        # 只刷新下表
-        self._load_node_year_data(year)
+        self._load_runtime_summary(self._get_dropdown_value("facility_code"), self._active_run_id)
 
     def _sync_year_buttons(self, year: str):
         for btn in getattr(self, "year_buttons", []):
@@ -725,7 +922,95 @@ class SpecialInspectionStrategy(BasePage):
             self.main_window.open_new_special_strategy_tab(facility_code)
 
     def _on_view_strategy(self):
-        pass
+        facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
+        if self.main_window is not None and hasattr(self.main_window, "open_upgrade_special_inspection_result_tab"):
+            self.main_window.open_upgrade_special_inspection_result_tab(facility_code, run_id=self._active_run_id)
 
     def _on_view_history(self):
-        pass
+        facility_code = self._get_dropdown_value("facility_code")
+        dialog = SpecialStrategyHistoryDialogView(
+            facility_code,
+            self,
+            result_service=self._result_service,
+        )
+        if dialog.exec_() != QDialog.Accepted or dialog.selected_run_id is None:
+            return
+        selected_run_id = int(dialog.selected_run_id)
+        if dialog.selected_action == "result":
+            if self.main_window is not None and hasattr(self.main_window, "open_upgrade_special_inspection_result_tab"):
+                self.main_window.open_upgrade_special_inspection_result_tab(facility_code, run_id=selected_run_id)
+            return
+        self.refresh_runtime_summary(facility_code=facility_code, run_id=selected_run_id, sync_dropdown=True)
+
+    # Clean overrides for platform linkage.
+    def _build_top_dropdown_fields(self) -> List[Dict]:
+        platform_default = default_platform()
+        stretch_map = {
+            "branch": 1,
+            "op_company": 2,
+            "oilfield": 2,
+            "facility_code": 2,
+            "facility_name": 3,
+            "inspect_seq": 1,
+            "inspect_time": 2,
+        }
+        return [
+            {
+                "key": "branch",
+                "label": "分公司",
+                "options": [platform_default["branch"]],
+                "default": platform_default["branch"],
+                "stretch": stretch_map["branch"],
+            },
+            {
+                "key": "op_company",
+                "label": "作业公司",
+                "options": [platform_default["op_company"]],
+                "default": platform_default["op_company"],
+                "stretch": stretch_map["op_company"],
+            },
+            {
+                "key": "oilfield",
+                "label": "油田",
+                "options": [platform_default["oilfield"]],
+                "default": platform_default["oilfield"],
+                "stretch": stretch_map["oilfield"],
+            },
+            {
+                "key": "facility_code",
+                "label": "设施编码",
+                "options": [item["facility_code"] for item in FILE_MANAGEMENT_PLATFORMS],
+                "default": platform_default["facility_code"],
+                "stretch": stretch_map["facility_code"],
+            },
+            {
+                "key": "facility_name",
+                "label": "设施名称",
+                "options": [item["facility_name"] for item in FILE_MANAGEMENT_PLATFORMS],
+                "default": platform_default["facility_name"],
+                "stretch": stretch_map["facility_name"],
+            },
+            {
+                "key": "inspect_seq",
+                "label": "检测序号",
+                "options": ["0", "1", "2", "3"],
+                "default": "0",
+                "stretch": stretch_map["inspect_seq"],
+            },
+            {
+                "key": "inspect_time",
+                "label": "检测时间",
+                "options": ["2008-06-26", "2008-07-12", "2008-08-21"],
+                "default": "2008-06-26",
+                "stretch": stretch_map["inspect_time"],
+            },
+        ]
+
+    def _sync_platform_ui(self, changed_key: str | None = None):
+        platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
+        facility_code = platform["facility_code"]
+        platform_name = platform["facility_name"]
+        window = self.window()
+        if hasattr(window, "set_current_platform_name"):
+            window.set_current_platform_name(platform_name)
+        self._load_runtime_summary(facility_code)

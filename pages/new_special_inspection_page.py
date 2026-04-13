@@ -5,19 +5,30 @@ import os
 import shutil
 import datetime
 import re
-from typing import List
+import json
+from pathlib import Path
+from typing import Any, List
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QWidget,
     QFileDialog, QMessageBox, QScrollArea,
     QAbstractItemView, QSizePolicy, QInputDialog
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 
 from app_paths import external_path, external_root, first_existing_path
 from base_page import BasePage
-from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
+from file_db_adapter import (
+    FileBackendError,
+    is_file_db_configured,
+    list_storage_paths,
+    list_storage_paths_by_prefix,
+    soft_delete_storage_path,
+    upload_file as upload_file_to_db,
+)
 from pages.platform_strength_page import InpWireframeView
+from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
+from special_strategy_runtime import load_base_config, load_latest_strategy_params, run_special_strategy_calculation
 
 
 class NewSpecialInspectionPage(BasePage):
@@ -32,23 +43,151 @@ class NewSpecialInspectionPage(BasePage):
     CATEGORY_MODEL = "model"
     CATEGORY_COLLAPSE = "collapse"
     CATEGORY_FATIGUE = "fatigue"
+    strategy_calculated = pyqtSignal(str, object)
 
     def __init__(self, facility_code: str, parent=None):
         self.facility_code = facility_code
         self._risk_updated = False
+        self._latest_run_id: int | None = None
         self.upload_root = external_path("upload", "model_files")
         self.packaged_upload_root = first_existing_path("upload", "model_files")
-        self._collapse_static_demo = True
+        self._collapse_static_demo = False
+        self._default_params = self._load_default_params()
 
         # 页面仅展示“系统文件库”记录（当前用 upload/model_files 代替数据库）
         self.model_files: List[str] = []
         self.collapse_files: List[str] = []
         self.collapse_demo_files: List[str] = []
-        self.fatigue_file: str = ""
+        self.fatigue_result_files: List[str] = []
+        self.fatigue_input_files: List[str] = []
 
         super().__init__("", parent)
         self._build_ui()
         self._reload_system_files_from_backend()
+
+    def _params_json_path(self) -> Path | None:
+        base = Path(__file__).resolve().parent / "output_special_strategy"
+        mapping = {
+            "WC19-1D": base / "wc19_1d_calc_params.json",
+            "WC9-7": base / "wc9_7_calc_params.json",
+        }
+        return mapping.get((self.facility_code or "").strip().upper())
+
+    def _load_default_params(self) -> dict:
+        try:
+            return load_latest_strategy_params(self.facility_code)
+        except Exception:
+            path = self._params_json_path()
+            if not path or not path.exists():
+                return {}
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+
+    @staticmethod
+    def _fmt_default_value(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value)
+
+    def _default_model_param_rows(self) -> list[tuple[str, str]]:
+        raw = self._default_params or {}
+        return [
+            ("构件直线夹角容许误差(度)", self._fmt_default_value(raw.get("x_angle_deviation", 15))),
+            ("腿柱节点直径最小值(mm)", self._fmt_default_value(raw.get("min_leg_od", 509))),
+            ("Work Point Z(m)", self._fmt_default_value(raw.get("wp_z", 10))),
+            ("腿柱数量", self._fmt_default_value(raw.get("no_legs", 4))),
+        ]
+
+    def _default_work_points(self) -> list[tuple[int, str, str]]:
+        points = list(self._default_params.get("work_points") or [])
+        if not points:
+            points = [(-10, -8), (-10, 8), (10, -8), (10, 8)]
+        rows: list[tuple[int, str, str]] = []
+        for idx, pair in enumerate(points, start=1):
+            x, y = pair if isinstance(pair, (list, tuple)) and len(pair) >= 2 else ("", "")
+            rows.append((idx, self._fmt_default_value(x), self._fmt_default_value(y)))
+        return rows
+
+    def _default_risk_specs(self) -> list[dict[str, Any]]:
+        raw = self._default_params or {}
+        return [
+            {
+                "label": "生命安全等级",
+                "key": "life_safety_level",
+                "value": self._fmt_default_value(raw.get("life_safety_level", "S-2")),
+                "description": "有人可撤离。有人居住的平台，在极端情况下人员可以实施撤离的情况。",
+                "numeric": False,
+                "integer": False,
+                "editable": True,
+            },
+            {
+                "label": "失效后果等级",
+                "key": "failure_consequence_level",
+                "value": self._fmt_default_value(raw.get("failure_consequence_level", "C-1")),
+                "description": "高后果。发生失效时有可能发生油气泄露的平台；包括失效时不具备关停油气生产、储油或切断主要输油管道能力的平台，以及水深>=120米的平台。",
+                "numeric": False,
+                "integer": False,
+                "editable": True,
+            },
+            {
+                "label": "平台整体暴露等级",
+                "key": "global_level_tag",
+                "value": self._fmt_default_value(raw.get("global_level_tag", "L-1")),
+                "description": "",
+                "numeric": False,
+                "integer": False,
+                "editable": True,
+            },
+            {
+                "label": "平台海域",
+                "key": "region",
+                "value": self._fmt_default_value(raw.get("region", "中国南海")),
+                "description": "",
+                "numeric": False,
+                "integer": False,
+                "editable": True,
+            },
+            {
+                "label": "A",
+                "key": "collapse_a_const",
+                "value": self._fmt_default_value(raw.get("collapse_a_const", 0.272)),
+                "description": "",
+                "numeric": True,
+                "integer": False,
+                "editable": True,
+            },
+            {
+                "label": "B",
+                "key": "collapse_b_const",
+                "value": self._fmt_default_value(raw.get("collapse_b_const", 0.158)),
+                "description": "",
+                "numeric": True,
+                "integer": False,
+                "editable": True,
+            },
+            {
+                "label": "已服役时间（年）",
+                "key": "served_years",
+                "value": self._fmt_default_value(raw.get("served_years", 1)),
+                "description": "",
+                "numeric": True,
+                "integer": True,
+                "editable": True,
+            },
+            {
+                "label": "设计寿命",
+                "key": "design_life",
+                "value": self._fmt_default_value(raw.get("design_life", 26)),
+                "description": "",
+                "numeric": True,
+                "integer": True,
+                "editable": True,
+            },
+        ]
 
     def _build_ui(self):
         # 整页浅蓝灰背景
@@ -157,14 +296,10 @@ class NewSpecialInspectionPage(BasePage):
         self.analysis_files_block = self._build_analysis_files_block()
         self.model_files_block.setParent(panel)
         self.analysis_files_block.setParent(panel)
-        self.model_files_block.hide()
-        self.analysis_files_block.hide()
-        # 按当前需求暂时注释掉以下区块：
-        # 1. 设置模型文件
-        # 2. 设置分析结果文件
-        # 3. 设置疲劳分析结果文件（位于分析结果文件区块内）
-        # v.addWidget(self.model_files_block, 0)
-        # v.addWidget(self.analysis_files_block, 0)
+        self.model_files_block.show()
+        self.analysis_files_block.show()
+        v.addWidget(self.model_files_block, 0)
+        v.addWidget(self.analysis_files_block, 0)
 
         # 下半部分：按你新截图增加的“用户设置/风险等级参数”
         v.addWidget(self._build_risk_level_settings_block(), 1)
@@ -191,50 +326,59 @@ class NewSpecialInspectionPage(BasePage):
         title_row.addWidget(btn_find)
         block_lay.addLayout(title_row)
 
-        # 参数表（两列：项目/值）
-        param_table = QTableWidget(4, 2)
+        # 参数表（两列：项目/值，默认从平台参数读取，值列可编辑）
+        params = self._default_model_param_rows()
+        self.model_param_table = QTableWidget(len(params), 2)
+        param_table = self.model_param_table
         param_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         param_table.verticalHeader().setVisible(False)
         param_table.horizontalHeader().setVisible(False)
 
-        params = [
-            ("构件直线夹角容许误差（度）", "15"),
-            ("腿柱管节点撑杆最小管径（mm）", "509"),
-            ("工作点高度 Z(m)", "10"),
-            ("腿柱数量", "4"),
-        ]
         for r, (k, val) in enumerate(params):
             item_k = QTableWidgetItem(k)
             item_v = QTableWidgetItem(val)
             item_k.setTextAlignment(Qt.AlignCenter)
             item_v.setTextAlignment(Qt.AlignCenter)
+            item_k.setFlags(item_k.flags() & ~Qt.ItemIsEditable)
+            item_v.setBackground(Qt.yellow)
             param_table.setItem(r, 0, item_k)
             param_table.setItem(r, 1, item_v)
 
         self._lock_table_full_display(param_table, row_height=34, show_header=False)
+        param_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
+        )
+        param_table.setSelectionMode(QAbstractItemView.SingleSelection)
 
         block_lay.addWidget(param_table)
 
-        # 坐标表（示例）
-        coord_table = QTableWidget(5, 3)
+        # 坐标表（默认从平台参数读取，X/Y 可编辑）
+        coords = self._default_work_points()
+        self.coord_table = QTableWidget(max(len(coords), 1), 3)
+        coord_table = self.coord_table
         coord_table.setHorizontalHeaderLabels(["柱腿工作点坐标", "X坐标（m）", "Y坐标（m）"])
         coord_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         coord_table.verticalHeader().setVisible(False)
 
-        coords = [
-            (1, -10, -8),
-            (2, -10,  8),
-            (3,  10, -8),
-            (4,  10,  8),
-            (5, "",  ""),
-        ]
         for r, (idx, x, y) in enumerate(coords):
             for c, val in enumerate([idx, x, y]):
                 it = QTableWidgetItem(str(val))
                 it.setTextAlignment(Qt.AlignCenter)
+                if c == 0:
+                    it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+                else:
+                    it.setBackground(Qt.yellow)
                 coord_table.setItem(r, c, it)
 
-        self._lock_table_with_scroll(coord_table, row_height=34, visible_rows=4)
+        self._lock_table_with_scroll(coord_table, row_height=34, visible_rows=min(max(len(coords), 4), 8))
+        coord_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
+        )
+        coord_table.setSelectionMode(QAbstractItemView.SingleSelection)
 
         block_lay.addWidget(coord_table)
         block.setMinimumHeight(block.sizeHint().height())
@@ -322,51 +466,51 @@ class NewSpecialInspectionPage(BasePage):
         title.setObjectName("RedSectionTitle")
         v.addWidget(title)
 
-        table = QTableWidget(7, 3)
-        table.setHorizontalHeaderLabels(["项目", "等级/值", "说明"])
+        self._risk_param_specs = self._default_risk_specs()
+        rows = self._risk_param_specs
+        self.risk_param_table = QTableWidget(len(rows), 3)
+        table = self.risk_param_table
+        table.horizontalHeader().setVisible(False)
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         table.verticalHeader().setVisible(False)
+        table.setWordWrap(True)
 
-        # 行内容（按你图的结构填示例）
-        rows = [
-            ("生命安全等级", "S-2", "有人可撤离——有人员居住的平台，在极端情况下人员可以实施撤离的情况。"),
-            ("失效后果等级", "C-3", "低后果——所有井口包含功能齐全的SSSV，在平台失效时，生产系统可以自行运转而不受影响。这些平台可以支持不依托平台的生产，平台仅包含低输量的内部管道，仅含有工艺库存。"),
-            ("平台整体暴露等级", "L-2", ""),
-            ("平台海域", "中国南海", ""),
-            ("A", "0.272", ""),
-            ("B", "0.158", ""),
-            ("已服役时间（年）", "12", ""),
-        ]
-
-        for r, (k, val, desc) in enumerate(rows):
-            it0 = QTableWidgetItem(k)
-            it1 = QTableWidgetItem(val)
-            it2 = QTableWidgetItem(desc)
+        for r, spec in enumerate(rows):
+            it0 = QTableWidgetItem(str(spec["label"]))
+            it1 = QTableWidgetItem(str(spec["value"]))
+            it2 = QTableWidgetItem(str(spec["description"]))
 
             it0.setTextAlignment(Qt.AlignCenter)
             it1.setTextAlignment(Qt.AlignCenter)
-            it2.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+            it2.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
-            # 描述列允许换行
-            it2.setFlags(it2.flags() | Qt.ItemIsSelectable)
+            it0.setFlags(it0.flags() & ~Qt.ItemIsEditable)
+            it2.setFlags(it2.flags() & ~Qt.ItemIsEditable)
+            if spec.get("editable", False):
+                it1.setBackground(Qt.white)
+            else:
+                it1.setFlags(it1.flags() & ~Qt.ItemIsEditable)
             table.setItem(r, 0, it0)
             table.setItem(r, 1, it1)
             table.setItem(r, 2, it2)
 
-        # 让前两行更高，容纳长描述
-        table.setRowHeight(0, 70)
-        table.setRowHeight(1, 90)
-
-        # “平台整体暴露等级 L-2”黄色高亮（对应截图）
         highlight = table.item(2, 1)
         if highlight:
-            highlight.setBackground(Qt.yellow)
-            highlight.setForeground(Qt.black)
+            highlight.setBackground(Qt.red)
+            highlight.setForeground(Qt.white)
             highlight.setTextAlignment(Qt.AlignCenter)
 
-        table.setMinimumHeight(300)
+        table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
+        )
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        for r in range(table.rowCount()):
+            table.setRowHeight(r, 42 if r < 2 else 34)
+        table.setMinimumHeight(360)
         table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         v.addWidget(table, 1)
         # 两个大按钮（对应截图：更新风险等级 / 查看结果）
@@ -438,9 +582,65 @@ class NewSpecialInspectionPage(BasePage):
         QMessageBox.information(self, "提取模型", "已从系统文件库提取并刷新模型文件。")
 
     def _on_update_risk_level(self):
-        # 这里你以后接算法，更新完就标记一下
+        if not self._validate_fatigue_groups():
+            return
+        try:
+            result_bundle = run_special_strategy_calculation(
+                self.facility_code,
+                param_overrides=self._collect_runtime_overrides(),
+                input_overrides=self._collect_runtime_input_overrides(),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "更新风险等级失败", f"风险结果计算失败：\n{exc}")
+            return
+
         self._risk_updated = True
-        QMessageBox.information(self, "更新风险等级", "已完成风险等级更新（示例）。")
+        state = result_bundle.get("state") if isinstance(result_bundle, dict) else {}
+        run_id = state.get("db_run_id") if isinstance(state, dict) else None
+        self._latest_run_id = int(run_id) if isinstance(run_id, int) else run_id
+        self.strategy_calculated.emit(self.facility_code, self._latest_run_id)
+        QMessageBox.information(self, "更新风险等级", "已按当前参数完成风险结果计算。")
+
+    def _validate_fatigue_groups(self) -> bool:
+        result_files = [path for path in self.fatigue_result_files if os.path.exists(path)]
+        input_files = [path for path in self.fatigue_input_files if os.path.exists(path)]
+        if not result_files and not input_files:
+            return True
+        if not result_files or not input_files:
+            QMessageBox.warning(
+                self,
+                "疲劳文件组不完整",
+                "疲劳分析结果文件组和输入文件组需要同时提供。\n如本次不想覆盖默认疲劳配置，请先删除已导入的疲劳文件。",
+            )
+            return False
+        if len(result_files) != len(input_files):
+            QMessageBox.warning(
+                self,
+                "疲劳文件组数量不一致",
+                f"当前疲劳结果文件为 {len(result_files)} 个，输入文件为 {len(input_files)} 个，请先调整一致。",
+            )
+            return False
+        try:
+            cfg = load_base_config(self.facility_code)
+        except Exception:
+            cfg = {}
+        expected_result_count = len(cfg.get("ftglst", []) or [])
+        expected_input_count = len(cfg.get("ftginp", []) or [])
+        if expected_result_count and len(result_files) < expected_result_count:
+            QMessageBox.warning(
+                self,
+                "疲劳结果文件不足",
+                f"当前平台默认需要至少 {expected_result_count} 个疲劳结果文件，当前仅有 {len(result_files)} 个。",
+            )
+            return False
+        if expected_input_count and len(input_files) < expected_input_count:
+            QMessageBox.warning(
+                self,
+                "疲劳输入文件不足",
+                f"当前平台默认需要至少 {expected_input_count} 个疲劳输入文件，当前仅有 {len(input_files)} 个。",
+            )
+            return False
+        return True
 
     def _on_view_result(self):
         if not self._risk_updated:
@@ -451,12 +651,12 @@ class NewSpecialInspectionPage(BasePage):
 
         # ✅这里判断/调用你 main.py 里真实存在的方法名
         if mw is not None and hasattr(mw, "open_upgrade_special_inspection_result_tab"):
-            mw.open_upgrade_special_inspection_result_tab(self.facility_code)
+            mw.open_upgrade_special_inspection_result_tab(self.facility_code, run_id=self._latest_run_id)
             return
 
         # 兜底：直接加tab
         if mw is not None and hasattr(mw, "tab_widget"):
-            page = UpgradeSpecialInspectionResultPage(self.facility_code, mw)
+            page = UpgradeSpecialInspectionResultPage(self.facility_code, mw, run_id=self._latest_run_id)
             idx = mw.tab_widget.addTab(page, f"{self.facility_code}更新风险结果")
             mw.tab_widget.setCurrentIndex(idx)
             return
@@ -464,25 +664,223 @@ class NewSpecialInspectionPage(BasePage):
         QMessageBox.warning(self, "错误", "未找到 MainWindow/tab_widget，无法打开结果页。")
 
     # ---------------- 文件来源：后续数据库接入接口（先走 upload/model_files） ----------------
-    def _db_fetch_file_records(self, category: str) -> List[str]:
+    def _db_fetch_file_records(self, category: str, branch: str | None = None) -> List[str]:
         """
         数据库读取接口（预留）：返回系统文件记录。
 
         后续接数据库时，只需要替换本方法内部实现即可，页面其余逻辑无需改动。
         当前实现：从 upload/model_files 扫描提取。
         """
-        return self._fetch_system_files_from_upload(category)
+        if is_file_db_configured():
+            try:
+                default_rows = list_storage_paths_by_prefix(
+                    file_type_code=category,
+                    module_code="model_files",
+                    logical_path_prefix=self._default_model_logical_prefix(category, branch),
+                    facility_code=(self.facility_code or "").strip() or None,
+                )
+                if default_rows:
+                    return default_rows
+                legacy_rows = list_storage_paths(
+                    file_type_code=category,
+                    module_code="special_strategy",
+                    logical_path=self._legacy_special_strategy_logical_path(category),
+                    facility_code=(self.facility_code or "").strip() or None,
+                )
+                if legacy_rows:
+                    return self._filter_records_by_branch(category, legacy_rows, branch)
+            except FileBackendError:
+                pass
+        return self._fetch_system_files_from_upload(category, branch)
 
-    def _db_store_local_file(self, local_path: str, category: str) -> str:
+    def _db_store_local_file(self, local_path: str, category: str, branch: str | None = None) -> str:
         """
         本地文件入库接口（预留）：把本地文件上传到系统文件库，返回系统记录路径/标识。
 
         后续接数据库时，只需要替换本方法内部实现即可，页面其余逻辑无需改动。
-        当前实现：复制到 upload/model_files/special_strategy/<category>/ 下。
+        当前实现：复制到 upload/model_files/<facility>/当前模型/.../用户上传 下。
         """
-        return self._store_local_file_to_upload(local_path, category)
+        if is_file_db_configured():
+            try:
+                row = upload_file_to_db(
+                    local_path,
+                    file_type_code=category,
+                    module_code="model_files",
+                    logical_path=self._db_logical_path(category, branch),
+                    facility_code=(self.facility_code or "").strip() or None,
+                )
+                return os.path.normpath(row["storage_path"])
+            except FileBackendError:
+                pass
+        return self._store_local_file_to_upload(local_path, category, branch)
 
-    def _fetch_system_files_from_upload(self, category: str) -> List[str]:
+    def _db_soft_delete_file(self, storage_path: str, category: str) -> bool:
+        if not is_file_db_configured():
+            return False
+        try:
+            deleted = soft_delete_storage_path(
+                storage_path,
+                file_type_code=category,
+                module_code="model_files",
+                facility_code=(self.facility_code or "").strip() or None,
+            )
+            if deleted:
+                return True
+            return soft_delete_storage_path(
+                storage_path,
+                file_type_code=category,
+                module_code="special_strategy",
+                logical_path=self._legacy_special_strategy_logical_path(category),
+                facility_code=(self.facility_code or "").strip() or None,
+            )
+        except FileBackendError:
+            return False
+
+    def _db_logical_path(self, category: str, branch: str | None = None) -> str:
+        segment_map = {
+            self.CATEGORY_MODEL: "当前模型/结构模型/用户上传",
+            self.CATEGORY_COLLAPSE: "当前模型/倒塌分析/结果/用户上传",
+            self.CATEGORY_FATIGUE: f"当前模型/疲劳分析/{'输入' if branch == 'input' else '结果'}/用户上传",
+        }
+        facility = (self.facility_code or "").strip() or "default_facility"
+        tail = segment_map.get(category, "当前模型/其他")
+        return f"{facility}/{tail}"
+
+    def _legacy_special_strategy_logical_path(self, category: str) -> str:
+        segment_map = {
+            self.CATEGORY_MODEL: "当前模型/结构模型",
+            self.CATEGORY_COLLAPSE: "当前模型/倒塌分析",
+            self.CATEGORY_FATIGUE: "当前模型/疲劳分析",
+        }
+        facility = (self.facility_code or "").strip() or "default_facility"
+        tail = segment_map.get(category, "当前模型/其他")
+        return f"{facility}/{tail}"
+
+    def _default_model_logical_prefix(self, category: str, branch: str | None = None) -> str:
+        facility = (self.facility_code or "").strip() or "default_facility"
+        if category == self.CATEGORY_MODEL:
+            tail = "当前模型/结构模型"
+        elif category == self.CATEGORY_COLLAPSE:
+            tail = "当前模型/倒塌分析"
+        elif category == self.CATEGORY_FATIGUE:
+            tail = f"当前模型/疲劳分析/{'输入' if branch == 'input' else '结果'}" if branch else "当前模型/疲劳分析"
+        else:
+            tail = "当前模型"
+        return f"{facility}/{tail}"
+
+    def _filter_records_by_branch(self, category: str, records: List[str], branch: str | None) -> List[str]:
+        if category != self.CATEGORY_FATIGUE or not branch:
+            return records
+        return [path for path in records if self._fatigue_branch_for_path(path) == branch]
+
+    def _collect_runtime_overrides(self) -> dict:
+        def get_text(table: QTableWidget, row: int, col: int) -> str:
+            item = table.item(row, col)
+            return item.text().strip() if item is not None else ""
+
+        def parse_number(text: str, *, integer: bool = False):
+            raw = (text or "").strip()
+            if raw == "":
+                return None
+            return int(float(raw)) if integer else float(raw)
+
+        overrides: dict[str, Any] = {}
+
+        model_keys = [
+            ("x_angle_deviation", False),
+            ("min_leg_od", False),
+            ("wp_z", False),
+            ("no_legs", True),
+        ]
+        for row, (key, integer) in enumerate(model_keys):
+            value = parse_number(get_text(self.model_param_table, row, 1), integer=integer)
+            if value is not None:
+                overrides[key] = value
+
+        for row, spec in enumerate(getattr(self, "_risk_param_specs", [])):
+            key = str(spec.get("key", "")).strip()
+            if not key:
+                continue
+            raw = get_text(self.risk_param_table, row, 1)
+            if spec.get("numeric"):
+                value = parse_number(raw, integer=bool(spec.get("integer")))
+            else:
+                value = raw
+            if value not in ("", None):
+                overrides[key] = value
+
+        work_points: list[list[float]] = []
+        for row in range(self.coord_table.rowCount()):
+            x_val = parse_number(get_text(self.coord_table, row, 1))
+            y_val = parse_number(get_text(self.coord_table, row, 2))
+            if x_val is None and y_val is None:
+                continue
+            if x_val is None or y_val is None:
+                raise ValueError("工作点坐标必须成对填写。")
+            work_points.append([x_val, y_val])
+        if work_points:
+            overrides["work_points"] = work_points
+
+        return overrides
+
+    def _collect_runtime_input_overrides(self) -> dict[str, Any]:
+        def existing_paths(values: List[str]) -> List[str]:
+            out: List[str] = []
+            for value in values:
+                path = str(value or "").strip()
+                if not path or not os.path.exists(path):
+                    continue
+                out.append(os.path.normpath(path))
+            return out
+
+        overrides: dict[str, Any] = {}
+        model_candidates = existing_paths(self.model_files)
+        if model_candidates:
+            overrides["model"] = model_candidates[0]
+
+        collapse_candidates = existing_paths(self.collapse_files)
+        if collapse_candidates:
+            overrides["clplog"] = collapse_candidates
+        fatigue_result_candidates = existing_paths(self.fatigue_result_files)
+        fatigue_input_candidates = existing_paths(self.fatigue_input_files)
+        if fatigue_result_candidates and fatigue_input_candidates:
+            overrides["ftglst"] = fatigue_result_candidates
+            overrides["ftginp"] = fatigue_input_candidates
+        return overrides
+
+    def _fatigue_branch_for_path(self, path: str) -> str:
+        normalized = str(path or "").replace("\\", "/").lower()
+        filename = os.path.basename(str(path or "")).lower()
+        stem = os.path.splitext(filename)[0]
+        ext = os.path.splitext(filename)[1].lower()
+        if "/疲劳分析/" in normalized and "/输入/" in normalized:
+            return "input"
+        if stem.startswith("ftginp"):
+            return "input"
+        if "/疲劳分析/" in normalized and "/结果/" in normalized:
+            return "result"
+        if stem.startswith("ftglst") or stem.startswith("wvrinp") or ext in {".wit", ".wjt"}:
+            return "result"
+        if "/疲劳分析/" in normalized:
+            return "result"
+        return ""
+
+    def _set_fatigue_groups_from_candidates(self, candidates: List[str]) -> None:
+        self.fatigue_result_files = []
+        self.fatigue_input_files = []
+        for raw_path in candidates:
+            path = os.path.normpath(str(raw_path or "").strip())
+            if not path:
+                continue
+            branch = self._fatigue_branch_for_path(path)
+            if branch == "input":
+                if path not in self.fatigue_input_files:
+                    self.fatigue_input_files.append(path)
+            else:
+                if path not in self.fatigue_result_files:
+                    self.fatigue_result_files.append(path)
+
+    def _fetch_system_files_from_upload(self, category: str, branch: str | None = None) -> List[str]:
         search_roots = []
         for root in [self.upload_root, self.packaged_upload_root]:
             if root and os.path.isdir(root) and root not in search_roots:
@@ -518,15 +916,24 @@ class NewSpecialInspectionPage(BasePage):
                     else:
                         allow = ext_map.get(category, set())
                         in_special_bucket = f"special_strategy{os.sep}{category}".lower() in full_low
-                        if in_special_bucket or (ext_no_dot in allow):
+                        if category == self.CATEGORY_FATIGUE and self._fatigue_branch_for_path(full_path):
                             keep = True
                             score += 100
+                        elif in_special_bucket or (ext_no_dot in allow):
+                            keep = True
+                            score += 100
+
+                    if category == self.CATEGORY_FATIGUE and branch:
+                        if self._fatigue_branch_for_path(full_path) != branch:
+                            keep = False
 
                     if not keep:
                         continue
 
                     if code_lower and code_lower in stem:
                         score += 80
+                    if code_lower and code_lower in full_low:
+                        score += 120
 
                     try:
                         mtime = os.path.getmtime(full_path)
@@ -537,8 +944,9 @@ class NewSpecialInspectionPage(BasePage):
         records.sort(key=lambda x: (x[0], x[1]), reverse=True)
         return [p for _, _, p in records]
 
-    def _store_local_file_to_upload(self, local_path: str, category: str) -> str:
-        target_dir = os.path.join(self.upload_root, "special_strategy", category)
+    def _store_local_file_to_upload(self, local_path: str, category: str, branch: str | None = None) -> str:
+        relative_dir = self._db_logical_path(category, branch).replace("/", os.sep)
+        target_dir = os.path.join(self.upload_root, relative_dir)
         os.makedirs(target_dir, exist_ok=True)
 
         base = os.path.basename(local_path)
@@ -605,13 +1013,13 @@ class NewSpecialInspectionPage(BasePage):
             arr.remove(p)
         arr.insert(0, p)
 
-    def _pick_system_file_dialog(self, category: str, title: str) -> str:
-        candidates = self._db_fetch_file_records(category)
+    def _pick_system_file_dialog(self, category: str, title: str, branch: str | None = None) -> str:
+        candidates = self._db_fetch_file_records(category, branch)
         if not candidates:
             QMessageBox.information(self, "系统导入", "系统文件库中暂无可用文件。")
             return ""
 
-        labels = [self._short_path(p) for p in candidates]
+        labels = [f"{idx + 1}. {self._short_path(path)}" for idx, path in enumerate(candidates)]
         picked, ok = QInputDialog.getItem(self, title, "请选择系统文件：", labels, 0, False)
         if not ok or not picked:
             return ""
@@ -673,12 +1081,7 @@ class NewSpecialInspectionPage(BasePage):
         self.model_files = self._db_fetch_file_records(self.CATEGORY_MODEL)
         self.collapse_files = self._db_fetch_file_records(self.CATEGORY_COLLAPSE)
         self.collapse_demo_files = self._build_collapse_demo_files(self.collapse_files)
-
-        fatigue_candidates = self._db_fetch_file_records(self.CATEGORY_FATIGUE)
-        if self.fatigue_file and self.fatigue_file in fatigue_candidates:
-            pass
-        else:
-            self.fatigue_file = fatigue_candidates[0] if fatigue_candidates else ""
+        self._set_fatigue_groups_from_candidates(self._db_fetch_file_records(self.CATEGORY_FATIGUE))
 
         self._refresh_model_files_table()
         self._refresh_files_table()
@@ -745,6 +1148,9 @@ class NewSpecialInspectionPage(BasePage):
     def _refresh_files_table(self):
         self.files_table.clearContents()
         self.files_table.setRowCount(0)
+        self._collapse_row_map: dict[int, int] = {}
+        self._fatigue_result_row_map: dict[int, int] = {}
+        self._fatigue_input_row_map: dict[int, int] = {}
 
         collapse_view = self.collapse_demo_files if self._collapse_static_demo else self.collapse_files
 
@@ -776,44 +1182,97 @@ class NewSpecialInspectionPage(BasePage):
             self.files_table.setItem(row, 0, idx_item)
             self.files_table.setItem(row, 1, path_item)
             self.files_table.setRowHeight(row, 32)
+            self._collapse_row_map[row] = i
 
-        # --- 疲劳分析部分 ---
-        r_fatigue_hdr = len(collapse_view) + 1
-        self.files_table.insertRow(r_fatigue_hdr)
-        self.files_table.setSpan(r_fatigue_hdr, 0, 1, 2)
-
-        fat_buttons = [
-            ("本地导入", self._on_set_fatigue_local),
-            ("系统导入", self._on_set_fatigue_sys)
+        # --- 疲劳分析结果文件组 ---
+        result_header_row = self.files_table.rowCount()
+        self.files_table.insertRow(result_header_row)
+        self.files_table.setSpan(result_header_row, 0, 1, 2)
+        result_buttons = [
+            ("本地导入", self._on_add_fatigue_result_local),
+            ("系统导入", self._on_add_fatigue_result_sys),
+            ("删除选中行", self._on_del_fatigue_result),
         ]
-        fat_title_widget = self._create_title_row_widget("设置疲劳分析结果文件", fat_buttons)
-        self.files_table.setCellWidget(r_fatigue_hdr, 0, fat_title_widget)
-        self.files_table.setRowHeight(r_fatigue_hdr, 38)
+        result_title_widget = self._create_title_row_widget("设置疲劳分析结果文件组", result_buttons)
+        self.files_table.setCellWidget(result_header_row, 0, result_title_widget)
+        self.files_table.setRowHeight(result_header_row, 38)
 
-        r_fatigue_val = r_fatigue_hdr + 1
-        self.files_table.insertRow(r_fatigue_val)
-        self.files_table.setSpan(r_fatigue_val, 0, 1, 2)
+        if self.fatigue_result_files:
+            for i, path in enumerate(self.fatigue_result_files):
+                row = self.files_table.rowCount()
+                self.files_table.insertRow(row)
 
-        val_widget = QWidget()
-        val_widget.setStyleSheet("background-color: #ffffff;")
-        val_lay = QHBoxLayout(val_widget)
-        val_lay.setContentsMargins(10, 0, 10, 0)
-        val_lay.setSpacing(10)
+                idx_item = QTableWidgetItem(str(i + 1))
+                idx_item.setTextAlignment(Qt.AlignCenter)
+                idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
 
-        lbl = QLabel("疲劳结果文件:")
-        lbl.setStyleSheet('color: #333; font-weight: normal; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
+                path_item = QTableWidgetItem(self._short_path(path))
+                path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                path_item.setToolTip(path)
 
-        path_text = self._short_path(self.fatigue_file) if self.fatigue_file else "暂未选择..."
-        val = QLabel(path_text)
-        val.setStyleSheet('color: #333; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
-        val.setWordWrap(True)
-        val.setToolTip(self.fatigue_file)
+                self.files_table.setItem(row, 0, idx_item)
+                self.files_table.setItem(row, 1, path_item)
+                self.files_table.setRowHeight(row, 32)
+                self._fatigue_result_row_map[row] = i
+        else:
+            row = self.files_table.rowCount()
+            self.files_table.insertRow(row)
+            self.files_table.setSpan(row, 0, 1, 2)
+            empty_widget = QWidget()
+            empty_widget.setStyleSheet("background-color: #ffffff;")
+            empty_layout = QHBoxLayout(empty_widget)
+            empty_layout.setContentsMargins(10, 0, 10, 0)
+            empty_label = QLabel("暂未选择疲劳分析结果文件。")
+            empty_label.setStyleSheet('color: #666; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
+            empty_layout.addWidget(empty_label)
+            empty_layout.addStretch(1)
+            self.files_table.setCellWidget(row, 0, empty_widget)
+            self.files_table.setRowHeight(row, 36)
 
-        val_lay.addWidget(lbl, 0)
-        val_lay.addWidget(val, 1)
+        # --- 疲劳分析输入文件组 ---
+        input_header_row = self.files_table.rowCount()
+        self.files_table.insertRow(input_header_row)
+        self.files_table.setSpan(input_header_row, 0, 1, 2)
+        input_buttons = [
+            ("本地导入", self._on_add_fatigue_input_local),
+            ("系统导入", self._on_add_fatigue_input_sys),
+            ("删除选中行", self._on_del_fatigue_input),
+        ]
+        input_title_widget = self._create_title_row_widget("设置疲劳分析输入文件组", input_buttons)
+        self.files_table.setCellWidget(input_header_row, 0, input_title_widget)
+        self.files_table.setRowHeight(input_header_row, 38)
 
-        self.files_table.setCellWidget(r_fatigue_val, 0, val_widget)
-        self.files_table.setRowHeight(r_fatigue_val, 36)
+        if self.fatigue_input_files:
+            for i, path in enumerate(self.fatigue_input_files):
+                row = self.files_table.rowCount()
+                self.files_table.insertRow(row)
+
+                idx_item = QTableWidgetItem(str(i + 1))
+                idx_item.setTextAlignment(Qt.AlignCenter)
+                idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+
+                path_item = QTableWidgetItem(self._short_path(path))
+                path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                path_item.setToolTip(path)
+
+                self.files_table.setItem(row, 0, idx_item)
+                self.files_table.setItem(row, 1, path_item)
+                self.files_table.setRowHeight(row, 32)
+                self._fatigue_input_row_map[row] = i
+        else:
+            row = self.files_table.rowCount()
+            self.files_table.insertRow(row)
+            self.files_table.setSpan(row, 0, 1, 2)
+            empty_widget = QWidget()
+            empty_widget.setStyleSheet("background-color: #ffffff;")
+            empty_layout = QHBoxLayout(empty_widget)
+            empty_layout.setContentsMargins(10, 0, 10, 0)
+            empty_label = QLabel("暂未选择疲劳分析输入文件。")
+            empty_label.setStyleSheet('color: #666; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
+            empty_layout.addWidget(empty_label)
+            empty_layout.addStretch(1)
+            self.files_table.setCellWidget(row, 0, empty_widget)
+            self.files_table.setRowHeight(row, 36)
 
         self._fit_table_height(self.files_table)
 
@@ -847,12 +1306,20 @@ class NewSpecialInspectionPage(BasePage):
             return
 
         rows_to_delete = sorted([idx.row() for idx in selected], reverse=True)
+        failed = False
         for r in rows_to_delete:
             if 1 <= r <= len(self.model_files):
+                path = self.model_files[r - 1]
+                deleted = self._db_soft_delete_file(path, self.CATEGORY_MODEL)
+                if is_file_db_configured() and not deleted:
+                    failed = True
+                    continue
                 del self.model_files[r - 1]
 
         self._refresh_model_files_table()
         self._refresh_model_preview()
+        if failed:
+            QMessageBox.warning(self, "警告", "部分文件未能同步更新数据库删除状态，已保留在列表中。")
 
     def _on_add_collapse_local(self):
         if self._collapse_static_demo:
@@ -893,32 +1360,93 @@ class NewSpecialInspectionPage(BasePage):
             return
 
         rows_to_delete = sorted([idx.row() for idx in selected], reverse=True)
+        failed = False
         for r in rows_to_delete:
             if 1 <= r <= len(self.collapse_files):
+                path = self.collapse_files[r - 1]
+                deleted = self._db_soft_delete_file(path, self.CATEGORY_COLLAPSE)
+                if is_file_db_configured() and not deleted:
+                    failed = True
+                    continue
                 del self.collapse_files[r - 1]
 
         self._refresh_files_table()
+        if failed:
+            QMessageBox.warning(self, "警告", "部分文件未能同步更新数据库删除状态，已保留在列表中。")
 
-    def _on_set_fatigue_local(self):
-        fp, _ = QFileDialog.getOpenFileName(self, "选择疲劳分析结果文件", "", "结果文件 (*.wit *.wjt *.csv *.txt);;所有文件 (*.*)")
+    def _fatigue_target_list(self, branch: str) -> List[str]:
+        return self.fatigue_input_files if branch == "input" else self.fatigue_result_files
+
+    def _fatigue_branch_label(self, branch: str) -> str:
+        return "输入文件" if branch == "input" else "结果文件"
+
+    def _on_add_fatigue_local(self, branch: str):
+        branch_label = self._fatigue_branch_label(branch)
+        fp, _ = QFileDialog.getOpenFileName(self, f"选择疲劳分析{branch_label}", "", "所有文件 (*.*)")
         if not fp:
             return
+        actual_branch = self._fatigue_branch_for_path(fp)
+        if actual_branch and actual_branch != branch:
+            QMessageBox.warning(self, "导入失败", f"当前选择的文件更像疲劳分析{self._fatigue_branch_label(actual_branch)}，请检查后重新导入。")
+            return
         try:
-            system_path = self._db_store_local_file(fp, self.CATEGORY_FATIGUE)
+            system_path = self._db_store_local_file(fp, self.CATEGORY_FATIGUE, branch)
         except Exception as e:
             QMessageBox.warning(self, "导入失败", f"本地文件入库失败：\n{e}")
             return
 
-        self.fatigue_file = system_path
+        self._append_unique_path(self._fatigue_target_list(branch), system_path)
         self._refresh_files_table()
         QMessageBox.information(self, "本地导入", f"文件已入系统库并显示：\n{system_path}")
 
-    def _on_set_fatigue_sys(self):
-        chosen = self._pick_system_file_dialog(self.CATEGORY_FATIGUE, "系统导入疲劳分析结果文件")
+    def _on_add_fatigue_sys(self, branch: str):
+        branch_label = self._fatigue_branch_label(branch)
+        chosen = self._pick_system_file_dialog(self.CATEGORY_FATIGUE, f"系统导入疲劳分析{branch_label}", branch)
         if not chosen:
             return
-        self.fatigue_file = chosen
+        self._append_unique_path(self._fatigue_target_list(branch), chosen)
         self._refresh_files_table()
+
+    def _on_del_fatigue(self, branch: str):
+        row_map = self._fatigue_input_row_map if branch == "input" else self._fatigue_result_row_map
+        selected = self.files_table.selectionModel().selectedRows()
+        indexes = sorted({row_map[idx.row()] for idx in selected if idx.row() in row_map}, reverse=True)
+        if not indexes:
+            QMessageBox.warning(self, "提示", f"请先在疲劳分析{self._fatigue_branch_label(branch)}区域选中要删除的行。")
+            return
+
+        failed = False
+        target_list = self._fatigue_target_list(branch)
+        for idx in indexes:
+            if 0 <= idx < len(target_list):
+                path = target_list[idx]
+                deleted = self._db_soft_delete_file(path, self.CATEGORY_FATIGUE)
+                if is_file_db_configured() and not deleted:
+                    failed = True
+                    continue
+                del target_list[idx]
+
+        self._refresh_files_table()
+        if failed:
+            QMessageBox.warning(self, "警告", "部分疲劳文件未能同步更新数据库删除状态，已保留在列表中。")
+
+    def _on_add_fatigue_result_local(self):
+        self._on_add_fatigue_local("result")
+
+    def _on_add_fatigue_result_sys(self):
+        self._on_add_fatigue_sys("result")
+
+    def _on_del_fatigue_result(self):
+        self._on_del_fatigue("result")
+
+    def _on_add_fatigue_input_local(self):
+        self._on_add_fatigue_local("input")
+
+    def _on_add_fatigue_input_sys(self):
+        self._on_add_fatigue_sys("input")
+
+    def _on_del_fatigue_input(self):
+        self._on_del_fatigue("input")
 
     def _refresh_model_preview(self):
         if not hasattr(self, "inp_view"):

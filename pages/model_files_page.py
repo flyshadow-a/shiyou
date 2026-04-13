@@ -4,10 +4,10 @@
 import os
 import shutil
 import datetime
-from typing import Dict, List
+from typing import Any, Dict, List
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFontMetrics, QPixmap
+from PyQt5.QtCore import Qt, QUrl, pyqtSignal
+from PyQt5.QtGui import QDesktopServices, QFontMetrics, QPixmap
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QSizePolicy, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
@@ -16,7 +16,9 @@ from PyQt5.QtWidgets import (
 
 from base_page import BasePage
 from dropdown_bar import DropdownBar
+from .file_management_platforms import default_platform, sync_platform_dropdowns
 from .doc_man import DocManWidget
+from file_db_adapter import is_file_db_configured, list_files_by_prefix, soft_delete_record, upload_file
 
 # ✅ 直接复用 ConstructionDocsWidget 的文件夹UI与交互（FolderButton / folder_grid / PathBar 等）
 from .construction_docs_widget import ConstructionDocsWidget
@@ -65,10 +67,12 @@ class ModelFilesDocsWidget(QWidget):
 
         # 每个叶子路径对应的 {row_index: 文件绝对路径}
         self.row_paths_by_path: Dict[str, Dict[int, str]] = {}  # { "详细设计模型/静力": {0: path, 1: path, ...}}
+        self.row_db_records_by_path: Dict[str, Dict[int, List[Dict[str, Any]]]] = {}
 
         # 当前显示的叶子路径 key 和行配置
         self.current_leaf_key: str = ""
         self.current_row_configs: List[Dict] = []
+        self.facility_code = ""
 
         # 上传根目录：项目根目录/upload/model_files（沿用你旧代码的 upload 路径）
         self.upload_root = self._get_upload_root()
@@ -88,6 +92,13 @@ class ModelFilesDocsWidget(QWidget):
         path = os.path.join(project_root, "upload", "model_files")
         os.makedirs(path, exist_ok=True)
         return path
+
+    def set_facility_code(self, code: str):
+        new_code = (code or "").strip()
+        if new_code != self.facility_code:
+            self.row_paths_by_path.clear()
+            self.row_db_records_by_path.clear()
+        self.facility_code = new_code
 
     def _build_folder_tree(self) -> Dict:
         """
@@ -505,10 +516,28 @@ class ModelFilesDocsWidget(QWidget):
         用于程序重启后恢复已有上传文件。
         """
         row_paths: Dict[int, str] = {}
+        db_row_records: Dict[int, List[Dict[str, Any]]] = {}
+
+        if is_file_db_configured() and self.facility_code:
+            node = self._get_node_by_path(self.current_path)
+            model_key = node.get("model_key") if node else None
+            row_configs = self.model_row_configs.get(model_key, [])
+            for row, cfg in enumerate(row_configs):
+                rows = self._list_db_records_for_row(path_key, cfg)
+                if not rows:
+                    continue
+                db_row_records[row] = rows
+                first_path = str(rows[0].get("storage_path") or "")
+                if first_path and os.path.exists(first_path):
+                    row_paths[row] = first_path
+
+        self.row_db_records_by_path[path_key] = db_row_records
 
         # 行数随配置走：但为了兼容“配置变更”，最多扫描 30 行
         max_rows = 30
         for row in range(max_rows):
+            if row in row_paths:
+                continue
             d = self._leaf_row_dir(path_key, row, create_dir=False)
             if not os.path.isdir(d):
                 continue
@@ -524,9 +553,161 @@ class ModelFilesDocsWidget(QWidget):
 
         return row_paths
 
+    def _list_db_records_for_row(self, path_key: str, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+        prefixes = self._db_prefixes_for_row(path_key, cfg)
+        if not prefixes:
+            return []
+        matches: List[Dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        for prefix in prefixes:
+            rows = list_files_by_prefix(
+                module_code="model_files",
+                logical_path_prefix=prefix,
+                facility_code=self.facility_code,
+            )
+            for row in rows:
+                row_id = row.get("id")
+                if row_id in seen_ids:
+                    continue
+                if not self._db_row_matches_cfg(row, cfg):
+                    continue
+                seen_ids.add(row_id)
+                matches.append(row)
+        matches.sort(
+            key=lambda item: (
+                str(item.get("logical_path") or ""),
+                str(item.get("original_name") or ""),
+            )
+        )
+        return matches
+
+    def _db_prefixes_for_row(self, path_key: str, cfg: Dict[str, Any]) -> List[str]:
+        if not self.facility_code or not path_key:
+            return []
+        parts = path_key.split("/")
+        if len(parts) < 2:
+            return []
+        model_root = parts[0]
+        base = f"{self.facility_code}/{model_root}"
+        fmt = str(cfg.get("fmt") or "").lower()
+        if fmt == "sacinp":
+            return [f"{base}/结构模型"]
+        if fmt.startswith("clp"):
+            return [f"{base}/倒塌分析"]
+        if fmt.startswith("ftg") or fmt == "wvrinp":
+            return [f"{base}/疲劳分析"]
+        return []
+
+    def _db_row_matches_cfg(self, row: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
+        name = str(row.get("original_name") or "").lower()
+        logical_path = str(row.get("logical_path") or "").replace("\\", "/").lower()
+        fmt = str(cfg.get("fmt") or "").lower()
+
+        if fmt == "sacinp":
+            return name.startswith("sacinp")
+        if fmt == "clpinp":
+            return name.startswith("clpinp")
+        if fmt == "clplog":
+            return name == "clplog"
+        if fmt == "clplst":
+            return name == "clplst"
+        if fmt == "clprst":
+            return name == "clprst"
+        if fmt == "ftginp":
+            return name.startswith("ftginp") and "/输入" in logical_path
+        if fmt == "ftglst":
+            return name.startswith("ftglst") and "/结果" in logical_path
+        if fmt == "wvrinp":
+            return name.startswith("wvrinp")
+        return False
+
+    def _build_db_remark(self, records: List[Dict[str, Any]]) -> str:
+        if not records:
+            return ""
+        labels: List[str] = []
+        for item in records:
+            logical_path = str(item.get("logical_path") or "").replace("\\", "/").strip("/")
+            original_name = str(item.get("original_name") or "")
+            parts = logical_path.split("/")
+            tail = "/".join(parts[-2:]) if len(parts) >= 2 else logical_path
+            label = f"{tail}/{original_name}".strip("/")
+            labels.append(label)
+        if len(labels) == 1:
+            return labels[0]
+        preview = "；".join(labels[:3])
+        if len(labels) > 3:
+            return f"{preview} 等{len(labels)}个文件"
+        return preview
+
+    def _doc_category_to_fmt(self, category: str) -> str:
+        mapping = {
+            "结构模型文件": "sacinp",
+            "海况文件": "seainp",
+            "桩基文件": "psiinp",
+            "冲剪节点文件": "jcninp",
+            "静力分析文件": "psilst",
+            "动力分析文件": "dyninp",
+            "疲劳分析模型文件": "ftginp",
+            "疲劳分析结果文件": "ftglst",
+            "倒塌分析模型文件": "clpinp",
+            "倒塌分析结果文件": "clplog",
+            "地震分析模型文件": "pilinp",
+            "地震分析结果文件": "lst",
+            "其他分析模型文件": "othinp",
+            "其他分析结果文件": "othlst",
+        }
+        return mapping.get(category, "")
+
+    def _format_from_original_name(self, original_name: str) -> str:
+        name = (original_name or "").lower()
+        if name.startswith("sacinp"):
+            return "SACINP"
+        if name.startswith("seainp"):
+            return "SEAINP"
+        if name.startswith("psiinp"):
+            return "PSIINP"
+        if name.startswith("jcninp"):
+            return "JCNINP"
+        if name.startswith("psilst"):
+            return "PSILST"
+        if name.startswith("dyninp"):
+            return "DYNINP"
+        if name.startswith("ftginp"):
+            return "FTGINP"
+        if name.startswith("ftglst"):
+            return "FTGLST"
+        if name.startswith("clpinp"):
+            return "CLPINP"
+        if name == "clplog":
+            return "CLPLOG"
+        if name == "clplst":
+            return "CLPLST"
+        if name == "clprst":
+            return "CLPRST"
+        if name.startswith("pilinp"):
+            return "PILINP"
+        if name == "lst":
+            return "LST"
+        return os.path.splitext(original_name or "")[1].lstrip(".").upper()
+
+    def _handle_model_doc_delete(self, selected: List[Dict[str, Any]], _records: List[Dict[str, Any]]):
+        total = 0
+        for rec in selected:
+            record_id = rec.get("record_id")
+            if record_id is None:
+                continue
+            soft_delete_record(int(record_id))
+            total += 1
+        path_key = self.current_leaf_key
+        self.row_paths_by_path.pop(path_key, None)
+        self.row_db_records_by_path.pop(path_key, None)
+        _records[:] = self._build_model_file_doc_records(path_key)
+        QMessageBox.information(self, "提示", f"已删除 {total} 个文件。")
+
     def _leaf_row_dir(self, path_key: str, row: int, create_dir: bool = True) -> str:
         segs = path_key.split("/") if path_key else []
-        d = os.path.join(self.upload_root, *segs, f"row_{row + 1}")
+        facility = (self.facility_code or "").strip()
+        d = os.path.join(self.upload_root, *( [facility] if facility else [] ), *segs, f"row_{row + 1}")
         if create_dir:
             os.makedirs(d, exist_ok=True)
         return d
@@ -542,8 +723,29 @@ class ModelFilesDocsWidget(QWidget):
         path_key = self._current_path_key()
         if path_key in self.doc_man_configs:
             self.current_leaf_key = path_key
-            records = self.doc_man_records.setdefault(path_key, [])
-            self.doc_man_widget.set_context(self.current_path, records, self.doc_man_configs[path_key])
+            if self.current_path and self.current_path[0] == "当前模型":
+                self.doc_man_widget.set_action_handlers(
+                    upload_handler=self._handle_model_doc_upload,
+                    delete_handler=self._handle_model_doc_delete,
+                    download_handler=self._handle_model_doc_download,
+                )
+                records = self._build_model_file_doc_records(path_key)
+            else:
+                self.doc_man_widget.set_action_handlers(
+                    upload_handler=None,
+                    delete_handler=None,
+                    download_handler=None,
+                )
+                records = self.doc_man_records.setdefault(path_key, [])
+            self.doc_man_widget.set_context(
+                self.current_path,
+                records,
+                self.doc_man_configs[path_key],
+                facility_code=self.facility_code,
+                overlay_from_db=not (self.current_path and self.current_path[0] == "当前模型"),
+                hide_empty_templates=True,
+                db_list_mode=not (self.current_path and self.current_path[0] == "当前模型"),
+            )
             return
 
         model_key = node.get("model_key")
@@ -552,6 +754,7 @@ class ModelFilesDocsWidget(QWidget):
 
         self.current_leaf_key = path_key
         row_paths = self._get_row_paths_for(path_key)
+        db_row_records = self.row_db_records_by_path.get(path_key, {})
 
         self.table.setRowCount(len(row_configs))
 
@@ -561,12 +764,21 @@ class ModelFilesDocsWidget(QWidget):
             self._set_center_item(self.table, row, 2, cfg.get("fmt", ""))
 
             file_path = row_paths.get(row)
+            db_records = db_row_records.get(row, [])
             if file_path and os.path.exists(file_path):
-                mtime = datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
+                if db_records:
+                    latest_dt = max(
+                        (item.get("source_modified_at") or item.get("uploaded_at") for item in db_records),
+                        default=None,
+                    )
+                    mtime = latest_dt or datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
+                else:
+                    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
                 date_str = mtime.strftime("%Y/%m/%d")
                 self._set_center_item(self.table, row, 3, date_str)
 
-                remark_item = QTableWidgetItem(os.path.basename(file_path))
+                remark_text = self._build_db_remark(db_records) if db_records else os.path.basename(file_path)
+                remark_item = QTableWidgetItem(remark_text)
                 remark_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 self.table.setItem(row, 6, remark_item)
             else:
@@ -579,79 +791,9 @@ class ModelFilesDocsWidget(QWidget):
         self._auto_fit_columns_with_padding(self.table, padding=36)
         self._auto_fit_row_height(self.table, padding=12)
 
-    # ------------------------------------------------------------------
-    # 上传 / 下载 点击事件（旧逻辑）
-    # ------------------------------------------------------------------
-    def _build_doc_man_configs(self) -> Dict[str, List[str]]:
-        leaf_categories = {
-            "静力": [
-                "结构模型文件",
-                "海况文件",
-                "桩基文件",
-                "冲剪节点文件",
-                "静力分析文件",
-                "其他",
-            ],
-            "疲劳": [
-                "结构模型文件",
-                "海况文件",
-                "桩基文件",
-                "动力分析文件",
-                "疲劳分析模型文件",
-                "疲劳分析结果文件",
-                "其他",
-            ],
-            "倒塌": [
-                "结构模型文件",
-                "海况文件",
-                "桩基文件",
-                "倒塌分析模型文件",
-                "倒塌分析结果文件",
-                "其他",
-            ],
-            "地震": [
-                "结构模型文件",
-                "海况文件",
-                "桩基文件",
-                "冲剪节点文件",
-                "动力分析文件",
-                "地震分析模型文件",
-                "地震分析结果文件",
-            ],
-            "其他模型": [
-                "结构模型文件",
-                "海况文件",
-                "其他分析模型文件",
-                "其他分析结果文件",
-                "其他",
-            ],
-        }
-
-        configs: Dict[str, List[str]] = {}
-        for model_root in ["当前模型", "详细设计模型", "改造1模型", "改造N模型"]:
-            for leaf_name, categories in leaf_categories.items():
-                configs["/".join([model_root, leaf_name])] = list(categories)
-        return configs
-
-    def _build_doc_man_records(self) -> Dict[str, List[Dict]]:
-        records: Dict[str, List[Dict]] = {}
-        for path_key, categories in self.doc_man_configs.items():
-            records[path_key] = [
-                {
-                    "index": idx + 1,
-                    "checked": False,
-                    "category": category,
-                    "fmt": "",
-                    "mtime": "",
-                    "path": "",
-                    "remark": "",
-                }
-                for idx, category in enumerate(categories)
-            ]
-        return records
-
     def _get_doc_man_upload_dir(self, path_segments: List[str]) -> str:
-        target_dir = os.path.join(self.upload_root, *path_segments)
+        facility = (self.facility_code or "").strip()
+        target_dir = os.path.join(self.upload_root, *( [facility] if facility else [] ), *path_segments)
         os.makedirs(target_dir, exist_ok=True)
         return target_dir
 
@@ -696,6 +838,11 @@ class ModelFilesDocsWidget(QWidget):
         row_dir = self._leaf_row_dir(self.current_leaf_key, row, create_dir=True)
         basename = os.path.basename(file_path)
         dest_path = os.path.join(row_dir, basename)
+        root, ext = os.path.splitext(dest_path)
+        suffix = 1
+        while os.path.exists(dest_path):
+            dest_path = f"{root} ({suffix}){ext}"
+            suffix += 1
 
         try:
             shutil.copy2(file_path, dest_path)
@@ -745,6 +892,304 @@ class ModelFilesDocsWidget(QWidget):
 #    - 顶部不显示 BasePage 标题
 #    - 不自写文件夹布局（文件夹由 ConstructionDocsWidget 渲染）
 # ============================================================
+    # Clean overrides for current-model DB behaviour.
+    def _display_name_from_row(self, row: Dict[str, Any]) -> str:
+        return str(row.get("original_name") or "")
+
+    def _build_doc_man_configs(self) -> Dict[str, List[str]]:
+        leaf_categories = {
+            "静力": [
+                "结构模型文件",
+                "海况文件",
+                "桩基文件",
+                "建模文件",
+                "静力分析结果文件",
+                "其他",
+            ],
+            "疲劳": [
+                "结构模型文件",
+                "海况文件",
+                "桩基文件",
+                "动力分析文件",
+                "疲劳分析模型文件",
+                "疲劳分析结果文件",
+                "其他",
+            ],
+            "倒塌": [
+                "结构模型文件",
+                "海况文件",
+                "桩基文件",
+                "倒塌分析模型文件",
+                "倒塌分析结果文件",
+                "其他",
+            ],
+            "地震": [
+                "结构模型文件",
+                "海况文件",
+                "桩基文件",
+                "建模文件",
+                "动力分析文件",
+                "地震分析模型文件",
+                "地震分析结果文件",
+                "其他",
+            ],
+            "其他模型": [
+                "结构模型文件",
+                "海况文件",
+                "其他模型文件",
+                "其他结果文件",
+                "其他",
+            ],
+        }
+        configs: Dict[str, List[str]] = {}
+        root_names = ["当前模型", "详细设计模型", "改造1模型", "改造N模型"]
+        leaf_mapping = {
+            "静力": "静力",
+            "疲劳": "疲劳",
+            "倒塌": "倒塌",
+            "地震": "地震",
+            "其他模型": "其他模型",
+        }
+        for root in root_names:
+            for leaf, key in leaf_mapping.items():
+                configs[f"{root}/{leaf}"] = list(leaf_categories[key])
+        return configs
+
+    def _build_doc_man_records(self) -> Dict[str, List[Dict]]:
+        return {path_key: [] for path_key in self.doc_man_configs}
+
+    def _pick_category_option(self, categories: List[str], *keywords: str, fallback: str = "其他") -> str:
+        for option in categories:
+            if all(word in option for word in keywords):
+                return option
+        for option in categories:
+            if any(word in option for word in keywords):
+                return option
+        return fallback
+
+    def _category_from_db_row(self, row: Dict[str, Any], categories: List[str]) -> str:
+        name = str(row.get("original_name") or "").lower()
+        logical_path = str(row.get("logical_path") or "").replace("\\", "/")
+        upload_marker = "/用户上传/"
+        if upload_marker in logical_path:
+            uploaded_category = logical_path.split(upload_marker, 1)[1].strip("/")
+            if uploaded_category:
+                return uploaded_category.split("/", 1)[0]
+        if name.startswith("sacinp"):
+            return self._pick_category_option(categories, "结构模型", fallback="结构模型文件")
+        if name.startswith("seainp"):
+            return self._pick_category_option(categories, "海况", fallback="海况文件")
+        if name.startswith("psiinp"):
+            return self._pick_category_option(categories, "桩基", fallback="桩基文件")
+        if name.startswith("jcninp"):
+            return self._pick_category_option(categories, "建模", fallback="建模文件")
+        if name.startswith("dyninp"):
+            return self._pick_category_option(categories, "地震", fallback="地震分析模型文件")
+        if name.startswith("ftginp") or "/疲劳分析/" in logical_path and "/输入/" in logical_path:
+            return self._pick_category_option(categories, "疲劳", "模型", fallback="疲劳分析模型文件")
+        if name.startswith("ftglst") or "/疲劳分析/" in logical_path and "/结果/" in logical_path:
+            return self._pick_category_option(categories, "疲劳", "结果", fallback="疲劳分析结果文件")
+        if name.startswith("wvrinp"):
+            return self._pick_category_option(categories, "疲劳", fallback="疲劳分析文件")
+        if name.startswith("clpinp"):
+            return self._pick_category_option(categories, "倒塌", "模型", fallback="倒塌分析模型文件")
+        if name in {"clplog", "clplst", "clprst"} or "/倒塌分析/" in logical_path:
+            return self._pick_category_option(categories, "倒塌", "结果", fallback="倒塌分析结果文件")
+        if name.startswith("pilinp"):
+            return self._pick_category_option(categories, "地震", "模型", fallback="地震分析模型文件")
+        if name == "lst":
+            return self._pick_category_option(categories, "地震", "结果", fallback="地震分析结果文件")
+        return self._pick_category_option(categories, "其他", fallback="其他")
+
+    def _doc_category_to_file_type_code(self, category: str) -> str:
+        if "疲劳" in category:
+            return "fatigue"
+        if "倒塌" in category:
+            return "collapse"
+        if "地震" in category:
+            return "seismic"
+        if any(word in category for word in ("图", "CAD", "cad")):
+            return "drawing"
+        if any(word in category for word in ("结构", "模型", "海况", "桩基", "建模")):
+            return "model"
+        return "other"
+
+    def _handle_model_doc_upload(self, row: int, rec: Dict[str, Any], _records: List[Dict[str, Any]]):
+        path_key = self.current_leaf_key
+        current_category = str(rec.get("category") or "").strip()
+        if not current_category:
+            QMessageBox.warning(self, "提示", "请先选择文件类别，再上传文件。")
+            return
+
+        title = f"选择上传文件 - {current_category}"
+        file_path, _ = QFileDialog.getOpenFileName(self, title, "", "所有文件 (*.*)")
+        if not file_path:
+            return
+
+        logical_path = rec.get("logical_path") or self._upload_logical_path_for_category(path_key, current_category)
+        record_id = rec.get("record_id")
+        if record_id is not None:
+            soft_delete_record(int(record_id))
+        result = upload_file(
+            file_path,
+            file_type_code=self._doc_category_to_file_type_code(current_category),
+            module_code="model_files",
+            logical_path=logical_path,
+            facility_code=self.facility_code,
+            remark=rec.get("remark") or "",
+        )
+        dt = result.get("source_modified_at") or result.get("uploaded_at")
+        rec["checked"] = False
+        rec["category"] = current_category
+        rec["fmt"] = self._format_from_original_name(str(result.get("original_name") or os.path.basename(file_path)))
+        rec["filename"] = str(result.get("original_name") or os.path.basename(file_path))
+        rec["mtime"] = dt.strftime("%Y/%m/%d") if dt else ""
+        rec["path"] = str(result.get("storage_path") or "")
+        rec["record_id"] = result.get("id")
+        rec["logical_path"] = str(result.get("logical_path") or logical_path)
+        rec["_force_visible"] = True
+
+        self.row_paths_by_path.pop(path_key, None)
+        self.row_db_records_by_path.pop(path_key, None)
+        QMessageBox.information(self, "上传成功", "文件已保存到当前目录。")
+
+    def _handle_model_doc_download(self, selected: List[Dict[str, Any]], _records: List[Dict[str, Any]]):
+        available: list[tuple[str, str]] = []
+        missing = 0
+        for rec in selected:
+            path = rec.get("path") or ""
+            if path and os.path.exists(path):
+                available.append((path, rec.get("filename") or os.path.basename(path)))
+            else:
+                missing += 1
+
+        if not available:
+            QMessageBox.information(self, "提示", "未找到可下载的文件。")
+            return
+
+        if len(available) == 1:
+            src_path, default_name = available[0]
+            save_path, _ = QFileDialog.getSaveFileName(self, "保存文件", default_name, "所有文件 (*.*)")
+            if not save_path:
+                return
+            try:
+                shutil.copy2(src_path, save_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "下载失败", str(exc))
+                return
+            message = "已下载 1 个文件。"
+            if missing:
+                message += f"\n另有 {missing} 个文件不存在。"
+            QMessageBox.information(self, "下载完成", message)
+            return
+
+        target_dir = QFileDialog.getExistingDirectory(self, "选择下载文件夹")
+        if not target_dir:
+            return
+
+        downloaded = 0
+        for src_path, filename in available:
+            target_path = os.path.join(target_dir, filename)
+            root, ext = os.path.splitext(target_path)
+            suffix = 1
+            while os.path.exists(target_path):
+                target_path = f"{root} ({suffix}){ext}"
+                suffix += 1
+            try:
+                shutil.copy2(src_path, target_path)
+                downloaded += 1
+            except Exception:
+                continue
+
+        message = f"已下载 {downloaded} 个文件到：\n{target_dir}"
+        if missing:
+            message += f"\n另有 {missing} 个文件不存在。"
+        QMessageBox.information(self, "下载完成", message)
+
+    def _current_model_prefixes(self, path_key: str) -> List[str]:
+        if not self.facility_code or not path_key:
+            return []
+        parts = path_key.split("/")
+        model_root = parts[0] if parts else "当前模型"
+        node = self._get_node_by_path(parts)
+        model_key = node.get("model_key") if node else ""
+        base = f"{self.facility_code}/{model_root}"
+        alias_map = {
+            "static": ["结构模型", "静力"],
+            "seismic": ["地震分析", "地震"],
+            "fatigue": ["疲劳分析", "疲劳"],
+            "collapse": ["倒塌分析", "倒塌"],
+            "other": ["其他", "其他模型"],
+        }
+        aliases = alias_map.get(model_key, [parts[-1] if parts else ""])
+        return [f"{base}/{alias}" for alias in aliases if alias]
+
+    def _upload_logical_path_for_category(self, path_key: str, category: str) -> str:
+        parts = path_key.split("/")
+        model_root = parts[0] if parts else "当前模型"
+        base = f"{self.facility_code}/{model_root}"
+        if "结构模型" in category:
+            return f"{base}/结构模型/用户上传"
+        if "海况" in category:
+            return f"{base}/结构模型/海况/用户上传"
+        if "桩基" in category:
+            return f"{base}/结构模型/桩基/用户上传"
+        if "建模" in category:
+            return f"{base}/结构模型/建模/用户上传"
+        if "地震" in category:
+            branch = "结果" if "结果" in category else "输入"
+            return f"{base}/地震分析/{branch}/用户上传"
+        if "疲劳" in category:
+            branch = "结果" if "结果" in category else "输入"
+            return f"{base}/疲劳分析/{branch}/用户上传"
+        if "倒塌" in category:
+            branch = "结果" if "结果" in category else "模型"
+            return f"{base}/倒塌分析/{branch}/用户上传"
+        return f"{base}/其他/用户上传"
+
+    def _build_model_file_doc_records(self, path_key: str) -> List[Dict[str, Any]]:
+        if not self.facility_code:
+            return []
+        categories = self.doc_man_configs.get(path_key, [])
+        rows: List[Dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        seen_keys: set[tuple[str, str]] = set()
+        for prefix in self._current_model_prefixes(path_key):
+            for row in list_files_by_prefix(
+                module_code="model_files",
+                logical_path_prefix=prefix,
+                facility_code=self.facility_code,
+            ):
+                row_id = row.get("id")
+                if row_id in seen_ids:
+                    continue
+                logical_path = str(row.get("logical_path") or "")
+                original_name = str(row.get("original_name") or "")
+                dedupe_key = (logical_path.lower(), original_name.lower())
+                if dedupe_key in seen_keys:
+                    continue
+                seen_ids.add(row_id)
+                seen_keys.add(dedupe_key)
+                dt = row.get("source_modified_at") or row.get("uploaded_at")
+                rows.append(
+                    {
+                        "index": len(rows) + 1,
+                        "checked": False,
+                        "category": self._category_from_db_row(row, categories),
+                        "fmt": self._format_from_original_name(str(row.get("original_name") or "")),
+                        "filename": str(row.get("original_name") or ""),
+                        "mtime": dt.strftime("%Y/%m/%d") if dt else "",
+                        "path": str(row.get("storage_path") or ""),
+                        "record_id": row.get("id"),
+                        "logical_path": logical_path,
+                        "remark": str(row.get("remark") or ""),
+                    }
+                )
+        rows.sort(key=lambda item: (str(item.get("category") or ""), str(item.get("logical_path") or ""), str(item.get("filename") or "")))
+        for index, row in enumerate(rows, start=1):
+            row["index"] = index
+        return rows
+
     def _emit_navigation_state(self):
         self.navigationStateChanged.emit(len(self.current_path) == 0)
 
@@ -780,6 +1225,7 @@ class ModelFilesPage(BasePage):
         self.main_layout.setSpacing(8)
 
         # ---------- 顶部下拉条 ----------
+        platform_defaults = default_platform()
         fields = [
             {"key": "branch",         "label": "分公司",   "options": ["渤江分公司"],             "default": "渤江分公司"},
             {"key": "op_company",     "label": "作业公司", "options": ["文昌油田群作业公司"],     "default": "文昌油田群作业公司"},
@@ -791,6 +1237,21 @@ class ModelFilesPage(BasePage):
             {"key": "start_time",     "label": "投产时间", "options": ["2013-07-15"],           "default": "2013-07-15"},
             {"key": "design_life",    "label": "设计年限", "options": ["15"],                   "default": "15"},
         ]
+        field_map = {item["key"]: item for item in fields}
+        field_map["oilfield"]["options"] = [platform_defaults["oilfield"]]
+        field_map["oilfield"]["default"] = platform_defaults["oilfield"]
+        field_map["facility_code"]["options"] = ["WC19-1D", "WC9-7"]
+        field_map["facility_code"]["default"] = platform_defaults["facility_code"]
+        field_map["facility_name"]["options"] = ["WC19-1D平台", "WC9-7平台"]
+        field_map["facility_name"]["default"] = platform_defaults["facility_name"]
+        field_map["facility_type"]["options"] = [platform_defaults["facility_type"]]
+        field_map["facility_type"]["default"] = platform_defaults["facility_type"]
+        field_map["category"]["options"] = [platform_defaults["category"]]
+        field_map["category"]["default"] = platform_defaults["category"]
+        field_map["start_time"]["options"] = [platform_defaults["start_time"]]
+        field_map["start_time"]["default"] = platform_defaults["start_time"]
+        field_map["design_life"]["options"] = [platform_defaults["design_life"]]
+        field_map["design_life"]["default"] = platform_defaults["design_life"]
         self.dropdown_bar = DropdownBar(fields, parent=self)
         self.main_layout.addWidget(self.dropdown_bar, 0)
 
@@ -822,12 +1283,19 @@ class ModelFilesPage(BasePage):
         self._sync_platform_ui()
 
     def on_filter_changed(self, key: str, value: str):
-        print(f"[ModelFilesPage] 条件变化：{key} -> {value}")
-        # 如果未来要按筛选条件重置目录/刷新，可在此扩展
-        self._sync_platform_ui()
+        self._sync_platform_ui(changed_key=key)
 
-    def _sync_platform_ui(self):
-        platform_name = self.dropdown_bar.get_value("facility_name")
+    def _sync_platform_ui(self, changed_key: str | None = None):
+        platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
+        facility_code = platform["facility_code"]
+        platform_name = platform["facility_name"]
+        self.docs_widget.set_facility_code(facility_code)
+        if self.docs_widget.current_path:
+            node = self.docs_widget._get_node_by_path(self.docs_widget.current_path)
+            if node and node.get("type") == "leaf":
+                self.docs_widget._show_files_for_current_leaf()
+            else:
+                self.docs_widget._refresh_folder_view()
         window = self.window()
         if hasattr(window, "set_current_platform_name"):
             window.set_current_platform_name(platform_name)

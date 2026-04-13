@@ -18,7 +18,7 @@
     "d:/pyproject/shiyou/pages/output_special_strategy/附件C.4 服役第20年的检验节点构件位置",
     "d:/pyproject/shiyou/pages/output_special_strategy/附件C.5 服役第25年的检验节点构件位置"
   ],
-  "include_word_plan_detail_tables": false,
+  "include_word_plan_detail_tables": true,
   "platform_name": "{{platform_name}}",
   "report_date": "{{report_date}}",
   "model": "D:/desk/横向/WC9-7&191D检测策略1103/WC9-7检测策略1103/model/WC9-7static/static model/sacinp.WC9-7 DPP",

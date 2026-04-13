@@ -1,16 +1,29 @@
 # -*- coding: utf-8 -*-
 # pages/upgrade_special_inspection_result_page.py
 
+from typing import Any
 
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea,
-    QComboBox, QTabWidget, QSizePolicy
+    QComboBox, QTabWidget, QSizePolicy, QMessageBox
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 
 from base_page import BasePage
+from special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService
+
+
+NODE_SUMMARY_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]
+NODE_SUMMARY_CONTEXT_MAP = {
+    "当前": "当前",
+    "+5年": "第5年",
+    "+10年": "第10年",
+    "+15年": "第15年",
+    "+20年": "第20年",
+    "+25年": "第25年",
+}
 
 
 class PlanDiagram(QWidget):
@@ -67,7 +80,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
     更新风险等级结果页（严格表头/汇总样式版）
     """
     HEADER_ROWS = 2
-    SUMMARY_YEARS = ["构件","当前", "第5年", "第10年", "第15年", "第20年", "第25年"]
+    COMPONENT_SUMMARY_LABELS = ["构件"]
+    NODE_SUMMARY_LABELS = ["当前", "第5年", "第10年", "第15年", "第20年", "第25年"]
 
     # 汇总颜色条（红、橙、黄、蓝、棕）
     RISK_COLORS = [
@@ -79,11 +93,14 @@ class UpgradeSpecialInspectionResultPage(BasePage):
     ]
     RISK_LABELS = ["一", "二", "三", "四", "五"]
 
-    def __init__(self, facility_code: str, parent=None):
+    def __init__(self, facility_code: str, parent=None, run_id: int | None = None):
         self.facility_code = facility_code
+        self.run_id = run_id
+        self._result_service = SpecialStrategyResultService()
+        self._year_mapper = NodeYearLabelMapper()
         super().__init__("", parent)
         self._build_ui()
-        self._fill_demo()
+        self._load_result_data()
 
     def _build_ui(self):
         self.setStyleSheet("""
@@ -181,7 +198,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         comp_l.setContentsMargins(0, 0, 0, 0)
         comp_l.setSpacing(10)
         self.table_comp = self._make_detail_table(is_node=False)
-        self.summary_comp = self._make_summary_table(is_node=False)
+        self.summary_comp = self._make_summary_table(self.COMPONENT_SUMMARY_LABELS)
 
         comp_l.addWidget(self.table_comp, 0)
         comp_l.addWidget(self.summary_comp, 1)
@@ -192,7 +209,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         node_l.setContentsMargins(0, 0, 0, 0)
         node_l.setSpacing(10)
         self.table_node = self._make_detail_table(is_node=True)
-        self.summary_node = self._make_summary_table(is_node=True)
+        self.summary_node = self._make_summary_table(self._year_mapper.display_labels())
         node_l.addWidget(self.table_node, 0)
         node_l.addWidget(self.summary_node, 1)
 
@@ -299,7 +316,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         table.setItem(r, c, it)
 
     # ---------------- Summary big table (tagged) ----------------
-    def _make_summary_table(self, is_node: bool = False) -> QTableWidget:
+    def _make_summary_table(self, labels: list[str]) -> QTableWidget:
         """
         汇总表：顶部 1 行标签（合并单元格），下面每个年份 3 行：
         - 年份标签 + 风险等级颜色条
@@ -307,7 +324,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         - 占比
         """
         cols = 6  # 0: 标签列，1..5: 风险等级一~五
-        rows =  len(self.SUMMARY_YEARS) * 4
+        rows = len(labels) * 4
 
         t = QTableWidget(rows, cols)
         t.verticalHeader().setVisible(False)
@@ -326,11 +343,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         # t.setSpan(0, 0, 1, cols)
         tag_bg = QColor("#e3e7ef")
         green = QColor("#cfe6b8")
-        for r in range(len(self.SUMMARY_YEARS)):
+        for r, text in enumerate(labels):
             t.setSpan(r * 4, 0, 1, 6)
-            text = self.SUMMARY_YEARS[r]
-            if is_node and r == 0 and text == "构件":
-                text = "节点"
             self._set_cell(t, r * 4, 0, text, green, True)
 
 
@@ -341,7 +355,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
         # Year blocks
         green = QColor("#cfe6b8")
-        for i, year in enumerate(self.SUMMARY_YEARS):
+        for i, _year in enumerate(labels):
             base_r = 1 + i * 4
 
 
@@ -385,6 +399,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             total_h += t.rowHeight(r)
         t.setFixedHeight(total_h)
         
+        t.setProperty("summary_labels", labels)
         return t
 
     # ---------------- Right ----------------
@@ -408,63 +423,121 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
         return panel
 
-    # ---------------- demo data fill ----------------
-    def _fill_demo(self):
-        # 明细表填充（从第2行开始）
-        self._fill_detail_demo(self.table_comp, is_node=False)
-        self._fill_detail_demo(self.table_node, is_node=True)
+    # ---------------- real data fill ----------------
+    @staticmethod
+    def _display_cell(value: object) -> str:
+        if value in ("", None):
+            return ""
+        return str(value)
 
-        # 汇总填充（构件/节点分别一套）
-        self._fill_summary_demo(self.summary_comp, seed=13)
-        self._fill_summary_demo(self.summary_node, seed=29)
+    def _load_result_data(self):
+        bundle = self._result_service.load_result_bundle(self.facility_code, self.run_id)
+        if not bundle:
+            self._set_detail_rows(self.table_comp, [], is_node=False)
+            self._set_detail_rows(self.table_node, [], is_node=True)
+            self._clear_summary_table(self.summary_comp)
+            self._clear_summary_table(self.summary_node)
+            self._apply_row_limit()
+            return
 
+        context = bundle["context"]
+        self._set_detail_rows(self.table_comp, bundle["member_risk_rows_full"], is_node=False)
+        self._set_detail_rows(self.table_node, bundle["node_risk_rows_full"], is_node=True)
+        self._fill_component_summary(context)
+        self._fill_node_summary(context)
         self._apply_row_limit()
 
-    def _fill_detail_demo(self, table: QTableWidget, is_node: bool):
+    def _set_detail_rows(self, table: QTableWidget, rows: list[dict[str, str]], *, is_node: bool):
         start = self.HEADER_ROWS
+        data_rows = max(len(rows), 1)
+        table.setRowCount(start + data_rows)
         for r in range(start, table.rowCount()):
-            idx = r - start
+            table.setRowHeight(r, 24)
+
+        if not rows:
+            rows = [{}]
+
+        for idx, row in enumerate(rows):
+            r = start + idx
             if not is_node:
                 vals = [
-                    "501L", "511L", "LEG", "2",
-                    "0.272", "0.158", "1.9", "10%", "6.9E-05", "4",
-                    "三" if idx % 3 == 0 else "四"
+                    row.get("joint_a", ""),
+                    row.get("joint_b", ""),
+                    row.get("member_type", ""),
+                    row.get("consequence_level", ""),
+                    row.get("a", ""),
+                    row.get("b", ""),
+                    row.get("rm", ""),
+                    row.get("vr", ""),
+                    row.get("pf", ""),
+                    row.get("collapse_prob_level", ""),
+                    row.get("risk_level", ""),
                 ]
             else:
                 vals = [
-                    f"J{idx+1:03d}", f"J{idx+2:03d}", "WELD", "2",
-                    "0.272", "0.158", "1.9", "10%", "6.9E-05", "4",
-                    "二" if idx % 4 == 0 else "三"
+                    row.get("joint_a", ""),
+                    row.get("joint_b", ""),
+                    row.get("weld_type", ""),
+                    row.get("consequence_level", ""),
+                    row.get("a", ""),
+                    row.get("b", ""),
+                    row.get("rm", ""),
+                    row.get("vr", ""),
+                    row.get("pf", ""),
+                    row.get("collapse_prob_level", ""),
+                    row.get("risk_level", ""),
                 ]
-            for c, v in enumerate(vals):
-                it = QTableWidgetItem(str(v))
-                it.setTextAlignment(Qt.AlignCenter)
-                table.setItem(r, c, it)
+            for c, value in enumerate(vals):
+                item = QTableWidgetItem(self._display_cell(value))
+                item.setTextAlignment(Qt.AlignCenter)
+                table.setItem(r, c, item)
 
-    def _fill_summary_demo(self, summary_table: QTableWidget, seed: int = 7):
-        """
-        给汇总表填一组稳定的演示数据（数量 + 占比）。
-        每个年份块：数量行在 base_r+1，比例行 base_r+2。
-        """
-        import random
-        rnd = random.Random(seed)
-
-        for i, _year in enumerate(self.SUMMARY_YEARS):
+    def _clear_summary_table(self, table: QTableWidget):
+        labels = list(table.property("summary_labels") or [])
+        for i in range(len(labels)):
             base_r = 1 + i * 4
-            nums = [rnd.randint(0, 500) for _ in range(5)]
-            total = sum(nums) or 1
-            pcts = [n * 100.0 / total for n in nums]
-
             for k in range(5):
-                # 数量
-                itn = QTableWidgetItem(str(nums[k]))
-                itn.setTextAlignment(Qt.AlignCenter)
-                summary_table.setItem(base_r + 1, 1 + k, itn)
+                table.setItem(base_r + 1, 1 + k, QTableWidgetItem(""))
+                table.item(base_r + 1, 1 + k).setTextAlignment(Qt.AlignCenter)
+                table.setItem(base_r + 2, 1 + k, QTableWidgetItem(""))
+                table.item(base_r + 2, 1 + k).setTextAlignment(Qt.AlignCenter)
 
-                # 占比
-                itp = QTableWidgetItem(f"{pcts[k]:.2f}%")
-                itp.setTextAlignment(Qt.AlignCenter)
-                summary_table.setItem(base_r + 2, 1 + k, itp)
+    def _fill_summary_block(self, table: QTableWidget, block_index: int, counts: dict[str, Any], ratios: dict[str, Any]):
+        base_r = 1 + block_index * 4
+        for k, risk in enumerate(self.RISK_LABELS):
+            count_item = QTableWidgetItem(self._display_cell(counts.get(risk, "")))
+            count_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(base_r + 1, 1 + k, count_item)
+
+            ratio_item = QTableWidgetItem(self._display_cell(ratios.get(risk, "")))
+            ratio_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(base_r + 2, 1 + k, ratio_item)
+
+    def _fill_component_summary(self, context: dict):
+        self._clear_summary_table(self.summary_comp)
+        self._fill_summary_block(
+            self.summary_comp,
+            0,
+            context.get("member_risk_counts", {}),
+            context.get("member_risk_ratios", {}),
+        )
+
+    def _fill_node_summary(self, context: dict):
+        self._clear_summary_table(self.summary_node)
+        labels = list(self.summary_node.property("summary_labels") or [])
+        label_to_index = {label: idx for idx, label in enumerate(labels)}
+        for block in context.get("node_summary_blocks", []):
+            context_label = str(block.get("time_node", "")).strip()
+            display_label = self._year_mapper.to_display_label(context_label)
+            if not display_label or display_label not in label_to_index:
+                continue
+            idx = label_to_index[display_label]
+            self._fill_summary_block(
+                self.summary_node,
+                idx,
+                block.get("counts", {}),
+                block.get("ratios", {}),
+            )
 
     def _apply_row_limit(self):
         choice = self.cb_rows.currentText()
@@ -479,5 +552,9 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         apply(self.table_node)
 
     def _on_report(self):
-        from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.information(self, "生成报告", "示例：按预定义格式生成特检策略报告（后续接导出PDF/Word）。")
+        try:
+            report_path = self._result_service.generate_report(self.facility_code, run_id=self.run_id)
+        except Exception as exc:
+            QMessageBox.warning(self, "生成报告失败", f"特检策略报告生成失败：\n{exc}")
+            return
+        QMessageBox.information(self, "生成报告", f"特检策略报告已生成：\n{report_path}")

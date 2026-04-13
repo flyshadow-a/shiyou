@@ -57,7 +57,8 @@ class ConstructionDocsWidget(QWidget):
         若要修改物理存放位置，只改这里即可。
         """
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        return os.path.join(project_root, "uploads")
+        facility = (getattr(self, "facility_code", "") or "").strip()
+        return os.path.join(project_root, "uploads", facility) if facility else os.path.join(project_root, "uploads")
     # =================================================
 
     def __init__(self, parent=None, show_platform_description=False):
@@ -68,6 +69,7 @@ class ConstructionDocsWidget(QWidget):
         self.breadcrumb_font_ratio = 0.015
         self.platform_name = ""
         self.platform_description = ""
+        self.facility_code = ""
 
         # 当前路径：["详细设计", "结构", "规格书"] 之类
         self.current_path: List[str] = []
@@ -84,133 +86,6 @@ class ConstructionDocsWidget(QWidget):
         self._build_ui()
 
     # ---------------- 文件夹树 / 初始数据 ---------------- #
-    def _build_folder_tree(self) -> Dict:
-        """
-        文件夹树结构：
-
-        首页
-        ├─ 基本信息
-        ├─ 详细设计
-        │   ├─ 结构
-        │   │   ├─ 规格书
-        │   │   ├─ 设计图纸
-        │   │   ├─ 分析报告
-        │   │   └─ 重控报告
-        │   ├─ 总图
-        │   └─ 其他文件
-        ├─ 完工文件
-        └─ 安装文件
-        """
-        return {
-            "基本信息": {"type": "folder", "children": {}},
-            "详细设计": {
-                "type": "folder",
-                "children": {
-                    "结构": {
-                        "type": "folder",
-                        "children": {
-                            "规格书": {"type": "file_view"},
-                            "设计图纸": {"type": "file_view"},
-                            "分析报告": {"type": "file_view"},
-                            "重控报告": {"type": "file_view"},
-                        },
-                    },
-                    "总图": {"type": "file_view"},
-                    "其他文件": {"type": "file_view"},
-                },
-            },
-            "完工文件": {"type": "file_view"},
-            "安装文件": {"type": "file_view"},
-        }
-
-    def _build_demo_file_records(self) -> Dict[str, List[Dict]]:
-        """
-        示例文件数据：只指定“序号、类别、格式”，
-        修改时间与路径初始都为空，待上传后写入。
-        """
-        records: Dict[str, List[Dict]] = {}
-
-        def path_key(path_list: List[str]) -> str:
-            return "/".join(path_list)
-
-        # ---- 规格书 ----
-        spec_path = ["详细设计", "结构", "规格书"]
-        records[path_key(spec_path)] = [
-            {
-                "index": 1,
-                "category": "平台结构设计规格书",
-                "fmt": "pdf/word",
-                "mtime": "",
-                "path": "",
-                "remark": "",
-            },
-        ]
-
-        # ---- 设计图纸 ----
-        drawing_path = ["详细设计", "结构", "设计图纸"]
-        records[path_key(drawing_path)] = [
-            {
-                "index": 1,
-                "category": "结构设计图",
-                "fmt": "pdf/dwg/rar",
-                "mtime": "",
-                "path": "",
-                "remark": "",
-            },
-        ]
-
-        # ---- 分析报告 ----
-        analysis_path = ["详细设计", "结构", "分析报告"]
-        records[path_key(analysis_path)] = [
-            {
-                "index": 1,
-                "category": "强度校核报告",
-                "fmt": "pdf/word",
-                "mtime": "",
-                "path": "",
-                "remark": "",
-            },
-            {
-                "index": 2,
-                "category": "检测策略报告",
-                "fmt": "pdf/word",
-                "mtime": "",
-                "path": "",
-                "remark": "",
-            },
-            {
-                "index": 3,
-                "category": "平台结构在位工况分析报告",
-                "fmt": "pdf/word",
-                "mtime": "",
-                "path": "",
-                "remark": "",
-            },
-        ]
-
-        # ---- 重控报告 ----
-        weight_path = ["详细设计", "结构", "重控报告"]
-        records[path_key(weight_path)] = [
-            {
-                "index": 1,
-                "category": "平台重量控制程序",
-                "fmt": "pdf/word",
-                "mtime": "",
-                "path": "",
-                "remark": "",
-            },
-            {
-                "index": 2,
-                "category": "平台重量控制报告",
-                "fmt": "pdf/word",
-                "mtime": "",
-                "path": "",
-                "remark": "",
-            },
-        ]
-
-        return records
-
     # ---------------- 一些工具方法 ---------------- #
     def _current_path_key(self) -> str:
         return "/".join(self.current_path)
@@ -658,19 +533,17 @@ class ConstructionDocsWidget(QWidget):
     # ---------------- 文件列表视图 ---------------- #
     def _show_files_for_current_path(self):
         key = self._current_path_key()
-        if key in self.doc_man_configs:
-            records = self.file_records.setdefault(key, [])
-            self.doc_man_widget.set_context(self.current_path, records, self.doc_man_configs[key])
-            self.file_view_stack.setCurrentWidget(self.doc_man_widget)
-            return
-
-        records = self.file_records.get(key, [])
-
-        if not records:
-            self.file_view_stack.setCurrentWidget(self.empty_page)
-        else:
-            self._fill_table(records)
-            self.file_view_stack.setCurrentWidget(self.table_page)
+        records = self.file_records.setdefault(key, [])
+        categories = self.doc_man_configs.get(key, [])
+        self.doc_man_widget.set_context(
+            self.current_path,
+            records,
+            categories,
+            facility_code=self.facility_code,
+            hide_empty_templates=True,
+            db_list_mode=True,
+        )
+        self.file_view_stack.setCurrentWidget(self.doc_man_widget)
 
     def _fill_table(self, records: List[Dict]):
         """将记录填充到 7 列表格中，并控制可编辑列。"""
@@ -776,6 +649,11 @@ class ConstructionDocsWidget(QWidget):
 
         filename = os.path.basename(file_path)
         dest_path = os.path.join(subdir, filename)
+        root, ext = os.path.splitext(dest_path)
+        suffix = 1
+        while os.path.exists(dest_path):
+            dest_path = f"{root} ({suffix}){ext}"
+            suffix += 1
 
         try:
             shutil.copy2(file_path, dest_path)
@@ -906,6 +784,9 @@ class ConstructionDocsWidget(QWidget):
     def set_platform_name(self, name: str):
         self.platform_name = name or ""
         self._update_platform_description_label()
+
+    def set_facility_code(self, code: str):
+        self.facility_code = (code or "").strip()
 
     def set_platform_description(self, description: str):
         self.platform_description = description or ""

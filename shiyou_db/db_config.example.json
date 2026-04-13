@@ -1,0 +1,12 @@
+{
+  "database": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "root",
+    "password": "your_mysql_password",
+    "database": "shiyou_files",
+    "charset": "utf8mb4"
+  },
+  "storage_root": "D:/pyproject/shiyou_db/shiyou_file_storage",
+  "echo_sql": false
+}

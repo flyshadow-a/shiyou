@@ -1,0 +1,44 @@
+{
+  "template_xlsm": "C:/path/to/wc19-1d-source.xlsm",
+  "params_json": "pages/output_special_strategy/wc19_1d_calc_params.json",
+  "report_template": "pages/output_special_strategy/xxx平台风险评级及检测策略报告.docx",
+  "output_report": "pages/output_special_strategy/wc19_1d_user_paths_report.docx",
+  "intermediate_workbook": "pages/output_special_strategy/wc19_1d_user_paths_report.pipeline.xlsx",
+  "policy": "strict",
+  "enable_topology_inference": false,
+  "interactive_manual_fill": true,
+  "manual_fill_workbook": "pages/output_special_strategy/manual_fill.xlsx",
+  "appendix_a_file": "pages/output_special_strategy/附件A 节点风险等级计算表.pdf",
+  "appendix_b_file": "pages/output_special_strategy/附件B 构件风险等级计算表.pdf",
+  "appendix_c_dirs": [
+    "pages/output_special_strategy/附件C.1 第5年检测节点构件位置",
+    "pages/output_special_strategy/附件C.2 第10年检测节点构件位置",
+    "pages/output_special_strategy/附件C.3 第15年检测节点构件位置",
+    "pages/output_special_strategy/附件C.4 第20年检测节点构件位置",
+    "pages/output_special_strategy/附件C.5 第25年检测节点构件位置"
+  ],
+  "include_word_plan_detail_tables": true,
+  "platform_name": "{{platform_name}}",
+  "report_date": "{{report_date}}",
+  "model": "C:/path/to/sacinp.JKnew",
+  "clplog": [
+    "C:/path/to/pushover/90/clplog",
+    "C:/path/to/pushover/128/clplog",
+    "C:/path/to/pushover/180/clplog",
+    "C:/path/to/pushover/231/clplog"
+  ],
+  "ftglst": [
+    "C:/path/to/fatigue/4.1WJT/ftglst",
+    "C:/path/to/fatigue/4.2WJT WITH RING/ftglst",
+    "C:/path/to/fatigue/4.3WJ1/ftglst",
+    "C:/path/to/fatigue/4.4WJ1 WITH RING/ftglst",
+    "C:/path/to/fatigue/4.5D/ftglst.d"
+  ],
+  "ftginp": [
+    "C:/path/to/fatigue/4.1WJT/ftginp.19-1d WJT",
+    "C:/path/to/fatigue/4.2WJT WITH RING/ftginp.19-1d WJT WITH RING",
+    "C:/path/to/fatigue/4.3WJ1/ftginp.19-1d WJ1",
+    "C:/path/to/fatigue/4.4WJ1 WITH RING/ftginp.19-1d WJ1 WITH RING",
+    "C:/path/to/fatigue/4.5D/ftginp.19-1d D"
+  ]
+}

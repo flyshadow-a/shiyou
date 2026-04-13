@@ -28,8 +28,15 @@ STD_NORM = NormalDist()
 
 
 @dataclass(frozen=True)
+class TableLocator:
+    title_keywords: tuple[str, ...]
+    header_keywords: tuple[str, ...] = ()
+    fallback_index: int | None = None
+
+
+@dataclass(frozen=True)
 class DynamicTableSpec:
-    table_index: int
+    locator: TableLocator
     header_rows: int
     context_key: str
     column_templates: list[str]
@@ -37,7 +44,11 @@ class DynamicTableSpec:
 
 DYNAMIC_TABLE_SPECS: list[DynamicTableSpec] = [
     DynamicTableSpec(
-        table_index=3,
+        locator=TableLocator(
+            title_keywords=("\u8282\u70b9\u710a\u7f1d\u75b2\u52b3\u5931\u6548\u6982\u7387",),
+            header_keywords=("JointID", "Brace", "JointType"),
+            fallback_index=3,
+        ),
         header_rows=2,
         context_key="fatigue_failure_rows",
         column_templates=[
@@ -52,7 +63,11 @@ DYNAMIC_TABLE_SPECS: list[DynamicTableSpec] = [
         ],
     ),
     DynamicTableSpec(
-        table_index=4,
+        locator=TableLocator(
+            title_keywords=("\u5012\u584c\u5206\u6790\u6784\u4ef6\u5931\u6548\u6982\u7387",),
+            header_keywords=("Joint", "\u5931\u6548\u6982\u7387"),
+            fallback_index=4,
+        ),
         header_rows=3,
         context_key="collapse_member_rows",
         column_templates=[
@@ -68,7 +83,11 @@ DYNAMIC_TABLE_SPECS: list[DynamicTableSpec] = [
         ],
     ),
     DynamicTableSpec(
-        table_index=5,
+        locator=TableLocator(
+            title_keywords=("\u5012\u584c\u5206\u6790\u8282\u70b9\u5931\u6548\u6982\u7387",),
+            header_keywords=("\u8282\u70b9", "\u5931\u6548\u6982\u7387"),
+            fallback_index=5,
+        ),
         header_rows=2,
         context_key="collapse_joint_rows",
         column_templates=[
@@ -83,7 +102,11 @@ DYNAMIC_TABLE_SPECS: list[DynamicTableSpec] = [
         ],
     ),
     DynamicTableSpec(
-        table_index=7,
+        locator=TableLocator(
+            title_keywords=("\u8282\u70b9\u98ce\u9669\u7b49\u7ea7",),
+            header_keywords=("JointID", "Brace", "JointType"),
+            fallback_index=7,
+        ),
         header_rows=1,
         context_key="node_risk_rows_current",
         column_templates=[
@@ -99,7 +122,11 @@ DYNAMIC_TABLE_SPECS: list[DynamicTableSpec] = [
         ],
     ),
     DynamicTableSpec(
-        table_index=8,
+        locator=TableLocator(
+            title_keywords=("\u6784\u4ef6\u98ce\u9669\u7b49\u7ea7",),
+            header_keywords=("\u6784\u4ef6", "\u6784\u4ef6\u98ce\u9669\u7b49\u7ea7"),
+            fallback_index=8,
+        ),
         header_rows=2,
         context_key="member_risk_rows",
         column_templates=[
@@ -112,7 +139,11 @@ DYNAMIC_TABLE_SPECS: list[DynamicTableSpec] = [
         ],
     ),
     DynamicTableSpec(
-        table_index=16,
+        locator=TableLocator(
+            title_keywords=("\u6784\u4ef6\u68c0\u6d4b\u8ba1\u5212",),
+            header_keywords=("JointA", "JointB", "MemberType"),
+            fallback_index=15,
+        ),
         header_rows=1,
         context_key="member_inspection_rows",
         column_templates=[
@@ -126,7 +157,11 @@ DYNAMIC_TABLE_SPECS: list[DynamicTableSpec] = [
         ],
     ),
     DynamicTableSpec(
-        table_index=17,
+        locator=TableLocator(
+            title_keywords=("\u8282\u70b9\u68c0\u9a8c\u8ba1\u5212",),
+            header_keywords=("JointID", "Brace", "JointType"),
+            fallback_index=16,
+        ),
         header_rows=1,
         context_key="node_inspection_rows_future",
         column_templates=[
@@ -141,6 +176,26 @@ DYNAMIC_TABLE_SPECS: list[DynamicTableSpec] = [
         ],
     ),
 ]
+
+
+SUMMARY_TABLE_LOCATORS: dict[str, TableLocator] = {
+    "member_risk_summary": TableLocator(
+        title_keywords=("\u5e73\u53f0\u6784\u4ef6\u98ce\u9669\u7b49\u7ea7\u6c47\u603b",),
+        fallback_index=9,
+    ),
+    "node_risk_summary": TableLocator(
+        title_keywords=("\u5e73\u53f0\u8282\u70b9\u98ce\u9669\u7b49\u7ea7\u6c47\u603b",),
+        fallback_index=10,
+    ),
+    "member_inspection_summary": TableLocator(
+        title_keywords=("\u6784\u4ef6\u68c0\u9a8c\u8ba1\u5212\u6c47\u603b\u8868",),
+        fallback_index=13,
+    ),
+    "node_inspection_summary": TableLocator(
+        title_keywords=("\u8282\u70b9\u68c0\u9a8c\u8ba1\u5212\u6c47\u603b\u8868",),
+        fallback_index=14,
+    ),
+}
 
 
 RISK_LEVEL_ORDER = ["\u4e00", "\u4e8c", "\u4e09", "\u56db", "\u4e94"]
@@ -818,7 +873,7 @@ def build_context(
 
     node_inspection_blocks = []
     for t in [x for x in TIME_ORDER if x != TIME_CURRENT]:
-        rows_t = [r for r in node_inspection_rows_future if r["time_node"] == t]
+        rows_t = [r for r in node_strategy_rows_use if r["time_node"] == t]
         if not rows_t:
             continue
         summary_rows = []
@@ -1644,6 +1699,40 @@ def get_table_list(document_root: ET.Element) -> list[ET.Element]:
     return [child for child in body if child.tag.endswith("tbl")]
 
 
+def normalize_lookup_text(value: Any) -> str:
+    return re.sub(r"\s+", "", to_text(value))
+
+
+def find_table_by_locator(document_root: ET.Element, locator: TableLocator) -> ET.Element | None:
+    body = document_root.find("w:body", NS)
+    if body is not None:
+        last_paragraph = ""
+        for child in body:
+            if child.tag.endswith("p"):
+                text = normalize_lookup_text(paragraph_text(child))
+                if text:
+                    last_paragraph = text
+                continue
+            if not child.tag.endswith("tbl"):
+                continue
+            header_text = normalize_lookup_text("".join(t.text or "" for t in child.findall(".//w:tr[1]//w:t", NS)))
+            title_match = (
+                not locator.title_keywords
+                or all(normalize_lookup_text(key) in last_paragraph for key in locator.title_keywords)
+            )
+            header_match = (
+                not locator.header_keywords
+                or all(normalize_lookup_text(key) in header_text for key in locator.header_keywords)
+            )
+            if title_match and header_match:
+                return child
+
+    tables = get_table_list(document_root)
+    if locator.fallback_index is not None and 0 <= locator.fallback_index < len(tables):
+        return tables[locator.fallback_index]
+    return None
+
+
 def get_text_nodes(el: ET.Element) -> list[ET.Element]:
     return el.findall(".//w:t", NS)
 
@@ -1934,61 +2023,61 @@ def set_table_cell(table: ET.Element, row_idx: int, col_idx: int, value: str) ->
 
 
 def fill_summary_tables(document_root: ET.Element, context: dict[str, Any]) -> None:
-    tables = get_table_list(document_root)
-    if len(tables) < 16:
-        return
-
     # Table 9: member risk distribution
-    table9 = tables[9]
-    for idx, risk in enumerate(RISK_LEVEL_ORDER, start=1):
-        set_table_cell(table9, 2, idx, str(context["member_risk_counts"].get(risk, 0)))
-        set_table_cell(table9, 3, idx, context["member_risk_ratios"].get(risk, "0.00%"))
+    table9 = find_table_by_locator(document_root, SUMMARY_TABLE_LOCATORS["member_risk_summary"])
+    if table9 is not None:
+        for idx, risk in enumerate(RISK_LEVEL_ORDER, start=1):
+            set_table_cell(table9, 2, idx, str(context["member_risk_counts"].get(risk, 0)))
+            set_table_cell(table9, 3, idx, context["member_risk_ratios"].get(risk, "0.00%"))
 
     # Table 10: node weld risk distribution by time (current + 5/10/15/20/25)
-    table10 = tables[10]
-    block_starts = [0, 4, 8, 12, 16, 20]
-    for block_idx, block in enumerate(context["node_summary_blocks"][: len(block_starts)]):
-        base = block_starts[block_idx]
-        set_table_cell(table10, base, 0, block["title"])
-        for ci, risk in enumerate(RISK_LEVEL_ORDER, start=1):
-            set_table_cell(table10, base + 2, ci, str(block["counts"].get(risk, 0)))
-            set_table_cell(table10, base + 3, ci, block["ratios"].get(risk, "0.00%"))
+    table10 = find_table_by_locator(document_root, SUMMARY_TABLE_LOCATORS["node_risk_summary"])
+    if table10 is not None:
+        block_starts = [0, 4, 8, 12, 16, 20]
+        for block_idx, block in enumerate(context["node_summary_blocks"][: len(block_starts)]):
+            base = block_starts[block_idx]
+            set_table_cell(table10, base, 0, block["title"])
+            for ci, risk in enumerate(RISK_LEVEL_ORDER, start=1):
+                set_table_cell(table10, base + 2, ci, str(block["counts"].get(risk, 0)))
+                set_table_cell(table10, base + 3, ci, block["ratios"].get(risk, "0.00%"))
 
-    # Table 14: member inspection summary
-    table14 = tables[14]
-    for row_idx, risk in enumerate(RISK_LEVEL_ORDER, start=2):
-        entry = next((x for x in context["member_inspection_summary"] if x["risk_level"] == risk), None)
-        if entry is None:
-            entry = {"count": 0, "II": 0, "III": 0, "IV": 0}
-        set_table_cell(table14, row_idx, 0, risk)
-        set_table_cell(table14, row_idx, 1, str(entry["count"]))
-        set_table_cell(table14, row_idx, 2, "-" if entry["II"] == 0 else str(entry["II"]))
-        set_table_cell(table14, row_idx, 3, "-" if entry["III"] == 0 else str(entry["III"]))
-        set_table_cell(table14, row_idx, 4, "-" if entry["IV"] == 0 else str(entry["IV"]))
-    set_table_cell(table14, 7, 1, str(context["member_inspection_total"]))
-    set_table_cell(table14, 7, 2, str(context["member_inspection_total_II"]))
-    set_table_cell(table14, 7, 3, str(context["member_inspection_total_III"]))
-    set_table_cell(table14, 7, 4, str(context["member_inspection_total_IV"]))
-
-    # Table 15: node inspection summary by future 5-year checkpoints
-    table15 = tables[15]
-    block_starts_15 = [0, 8, 16, 24, 32]
-    for block_idx, block in enumerate(context["node_inspection_blocks"][: len(block_starts_15)]):
-        base = block_starts_15[block_idx]
-        set_table_cell(table15, base, 0, block["time_node"])
-        for ridx, risk in enumerate(RISK_LEVEL_ORDER, start=2):
-            entry = next((x for x in block["summary_rows"] if x["risk_level"] == risk), None)
+    # Table 13: member inspection summary
+    table14 = find_table_by_locator(document_root, SUMMARY_TABLE_LOCATORS["member_inspection_summary"])
+    if table14 is not None:
+        for row_idx, risk in enumerate(RISK_LEVEL_ORDER, start=2):
+            entry = next((x for x in context["member_inspection_summary"] if x["risk_level"] == risk), None)
             if entry is None:
                 entry = {"count": 0, "II": 0, "III": 0, "IV": 0}
-            set_table_cell(table15, ridx + base, 0, risk)
-            set_table_cell(table15, ridx + base, 1, str(entry["count"]))
-            set_table_cell(table15, ridx + base, 2, "-" if entry["II"] == 0 else str(entry["II"]))
-            set_table_cell(table15, ridx + base, 3, "-" if entry["III"] == 0 else str(entry["III"]))
-            set_table_cell(table15, ridx + base, 4, "-" if entry["IV"] == 0 else str(entry["IV"]))
-        set_table_cell(table15, base + 7, 1, str(block["total_count"]))
-        set_table_cell(table15, base + 7, 2, str(block["total_II"]))
-        set_table_cell(table15, base + 7, 3, str(block["total_III"]))
-        set_table_cell(table15, base + 7, 4, str(block["total_IV"]))
+            set_table_cell(table14, row_idx, 0, risk)
+            set_table_cell(table14, row_idx, 1, str(entry["count"]))
+            set_table_cell(table14, row_idx, 2, "-" if entry["II"] == 0 else str(entry["II"]))
+            set_table_cell(table14, row_idx, 3, "-" if entry["III"] == 0 else str(entry["III"]))
+            set_table_cell(table14, row_idx, 4, "-" if entry["IV"] == 0 else str(entry["IV"]))
+        set_table_cell(table14, 7, 1, str(context["member_inspection_total"]))
+        set_table_cell(table14, 7, 2, str(context["member_inspection_total_II"]))
+        set_table_cell(table14, 7, 3, str(context["member_inspection_total_III"]))
+        set_table_cell(table14, 7, 4, str(context["member_inspection_total_IV"]))
+
+    # Table 14: node inspection summary by future 5-year checkpoints
+    table15 = find_table_by_locator(document_root, SUMMARY_TABLE_LOCATORS["node_inspection_summary"])
+    if table15 is not None:
+        block_starts_15 = [0, 8, 16, 24, 32]
+        for block_idx, block in enumerate(context["node_inspection_blocks"][: len(block_starts_15)]):
+            base = block_starts_15[block_idx]
+            set_table_cell(table15, base, 0, block["time_node"])
+            for ridx, risk in enumerate(RISK_LEVEL_ORDER, start=2):
+                entry = next((x for x in block["summary_rows"] if x["risk_level"] == risk), None)
+                if entry is None:
+                    entry = {"count": 0, "II": 0, "III": 0, "IV": 0}
+                set_table_cell(table15, ridx + base, 0, risk)
+                set_table_cell(table15, ridx + base, 1, str(entry["count"]))
+                set_table_cell(table15, ridx + base, 2, "-" if entry["II"] == 0 else str(entry["II"]))
+                set_table_cell(table15, ridx + base, 3, "-" if entry["III"] == 0 else str(entry["III"]))
+                set_table_cell(table15, ridx + base, 4, "-" if entry["IV"] == 0 else str(entry["IV"]))
+            set_table_cell(table15, base + 7, 1, str(block["total_count"]))
+            set_table_cell(table15, base + 7, 2, str(block["total_II"]))
+            set_table_cell(table15, base + 7, 3, str(block["total_III"]))
+            set_table_cell(table15, base + 7, 4, str(block["total_IV"]))
 
 
 def should_render_detail_table(context: dict[str, Any], context_key: str) -> bool:
@@ -2064,6 +2153,8 @@ def build_row_cap_notes(context: dict[str, Any]) -> list[str]:
 
 def render_report(template_docx: Path, output_docx: Path, context: dict[str, Any]) -> None:
     env = Environment(undefined=StrictUndefined, autoescape=False, trim_blocks=True, lstrip_blocks=True)
+    output_docx.parent.mkdir(parents=True, exist_ok=True)
+    temp_output_docx = output_docx.with_name(f"{output_docx.stem}.{uuid.uuid4().hex}.tmp{output_docx.suffix}")
 
     with zipfile.ZipFile(template_docx, "r") as zin:
         doc_xml = zin.read("word/document.xml")
@@ -2072,13 +2163,13 @@ def render_report(template_docx: Path, output_docx: Path, context: dict[str, Any
         rels_root = ET.fromstring(rels_xml)
 
         fill_cover_paragraphs(root, context, env)
-        tables = get_table_list(root)
         for spec in DYNAMIC_TABLE_SPECS:
-            if spec.table_index >= len(tables):
+            table = find_table_by_locator(root, spec.locator)
+            if table is None:
                 continue
             if not should_render_detail_table(context, spec.context_key):
                 replace_dynamic_table_rows(
-                    table=tables[spec.table_index],
+                    table=table,
                     rows_data=[],
                     header_rows=spec.header_rows,
                     col_templates=spec.column_templates,
@@ -2087,7 +2178,7 @@ def render_report(template_docx: Path, output_docx: Path, context: dict[str, Any
                 continue
             rows_data = context.get(spec.context_key, [])
             replace_dynamic_table_rows(
-                table=tables[spec.table_index],
+                table=table,
                 rows_data=rows_data,
                 header_rows=spec.header_rows,
                 col_templates=spec.column_templates,
@@ -2100,7 +2191,7 @@ def render_report(template_docx: Path, output_docx: Path, context: dict[str, Any
         out_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
         out_rels_xml = ET.tostring(rels_root, encoding="utf-8", xml_declaration=True)
 
-        with zipfile.ZipFile(output_docx, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        with zipfile.ZipFile(temp_output_docx, "w", compression=zipfile.ZIP_DEFLATED) as zout:
             for item in zin.infolist():
                 if item.filename == "word/document.xml":
                     zout.writestr(item, out_xml)
@@ -2108,6 +2199,8 @@ def render_report(template_docx: Path, output_docx: Path, context: dict[str, Any
                     zout.writestr(item, out_rels_xml)
                 else:
                     zout.writestr(item, zin.read(item.filename))
+
+    temp_output_docx.replace(output_docx)
 
 
 def parse_args() -> argparse.Namespace:

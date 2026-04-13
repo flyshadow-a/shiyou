@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
 
 from base_page import BasePage
 from dropdown_bar import DropdownBar
+from .file_management_platforms import default_platform, sync_platform_dropdowns
 from .construction_docs_widget import ConstructionDocsWidget
 from .important_history_rebuild_info_page import ImportantHistoryDetailWidget
 
@@ -76,6 +77,22 @@ class HistoryRebuildFilesPage(BasePage):
             {"key": "start_time", "label": "投产时间", "options": ["2013-07-15"], "default": "2013-07-15"},
             {"key": "design_life", "label": "设计年限", "options": ["15"], "default": "15"},
         ]
+        platform_defaults = default_platform()
+        field_map = {item["key"]: item for item in fields}
+        field_map["oilfield"]["options"] = [platform_defaults["oilfield"]]
+        field_map["oilfield"]["default"] = platform_defaults["oilfield"]
+        field_map["facility_code"]["options"] = ["WC19-1D", "WC9-7"]
+        field_map["facility_code"]["default"] = platform_defaults["facility_code"]
+        field_map["facility_name"]["options"] = ["WC19-1D平台", "WC9-7平台"]
+        field_map["facility_name"]["default"] = platform_defaults["facility_name"]
+        field_map["facility_type"]["options"] = [platform_defaults["facility_type"]]
+        field_map["facility_type"]["default"] = platform_defaults["facility_type"]
+        field_map["category"]["options"] = [platform_defaults["category"]]
+        field_map["category"]["default"] = platform_defaults["category"]
+        field_map["start_time"]["options"] = [platform_defaults["start_time"]]
+        field_map["start_time"]["default"] = platform_defaults["start_time"]
+        field_map["design_life"]["options"] = [platform_defaults["design_life"]]
+        field_map["design_life"]["default"] = platform_defaults["design_life"]
         self.dropdown_bar = DropdownBar(fields, parent=self)
         self.main_layout.addWidget(self.dropdown_bar, 0)
 
@@ -114,6 +131,7 @@ class HistoryRebuildFilesPage(BasePage):
 
     def _open_history_info(self, folder_name: str):
         self._set_dropdown_visible(False)
+        self.detail_widget.set_facility_code(self.dropdown_bar.get_value("facility_code"))
         self.detail_widget.load_history_event(folder_name)
         self.stack.setCurrentWidget(self.detail_widget)
 
@@ -126,6 +144,18 @@ class HistoryRebuildFilesPage(BasePage):
 
     def _sync_platform_ui(self):
         platform_name = self.dropdown_bar.get_value("facility_name")
+        window = self.window()
+        if hasattr(window, "set_current_platform_name"):
+            window.set_current_platform_name(platform_name)
+
+    def on_filter_changed(self, key: str, value: str):
+        self._sync_platform_ui(changed_key=key)
+
+    def _sync_platform_ui(self, changed_key: str | None = None):
+        platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
+        platform_name = platform["facility_name"]
+        self.docs_widget.set_facility_code(platform["facility_code"])
+        self.detail_widget.set_facility_code(platform["facility_code"])
         window = self.window()
         if hasattr(window, "set_current_platform_name"):
             window.set_current_platform_name(platform_name)

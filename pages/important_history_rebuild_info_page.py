@@ -7,22 +7,37 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
+    QFormLayout,
     QHeaderView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from base_page import BasePage
 from dropdown_bar import DropdownBar
+from inspection_business_db_adapter import (
+    create_inspection_project,
+    list_inspection_projects,
+    soft_delete_inspection_project,
+    update_inspection_project,
+)
+from file_db_adapter import DOC_MAN_MODULE_CODE, soft_delete_files_by_prefix
+from .file_management_platforms import default_platform, sync_platform_dropdowns
 from .construction_docs_widget import ConstructionDocsWidget
+from .doc_man import DocManWidget
 
 
 class ClickableLabel(QLabel):
@@ -132,14 +147,71 @@ class HistoryEventsHomeDocsWidget(ConstructionDocsWidget):
         self.folderSelected.emit(folder_name)
 
 
+class InspectionProjectDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        title_text: str,
+        project_name: str = "",
+        project_year: str = "",
+        summary_text: str = "",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle(title_text)
+        self.resize(520, 320)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(10)
+        self.name_edit = QLineEdit(self)
+        self.name_edit.setText(project_name)
+        self.year_edit = QLineEdit(self)
+        self.year_edit.setText(project_year)
+        form.addRow("项目名称", self.name_edit)
+        form.addRow("年份", self.year_edit)
+        layout.addLayout(form)
+
+        self.summary_edit = QTextEdit(self)
+        self.summary_edit.setPlaceholderText("请输入项目说明或结论")
+        self.summary_edit.setPlainText(summary_text or "")
+        layout.addWidget(self.summary_edit, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.button(QDialogButtonBox.Ok).setText("保存")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _accept_if_valid(self):
+        if not self.name_edit.text().strip():
+            QMessageBox.information(self, "提示", "项目名称不能为空。")
+            return
+        self.accept()
+
+    def get_values(self) -> dict[str, str]:
+        return {
+            "project_name": self.name_edit.text().strip(),
+            "project_year": self.year_edit.text().strip(),
+            "summary_text": self.summary_edit.toPlainText().strip(),
+        }
+
+
 class ImportantHistoryDetailWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._folder_icon_path = os.path.join(self._project_root, "pict", "wenjian.png")
         self._breadcrumb_font_ratio = 0.015
-        self._demo_history_data = self._build_demo_history_data()
         self._current_projects = []
+        self._current_folder_name = "历史改造信息"
+        self.facility_code = ""
 
         self._build_ui()
 
@@ -342,6 +414,23 @@ class ImportantHistoryDetailWidget(QWidget):
         self.top_table.itemSelectionChanged.connect(self._on_project_selection_changed)
         content_layout.addWidget(self.top_table, 0)
 
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.addStretch()
+        self.btn_add_project = QPushButton("新增项目", content)
+        self.btn_add_project.setObjectName("OverviewActionButton")
+        self.btn_add_project.clicked.connect(self._add_project)
+        action_row.addWidget(self.btn_add_project, 0, Qt.AlignRight)
+        self.btn_edit_project = QPushButton("编辑项目", content)
+        self.btn_edit_project.setObjectName("OverviewActionButton")
+        self.btn_edit_project.clicked.connect(self._edit_project)
+        action_row.addWidget(self.btn_edit_project, 0, Qt.AlignRight)
+        self.btn_delete_project = QPushButton("删除项目", content)
+        self.btn_delete_project.setObjectName("OverviewActionButton")
+        self.btn_delete_project.clicked.connect(self._delete_project)
+        action_row.addWidget(self.btn_delete_project, 0, Qt.AlignRight)
+        content_layout.addLayout(action_row)
+
         self.desc_frame = QFrame(content)
         self.desc_frame.setObjectName("HistoryDescFrame")
         desc_layout = QVBoxLayout(self.desc_frame)
@@ -368,42 +457,12 @@ class ImportantHistoryDetailWidget(QWidget):
         file_layout.setContentsMargins(0, 0, 0, 0)
         file_layout.setSpacing(8)
 
-        file_header = QHBoxLayout()
-        file_header.setContentsMargins(0, 0, 0, 0)
-        file_header.setSpacing(8)
-
         self.file_title = QLabel("改造项目文件列表", file_frame)
         self.file_title.setObjectName("HistorySectionTitle")
+        file_layout.addWidget(self.file_title, 0)
 
-        self.upload_button = QPushButton("上传文件", file_frame)
-        self.upload_button.setObjectName("PrimaryActionButton")
-        self.upload_button.clicked.connect(self._upload_demo_file)
-
-        self.download_button = QPushButton("下载选中文件", file_frame)
-        self.download_button.setObjectName("SecondaryActionButton")
-        self.download_button.clicked.connect(self._download_selected_file)
-
-        file_header.addWidget(self.file_title)
-        file_header.addStretch()
-        file_header.addWidget(self.upload_button)
-        file_header.addWidget(self.download_button)
-        file_layout.addLayout(file_header)
-
-        self.files_table = QTableWidget(0, 4, file_frame)
-        self.files_table.setHorizontalHeaderLabels(["文件名称", "文件类型", "更新时间", "说明"])
-        self._init_table_common(self.files_table)
-        self.files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.files_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.files_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.files_table.setMinimumHeight(220)
-        self.files_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        file_layout.addWidget(self.files_table, 1)
-
-        self.file_status_label = QLabel("", file_frame)
-        self.file_status_label.setObjectName("HistoryFileStatus")
-        self.file_status_label.setWordWrap(True)
-        file_layout.addWidget(self.file_status_label)
+        self.doc_man_widget = DocManWidget(self._get_doc_man_upload_dir, file_frame)
+        file_layout.addWidget(self.doc_man_widget, 1)
 
         content_layout.addWidget(file_frame, 1)
         main_layout.addWidget(content, 1)
@@ -453,31 +512,6 @@ class ImportantHistoryDetailWidget(QWidget):
                 font-weight: bold;
                 color: #1f2937;
             }
-            QPushButton#PrimaryActionButton,
-            QPushButton#SecondaryActionButton {
-                min-height: 32px;
-                padding: 0 14px;
-                border-radius: 6px;
-                border: 1px solid #0b78d0;
-            }
-            QPushButton#PrimaryActionButton {
-                background-color: #0b78d0;
-                color: #ffffff;
-            }
-            QPushButton#PrimaryActionButton:hover {
-                background-color: #0968b3;
-            }
-            QPushButton#SecondaryActionButton {
-                background-color: #ffffff;
-                color: #0b78d0;
-            }
-            QPushButton#SecondaryActionButton:hover {
-                background-color: #eff6ff;
-            }
-            QLabel#HistoryFileStatus {
-                min-height: 22px;
-                color: #4b5563;
-            }
             """
         )
 
@@ -492,15 +526,58 @@ class ImportantHistoryDetailWidget(QWidget):
             font.setPointSizeF(font_size)
             widget.setFont(font)
 
-    def load_history_event(self, folder_name: str):
-        self.lbl_folder.setText(folder_name)
-        folder_data = self._demo_history_data.get(folder_name)
-        if folder_data is None:
-            folder_data = {"projects": self._build_placeholder_project(folder_name)}
-            self._demo_history_data[folder_name] = folder_data
+    def _folder_project_type(self, folder_name: str) -> str | None:
+        mapping = {
+            "历史改造信息": "history_rebuild",
+            "特检延寿": "life_extension",
+            "台风&损伤": "special_event",
+            "特殊事件检测（台风、碰撞等）": "special_event",
+        }
+        return mapping.get(folder_name)
 
-        self._current_projects = folder_data["projects"]
-        self.file_status_label.clear()
+    def _default_project_name(self, folder_name: str, next_index: int) -> str:
+        mapping = {
+            "历史改造信息": "历史改造项目",
+            "特检延寿": "特检延寿项目",
+            "台风&损伤": "特殊事件项目",
+            "特殊事件检测（台风、碰撞等）": "特殊事件项目",
+        }
+        return f"{mapping.get(folder_name, '检测项目')}{next_index}"
+
+    def _project_storage_segments(self, project: dict | None) -> list[str]:
+        folder_name = self._current_folder_name or "历史改造信息"
+        if not project:
+            return [folder_name]
+        project_id = project.get("id")
+        if project_id:
+            return [folder_name, f"project_{project_id}"]
+        return [folder_name, project.get("name") or "project"]
+
+    def _build_project_view_models(self, rows: list[dict]) -> list[dict]:
+        projects: list[dict] = []
+        for idx, row in enumerate(rows, start=1):
+            year = str(row.get("project_year") or "").strip()
+            if not year:
+                event_date = str(row.get("event_date") or "").strip()
+                year = f"{event_date[:4]}年" if len(event_date) >= 4 else ""
+            projects.append(
+                {
+                    "id": row.get("id"),
+                    "index": idx,
+                    "name": row.get("project_name") or f"项目{idx}",
+                    "year": year,
+                    "conclusion": row.get("summary_text") or "",
+                }
+            )
+        return projects
+
+    def load_history_event(self, folder_name: str):
+        self._current_folder_name = folder_name
+        self.lbl_folder.setText(folder_name)
+        facility_code = self.facility_code or default_platform()["facility_code"]
+        project_type = self._folder_project_type(folder_name)
+        rows = list_inspection_projects(facility_code, project_type) if project_type else []
+        self._current_projects = self._build_project_view_models(rows)
 
         self.top_table.blockSignals(True)
         self.top_table.clearContents()
@@ -518,7 +595,17 @@ class ImportantHistoryDetailWidget(QWidget):
             self._refresh_project_detail(0)
         else:
             self.desc_label.setText("当前暂无改造项目结论。")
-            self._populate_files_table([])
+            self._refresh_doc_man(None)
+
+    def _reload_current_folder(self, *, selected_id: int | None = None):
+        self.load_history_event(self._current_folder_name)
+        if selected_id is None:
+            return
+        for row, project in enumerate(self._current_projects):
+            if project.get("id") == selected_id:
+                self.top_table.selectRow(row)
+                self._refresh_project_detail(row)
+                break
 
     def _on_project_selection_changed(self):
         row = self.top_table.currentRow()
@@ -529,12 +616,81 @@ class ImportantHistoryDetailWidget(QWidget):
     def _refresh_project_detail(self, row: int):
         if row < 0 or row >= len(self._current_projects):
             self.desc_label.setText("当前暂无改造项目结论。")
-            self._populate_files_table([])
+            self._refresh_doc_man(None)
             return
 
         project = self._current_projects[row]
         self.desc_label.setText(f"{project['name']}：{project['conclusion']}")
-        self._populate_files_table(project["files"])
+        self._refresh_doc_man(project)
+
+    def _add_project(self):
+        folder_name = self._current_folder_name or "历史改造信息"
+        project_type = self._folder_project_type(folder_name)
+        if not project_type:
+            return
+        facility_code = self.facility_code or default_platform()["facility_code"]
+        next_index = len(self._current_projects) + 1
+        created = create_inspection_project(
+            facility_code=facility_code,
+            project_type=project_type,
+            project_name=self._default_project_name(folder_name, next_index),
+            project_year="",
+            summary_text="",
+        )
+        self._reload_current_folder(selected_id=created.get("id"))
+
+    def _get_doc_man_upload_dir(self, path_segments):
+        root = os.path.join(self._project_root, "uploads", "history_rebuild")
+        return os.path.join(root, *path_segments)
+
+    def _edit_project(self):
+        project = self._get_selected_project()
+        if not project or not project.get("id"):
+            QMessageBox.information(self, "提示", "请先选择要编辑的项目。")
+            return
+        dialog = InspectionProjectDialog(
+            title_text="编辑项目",
+            project_name=project.get("name", ""),
+            project_year=project.get("year", ""),
+            summary_text=project.get("conclusion", ""),
+            parent=self,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        values = dialog.get_values()
+        update_inspection_project(
+            int(project["id"]),
+            project_name=values["project_name"],
+            project_year=values["project_year"],
+            summary_text=values["summary_text"],
+        )
+        self._reload_current_folder(selected_id=int(project["id"]))
+
+    def _delete_project(self):
+        project = self._get_selected_project()
+        if not project or not project.get("id"):
+            QMessageBox.information(self, "提示", "请先选择要删除的项目。")
+            return
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定删除项目“{project.get('name', '')}”吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        soft_delete_files_by_prefix(
+            module_code=DOC_MAN_MODULE_CODE,
+            logical_path_prefix="/".join(self._project_storage_segments(project)),
+            facility_code=self.facility_code,
+        )
+        soft_delete_inspection_project(int(project["id"]))
+        self._reload_current_folder()
+
+    def set_facility_code(self, code: str):
+        self.facility_code = (code or "").strip()
+        self._reload_current_folder()
 
     def _populate_files_table(self, files):
         self.files_table.clearContents()
@@ -587,6 +743,17 @@ class ImportantHistoryDetailWidget(QWidget):
 
         file_info = project["files"][row]
         self.file_status_label.setText(f"已模拟下载文件：{file_info['name']}")
+
+    def _refresh_doc_man(self, project: dict | None):
+        path_segments = self._project_storage_segments(project)
+        self.doc_man_widget.set_context(
+            path_segments,
+            [] if project else [],
+            ["PDF", "Word", "Excel", "CAD", "其他"],
+            facility_code=self.facility_code,
+            hide_empty_templates=True,
+            db_list_mode=True,
+        )
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -641,6 +808,22 @@ class ImportantHistoryEventsPage(BasePage):
             {"key": "start_time", "label": "投产时间", "options": ["2013-07-15"], "default": "2013-07-15"},
             {"key": "design_life", "label": "设计年限", "options": ["15"], "default": "15"},
         ]
+        platform_defaults = default_platform()
+        field_map = {item["key"]: item for item in fields}
+        field_map["oilfield"]["options"] = [platform_defaults["oilfield"]]
+        field_map["oilfield"]["default"] = platform_defaults["oilfield"]
+        field_map["facility_code"]["options"] = ["WC19-1D", "WC9-7"]
+        field_map["facility_code"]["default"] = platform_defaults["facility_code"]
+        field_map["facility_name"]["options"] = ["WC19-1D平台", "WC9-7平台"]
+        field_map["facility_name"]["default"] = platform_defaults["facility_name"]
+        field_map["facility_type"]["options"] = [platform_defaults["facility_type"]]
+        field_map["facility_type"]["default"] = platform_defaults["facility_type"]
+        field_map["category"]["options"] = [platform_defaults["category"]]
+        field_map["category"]["default"] = platform_defaults["category"]
+        field_map["start_time"]["options"] = [platform_defaults["start_time"]]
+        field_map["start_time"]["default"] = platform_defaults["start_time"]
+        field_map["design_life"]["options"] = [platform_defaults["design_life"]]
+        field_map["design_life"]["default"] = platform_defaults["design_life"]
         self.dropdown_bar = DropdownBar(fields, parent=page)
         layout.addWidget(self.dropdown_bar, 0)
 
@@ -657,11 +840,27 @@ class ImportantHistoryEventsPage(BasePage):
 
         card_layout.addWidget(self.home_docs)
         layout.addWidget(card, 1)
+        self.dropdown_bar.valueChanged.connect(self.on_filter_changed)
+        self._sync_platform_ui()
         return page
 
     def _enter_detail(self, folder_name: str):
+        self.detail_widget.set_facility_code(self.dropdown_bar.get_value("facility_code"))
         self.detail_widget.load_history_event(folder_name)
         self.stack.setCurrentIndex(1)
 
     def _go_home(self):
         self.stack.setCurrentIndex(0)
+
+    def on_filter_changed(self, key: str, value: str):
+        self._sync_platform_ui(changed_key=key)
+
+    def _sync_platform_ui(self, changed_key: str | None = None):
+        platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
+        self.home_docs.set_facility_code(platform["facility_code"])
+        if hasattr(self, "detail_widget") and self.detail_widget is not None:
+            self.detail_widget.set_facility_code(platform["facility_code"])
+
+    def set_facility_code(self, code: str):
+        self.dropdown_bar.set_value("facility_code", code)
+        self._sync_platform_ui(changed_key="facility_code")
