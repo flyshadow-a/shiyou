@@ -29,6 +29,7 @@ from file_db_adapter import (
     soft_delete_storage_path,
     upload_file as upload_file_to_db,
 )
+
 from pages.model_files_page import ModelFilesDocsWidget
 from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
 from special_strategy_runtime import load_base_config, load_latest_strategy_params, run_special_strategy_calculation
@@ -321,6 +322,7 @@ class _SystemLibraryPickerDialog(QDialog):
     @property
     def selected_rows(self) -> list[dict[str, Any]]:
         return list(self._selected_rows)
+
 
 
 class NewSpecialInspectionPage(BasePage):

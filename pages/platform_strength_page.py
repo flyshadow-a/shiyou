@@ -37,6 +37,8 @@ from pages.read_table_xls import ReadTableXls
 
 from pages.sacs_import_service import import_model_bundle_to_db
 
+from shiyou_db.runtime_db import get_mysql_url
+
 from collections import Counter
 
 class PyVistaSacsView(QFrame):
@@ -700,10 +702,7 @@ class PlatformStrengthPage(BasePage):
         return self._safe_float(self.edt_workpoint.text(), 9.1)
 
     def _get_mysql_url(self) -> str:
-        url = os.environ.get("MYSQL_URL", "mysql+pymysql://root:ljm020918**@127.0.0.1:3306/SACS_new?charset=utf8mb4").strip()
-        if not url:
-            raise ValueError("MYSQL_URL 未配置")
-        return url
+        return get_mysql_url()
 
     def _find_matching_sea_file(self, model_path: str) -> Optional[str]:
         if not model_path:

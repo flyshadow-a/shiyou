@@ -46,6 +46,8 @@ from pages.feasibility_assessment_results_page import FeasibilityAssessmentResul
 from pages.sacs_create_model_service import create_new_model_files
 from app_paths import first_existing_path
 
+from shiyou_db.runtime_db import get_mysql_url
+
 SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
 
 
@@ -105,10 +107,7 @@ class FeasibilityAssessmentPage(BasePage):
         self._dynamic_table_meta = {}
 
         self.job_name = facility_code
-        self.mysql_url = os.environ.get(
-            "MYSQL_URL",
-            "mysql+pymysql://root:ljm020918**@127.0.0.1:3306/SACS_new?charset=utf8mb4"
-        ).strip()
+        self.mysql_url = get_mysql_url()
 
         self.elevations = list(elevations) if elevations is not None else []
         self._use_dynamic_elevations = bool(elevations)

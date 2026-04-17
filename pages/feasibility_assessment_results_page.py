@@ -42,6 +42,8 @@ from base_page import BasePage
 from sqlalchemy import create_engine, text
 from pages.sacs_compare_view import SacsComparePanel
 
+from shiyou_db.runtime_db import get_mysql_url
+
 from dropdown_bar import DropdownBar
 
 
@@ -228,10 +230,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self.main_window = main_window
         self.facility_code = facility_code
         self.job_name = job_name or facility_code
-        self.mysql_url = (mysql_url or os.environ.get(
-            "MYSQL_URL",
-            "mysql+pymysql://root:ljm020918**@127.0.0.1:3306/SACS_new?charset=utf8mb4"
-        )).strip()
+        self.mysql_url = get_mysql_url()
         self.current_tab = "构件"
 
         self._build_ui()
