@@ -116,11 +116,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 background: #eaf2ff;
                 border: 1px solid #4a4a4a;
                 border-bottom: none;
-                padding: 6px 16px;
-                min-width: 110px;
+                min-width: 150px;
+                min-height: 34px;
+                padding: 6px 18px;
                 font-weight: bold;
                 font-size: 12pt;
             }
+
             QTabBar::tab:selected { background: #d6f0d0; }
 
             /* 表格（网格线明显） */
@@ -152,69 +154,91 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         """)
 
         # 整页滚动（内容多时滚轮可滚）
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        self.main_layout.addWidget(scroll, 1)
-
-        container = QWidget()
-        scroll.setWidget(container)
-        root = QVBoxLayout(container)
-        root.setContentsMargins(0, 0, 0, 0)
-
         card = QFrame()
         card.setObjectName("Card")
-        root.addWidget(card)
+        self.main_layout.addWidget(card, 1)
 
         lay = QHBoxLayout(card)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(12)
 
-        lay.addWidget(self._build_left(), 3)
-        lay.addWidget(self._build_right(), 2)
+        left_scroll = QScrollArea(card)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        left_panel = self._build_left()
+        left_scroll.setWidget(left_panel)
+
+        right_panel = self._build_right()
+        right_panel.setMinimumWidth(320)
+        right_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        lay.addWidget(left_scroll, 5)
+        lay.addWidget(right_panel, 3)
 
     # ---------------- Left ----------------
     def _build_left(self) -> QWidget:
         panel = QWidget()
+        panel.setMinimumWidth(0)
+        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(10)
+        v.setSpacing(2)
 
         # 顶部：条数选择（10/20/50/100/全部）
         row_bar = QHBoxLayout()
+        row_bar.setContentsMargins(0, 0, 0, 0)
+        row_bar.setSpacing(6)
         row_bar.addWidget(QLabel("明细显示行数："))
+
         self.cb_rows = QComboBox()
         self.cb_rows.addItems(["10", "20", "50", "100", "全部"])
         self.cb_rows.currentIndexChanged.connect(self._apply_row_limit)
         row_bar.addWidget(self.cb_rows)
         row_bar.addStretch(1)
+
         v.addLayout(row_bar)
 
         # 构件/节点 二级tab
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.North)
+        self.tabs.tabBar().setExpanding(False)
+        self.tabs.tabBar().setElideMode(Qt.ElideNone)
+        self.tabs.tabBar().setUsesScrollButtons(False)
+        self.tabs.setMinimumWidth(0)
+        self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         comp_wrap = QWidget()
         comp_l = QVBoxLayout(comp_wrap)
         comp_l.setContentsMargins(0, 0, 0, 0)
-        comp_l.setSpacing(10)
+        comp_l.setSpacing(8)
+
         self.table_comp = self._make_detail_table(is_node=False)
         self.summary_comp = self._make_summary_table(self.COMPONENT_SUMMARY_LABELS)
 
-        comp_l.addWidget(self.table_comp, 0)
-        comp_l.addWidget(self.summary_comp, 1)
-
+        comp_l.addWidget(self.table_comp, 3)
+        comp_l.addWidget(self.summary_comp, 2)
 
         node_wrap = QWidget()
         node_l = QVBoxLayout(node_wrap)
         node_l.setContentsMargins(0, 0, 0, 0)
-        node_l.setSpacing(10)
+        node_l.setSpacing(8)
+
         self.table_node = self._make_detail_table(is_node=True)
         self.summary_node = self._make_summary_table(self._year_mapper.display_labels())
-        node_l.addWidget(self.table_node, 0)
-        node_l.addWidget(self.summary_node, 1)
+
+        node_l.addWidget(self.table_node, 3)
+        node_l.addWidget(self.summary_node, 2)
+
+        node_l.addWidget(self.table_node)
+        node_l.addWidget(self.summary_node)
 
         self.tabs.addTab(comp_wrap, "构件风险等级")
         self.tabs.addTab(node_wrap, "节点风险等级")
+
         v.addWidget(self.tabs, 1)
 
         return panel
@@ -248,6 +272,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         t.setGridStyle(Qt.SolidLine)
         t.setSelectionBehavior(QTableWidget.SelectRows)
         t.setSelectionMode(QTableWidget.SingleSelection)
+        t.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        t.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # 列宽：用 Stretch（和你现有实现一致）
         #t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -290,7 +316,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             t.setColumnWidth(c, max(80, w + 10))
 
         # 禁用自动拉伸最后一列，以防破坏已计算好的宽度
-        header.setStretchLastSection(False)
+        header.setStretchLastSection(True)
         # ============================================
 
         # row heights
@@ -300,7 +326,11 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             t.setRowHeight(r, 24)
 
         # minimum height so it looks like the sample (scroll inside table)
-        t.setMinimumHeight(260)
+        # fixed_height = t.frameWidth() * 2 + 2
+        # fixed_height += t.rowHeight(0) + t.rowHeight(1)
+        # fixed_height += 20 * 24
+        # t.setFixedHeight(fixed_height)
+        t.setMinimumHeight(420)
 
         return t
 
@@ -314,6 +344,14 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             f.setBold(True)
             it.setFont(f)
         table.setItem(r, c, it)
+
+    def _set_detail_table_height(self, table: QTableWidget, visible_rows: int) -> None:
+        pass
+        # display_rows = max(1, min(int(visible_rows), 20))
+        # fixed_height = table.frameWidth() * 2 + 2
+        # fixed_height += table.rowHeight(0) + table.rowHeight(1)
+        # fixed_height += display_rows * 24
+        # table.setFixedHeight(fixed_height)
 
     # ---------------- Summary big table (tagged) ----------------
     def _make_summary_table(self, labels: list[str]) -> QTableWidget:
@@ -397,20 +435,23 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         total_h = t.frameWidth() * 2 + 2
         for r in range(t.rowCount()):
             total_h += t.rowHeight(r)
-        t.setFixedHeight(total_h)
-        
+        t.setMinimumHeight(total_h)
+        t.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         t.setProperty("summary_labels", labels)
         return t
 
     # ---------------- Right ----------------
     def _build_right(self) -> QWidget:
         panel = QWidget()
+        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(10)
 
         frame = QFrame()
         frame.setStyleSheet("background:black;border:1px solid #c7d2e3;")
+        frame.setMinimumHeight(420)
+        frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         fl = QVBoxLayout(frame)
         fl.setContentsMargins(6, 6, 6, 6)
         fl.addWidget(PlanDiagram(), 1)
@@ -451,6 +492,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         start = self.HEADER_ROWS
         data_rows = max(len(rows), 1)
         table.setRowCount(start + data_rows)
+        table.setProperty("detail_row_count", data_rows)
         for r in range(start, table.rowCount()):
             table.setRowHeight(r, 24)
 
@@ -545,11 +587,30 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
         def apply(table: QTableWidget):
             start = self.HEADER_ROWS
+            total_rows = int(table.property("detail_row_count") or max(table.rowCount() - start, 1))
             for r in range(start, table.rowCount()):
                 table.setRowHidden(r, (limit is not None and (r - start) >= limit))
+            # visible_rows = total_rows if limit is None else min(limit, total_rows)
+            # self._set_detail_table_height(table, visible_rows)
 
         apply(self.table_comp)
         apply(self.table_node)
+        # self._sync_current_tab_height()
+
+    def _sync_current_tab_height(self, _index: int | None = None) -> None:
+        return
+        # if not hasattr(self, "tabs"):
+        #     return
+        # page = self.tabs.currentWidget()
+        # if page is None:
+        #     return
+        # layout = page.layout()
+        # if layout is not None:
+        #     layout.activate()
+        # page.adjustSize()
+        # page_height = page.sizeHint().height()
+        # tab_bar_height = self.tabs.tabBar().sizeHint().height()
+        # self.tabs.setFixedHeight(tab_bar_height + page_height + 8)
 
     def _on_report(self):
         try:

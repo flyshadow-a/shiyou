@@ -1,5 +1,5 @@
 {
-  "template_xlsm": "D:/desk/横向/WC9-7&191D检测策略1103/WC19-1D检测策略1103/检验策略- wc19-1d-10.30.xlsm",
+  "template_xlsm": "Y:/special_strategy_inputs/WC9-7&191D检测策略1103/WC19-1D检测策略1103/检验策略- wc19-1d-10.30.xlsm",
   "params_json": "d:/pyproject/shiyou/pages/output_special_strategy/wc19_1d_calc_params.json",
   "report_template": "d:/pyproject/shiyou/pages/output_special_strategy/xxx平台风险评级及检测策略报告.docx",
   "output_report": "d:/pyproject/shiyou/pages/output_special_strategy/wc19_1d_user_paths_report.docx",

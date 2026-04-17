@@ -10,7 +10,12 @@ from typing import Any
 from openpyxl import load_workbook
 
 from app_paths import external_path
-from file_db_adapter import is_file_db_configured, list_files_by_prefix
+from file_db_adapter import (
+    is_file_db_configured,
+    list_files_by_prefix,
+    resolve_storage_path,
+    shared_storage_dir,
+)
 from pages.file_management_platforms import find_platform
 from special_strategy_state_db import (
     list_strategy_runs,
@@ -55,6 +60,14 @@ def normalize_facility_code(facility_code: str) -> str:
 
 def runtime_dir(facility_code: str) -> Path:
     code = normalize_facility_code(facility_code)
+    shared_root = shared_storage_dir("special_strategy_runtime")
+    if shared_root:
+        candidate = Path(shared_root) / code
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate.resolve()
+        except Exception:
+            pass
     return Path(external_path("special_strategy_runtime", code)).resolve()
 
 
@@ -204,14 +217,11 @@ def _should_override_fatigue_groups(
     input_count = len(candidate_ftginp_rows)
     if result_count <= 0 or input_count <= 0:
         return False
-
-    expected_result_count = len(default_ftglst)
-    expected_input_count = len(default_ftginp)
-    if expected_result_count > 0 and result_count < expected_result_count:
-        return False
-    if expected_input_count > 0 and input_count < expected_input_count:
-        return False
-    return True
+    # User explicitly imported fatigue files — use them as long as both sides
+    # have matching counts. The previous check that rejected imports when their
+    # count was below the default config's expected count caused the system to
+    # silently fall back to default files, producing wrong calculation results.
+    return result_count == input_count
 
 
 def resolve_current_model_inputs(facility_code: str, cfg: dict[str, Any]) -> dict[str, Any]:
@@ -239,23 +249,25 @@ def resolve_current_model_inputs(facility_code: str, cfg: dict[str, Any]) -> dic
 
     for row in sorted(rows, key=_row_sort_key):
         logical_path = _normalize_logical_path(str(row.get("logical_path", "")))
-        storage_path = str(row.get("storage_path", "")).strip()
+        storage_path = resolve_storage_path(row)
         if not storage_path or not Path(storage_path).exists():
             continue
+        current_row = dict(row)
+        current_row["storage_path"] = storage_path
         if _logical_has_segment(logical_path, "当前模型/结构模型") and not model_path:
             model_path = storage_path
         elif _logical_has_segment(logical_path, "当前模型/倒塌分析"):
-            collapse_rows.append(row)
+            collapse_rows.append(current_row)
         elif (
             _logical_has_segment(logical_path, "当前模型/疲劳分析")
             and _logical_has_segment(logical_path, "结果")
         ):
-            ftglst_rows.append(row)
+            ftglst_rows.append(current_row)
         elif (
             _logical_has_segment(logical_path, "当前模型/疲劳分析")
             and _logical_has_segment(logical_path, "输入")
         ):
-            ftginp_rows.append(row)
+            ftginp_rows.append(current_row)
 
     if model_path:
         resolved["model"] = model_path

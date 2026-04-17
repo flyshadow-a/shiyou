@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from functools import lru_cache
@@ -19,7 +20,7 @@ class FileBackendError(RuntimeError):
 
 
 def _ensure_import_path() -> None:
-    for path in (PROJECT_ROOT, PROJECT_PARENT):
+    for path in (PROJECT_PARENT, PROJECT_ROOT):
         text = str(path)
         if text not in sys.path:
             sys.path.insert(0, text)
@@ -28,6 +29,21 @@ def _ensure_import_path() -> None:
 def is_file_db_configured(config_path: str | None = None) -> bool:
     path = Path(config_path) if config_path else DEFAULT_DB_CONFIG
     return path.exists()
+
+
+@lru_cache(maxsize=4)
+def _load_settings(config_path: str | None = None):
+    _ensure_import_path()
+    try:
+        from shiyou_db import load_settings
+    except Exception as exc:
+        raise FileBackendError(f"Cannot import package shiyou_db: {exc}") from exc
+
+    resolved = str(Path(config_path).resolve()) if config_path else None
+    try:
+        return load_settings(resolved)
+    except Exception as exc:
+        raise FileBackendError(f"Cannot load file database settings: {exc}") from exc
 
 
 @lru_cache(maxsize=4)
@@ -46,6 +62,91 @@ def _get_service(config_path: str | None = None):
     except Exception as exc:
         raise FileBackendError(f"Cannot initialize file database service: {exc}") from exc
 
+
+def configured_storage_root(config_path: str | None = None) -> str:
+    path = Path(config_path) if config_path else DEFAULT_DB_CONFIG
+    if not path.exists():
+        return ""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        value = str(raw.get("storage_root") or "").strip()
+        if not value:
+            return ""
+        return str(Path(value).resolve())
+    except Exception:
+        return ""
+
+
+def shared_storage_dir(name: str, *, config_path: str | None = None) -> str:
+    storage_root = configured_storage_root(config_path)
+    if not storage_root:
+        return ""
+    return str((Path(storage_root).parent / name).resolve())
+
+
+def _safe_segment(text: str) -> str:
+    filtered: list[str] = []
+    for ch in str(text or "").strip():
+        if ch.isalnum() or ch in ("-", "_", "."):
+            filtered.append(ch)
+        else:
+            filtered.append("_")
+    return "".join(filtered).strip("._") or "default"
+
+
+def resolve_storage_path(row: dict[str, Any], *, config_path: str | None = None) -> str:
+    raw_storage = str(row.get("storage_path") or "").strip()
+    raw_path = os.path.normpath(raw_storage) if raw_storage else ""
+
+    storage_root = configured_storage_root(config_path)
+    module_code = str(row.get("module_code") or "").strip()
+    logical_path = str(row.get("logical_path") or "").replace("\\", "/").strip().strip("/")
+    stored_name = str(row.get("stored_name") or "").strip()
+
+    # 兼容旧数据：stored_name 缺失时，尝试从原始路径里补一个文件名
+    if not stored_name and raw_path:
+        guessed_name = os.path.basename(raw_path)
+        if guessed_name and guessed_name not in (".", ".."):
+            stored_name = guessed_name
+
+    # 缺关键字段时，只在原始路径真实存在的情况下返回它；否则返回空串
+    if not storage_root or not module_code or not stored_name:
+        if raw_path and raw_path not in (".", "..") and os.path.exists(raw_path):
+            return raw_path
+        return ""
+
+    safe_module = _safe_segment(module_code or "general")
+    logical_segments = [_safe_segment(seg) for seg in logical_path.split("/") if seg]
+    base_dir = Path(storage_root) / safe_module / Path(*logical_segments)
+
+    direct_candidate = base_dir / stored_name
+    if direct_candidate.exists():
+        return os.path.normpath(str(direct_candidate))
+
+    date_candidates: list[str] = []
+    for dt in (row.get("uploaded_at"), row.get("source_modified_at"), row.get("updated_at")):
+        if hasattr(dt, "strftime"):
+            date_candidates.append(dt.strftime("%Y%m%d"))
+
+    for day in date_candidates:
+        candidate = base_dir / day / stored_name
+        if candidate.exists():
+            return os.path.normpath(str(candidate))
+
+    if base_dir.is_dir():
+        try:
+            for day_dir in base_dir.iterdir():
+                if not day_dir.is_dir():
+                    continue
+                candidate = day_dir / stored_name
+                if candidate.exists():
+                    return os.path.normpath(str(candidate))
+        except Exception:
+            pass
+
+    if raw_path and raw_path not in (".", "..") and os.path.exists(raw_path):
+        return raw_path
+    return ""
 
 def list_files(
     *,

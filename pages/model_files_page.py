@@ -18,7 +18,13 @@ from base_page import BasePage
 from dropdown_bar import DropdownBar
 from .file_management_platforms import default_platform, sync_platform_dropdowns
 from .doc_man import DocManWidget
-from file_db_adapter import is_file_db_configured, list_files_by_prefix, soft_delete_record, upload_file
+from file_db_adapter import (
+    is_file_db_configured,
+    list_files_by_prefix,
+    resolve_storage_path,
+    soft_delete_record,
+    upload_file,
+)
 
 # ✅ 直接复用 ConstructionDocsWidget 的文件夹UI与交互（FolderButton / folder_grid / PathBar 等）
 from .construction_docs_widget import ConstructionDocsWidget
@@ -72,6 +78,7 @@ class ModelFilesDocsWidget(QWidget):
         # 当前显示的叶子路径 key 和行配置
         self.current_leaf_key: str = ""
         self.current_row_configs: List[Dict] = []
+        self.current_table_rows: List[Dict[str, Any]] = []
         self.facility_code = ""
 
         # 上传根目录：项目根目录/upload/model_files（沿用你旧代码的 upload 路径）
@@ -608,15 +615,17 @@ class ModelFilesDocsWidget(QWidget):
         if fmt == "clpinp":
             return name.startswith("clpinp")
         if fmt == "clplog":
-            return name == "clplog"
+            return "clplog" in name
         if fmt == "clplst":
-            return name == "clplst"
+            return "clplst" in name
         if fmt == "clprst":
-            return name == "clprst"
+            return "clprst" in name
         if fmt == "ftginp":
-            return name.startswith("ftginp") and "/输入" in logical_path
+            # 优先匹配带/输入 路径的文件，但如果文件名以 ftginp 开头也接受
+            return name.startswith("ftginp") and ("/输入" in logical_path or "/疲劳分析/" in logical_path)
         if fmt == "ftglst":
-            return name.startswith("ftglst") and "/结果" in logical_path
+            # 优先匹配带/结果 路径的文件，但如果文件名以 ftglst 开头也接受
+            return name.startswith("ftglst") and ("/结果" in logical_path or "/疲劳分析/" in logical_path)
         if fmt == "wvrinp":
             return name.startswith("wvrinp")
         return False
@@ -638,6 +647,57 @@ class ModelFilesDocsWidget(QWidget):
         if len(labels) > 3:
             return f"{preview} 等{len(labels)}个文件"
         return preview
+
+    def _resolve_record_path(self, row: Dict[str, Any]) -> str:
+        return resolve_storage_path(row)
+
+    def _record_datetime(self, row: Dict[str, Any], fallback_path: str = "") -> datetime.datetime | None:
+        dt_value = row.get("source_modified_at") or row.get("uploaded_at") or row.get("updated_at")
+        if isinstance(dt_value, datetime.datetime):
+            return dt_value
+        if fallback_path and os.path.exists(fallback_path):
+            return datetime.datetime.fromtimestamp(os.path.getmtime(fallback_path))
+        return None
+
+    def _build_leaf_display_rows(
+        self,
+        row_configs: List[Dict[str, Any]],
+        row_paths: Dict[int, str],
+        db_row_records: Dict[int, List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        display_rows: List[Dict[str, Any]] = []
+        for row_index, cfg in enumerate(row_configs):
+            db_records = db_row_records.get(row_index, [])
+            if db_records:
+                for record_index, record in enumerate(db_records):
+                    record_path = self._resolve_record_path(record)
+                    original_name = str(record.get("original_name") or os.path.basename(record_path))
+                    display_rows.append(
+                        {
+                            "cfg": cfg,
+                            "row_index": row_index,
+                            "file_path": record_path,
+                            "remark": original_name,
+                            "mtime": self._record_datetime(record, record_path),
+                            "upload_enabled": record_index == 0,
+                            "download_enabled": bool(record_path),
+                        }
+                    )
+                continue
+
+            file_path = row_paths.get(row_index, "")
+            display_rows.append(
+                {
+                    "cfg": cfg,
+                    "row_index": row_index,
+                    "file_path": file_path,
+                    "remark": os.path.basename(file_path) if file_path else "",
+                    "mtime": self._record_datetime({}, file_path),
+                    "upload_enabled": True,
+                    "download_enabled": bool(file_path),
+                }
+            )
+        return display_rows
 
     def _doc_category_to_fmt(self, category: str) -> str:
         mapping = {
@@ -672,6 +732,8 @@ class ModelFilesDocsWidget(QWidget):
             return "PSILST"
         if name.startswith("dyninp"):
             return "DYNINP"
+        if name.startswith("dyrinp"):
+            return "DYRINP"
         if name.startswith("ftginp"):
             return "FTGINP"
         if name.startswith("ftglst"):
@@ -688,6 +750,10 @@ class ModelFilesDocsWidget(QWidget):
             return "PILINP"
         if name == "lst":
             return "LST"
+        if name.startswith("othinp"):
+            return "OTHINP"
+        if name.startswith("othlst"):
+            return "OTHLST"
         return os.path.splitext(original_name or "")[1].lstrip(".").upper()
 
     def _handle_model_doc_delete(self, selected: List[Dict[str, Any]], _records: List[Dict[str, Any]]):
@@ -711,11 +777,7 @@ class ModelFilesDocsWidget(QWidget):
         if create_dir:
             os.makedirs(d, exist_ok=True)
         return d
-
     def _show_files_for_current_leaf(self):
-        """
-        根据 current_path 中的叶子节点显示文件表格。
-        """
         node = self._get_node_by_path(self.current_path)
         if not node or node.get("type") != "leaf":
             return
@@ -723,7 +785,7 @@ class ModelFilesDocsWidget(QWidget):
         path_key = self._current_path_key()
         if path_key in self.doc_man_configs:
             self.current_leaf_key = path_key
-            if self.current_path and self.current_path[0] == "当前模型":
+            if self.current_path and self.current_path[0] == "\u5f53\u524d\u6a21\u578b":
                 self.doc_man_widget.set_action_handlers(
                     upload_handler=self._handle_model_doc_upload,
                     delete_handler=self._handle_model_doc_delete,
@@ -742,100 +804,90 @@ class ModelFilesDocsWidget(QWidget):
                 records,
                 self.doc_man_configs[path_key],
                 facility_code=self.facility_code,
-                overlay_from_db=not (self.current_path and self.current_path[0] == "当前模型"),
+                overlay_from_db=not (self.current_path and self.current_path[0] == "\u5f53\u524d\u6a21\u578b"),
                 hide_empty_templates=True,
-                db_list_mode=not (self.current_path and self.current_path[0] == "当前模型"),
+                db_list_mode=not (self.current_path and self.current_path[0] == "\u5f53\u524d\u6a21\u578b"),
             )
             return
 
         model_key = node.get("model_key")
         row_configs = self.model_row_configs.get(model_key, [])
         self.current_row_configs = row_configs
-
         self.current_leaf_key = path_key
+
         row_paths = self._get_row_paths_for(path_key)
         db_row_records = self.row_db_records_by_path.get(path_key, {})
+        self.current_table_rows = self._build_leaf_display_rows(row_configs, row_paths, db_row_records)
 
-        self.table.setRowCount(len(row_configs))
-
-        for row, cfg in enumerate(row_configs):
+        self.table.setRowCount(len(self.current_table_rows))
+        for row, row_meta in enumerate(self.current_table_rows):
+            cfg = row_meta["cfg"]
             self._set_center_item(self.table, row, 0, row + 1)
             self._set_center_item(self.table, row, 1, cfg.get("category", ""))
             self._set_center_item(self.table, row, 2, cfg.get("fmt", ""))
 
-            file_path = row_paths.get(row)
-            db_records = db_row_records.get(row, [])
-            if file_path and os.path.exists(file_path):
-                if db_records:
-                    latest_dt = max(
-                        (item.get("source_modified_at") or item.get("uploaded_at") for item in db_records),
-                        default=None,
-                    )
-                    mtime = latest_dt or datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
-                else:
-                    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
-                date_str = mtime.strftime("%Y/%m/%d")
-                self._set_center_item(self.table, row, 3, date_str)
+            mtime = row_meta.get("mtime")
+            date_str = mtime.strftime("%Y/%m/%d") if isinstance(mtime, datetime.datetime) else ""
+            self._set_center_item(self.table, row, 3, date_str)
 
-                remark_text = self._build_db_remark(db_records) if db_records else os.path.basename(file_path)
-                remark_item = QTableWidgetItem(remark_text)
-                remark_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                self.table.setItem(row, 6, remark_item)
-            else:
-                self._set_center_item(self.table, row, 3, "")
-                self._set_center_item(self.table, row, 6, "")
+            remark_item = QTableWidgetItem(str(row_meta.get("remark") or ""))
+            remark_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.table.setItem(row, 6, remark_item)
 
-            self._set_center_item(self.table, row, 4, "上传")
-            self._set_center_item(self.table, row, 5, "下载")
+            self._set_center_item(self.table, row, 4, "\u4e0a\u4f20" if row_meta.get("upload_enabled") else "")
+            self._set_center_item(self.table, row, 5, "\u4e0b\u8f7d" if row_meta.get("download_enabled") else "")
 
         self._auto_fit_columns_with_padding(self.table, padding=36)
         self._auto_fit_row_height(self.table, padding=12)
 
     def _get_doc_man_upload_dir(self, path_segments: List[str]) -> str:
         facility = (self.facility_code or "").strip()
-        target_dir = os.path.join(self.upload_root, *( [facility] if facility else [] ), *path_segments)
+        target_dir = os.path.join(self.upload_root, *([facility] if facility else []), *path_segments)
         os.makedirs(target_dir, exist_ok=True)
         return target_dir
 
     def _on_table_cell_clicked(self, row: int, col: int):
         if not self.current_leaf_key:
             return
-        if col == 4:
+        if row < 0 or row >= len(self.current_table_rows):
+            return
+        row_meta = self.current_table_rows[row]
+        if col == 4 and row_meta.get("upload_enabled"):
             self._handle_upload(row)
-        elif col == 5:
+        elif col == 5 and row_meta.get("download_enabled"):
             self._handle_download(row)
 
     def _parse_allowed_exts(self, fmt_text: str) -> List[str]:
         if not fmt_text:
             return []
-        tmp = fmt_text.replace("，", ",").replace("/", ",")
+        tmp = fmt_text.replace("\uff0c", ",").replace("/", ",")
         parts = [p.strip().lower() for p in tmp.split(",") if p.strip()]
         return parts
 
     def _handle_upload(self, row: int):
-        if row < 0 or row >= len(self.current_row_configs):
+        if row < 0 or row >= len(self.current_table_rows):
             return
 
-        cfg = self.current_row_configs[row]
+        row_meta = self.current_table_rows[row]
+        cfg = row_meta["cfg"]
         allowed_exts = self._parse_allowed_exts(cfg.get("fmt", ""))
+        target_row_index = int(row_meta.get("row_index", row))
 
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择要上传的文件", "", "所有文件 (*.*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "\u9009\u62e9\u8981\u4e0a\u4f20\u7684\u6587\u4ef6", "", "\u6240\u6709\u6587\u4ef6 (*.*)")
         if not file_path:
             return
 
         ext = os.path.splitext(file_path)[1].lower()
         ext_no_dot = ext[1:] if ext.startswith(".") else ext
-
         if allowed_exts and ext_no_dot not in allowed_exts:
             QMessageBox.warning(
                 self,
-                "格式不匹配",
-                f"当前行仅允许上传以下格式：{cfg.get('fmt', '')}\n"
-                f"你选择的文件后缀为：{ext}",
+                "\u683c\u5f0f\u4e0d\u5339\u914d",
+                f"\u5f53\u524d\u884c\u4ec5\u5141\u8bb8\u4e0a\u4f20\u4ee5\u4e0b\u683c\u5f0f\uff1a{cfg.get('fmt', '')}\\n\u4f60\u9009\u62e9\u7684\u6587\u4ef6\u540e\u7f00\u4e3a\uff1a{ext}",
             )
             return
 
-        row_dir = self._leaf_row_dir(self.current_leaf_key, row, create_dir=True)
+        row_dir = self._leaf_row_dir(self.current_leaf_key, target_row_index, create_dir=True)
         basename = os.path.basename(file_path)
         dest_path = os.path.join(row_dir, basename)
         root, ext = os.path.splitext(dest_path)
@@ -847,45 +899,34 @@ class ModelFilesDocsWidget(QWidget):
         try:
             shutil.copy2(file_path, dest_path)
         except Exception as e:
-            QMessageBox.critical(self, "上传失败", f"复制文件时出错：\n{e}")
+            QMessageBox.critical(self, "\u4e0a\u4f20\u5931\u8d25", f"\u590d\u5236\u6587\u4ef6\u65f6\u51fa\u9519\uff1a\\n{e}")
             return
 
         row_paths = self._get_row_paths_for(self.current_leaf_key)
-        row_paths[row] = dest_path
-
-        mtime = datetime.datetime.fromtimestamp(os.path.getmtime(dest_path))
-        date_str = mtime.strftime("%Y/%m/%d")
-        self._set_center_item(self.table, row, 3, date_str)
-
-        remark_item = QTableWidgetItem(basename)
-        remark_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.table.setItem(row, 6, remark_item)
-
-        self._auto_fit_columns_with_padding(self.table, padding=36)
-        QMessageBox.information(self, "上传成功", "文件已上传。")
+        row_paths[target_row_index] = dest_path
+        self._show_files_for_current_leaf()
+        QMessageBox.information(self, "\u4e0a\u4f20\u6210\u529f", "\u6587\u4ef6\u5df2\u4e0a\u4f20\u3002")
 
     def _handle_download(self, row: int):
-        row_paths = self._get_row_paths_for(self.current_leaf_key)
-        path = row_paths.get(row)
+        if row < 0 or row >= len(self.current_table_rows):
+            return
+        path = str(self.current_table_rows[row].get("file_path") or "")
         if not path or not os.path.exists(path):
-            QMessageBox.information(self, "提示", "该行尚未上传文件，无法下载。")
+            QMessageBox.information(self, "\u63d0\u793a", "\u8be5\u884c\u5c1a\u672a\u4e0a\u4f20\u6587\u4ef6\uff0c\u65e0\u6cd5\u4e0b\u8f7d\u3002")
             return
 
         default_name = os.path.basename(path)
-        save_path, _ = QFileDialog.getSaveFileName(
-            self, "选择保存位置", default_name, "所有文件 (*.*)"
-        )
+        save_path, _ = QFileDialog.getSaveFileName(self, "\u9009\u62e9\u4fdd\u5b58\u4f4d\u7f6e", default_name, "\u6240\u6709\u6587\u4ef6 (*.*)")
         if not save_path:
             return
 
         try:
             shutil.copy2(path, save_path)
         except Exception as e:
-            QMessageBox.critical(self, "下载失败", f"复制文件时出错：\n{e}")
+            QMessageBox.critical(self, "\u4e0b\u8f7d\u5931\u8d25", f"\u590d\u5236\u6587\u4ef6\u65f6\u51fa\u9519\uff1a\\n{e}")
             return
 
-        QMessageBox.information(self, "下载完成", "文件已保存。")
-
+        QMessageBox.information(self, "\u4e0b\u8f7d\u5b8c\u6210", "\u6587\u4ef6\u5df2\u4fdd\u5b58\u3002")
 
 # ============================================================
 # 2) Page：DropdownBar + QFrame card(0边距0间距) + docs_widget
@@ -897,50 +938,24 @@ class ModelFilesDocsWidget(QWidget):
         return str(row.get("original_name") or "")
 
     def _build_doc_man_configs(self) -> Dict[str, List[str]]:
-        leaf_categories = {
-            "静力": [
-                "结构模型文件",
-                "海况文件",
-                "桩基文件",
-                "建模文件",
-                "静力分析结果文件",
-                "其他",
-            ],
-            "疲劳": [
-                "结构模型文件",
-                "海况文件",
-                "桩基文件",
-                "动力分析文件",
-                "疲劳分析模型文件",
-                "疲劳分析结果文件",
-                "其他",
-            ],
-            "倒塌": [
-                "结构模型文件",
-                "海况文件",
-                "桩基文件",
-                "倒塌分析模型文件",
-                "倒塌分析结果文件",
-                "其他",
-            ],
-            "地震": [
-                "结构模型文件",
-                "海况文件",
-                "桩基文件",
-                "建模文件",
-                "动力分析文件",
-                "地震分析模型文件",
-                "地震分析结果文件",
-                "其他",
-            ],
-            "其他模型": [
-                "结构模型文件",
-                "海况文件",
-                "其他模型文件",
-                "其他结果文件",
-                "其他",
-            ],
+        leaf_categories: Dict[str, List[str]] = {}
+        source_map = {
+            "静力": "static",
+            "疲劳": "fatigue",
+            "倒塌": "collapse",
+            "地震": "seismic",
+            "其他模型": "other",
         }
+        for leaf_name, model_key in source_map.items():
+            categories: List[str] = []
+            for cfg in self.model_row_configs.get(model_key, []):
+                category = str(cfg.get("category") or "").strip()
+                if category and category not in categories:
+                    categories.append(category)
+            if "其他" not in categories:
+                categories.append("其他")
+            leaf_categories[leaf_name] = categories
+
         configs: Dict[str, List[str]] = {}
         root_names = ["当前模型", "详细设计模型", "改造1模型", "改造N模型"]
         leaf_mapping = {
@@ -982,24 +997,44 @@ class ModelFilesDocsWidget(QWidget):
         if name.startswith("psiinp"):
             return self._pick_category_option(categories, "桩基", fallback="桩基文件")
         if name.startswith("jcninp"):
-            return self._pick_category_option(categories, "建模", fallback="建模文件")
+            return self._pick_category_option(categories, "冲剪", fallback="冲剪节点文件")
+        if name.startswith("psilst"):
+            return self._pick_category_option(categories, "静力", "结果", fallback="静力分析结果文件")
         if name.startswith("dyninp"):
-            return self._pick_category_option(categories, "地震", fallback="地震分析模型文件")
+            return self._pick_category_option(categories, "动力", fallback="动力分析文件")
+        if name.startswith("dyrinp"):
+            return self._pick_category_option(categories, "动力", "地震", fallback="动力分析文件(地震)")
         if name.startswith("ftginp") or "/疲劳分析/" in logical_path and "/输入/" in logical_path:
             return self._pick_category_option(categories, "疲劳", "模型", fallback="疲劳分析模型文件")
         if name.startswith("ftglst") or "/疲劳分析/" in logical_path and "/结果/" in logical_path:
             return self._pick_category_option(categories, "疲劳", "结果", fallback="疲劳分析结果文件")
         if name.startswith("wvrinp"):
-            return self._pick_category_option(categories, "疲劳", fallback="疲劳分析文件")
+            return self._pick_category_option(categories, "疲劳", "结果", fallback="疲劳分析结果文件")
         if name.startswith("clpinp"):
             return self._pick_category_option(categories, "倒塌", "模型", fallback="倒塌分析模型文件")
-        if name in {"clplog", "clplst", "clprst"} or "/倒塌分析/" in logical_path:
+        if name == "clplog":
+            return self._pick_category_option(categories, "倒塌", "日志", fallback="倒塌分析日志文件")
+        if name in {"clplst", "clprst"} or "/倒塌分析/" in logical_path:
             return self._pick_category_option(categories, "倒塌", "结果", fallback="倒塌分析结果文件")
         if name.startswith("pilinp"):
             return self._pick_category_option(categories, "地震", "模型", fallback="地震分析模型文件")
         if name == "lst":
             return self._pick_category_option(categories, "地震", "结果", fallback="地震分析结果文件")
+        if name.startswith("othinp"):
+            return self._pick_category_option(categories, "其他", "模型", fallback="其他分析模型文件")
+        if name.startswith("othlst"):
+            return self._pick_category_option(categories, "其他", "结果", fallback="其他分析结果文件")
         return self._pick_category_option(categories, "其他", fallback="其他")
+
+    @staticmethod
+    def _category_allows_multiple_files(category: str) -> bool:
+        multi_categories = {
+            "疲劳分析模型文件",
+            "疲劳分析结果文件",
+            "倒塌分析日志文件",
+            "倒塌分析结果文件",
+        }
+        return category in multi_categories
 
     def _doc_category_to_file_type_code(self, category: str) -> str:
         if "疲劳" in category:
@@ -1028,7 +1063,7 @@ class ModelFilesDocsWidget(QWidget):
 
         logical_path = rec.get("logical_path") or self._upload_logical_path_for_category(path_key, current_category)
         record_id = rec.get("record_id")
-        if record_id is not None:
+        if record_id is not None and not self._category_allows_multiple_files(current_category):
             soft_delete_record(int(record_id))
         result = upload_file(
             file_path,
@@ -1039,12 +1074,13 @@ class ModelFilesDocsWidget(QWidget):
             remark=rec.get("remark") or "",
         )
         dt = result.get("source_modified_at") or result.get("uploaded_at")
+        resolved_path = resolve_storage_path(result)
         rec["checked"] = False
         rec["category"] = current_category
         rec["fmt"] = self._format_from_original_name(str(result.get("original_name") or os.path.basename(file_path)))
         rec["filename"] = str(result.get("original_name") or os.path.basename(file_path))
         rec["mtime"] = dt.strftime("%Y/%m/%d") if dt else ""
-        rec["path"] = str(result.get("storage_path") or "")
+        rec["path"] = resolved_path
         rec["record_id"] = result.get("id")
         rec["logical_path"] = str(result.get("logical_path") or logical_path)
         rec["_force_visible"] = True
@@ -1129,23 +1165,25 @@ class ModelFilesDocsWidget(QWidget):
         model_root = parts[0] if parts else "当前模型"
         base = f"{self.facility_code}/{model_root}"
         if "结构模型" in category:
-            return f"{base}/结构模型/用户上传"
+            return f"{base}/结构模型/用户上传/{category}"
         if "海况" in category:
-            return f"{base}/结构模型/海况/用户上传"
+            return f"{base}/结构模型/海况/用户上传/{category}"
         if "桩基" in category:
-            return f"{base}/结构模型/桩基/用户上传"
-        if "建模" in category:
-            return f"{base}/结构模型/建模/用户上传"
+            return f"{base}/结构模型/桩基/用户上传/{category}"
+        if "建模" in category or "冲剪" in category:
+            return f"{base}/结构模型/建模/用户上传/{category}"
         if "地震" in category:
             branch = "结果" if "结果" in category else "输入"
-            return f"{base}/地震分析/{branch}/用户上传"
+            return f"{base}/地震分析/{branch}/用户上传/{category}"
         if "疲劳" in category:
             branch = "结果" if "结果" in category else "输入"
-            return f"{base}/疲劳分析/{branch}/用户上传"
+            return f"{base}/疲劳分析/{branch}/用户上传/{category}"
         if "倒塌" in category:
+            if "日志" in category:
+                return f"{base}/倒塌分析/结果/用户上传/{category}"
             branch = "结果" if "结果" in category else "模型"
-            return f"{base}/倒塌分析/{branch}/用户上传"
-        return f"{base}/其他/用户上传"
+            return f"{base}/倒塌分析/{branch}/用户上传/{category}"
+        return f"{base}/其他/用户上传/{category}"
 
     def _build_model_file_doc_records(self, path_key: str) -> List[Dict[str, Any]]:
         if not self.facility_code:
@@ -1153,7 +1191,6 @@ class ModelFilesDocsWidget(QWidget):
         categories = self.doc_man_configs.get(path_key, [])
         rows: List[Dict[str, Any]] = []
         seen_ids: set[int] = set()
-        seen_keys: set[tuple[str, str]] = set()
         for prefix in self._current_model_prefixes(path_key):
             for row in list_files_by_prefix(
                 module_code="model_files",
@@ -1164,12 +1201,7 @@ class ModelFilesDocsWidget(QWidget):
                 if row_id in seen_ids:
                     continue
                 logical_path = str(row.get("logical_path") or "")
-                original_name = str(row.get("original_name") or "")
-                dedupe_key = (logical_path.lower(), original_name.lower())
-                if dedupe_key in seen_keys:
-                    continue
                 seen_ids.add(row_id)
-                seen_keys.add(dedupe_key)
                 dt = row.get("source_modified_at") or row.get("uploaded_at")
                 rows.append(
                     {
@@ -1179,7 +1211,7 @@ class ModelFilesDocsWidget(QWidget):
                         "fmt": self._format_from_original_name(str(row.get("original_name") or "")),
                         "filename": str(row.get("original_name") or ""),
                         "mtime": dt.strftime("%Y/%m/%d") if dt else "",
-                        "path": str(row.get("storage_path") or ""),
+                        "path": resolve_storage_path(row),
                         "record_id": row.get("id"),
                         "logical_path": logical_path,
                         "remark": str(row.get("remark") or ""),

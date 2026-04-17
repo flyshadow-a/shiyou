@@ -24,3 +24,4 @@ pages/output_special_strategy/*.preview.json
 pages/output_special_strategy/*.preview.xlsx
 pages/output_special_strategy/*.preview.pipeline.xlsx
 pages/output_special_strategy/*.preview.docx
+模型/

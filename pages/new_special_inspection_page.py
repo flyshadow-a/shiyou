@@ -12,27 +12,315 @@ from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QWidget,
     QFileDialog, QMessageBox, QScrollArea,
-    QAbstractItemView, QSizePolicy, QInputDialog
+    QAbstractItemView, QSizePolicy, QDialog, QDialogButtonBox, QApplication,
+    QTreeWidget, QTreeWidgetItem, QSplitter
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 
 from app_paths import external_path, external_root, first_existing_path
 from base_page import BasePage
-<<<<<<< HEAD
 from file_db_adapter import (
+    DEFAULT_DB_CONFIG,
     FileBackendError,
     is_file_db_configured,
-    list_storage_paths,
-    list_storage_paths_by_prefix,
+    list_files,
+    list_files_by_prefix,
+    resolve_storage_path,
     soft_delete_storage_path,
     upload_file as upload_file_to_db,
 )
-from pages.platform_strength_page import InpWireframeView
+from pages.model_files_page import ModelFilesDocsWidget
 from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
 from special_strategy_runtime import load_base_config, load_latest_strategy_params, run_special_strategy_calculation
-=======
-from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
->>>>>>> origin/main
+
+
+class _SystemFilePickerDialog(QDialog):
+    def __init__(self, title: str, rows: List[dict[str, Any]], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(980, 520)
+        self._rows = rows
+        self._selected_path = ""
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        tip = QLabel("请选择系统文件库中的文件。双击行可直接确认。", self)
+        layout.addWidget(tip)
+
+        self.table = QTableWidget(len(rows), 6, self)
+        self.table.setHorizontalHeaderLabels(["序号", "文件名", "当前路径", "逻辑路径", "修改时间", "备注"])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.horizontalHeader().setHighlightSections(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                gridline-color: #d0d0d0;
+            }
+            QTableWidget::item {
+                border-bottom: 1px solid #d0d0d0;
+                border-right: 1px solid #d0d0d0;
+                padding: 4px 8px;
+            }
+            QTableWidget::item:selected {
+                background-color: #dbeafe;
+                color: #111827;
+            }
+            QHeaderView::section {
+                background-color: #f3f4f6;
+                border: 0px;
+                border-bottom: 1px solid #d0d0d0;
+                border-right: 1px solid #d0d0d0;
+                padding: 4px 8px;
+            }
+        """)
+
+        for row_idx, row in enumerate(rows):
+            storage_path = os.path.normpath(str(row.get("storage_path") or "").strip())
+            original_name = str(row.get("original_name") or os.path.basename(storage_path)).strip() or os.path.basename(storage_path)
+            display_path = str(row.get("display_path") or storage_path).strip()
+            logical_path = str(row.get("logical_path") or "").replace("\\", "/").strip().strip("/")
+            modified = row.get("source_modified_at") or row.get("uploaded_at") or row.get("updated_at")
+            modified_text = modified.strftime("%Y-%m-%d %H:%M") if hasattr(modified, "strftime") else ""
+            remark = str(row.get("remark") or "").strip()
+
+            index_item = QTableWidgetItem(str(row_idx + 1))
+            index_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row_idx, 0, index_item)
+
+            name_item = QTableWidgetItem(original_name)
+            name_item.setData(Qt.UserRole, storage_path)
+            self.table.setItem(row_idx, 1, name_item)
+            path_item = QTableWidgetItem(display_path or storage_path)
+            path_item.setToolTip(storage_path)
+            self.table.setItem(row_idx, 2, path_item)
+            self.table.setItem(row_idx, 3, QTableWidgetItem(logical_path))
+
+            modified_item = QTableWidgetItem(modified_text)
+            modified_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row_idx, 4, modified_item)
+            self.table.setItem(row_idx, 5, QTableWidgetItem(remark))
+
+        self.table.itemDoubleClicked.connect(self._accept_current_selection)
+        self.table.itemSelectionChanged.connect(self._sync_buttons)
+        layout.addWidget(self.table, 1)
+
+        self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
+        self.button_box.accepted.connect(self._accept_current_selection)
+        self.button_box.rejected.connect(self.reject)
+        self.button_box.button(QDialogButtonBox.Ok).setText("确定")
+        self.button_box.button(QDialogButtonBox.Cancel).setText("取消")
+        layout.addWidget(self.button_box)
+
+        if rows:
+            self.table.selectRow(0)
+        self._sync_buttons()
+
+    def _current_storage_path(self) -> str:
+        current_row = self.table.currentRow()
+        if current_row < 0:
+            return ""
+        item = self.table.item(current_row, 1)
+        if item is None:
+            return ""
+        return os.path.normpath(str(item.data(Qt.UserRole) or "").strip())
+
+    def _sync_buttons(self) -> None:
+        ok_button = self.button_box.button(QDialogButtonBox.Ok)
+        if ok_button is not None:
+            ok_button.setEnabled(bool(self._current_storage_path()))
+
+    def _accept_current_selection(self) -> None:
+        chosen = self._current_storage_path()
+        if not chosen:
+            QMessageBox.information(self, "系统导入", "请先选择一条文件记录。")
+            return
+        self._selected_path = chosen
+        self.accept()
+
+    @property
+    def selected_path(self) -> str:
+        return self._selected_path
+
+
+class _SystemLibraryPickerDialog(QDialog):
+    def __init__(self, title: str, tree_spec: list[dict[str, Any]], fetch_rows, *, group_mode: bool = False, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(1120, 620)
+        self._fetch_rows = fetch_rows
+        self._group_mode = bool(group_mode)
+        self._current_rows: list[dict[str, Any]] = []
+        self._selected_row: dict[str, Any] | None = None
+        self._selected_rows: list[dict[str, Any]] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        if self._group_mode:
+            tip_text = "请先从左侧选择模型文件中的文件夹。右侧将展示该文件夹下参与计算的整组文件，点击”确定”后会整组导入。"
+        else:
+            tip_text = "请先从左侧选择模型文件中的文件夹，再在右侧选择具体文件。双击文件可直接确认。"
+        tip = QLabel(tip_text, self)
+        layout.addWidget(tip)
+
+        splitter = QSplitter(Qt.Horizontal, self)
+        layout.addWidget(splitter, 1)
+
+        self.tree = QTreeWidget(splitter)
+        self.tree.setHeaderHidden(True)
+        self.tree.setMinimumWidth(240)
+
+        self.table = QTableWidget(0, 5, splitter)
+        self.table.setHorizontalHeaderLabels(["文件名", "当前路径", "逻辑路径", "修改时间", "备注"])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setHighlightSections(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                gridline-color: #d0d0d0;
+            }
+            QTableWidget::item {
+                border-bottom: 1px solid #d0d0d0;
+                border-right: 1px solid #d0d0d0;
+                padding: 4px 8px;
+            }
+            QTableWidget::item:selected {
+                background-color: #dbeafe;
+                color: #111827;
+            }
+            QHeaderView::section {
+                background-color: #f3f4f6;
+                border: 0px;
+                border-bottom: 1px solid #d0d0d0;
+                border-right: 1px solid #d0d0d0;
+                padding: 4px 8px;
+            }
+        """)
+
+        for root_spec in tree_spec:
+            root_item = QTreeWidgetItem([str(root_spec.get("label") or "")])
+            root_item.setFlags(root_item.flags() & ~Qt.ItemIsSelectable)
+            for child in root_spec.get("children") or []:
+                child_item = QTreeWidgetItem([str(child.get("label") or "")])
+                child_item.setData(0, Qt.UserRole, (child.get("path_key"), child.get("model_key")))
+                root_item.addChild(child_item)
+            self.tree.addTopLevelItem(root_item)
+            root_item.setExpanded(True)
+
+        self.tree.currentItemChanged.connect(self._on_tree_current_changed)
+        self.table.itemDoubleClicked.connect(self._accept_current_selection)
+        self.table.itemSelectionChanged.connect(self._sync_buttons)
+
+        self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
+        self.button_box.accepted.connect(self._accept_current_selection)
+        self.button_box.rejected.connect(self.reject)
+        self.button_box.button(QDialogButtonBox.Ok).setText("确定")
+        self.button_box.button(QDialogButtonBox.Cancel).setText("取消")
+        layout.addWidget(self.button_box)
+
+        if self.tree.topLevelItemCount() > 0 and self.tree.topLevelItem(0).childCount() > 0:
+            self.tree.setCurrentItem(self.tree.topLevelItem(0).child(0))
+        self._sync_buttons()
+
+    def _on_tree_current_changed(self, current: QTreeWidgetItem, _previous: QTreeWidgetItem) -> None:
+        payload = current.data(0, Qt.UserRole) if current is not None else None
+        if not payload:
+            self._current_rows = []
+            self.table.setRowCount(0)
+            self._sync_buttons()
+            return
+        path_key, model_key = payload
+        rows = list(self._fetch_rows(path_key, model_key) or [])
+        self._current_rows = rows
+        self.table.setRowCount(len(rows))
+        for row_idx, row in enumerate(rows):
+            storage_path = os.path.normpath(str(row.get("storage_path") or "").strip())
+            original_name = str(row.get("original_name") or os.path.basename(storage_path)).strip() or os.path.basename(storage_path)
+            current_path = str(row.get("display_path") or storage_path).strip()
+            logical_path = str(row.get("logical_path") or "").replace("\\", "/").strip().strip("/")
+            modified = row.get("source_modified_at") or row.get("uploaded_at") or row.get("updated_at")
+            modified_text = modified.strftime("%Y-%m-%d %H:%M") if hasattr(modified, "strftime") else ""
+            remark = str(row.get("remark") or "").strip()
+
+            name_item = QTableWidgetItem(original_name)
+            name_item.setData(Qt.UserRole, row_idx)
+            name_item.setToolTip(storage_path)
+            self.table.setItem(row_idx, 0, name_item)
+            self.table.setItem(row_idx, 1, QTableWidgetItem(current_path))
+            self.table.setItem(row_idx, 2, QTableWidgetItem(logical_path))
+
+            modified_item = QTableWidgetItem(modified_text)
+            modified_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row_idx, 3, modified_item)
+            self.table.setItem(row_idx, 4, QTableWidgetItem(remark))
+            self.table.setRowHeight(row_idx, 36)
+
+        if rows:
+            self.table.selectRow(0)
+        self._sync_buttons()
+
+    def _current_row(self) -> dict[str, Any] | None:
+        current_row = self.table.currentRow()
+        if current_row < 0 or current_row >= len(self._current_rows):
+            return None
+        return self._current_rows[current_row]
+
+    def _sync_buttons(self) -> None:
+        ok_button = self.button_box.button(QDialogButtonBox.Ok)
+        if ok_button is not None:
+            if self._group_mode:
+                ok_button.setEnabled(bool(self._current_rows))
+            else:
+                ok_button.setEnabled(self._current_row() is not None)
+
+    def _accept_current_selection(self) -> None:
+        if self._group_mode:
+            if not self._current_rows:
+                QMessageBox.information(self, "系统导入", "当前文件夹下没有可导入的文件。")
+                return
+            self._selected_rows = [dict(row) for row in self._current_rows]
+            self._selected_row = dict(self._current_rows[0])
+        else:
+            row = self._current_row()
+            if row is None:
+                QMessageBox.information(self, "系统导入", "请先选择一条文件记录。")
+                return
+            self._selected_row = dict(row)
+            self._selected_rows = [dict(row)]
+        self.accept()
+
+    @property
+    def selected_row(self) -> dict[str, Any] | None:
+        return self._selected_row
+
+    @property
+    def selected_rows(self) -> list[dict[str, Any]]:
+        return list(self._selected_rows)
 
 
 class NewSpecialInspectionPage(BasePage):
@@ -54,19 +342,26 @@ class NewSpecialInspectionPage(BasePage):
         self._latest_run_id: int | None = None
         self.upload_root = external_path("upload", "model_files")
         self.packaged_upload_root = first_existing_path("upload", "model_files")
-        self._collapse_static_demo = False
         self._default_params = self._load_default_params()
 
-        # 页面仅展示“系统文件库”记录（当前用 upload/model_files 代替数据库）
+        # 页面仅展示"系统文件库"记录（当前用 upload/model_files 代替数据库）
         self.model_files: List[str] = []
         self.collapse_files: List[str] = []
-        self.collapse_demo_files: List[str] = []
         self.fatigue_result_files: List[str] = []
         self.fatigue_input_files: List[str] = []
+        self._file_meta_by_path: dict[str, dict[str, Any]] = {}
+        self._model_files_helper_widget: ModelFilesDocsWidget | None = None
 
         super().__init__("", parent)
         self._build_ui()
-        self._reload_system_files_from_backend()
+        self._refresh_model_files_table()
+        self._refresh_files_table()
+        self._refresh_model_preview()
+        # 页面初始化时所有文件列表为空，用户需要点击导入按钮手动导入文件
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # 每次显示页面时重置为空白状态，不自动加载任何文件
 
     def _params_json_path(self) -> Path | None:
         base = Path(__file__).resolve().parent / "output_special_strategy"
@@ -258,16 +553,7 @@ class NewSpecialInspectionPage(BasePage):
             }
         """)
 
-        # ===== 关键：用 ScrollArea 包裹“中间主要内容”，滚轮可下滑查看下半部分 =====
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.main_layout.addWidget(scroll, 1)
-
-        container = QWidget()
-        scroll.setWidget(container)
-
+        # ===== 关键：用 ScrollArea 包裹"中间主要内容"，滚轮可下滑查看下半部分 =====
         # 保留右侧模型展示区域，但暂时不接入实际渲染，避免页面打不开
         content = QFrame()
         content.setObjectName("Card")
@@ -275,16 +561,30 @@ class NewSpecialInspectionPage(BasePage):
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(12)
 
+        left_scroll = QScrollArea(content)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setFrameShape(QFrame.NoFrame)
+        left_scroll.setObjectName("LeftScrollArea")
+        left_scroll.setStyleSheet("""
+            QScrollArea#LeftScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollArea#LeftScrollArea > QWidget > QWidget {
+                background: transparent;
+            }
+        """)
+
         left = self._build_left_panel()
+        left_scroll.setWidget(left)
         right = self._build_right_panel()
 
-        lay.addWidget(left, 3)
+        lay.addWidget(left_scroll, 3)
         lay.addWidget(right, 2)
 
-        root = QVBoxLayout(container)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        root.addWidget(content)
+        self.main_layout.addWidget(content, 1)
 
     # ---------------- 左侧：上下拼接 ----------------
     def _build_left_panel(self) -> QWidget:
@@ -304,7 +604,7 @@ class NewSpecialInspectionPage(BasePage):
         v.addWidget(self.model_files_block, 0)
         v.addWidget(self.analysis_files_block, 0)
 
-        # 下半部分：按你新截图增加的“用户设置/风险等级参数”
+        # 下半部分：按你新截图增加的"用户设置/风险等级参数"
         v.addWidget(self._build_risk_level_settings_block(), 1)
         return panel
 
@@ -316,18 +616,9 @@ class NewSpecialInspectionPage(BasePage):
         block_lay.setContentsMargins(0, 0, 0, 0)
         block_lay.setSpacing(6)
 
-        title_row = QHBoxLayout()
         title = QLabel("结构模型信息")
         title.setObjectName("SectionTitle")
-
-        btn_find = QPushButton("查找节点")
-        btn_find.setObjectName("ActionBtn")
-        btn_find.clicked.connect(self._on_find_nodes)
-
-        title_row.addWidget(title)
-        title_row.addStretch(1)
-        title_row.addWidget(btn_find)
-        block_lay.addLayout(title_row)
+        block_lay.addWidget(title)
 
         # 参数表（两列：项目/值，默认从平台参数读取，值列可编辑）
         params = self._default_model_param_rows()
@@ -394,19 +685,6 @@ class NewSpecialInspectionPage(BasePage):
         block_lay.setContentsMargins(0, 0, 0, 0)
         block_lay.setSpacing(6)
 
-        title_row = QHBoxLayout()
-        title = QLabel("设置模型文件")
-        title.setObjectName("SectionTitle")
-
-        btn_extract = QPushButton("提取模型")
-        btn_extract.setObjectName("ActionBtn")
-        btn_extract.clicked.connect(self._on_extract_model_files)
-
-        title_row.addWidget(title)
-        title_row.addStretch(1)
-        title_row.addWidget(btn_extract)
-        block_lay.addLayout(title_row)
-
         self.model_files_table = QTableWidget(0, 2)
         self.model_files_table.horizontalHeader().setVisible(False)
         self.model_files_table.verticalHeader().setVisible(False)
@@ -424,20 +702,6 @@ class NewSpecialInspectionPage(BasePage):
         block_lay = QVBoxLayout(block)
         block_lay.setContentsMargins(0, 0, 0, 0)
         block_lay.setSpacing(6)
-
-        # 1. 区块主标题与“提取分析”按钮
-        title_row = QHBoxLayout()
-        title = QLabel("设置分析结果文件")
-        title.setObjectName("SectionTitle")
-
-        btn_extract = QPushButton("提取分析")
-        btn_extract.setObjectName("ActionBtn")
-        btn_extract.clicked.connect(self._on_extract_analysis)
-
-        title_row.addWidget(title)
-        title_row.addStretch(1)
-        title_row.addWidget(btn_extract)
-        block_lay.addLayout(title_row)
 
         # 2. 初始化核心单表
         self.files_table = QTableWidget(0, 2)
@@ -464,7 +728,7 @@ class NewSpecialInspectionPage(BasePage):
         v.setSpacing(10)
         block.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # 红色标题（对应截图“设置等级参数”）
+        # 红色标题（对应截图"设置等级参数"）
         title = QLabel("设置等级参数")
         title.setObjectName("RedSectionTitle")
         v.addWidget(title)
@@ -541,9 +805,17 @@ class NewSpecialInspectionPage(BasePage):
     # ---------------- 右侧：黑色模型展示区（当前占位，不渲染模型） ----------------
     def _build_right_panel(self) -> QFrame:
         panel = QFrame()
+        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        screen = QApplication.primaryScreen()
+        available_height = screen.availableGeometry().height() if screen else 900
+        preview_height = max(360, min(int(available_height * 0.56), 640))
+        preview_width = max(430, min(int(available_height * 0.46), 560))
+        panel.setMinimumWidth(preview_width)
+        panel.setMaximumWidth(preview_width + 20)
+
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(8)
+        v.setSpacing(4)
 
         title = QLabel("结构模型预览")
         title.setObjectName("SectionTitle")
@@ -552,15 +824,17 @@ class NewSpecialInspectionPage(BasePage):
         hint = QLabel("当前已暂时关闭模型渲染，先保留展示区域，后续可继续接入模型图显示。")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#5d6f85; font-size:14px;")
+        hint.setVisible(False)
         v.addWidget(hint, 0)
 
         placeholder = QFrame()
         placeholder.setStyleSheet("background: #0b0b0b; border: 1px solid #1f2a36;")
-        placeholder.setMinimumHeight(320)
+        placeholder.setMinimumHeight(preview_height)
+        placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         placeholder_lay = QVBoxLayout(placeholder)
-        placeholder_lay.setContentsMargins(12, 12, 12, 12)
-        placeholder_lay.setSpacing(8)
+        placeholder_lay.setContentsMargins(16, 16, 16, 16)
+        placeholder_lay.setSpacing(10)
 
         info = QLabel("模型图区域已保留\n当前暂不加载渲染组件")
         info.setAlignment(Qt.AlignCenter)
@@ -571,6 +845,15 @@ class NewSpecialInspectionPage(BasePage):
 
         v.addWidget(placeholder, 1)
         return panel
+
+    def _resolve_db_storage_path(self, row: dict[str, Any]) -> str:
+        return resolve_storage_path(row, config_path=str(DEFAULT_DB_CONFIG))
+
+    def _display_storage_path(self, path: str) -> str:
+        normalized = os.path.normpath(str(path or "").strip())
+        if not normalized:
+            return ""
+        return self._short_path(normalized)
 
     # ---------------- actions ----------------
     def _on_find_nodes(self):
@@ -669,6 +952,78 @@ class NewSpecialInspectionPage(BasePage):
         QMessageBox.warning(self, "错误", "未找到 MainWindow/tab_widget，无法打开结果页。")
 
     # ---------------- 文件来源：后续数据库接入接口（先走 upload/model_files） ----------------
+    def _wrap_storage_paths_as_rows(self, records: List[str]) -> List[dict[str, Any]]:
+        rows: List[dict[str, Any]] = []
+        for raw_path in records:
+            path = os.path.normpath(str(raw_path or "").strip())
+            if not path:
+                continue
+            rows.append(
+                {
+                    "storage_path": path,
+                    "display_path": self._display_storage_path(path),
+                    "original_name": os.path.basename(path),
+                    "logical_path": "",
+                    "module_code": "upload_scan",
+                }
+            )
+        return rows
+
+    def _filter_file_rows_by_branch(
+        self,
+        category: str,
+        rows: List[dict[str, Any]],
+        branch: str | None,
+    ) -> List[dict[str, Any]]:
+        if category != self.CATEGORY_FATIGUE or not branch:
+            return rows
+        filtered: List[dict[str, Any]] = []
+        for row in rows:
+            path = str(row.get("storage_path") or "").strip()
+            if self._fatigue_branch_for_path(path) == branch:
+                filtered.append(row)
+        return filtered
+
+    def _db_fetch_file_rows(self, category: str, branch: str | None = None) -> List[dict[str, Any]]:
+        """
+        数据库读取接口：返回系统文件记录。
+
+        当数据库配置存在时，系统导入只从数据库中选文件；
+        仅在未配置数据库时，才回退到本地 upload/model_files 扫描。
+        """
+        def _normalize_rows(rows: List[dict[str, Any]]) -> List[dict[str, Any]]:
+            normalized: List[dict[str, Any]] = []
+            for row in rows:
+                current = dict(row)
+                resolved_path = self._resolve_db_storage_path(current)
+                current["storage_path"] = resolved_path
+                current["display_path"] = self._display_storage_path(resolved_path)
+                normalized.append(current)
+            return normalized
+
+        if is_file_db_configured():
+            try:
+                default_rows = list_files_by_prefix(
+                    file_type_code=category,
+                    module_code="model_files",
+                    logical_path_prefix=self._default_model_logical_prefix(category, branch),
+                    facility_code=(self.facility_code or "").strip() or None,
+                )
+                if default_rows:
+                    return self._filter_file_rows_by_branch(category, _normalize_rows(default_rows), branch)
+                legacy_rows = list_files(
+                    file_type_code=category,
+                    module_code="special_strategy",
+                    logical_path=self._legacy_special_strategy_logical_path(category),
+                    facility_code=(self.facility_code or "").strip() or None,
+                )
+                if legacy_rows:
+                    return self._filter_file_rows_by_branch(category, _normalize_rows(legacy_rows), branch)
+                return []
+            except FileBackendError:
+                return []
+        return self._wrap_storage_paths_as_rows(self._fetch_system_files_from_upload(category, branch))
+
     def _db_fetch_file_records(self, category: str, branch: str | None = None) -> List[str]:
         """
         数据库读取接口（预留）：返回系统文件记录。
@@ -676,47 +1031,19 @@ class NewSpecialInspectionPage(BasePage):
         后续接数据库时，只需要替换本方法内部实现即可，页面其余逻辑无需改动。
         当前实现：从 upload/model_files 扫描提取。
         """
-        if is_file_db_configured():
-            try:
-                default_rows = list_storage_paths_by_prefix(
-                    file_type_code=category,
-                    module_code="model_files",
-                    logical_path_prefix=self._default_model_logical_prefix(category, branch),
-                    facility_code=(self.facility_code or "").strip() or None,
-                )
-                if default_rows:
-                    return default_rows
-                legacy_rows = list_storage_paths(
-                    file_type_code=category,
-                    module_code="special_strategy",
-                    logical_path=self._legacy_special_strategy_logical_path(category),
-                    facility_code=(self.facility_code or "").strip() or None,
-                )
-                if legacy_rows:
-                    return self._filter_records_by_branch(category, legacy_rows, branch)
-            except FileBackendError:
-                pass
-        return self._fetch_system_files_from_upload(category, branch)
+        rows = self._db_fetch_file_rows(category, branch)
+        self._remember_file_rows(rows)
+        return [
+            os.path.normpath(str(row.get("storage_path") or "").strip())
+            for row in rows
+            if str(row.get("storage_path") or "").strip()
+        ]
 
     def _db_store_local_file(self, local_path: str, category: str, branch: str | None = None) -> str:
         """
-        本地文件入库接口（预留）：把本地文件上传到系统文件库，返回系统记录路径/标识。
-
-        后续接数据库时，只需要替换本方法内部实现即可，页面其余逻辑无需改动。
-        当前实现：复制到 upload/model_files/<facility>/当前模型/.../用户上传 下。
+        本地导入只保存到本地 upload/model_files，不写入数据库。
+        系统导入才从数据库读取。
         """
-        if is_file_db_configured():
-            try:
-                row = upload_file_to_db(
-                    local_path,
-                    file_type_code=category,
-                    module_code="model_files",
-                    logical_path=self._db_logical_path(category, branch),
-                    facility_code=(self.facility_code or "").strip() or None,
-                )
-                return os.path.normpath(row["storage_path"])
-            except FileBackendError:
-                pass
         return self._store_local_file_to_upload(local_path, category, branch)
 
     def _db_soft_delete_file(self, storage_path: str, category: str) -> bool:
@@ -1013,23 +1340,394 @@ class NewSpecialInspectionPage(BasePage):
             return False
 
     def _append_unique_path(self, arr: List[str], path: str):
-        p = os.path.normpath(path)
+        raw = str(path or "").strip()
+        if not raw:
+            return
+
+        p = os.path.normpath(raw)
+        if p in (".", ".."):
+            return
+        if not os.path.isabs(p) and not os.path.exists(p):
+            return
+        if not os.path.exists(p):
+            return
+
         if p in arr:
             arr.remove(p)
         arr.insert(0, p)
 
+    def _is_usable_path(self, path: str) -> bool:
+        raw = str(path or "").strip()
+        if not raw:
+            return False
+        normalized = os.path.normpath(raw)
+        if normalized in (".", ".."):
+            return False
+        return os.path.exists(normalized)
+
+    def _remember_file_meta(
+        self,
+        path: str,
+        row: dict[str, Any] | None = None,
+        *,
+        original_name: str | None = None,
+        logical_path: str | None = None,
+        display_path: str | None = None,
+        remark: str | None = None,
+        branch_label: str | None = None,
+        format_label: str | None = None,
+        source_label: str | None = None,
+    ) -> None:
+        normalized = os.path.normpath(str(path or "").strip())
+        if not normalized:
+            return
+        meta = dict(self._file_meta_by_path.get(normalized) or {})
+        if row:
+            meta.update(
+                {
+                    "original_name": row.get("original_name"),
+                    "logical_path": row.get("logical_path"),
+                    "display_path": row.get("display_path"),
+                    "remark": row.get("remark"),
+                    "branch_label": row.get("branch_label"),
+                    "format_label": row.get("format_label"),
+                    "source_label": row.get("source_label"),
+                    "storage_path": normalized,
+                }
+            )
+        if original_name:
+            meta["original_name"] = original_name
+        if logical_path:
+            meta["logical_path"] = logical_path
+        if display_path:
+            meta["display_path"] = display_path
+        if remark:
+            meta["remark"] = remark
+        if branch_label:
+            meta["branch_label"] = branch_label
+        if format_label:
+            meta["format_label"] = format_label
+        if source_label:
+            meta["source_label"] = source_label
+        meta.setdefault("original_name", os.path.basename(normalized))
+        meta.setdefault("display_path", self._display_storage_path(normalized))
+        meta["storage_path"] = normalized
+        self._file_meta_by_path[normalized] = meta
+
+    def _remember_file_rows(self, rows: List[dict[str, Any]]) -> None:
+        for row in rows:
+            path = os.path.normpath(str(row.get("storage_path") or "").strip())
+            if path:
+                self._remember_file_meta(path, row=row)
+
+    def _file_meta(self, path: str) -> dict[str, Any]:
+        normalized = os.path.normpath(str(path or "").strip())
+        return dict(self._file_meta_by_path.get(normalized) or {})
+
+    def _path_format_label(self, path: str) -> str:
+        name = os.path.basename(str(path or "")).lower()
+        for token in ("ftginp", "ftglst", "wvrinp", "clplog", "clplst", "clprst", "sacinp"):
+            if token in name:
+                return token.upper()
+        suffix = os.path.splitext(name)[1].lstrip(".")
+        return suffix.upper() if suffix else ""
+
+    def _display_marks_for_path(self, path: str) -> list[str]:
+        meta = self._file_meta(path)
+        marks: list[str] = []
+        branch_label = str(meta.get("branch_label") or "").strip()
+        format_label = str(meta.get("format_label") or "").strip()
+        source_label = str(meta.get("source_label") or "").strip()
+        if branch_label:
+            marks.append(branch_label)
+        if format_label:
+            marks.append(format_label)
+        if source_label:
+            marks.append(source_label)
+        return marks
+
+    def _friendly_display_name(self, path: str) -> str:
+        meta = self._file_meta(path)
+        primary = str(meta.get("original_name") or os.path.basename(path or "")).strip()
+        marks = self._display_marks_for_path(path)
+        if not marks:
+            return primary
+        return f"{primary}\n{' | '.join(marks)}"
+
+    def _friendly_tooltip(self, path: str) -> str:
+        normalized = os.path.normpath(str(path or "").strip())
+        meta = self._file_meta(normalized)
+        lines = [f"文件名：{str(meta.get('original_name') or os.path.basename(normalized)).strip()}"]
+        marks = self._display_marks_for_path(normalized)
+        display_path = str(meta.get("display_path") or normalized).strip()
+        logical_path = str(meta.get("logical_path") or "").replace("\\", "/").strip().strip("/")
+        remark = str(meta.get("remark") or "").strip()
+        if marks:
+            lines.append(f"标识：{' | '.join(marks)}")
+        if display_path:
+            lines.append(f"当前路径：{display_path}")
+        if logical_path:
+            lines.append(f"逻辑路径：{logical_path}")
+        if remark:
+            lines.append(f"备注：{remark}")
+        return "\n".join(lines)
+
+    def _display_name_for_path(self, path: str) -> str:
+        meta = self._file_meta(path)
+        name = str(meta.get("original_name") or os.path.basename(path or "")).strip()
+        logical_path = str(meta.get("logical_path") or "").replace("\\", "/").strip().strip("/")
+        if not logical_path:
+            return name
+        parts = logical_path.split("/")
+        tail = "/".join(parts[-2:]) if len(parts) >= 2 else logical_path
+        return f"{name}  [{tail}]"
+
+    def _tooltip_for_path(self, path: str) -> str:
+        normalized = os.path.normpath(str(path or "").strip())
+        meta = self._file_meta(normalized)
+        lines = [f"文件名：{str(meta.get('original_name') or os.path.basename(normalized)).strip()}"]
+        display_path = str(meta.get("display_path") or normalized).strip()
+        logical_path = str(meta.get("logical_path") or "").replace("\\", "/").strip().strip("/")
+        remark = str(meta.get("remark") or "").strip()
+        if display_path:
+            lines.append(f"当前路径：{display_path}")
+        if logical_path:
+            lines.append(f"逻辑路径：{logical_path}")
+        if remark:
+            lines.append(f"备注：{remark}")
+        return "\n".join(lines)
+
+    def _model_files_helper(self) -> ModelFilesDocsWidget:
+        if self._model_files_helper_widget is None:
+            self._model_files_helper_widget = ModelFilesDocsWidget()
+        self._model_files_helper_widget.set_facility_code(self.facility_code)
+        return self._model_files_helper_widget
+
+    def _system_library_allowed_model_keys(self, category: str, branch: str | None = None) -> set[str]:
+        if category == self.CATEGORY_COLLAPSE:
+            return {"collapse"}
+        if category == self.CATEGORY_FATIGUE:
+            return {"fatigue"}
+        return {"static", "seismic", "fatigue", "collapse", "other"}
+
+    def _system_library_allowed_formats(self, category: str, branch: str | None = None) -> set[str]:
+        if category == self.CATEGORY_MODEL:
+            return {"sacinp"}
+        if category == self.CATEGORY_COLLAPSE:
+            return {"clplog", "clplst", "clprst"}
+        if branch == "input":
+            return {"ftginp"}
+        return {"ftglst", "wvrinp"}
+
+    @staticmethod
+    def _system_library_row_sort_key(row: dict[str, Any]) -> tuple[str, str, str]:
+        logical_path = str(row.get("logical_path") or "").replace("\\", "/").strip().strip("/").lower()
+        original_name = str(row.get("original_name") or "").lower()
+        uploaded_at = str(row.get("uploaded_at") or "")
+        return (logical_path, original_name, uploaded_at)
+
+    def _system_library_tree_spec(self, category: str, branch: str | None = None) -> list[dict[str, Any]]:
+        helper = self._model_files_helper()
+        if category == self.CATEGORY_MODEL:
+            spec: list[dict[str, Any]] = []
+            for root_name in helper.folder_tree.keys():
+                spec.append(
+                    {
+                        "label": root_name,
+                        "children": [
+                            {
+                                "label": "结构模型",
+                                "path_key": root_name,
+                                "model_key": "__model_root__",
+                            }
+                        ],
+                    }
+                )
+            return spec
+        allowed_model_keys = self._system_library_allowed_model_keys(category, branch)
+        spec: list[dict[str, Any]] = []
+        for root_name, root_cfg in helper.folder_tree.items():
+            children: list[dict[str, Any]] = []
+            for child_name, child_cfg in (root_cfg.get("children") or {}).items():
+                model_key = str(child_cfg.get("model_key") or "").strip()
+                if model_key not in allowed_model_keys:
+                    continue
+                children.append(
+                    {
+                        "label": child_name,
+                        "path_key": f"{root_name}/{child_name}",
+                        "model_key": model_key,
+                    }
+                )
+            if children:
+                spec.append({"label": root_name, "children": children})
+        return spec
+
+    def _system_library_rows_for_leaf(
+        self,
+        path_key: str,
+        model_key: str,
+        category: str,
+        branch: str | None = None,
+    ) -> List[dict[str, Any]]:
+        helper = self._model_files_helper()
+        if category == self.CATEGORY_MODEL and model_key == "__model_root__":
+            facility = (self.facility_code or "").strip() or None
+            prefix = f"{facility}/{path_key}/结构模型" if facility else f"{path_key}/结构模型"
+            rows: List[dict[str, Any]] = []
+            seen_ids: set[int] = set()
+            for row in list_files_by_prefix(
+                module_code="model_files",
+                logical_path_prefix=prefix,
+                facility_code=facility,
+            ):
+                row_id = row.get("id")
+                if row_id in seen_ids:
+                    continue
+                name = str(row.get("original_name") or "").lower()
+                if not name.startswith("sacinp"):
+                    continue
+                current = dict(row)
+                resolved_path = self._resolve_db_storage_path(current)
+                current["storage_path"] = resolved_path
+                current["display_path"] = self._display_storage_path(resolved_path)
+                current["format_label"] = "SACINP"
+                current["source_label"] = f"{path_key} / 结构模型"
+                rows.append(current)
+                if row_id is not None:
+                    seen_ids.add(row_id)
+            rows.sort(
+                key=lambda item: (
+                    item.get("source_modified_at") or item.get("uploaded_at") or item.get("updated_at") or "",
+                    str(item.get("original_name") or ""),
+                ),
+                reverse=True,
+            )
+            self._remember_file_rows(rows)
+            return rows
+
+        # 新逻辑：直接获取文件夹下所有匹配格式的文件，不再受配置行数限制
+        allowed_formats = self._system_library_allowed_formats(category, branch)
+        rows: List[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+
+        # 构建搜索前缀
+        facility = (self.facility_code or "").strip() or None
+        if category == self.CATEGORY_COLLAPSE:
+            prefix = f"{facility}/{path_key}/倒塌分析" if facility else f"{path_key}/倒塌分析"
+        elif category == self.CATEGORY_FATIGUE:
+            if branch:
+                branch_cn = "输入" if branch == "input" else "结果"
+                prefix = f"{facility}/{path_key}/疲劳分析/{branch_cn}" if facility else f"{path_key}/疲劳分析/{branch_cn}"
+            else:
+                prefix = f"{facility}/{path_key}/疲劳分析" if facility else f"{path_key}/疲劳分析"
+        else:
+            # 其他类型使用原有逻辑
+            prefix = f"{facility}/{path_key}" if facility else path_key
+
+        # 直接搜索该前缀下的所有文件
+        for row in list_files_by_prefix(
+            module_code="model_files",
+            logical_path_prefix=prefix,
+            facility_code=facility,
+        ):
+            row_id = row.get("id")
+            if row_id in seen_ids:
+                continue
+            name = str(row.get("original_name") or "").lower()
+            fmt = self._format_from_original_name(name)
+            if fmt.lower() not in allowed_formats:
+                continue
+            current = dict(row)
+            resolved_path = self._resolve_db_storage_path(current)
+            current["storage_path"] = resolved_path
+            current["display_path"] = self._display_storage_path(resolved_path)
+            current["format_label"] = fmt.upper()
+            current["source_label"] = path_key.replace("/", " / ")
+            if category == self.CATEGORY_FATIGUE and branch:
+                current["branch_label"] = f"疲劳{self._fatigue_branch_label(branch)}"
+            rows.append(current)
+            if row_id is not None:
+                seen_ids.add(row_id)
+
+        rows.sort(
+            key=lambda item: (
+                item.get("source_modified_at") or item.get("uploaded_at") or item.get("updated_at") or "",
+                str(item.get("original_name") or ""),
+            ),
+            reverse=True,
+        )
+        self._remember_file_rows(rows)
+        return rows
+
+    def _pick_system_library_file(self, category: str, title: str, branch: str | None = None) -> str:
+        if is_file_db_configured():
+            tree_spec = self._system_library_tree_spec(category, branch)
+            if not tree_spec:
+                QMessageBox.information(self, "系统导入", "模型文件库中暂无可选文件夹。")
+                return ""
+
+            dialog = _SystemLibraryPickerDialog(
+                title,
+                tree_spec,
+                lambda path_key, model_key: self._system_library_rows_for_leaf(path_key, model_key, category, branch),
+                parent=self,
+            )
+            if dialog.exec_() != QDialog.Accepted or not dialog.selected_row:
+                return ""
+
+            chosen_row = dict(dialog.selected_row)
+            chosen_path = os.path.normpath(str(chosen_row.get("storage_path") or "").strip())
+
+            if not self._is_usable_path(chosen_path):
+                QMessageBox.warning(self, "系统导入", "所选文件记录的物理路径无效，请检查数据库字段 storage_path / stored_name / storage_root。")
+                return ""
+
+            self._remember_file_meta(chosen_path, row=chosen_row)
+            return chosen_path
+
+        return self._pick_system_file_dialog(category, title, branch)
+
+    def _pick_system_library_files(self, category: str, title: str, branch: str | None = None) -> List[str]:
+        if not is_file_db_configured():
+            return []
+
+        tree_spec = self._system_library_tree_spec(category, branch)
+        if not tree_spec:
+            QMessageBox.information(self, "系统导入", "模型文件库中暂无可选文件夹。")
+            return []
+
+        dialog = _SystemLibraryPickerDialog(
+            title,
+            tree_spec,
+            lambda path_key, model_key: self._system_library_rows_for_leaf(path_key, model_key, category, branch),
+            group_mode=True,
+            parent=self,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return []
+
+        chosen_rows = sorted(dialog.selected_rows, key=self._system_library_row_sort_key)
+        chosen_paths: List[str] = []
+        for row in chosen_rows:
+            chosen_path = os.path.normpath(str(row.get("storage_path") or "").strip())
+            if not self._is_usable_path(chosen_path):
+                continue
+            self._remember_file_meta(chosen_path, row=row)
+            if chosen_path not in chosen_paths:
+                chosen_paths.append(chosen_path)
+        if not chosen_paths:
+            QMessageBox.warning(self, "系统导入", "当前文件夹下没有可用于计算的文件。")
+        return chosen_paths
     def _pick_system_file_dialog(self, category: str, title: str, branch: str | None = None) -> str:
-        candidates = self._db_fetch_file_records(category, branch)
-        if not candidates:
+        candidate_rows = self._db_fetch_file_rows(category, branch)
+        if not candidate_rows:
             QMessageBox.information(self, "系统导入", "系统文件库中暂无可用文件。")
             return ""
-
-        labels = [f"{idx + 1}. {self._short_path(path)}" for idx, path in enumerate(candidates)]
-        picked, ok = QInputDialog.getItem(self, title, "请选择系统文件：", labels, 0, False)
-        if not ok or not picked:
+        dialog = _SystemFilePickerDialog(title, candidate_rows, self)
+        if dialog.exec_() != QDialog.Accepted:
             return ""
-        idx = labels.index(picked)
-        return candidates[idx]
+        return dialog.selected_path
 
     def _short_path(self, path: str) -> str:
         try:
@@ -1083,38 +1781,14 @@ class NewSpecialInspectionPage(BasePage):
         table.setFixedHeight(max(total, 120))
 
     def _reload_system_files_from_backend(self):
+        # 从系统文件库加载所有文件（模型、倒塌、疲劳）
         self.model_files = self._db_fetch_file_records(self.CATEGORY_MODEL)
         self.collapse_files = self._db_fetch_file_records(self.CATEGORY_COLLAPSE)
-        self.collapse_demo_files = self._build_collapse_demo_files(self.collapse_files)
         self._set_fatigue_groups_from_candidates(self._db_fetch_file_records(self.CATEGORY_FATIGUE))
 
         self._refresh_model_files_table()
         self._refresh_files_table()
         self._refresh_model_preview()
-
-    def _build_collapse_demo_files(self, source: List[str]) -> List[str]:
-        fallback = [
-            r"D:\SACSW\Strategy\test file\1\clplog",
-            r"D:\SACSW\Strategy\test file\2\clplog",
-            r"D:\SACSW\Strategy\test file\3\clplog",
-        ]
-
-        if source:
-            preferred = []
-            for p in source:
-                ext = os.path.splitext(p)[1].lower().lstrip(".")
-                if ext in {"clplog", "clplst", "clprst"}:
-                    preferred.append(p)
-            if preferred:
-                out = preferred[:3]
-            else:
-                out = source[:3]
-
-            if len(out) < 3:
-                out = out + fallback[: (3 - len(out))]
-            return out
-
-        return fallback
 
     # ---------------- 文件动态表格刷新与事件 ----------------
     def _refresh_model_files_table(self):
@@ -1124,29 +1798,44 @@ class NewSpecialInspectionPage(BasePage):
         self.model_files_table.insertRow(0)
         self.model_files_table.setSpan(0, 0, 1, 2)
         model_buttons = [
-            ("本地导入", self._on_add_model_local),
-            ("系统导入", self._on_add_model_sys),
+            ("上传", self._on_add_model_local),
+            # ("系统导入", self._on_add_model_sys),
             ("删除选中行", self._on_del_model),
         ]
         title_widget = self._create_title_row_widget("设置模型文件", model_buttons)
         self.model_files_table.setCellWidget(0, 0, title_widget)
         self.model_files_table.setRowHeight(0, 38)
 
-        for i, path in enumerate(self.model_files):
-            row = i + 1
+        if self.model_files:
+            for i, path in enumerate(self.model_files):
+                row = i + 1
+                self.model_files_table.insertRow(row)
+
+                idx_item = QTableWidgetItem(str(i + 1))
+                idx_item.setTextAlignment(Qt.AlignCenter)
+                idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+
+                path_item = QTableWidgetItem(self._friendly_display_name(path))
+                path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                path_item.setToolTip(self._friendly_tooltip(path))
+
+                self.model_files_table.setItem(row, 0, idx_item)
+                self.model_files_table.setItem(row, 1, path_item)
+                self.model_files_table.setRowHeight(row, 54)
+        else:
+            row = self.model_files_table.rowCount()
             self.model_files_table.insertRow(row)
-
-            idx_item = QTableWidgetItem(str(i + 1))
-            idx_item.setTextAlignment(Qt.AlignCenter)
-            idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-
-            path_item = QTableWidgetItem(self._short_path(path))
-            path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            path_item.setToolTip(path)
-
-            self.model_files_table.setItem(row, 0, idx_item)
-            self.model_files_table.setItem(row, 1, path_item)
-            self.model_files_table.setRowHeight(row, 32)
+            self.model_files_table.setSpan(row, 0, 1, 2)
+            empty_widget = QWidget()
+            empty_widget.setStyleSheet("background-color: #ffffff;")
+            empty_layout = QHBoxLayout(empty_widget)
+            empty_layout.setContentsMargins(10, 0, 10, 0)
+            empty_label = QLabel("暂未选择模型文件。")
+            empty_label.setStyleSheet('color: #666; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
+            empty_layout.addWidget(empty_label)
+            empty_layout.addStretch(1)
+            self.model_files_table.setCellWidget(row, 0, empty_widget)
+            self.model_files_table.setRowHeight(row, 36)
 
         self._fit_table_height(self.model_files_table)
 
@@ -1157,45 +1846,59 @@ class NewSpecialInspectionPage(BasePage):
         self._fatigue_result_row_map: dict[int, int] = {}
         self._fatigue_input_row_map: dict[int, int] = {}
 
-        collapse_view = self.collapse_demo_files if self._collapse_static_demo else self.collapse_files
-
+        # --- 倒塌分析部分 ---
         # --- 倒塌分析部分 ---
         self.files_table.insertRow(0)
         self.files_table.setSpan(0, 0, 1, 2)
 
         col_buttons = [
-            ("本地导入", self._on_add_collapse_local),
-            ("系统导入", self._on_add_collapse_sys),
+            ("上传", self._on_add_collapse_local),
+            # ("系统导入", self._on_add_collapse_sys),
             ("删除选中行", self._on_del_collapse)
         ]
         col_title_widget = self._create_title_row_widget("设置倒塌分析结果文件", col_buttons)
         self.files_table.setCellWidget(0, 0, col_title_widget)
         self.files_table.setRowHeight(0, 38)
 
-        for i, path in enumerate(collapse_view):
-            row = i + 1
+        if self.collapse_files:
+            for i, path in enumerate(self.collapse_files):
+                row = i + 1
+                self.files_table.insertRow(row)
+
+                idx_item = QTableWidgetItem(str(i + 1))
+                idx_item.setTextAlignment(Qt.AlignCenter)
+                idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+
+                path_item = QTableWidgetItem(self._friendly_display_name(path))
+                path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                path_item.setToolTip(self._friendly_tooltip(path))
+
+                self.files_table.setItem(row, 0, idx_item)
+                self.files_table.setItem(row, 1, path_item)
+                self.files_table.setRowHeight(row, 54)
+                self._collapse_row_map[row] = i
+        else:
+            row = self.files_table.rowCount()
             self.files_table.insertRow(row)
-
-            idx_item = QTableWidgetItem(str(i + 1))
-            idx_item.setTextAlignment(Qt.AlignCenter)
-            idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-
-            path_item = QTableWidgetItem(self._short_path(path))
-            path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            path_item.setToolTip(path)
-
-            self.files_table.setItem(row, 0, idx_item)
-            self.files_table.setItem(row, 1, path_item)
-            self.files_table.setRowHeight(row, 32)
-            self._collapse_row_map[row] = i
+            self.files_table.setSpan(row, 0, 1, 2)
+            empty_widget = QWidget()
+            empty_widget.setStyleSheet("background-color: #ffffff;")
+            empty_layout = QHBoxLayout(empty_widget)
+            empty_layout.setContentsMargins(10, 0, 10, 0)
+            empty_label = QLabel("暂未选择倒塌分析结果文件。")
+            empty_label.setStyleSheet('color: #666; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
+            empty_layout.addWidget(empty_label)
+            empty_layout.addStretch(1)
+            self.files_table.setCellWidget(row, 0, empty_widget)
+            self.files_table.setRowHeight(row, 36)
 
         # --- 疲劳分析结果文件组 ---
         result_header_row = self.files_table.rowCount()
         self.files_table.insertRow(result_header_row)
         self.files_table.setSpan(result_header_row, 0, 1, 2)
         result_buttons = [
-            ("本地导入", self._on_add_fatigue_result_local),
-            ("系统导入", self._on_add_fatigue_result_sys),
+            ("上传", self._on_add_fatigue_result_local),
+            #("系统导入", self._on_add_fatigue_result_sys),
             ("删除选中行", self._on_del_fatigue_result),
         ]
         result_title_widget = self._create_title_row_widget("设置疲劳分析结果文件组", result_buttons)
@@ -1211,13 +1914,13 @@ class NewSpecialInspectionPage(BasePage):
                 idx_item.setTextAlignment(Qt.AlignCenter)
                 idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
 
-                path_item = QTableWidgetItem(self._short_path(path))
+                path_item = QTableWidgetItem(self._friendly_display_name(path))
                 path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                path_item.setToolTip(path)
+                path_item.setToolTip(self._friendly_tooltip(path))
 
                 self.files_table.setItem(row, 0, idx_item)
                 self.files_table.setItem(row, 1, path_item)
-                self.files_table.setRowHeight(row, 32)
+                self.files_table.setRowHeight(row, 54)
                 self._fatigue_result_row_map[row] = i
         else:
             row = self.files_table.rowCount()
@@ -1239,8 +1942,8 @@ class NewSpecialInspectionPage(BasePage):
         self.files_table.insertRow(input_header_row)
         self.files_table.setSpan(input_header_row, 0, 1, 2)
         input_buttons = [
-            ("本地导入", self._on_add_fatigue_input_local),
-            ("系统导入", self._on_add_fatigue_input_sys),
+            ("上传", self._on_add_fatigue_input_local),
+            #("系统导入", self._on_add_fatigue_input_sys),
             ("删除选中行", self._on_del_fatigue_input),
         ]
         input_title_widget = self._create_title_row_widget("设置疲劳分析输入文件组", input_buttons)
@@ -1256,13 +1959,13 @@ class NewSpecialInspectionPage(BasePage):
                 idx_item.setTextAlignment(Qt.AlignCenter)
                 idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
 
-                path_item = QTableWidgetItem(self._short_path(path))
+                path_item = QTableWidgetItem(self._friendly_display_name(path))
                 path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                path_item.setToolTip(path)
+                path_item.setToolTip(self._friendly_tooltip(path))
 
                 self.files_table.setItem(row, 0, idx_item)
                 self.files_table.setItem(row, 1, path_item)
-                self.files_table.setRowHeight(row, 32)
+                self.files_table.setRowHeight(row, 54)
                 self._fatigue_input_row_map[row] = i
         else:
             row = self.files_table.rowCount()
@@ -1291,18 +1994,29 @@ class NewSpecialInspectionPage(BasePage):
             QMessageBox.warning(self, "导入失败", f"本地文件入库失败：\n{e}")
             return
 
+        self._remember_file_meta(
+            system_path,
+            original_name=os.path.basename(fp),
+            logical_path=self._db_logical_path(self.CATEGORY_MODEL),
+            display_path=self._display_storage_path(system_path),
+            remark="本地导入",
+        )
+        self._remember_file_meta(
+            system_path,
+            format_label=self._path_format_label(fp),
+            source_label="本地导入",
+        )
         self._append_unique_path(self.model_files, system_path)
         self._refresh_model_files_table()
         self._refresh_model_preview()
         QMessageBox.information(self, "本地导入", f"文件已入系统库并显示：\n{system_path}")
 
     def _on_add_model_sys(self):
-        chosen = self._pick_system_file_dialog(self.CATEGORY_MODEL, "系统导入模型文件")
-        if not chosen:
-            return
-        self._append_unique_path(self.model_files, chosen)
-        self._refresh_model_files_table()
-        self._refresh_model_preview()
+        return
+
+
+    def _on_add_collapse_sys(self):
+        return
 
     def _on_del_model(self):
         selected = self.model_files_table.selectionModel().selectedRows()
@@ -1327,10 +2041,6 @@ class NewSpecialInspectionPage(BasePage):
             QMessageBox.warning(self, "警告", "部分文件未能同步更新数据库删除状态，已保留在列表中。")
 
     def _on_add_collapse_local(self):
-        if self._collapse_static_demo:
-            QMessageBox.information(self, "提示", "当前“设置倒塌分析结果文件”为静态演示模式，已锁定显示。")
-            return
-
         fp, _ = QFileDialog.getOpenFileName(self, "选择倒塌分析结果文件", "", "所有文件 (*.*)")
         if not fp:
             return
@@ -1340,25 +2050,23 @@ class NewSpecialInspectionPage(BasePage):
             QMessageBox.warning(self, "导入失败", f"本地文件入库失败：\n{e}")
             return
 
+        self._remember_file_meta(
+            system_path,
+            original_name=os.path.basename(fp),
+            logical_path=self._db_logical_path(self.CATEGORY_COLLAPSE),
+            display_path=self._display_storage_path(system_path),
+            remark="本地导入",
+        )
+        self._remember_file_meta(
+            system_path,
+            format_label=self._path_format_label(fp),
+            source_label="本地导入",
+        )
         self._append_unique_path(self.collapse_files, system_path)
         self._refresh_files_table()
 
-    def _on_add_collapse_sys(self):
-        if self._collapse_static_demo:
-            QMessageBox.information(self, "提示", "当前“设置倒塌分析结果文件”为静态演示模式，已锁定显示。")
-            return
-
-        chosen = self._pick_system_file_dialog(self.CATEGORY_COLLAPSE, "系统导入倒塌分析结果文件")
-        if not chosen:
-            return
-        self._append_unique_path(self.collapse_files, chosen)
-        self._refresh_files_table()
 
     def _on_del_collapse(self):
-        if self._collapse_static_demo:
-            QMessageBox.information(self, "提示", "当前“设置倒塌分析结果文件”为静态演示模式，已锁定显示。")
-            return
-
         selected = self.files_table.selectionModel().selectedRows()
         if not selected:
             QMessageBox.warning(self, "提示", "请先在表格中点击选中要删除的倒塌文件行。")
@@ -1400,16 +2108,30 @@ class NewSpecialInspectionPage(BasePage):
             QMessageBox.warning(self, "导入失败", f"本地文件入库失败：\n{e}")
             return
 
+        self._remember_file_meta(
+            system_path,
+            original_name=os.path.basename(fp),
+            logical_path=self._db_logical_path(self.CATEGORY_FATIGUE, branch),
+            display_path=self._display_storage_path(system_path),
+            remark="本地导入",
+        )
+        self._remember_file_meta(
+            system_path,
+            branch_label=f"疲劳{branch_label}",
+            format_label=self._path_format_label(fp),
+            source_label="本地导入",
+        )
         self._append_unique_path(self._fatigue_target_list(branch), system_path)
         self._refresh_files_table()
         QMessageBox.information(self, "本地导入", f"文件已入系统库并显示：\n{system_path}")
 
     def _on_add_fatigue_sys(self, branch: str):
         branch_label = self._fatigue_branch_label(branch)
-        chosen = self._pick_system_file_dialog(self.CATEGORY_FATIGUE, f"系统导入疲劳分析{branch_label}", branch)
-        if not chosen:
+        chosen_paths = self._pick_system_library_files(self.CATEGORY_FATIGUE, f"系统导入疲劳分析{branch_label}", branch)
+        if not chosen_paths:
             return
-        self._append_unique_path(self._fatigue_target_list(branch), chosen)
+        target_list = self._fatigue_target_list(branch)
+        target_list[:] = list(chosen_paths)
         self._refresh_files_table()
 
     def _on_del_fatigue(self, branch: str):
@@ -1439,16 +2161,17 @@ class NewSpecialInspectionPage(BasePage):
         self._on_add_fatigue_local("result")
 
     def _on_add_fatigue_result_sys(self):
-        self._on_add_fatigue_sys("result")
-
+        return
+    def _on_add_fatigue_input_sys(self):
+        return
+        
     def _on_del_fatigue_result(self):
         self._on_del_fatigue("result")
 
     def _on_add_fatigue_input_local(self):
         self._on_add_fatigue_local("input")
 
-    def _on_add_fatigue_input_sys(self):
-        self._on_add_fatigue_sys("input")
+
 
     def _on_del_fatigue_input(self):
         self._on_del_fatigue("input")
