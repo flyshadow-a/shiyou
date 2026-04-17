@@ -50,7 +50,7 @@ def main() -> int:
         if not path.is_file():
             continue
         relative_parent = path.parent.relative_to(source_root)
-        logical_parts = [part for part in [args.logical_prefix.strip("/"), str(relative_parent).replace("\", "/")] if part and part != "."]
+        logical_parts = [part for part in [args.logical_prefix.strip("/"), str(relative_parent).replace("\\", "/")] if part and part != "."]
         service.upload_file(
             str(path),
             file_type_code=infer_file_type(path),
