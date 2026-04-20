@@ -17,8 +17,8 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
 )
 
-from base_page import BasePage
-from dropdown_bar import DropdownBar  # 你之前单独写好的下拉条类
+from core.base_page import BasePage
+from core.dropdown_bar import DropdownBar  # 你之前单独写好的下拉条类
 
 
 class PlatformBasicInfoPage(BasePage):

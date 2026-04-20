@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 class SpecialStrategyHistoryRegressionTests(unittest.TestCase):
     def test_runtime_exposes_history_loading_by_run(self) -> None:
-        text = (REPO_ROOT / "special_strategy_runtime.py").read_text(encoding="utf-8")
+        text = (REPO_ROOT / "services" / "special_strategy_runtime.py").read_text(encoding="utf-8")
         for snippet in (
             "def load_result_bundle(facility_code: str, run_id: int | None = None)",
             "if run_id and run_payload is None:",
@@ -22,7 +22,7 @@ class SpecialStrategyHistoryRegressionTests(unittest.TestCase):
                 self.assertIn(snippet, text)
 
     def test_state_db_has_history_queries_and_run_index(self) -> None:
-        text = (REPO_ROOT / "special_strategy_state_db.py").read_text(encoding="utf-8")
+        text = (REPO_ROOT / "services" / "special_strategy_state_db.py").read_text(encoding="utf-8")
         for snippet in (
             "ix_special_strategy_result_run_id",
             "def load_strategy_run_by_id(run_id: int",
@@ -33,7 +33,7 @@ class SpecialStrategyHistoryRegressionTests(unittest.TestCase):
                 self.assertIn(snippet, text)
 
     def test_oop_service_module_exists(self) -> None:
-        text = (REPO_ROOT / "special_strategy_services.py").read_text(encoding="utf-8")
+        text = (REPO_ROOT / "services" / "special_strategy_services.py").read_text(encoding="utf-8")
         for snippet in (
             "class StrategyRunHistoryItem:",
             "class NodeYearLabelMapper:",
@@ -51,7 +51,7 @@ class SpecialStrategyHistoryRegressionTests(unittest.TestCase):
         text = (REPO_ROOT / "pages/special_inspection_strategy.py").read_text(encoding="utf-8")
         for snippet in (
             "from pages.special_strategy_history_dialog import SpecialStrategyHistoryDialog as SpecialStrategyHistoryDialogView",
-            "from special_strategy_services import (",
+            "from services.special_strategy_services import (",
             "self._result_service = SpecialStrategyResultService()",
             "self._year_mapper = NodeYearLabelMapper()",
             "self._summary_builder = SpecialStrategySummaryBuilder(self._year_mapper)",
@@ -67,7 +67,7 @@ class SpecialStrategyHistoryRegressionTests(unittest.TestCase):
     def test_history_dialog_uses_service(self) -> None:
         text = (REPO_ROOT / "pages/special_strategy_history_dialog.py").read_text(encoding="utf-8")
         for snippet in (
-            "from special_strategy_services import SpecialStrategyResultService",
+            "from services.special_strategy_services import SpecialStrategyResultService",
             "result_service: SpecialStrategyResultService | None = None",
             "self._result_service = result_service or SpecialStrategyResultService()",
             "rows = self._result_service.list_history(self.facility_code, limit=100)",
@@ -78,7 +78,7 @@ class SpecialStrategyHistoryRegressionTests(unittest.TestCase):
     def test_result_page_uses_service_and_mapper(self) -> None:
         text = (REPO_ROOT / "pages/upgrade_special_inspection_result_page.py").read_text(encoding="utf-8")
         for snippet in (
-            "from special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService",
+            "from services.special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService",
             "self._result_service = SpecialStrategyResultService()",
             "self._year_mapper = NodeYearLabelMapper()",
             "self.summary_node = self._make_summary_table(self._year_mapper.display_labels())",

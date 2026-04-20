@@ -14,15 +14,15 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QMessageBox, QFileDialog, QWidget
 )
 
-from base_page import BasePage
-from dropdown_bar import DropdownBar
+from core.base_page import BasePage
+from core.dropdown_bar import DropdownBar
 from .file_management_platforms import default_platform, sync_platform_dropdowns
 from .doc_man import DocManWidget
-from file_db_adapter import (
+from services.file_db_adapter import (
+    hard_delete_record,
     is_file_db_configured,
     list_files_by_prefix,
     resolve_storage_path,
-    soft_delete_record,
     upload_file,
 )
 
@@ -762,7 +762,7 @@ class ModelFilesDocsWidget(QWidget):
             record_id = rec.get("record_id")
             if record_id is None:
                 continue
-            soft_delete_record(int(record_id))
+            hard_delete_record(int(record_id))
             total += 1
         path_key = self.current_leaf_key
         self.row_paths_by_path.pop(path_key, None)
@@ -807,6 +807,7 @@ class ModelFilesDocsWidget(QWidget):
                 overlay_from_db=not (self.current_path and self.current_path[0] == "\u5f53\u524d\u6a21\u578b"),
                 hide_empty_templates=True,
                 db_list_mode=not (self.current_path and self.current_path[0] == "\u5f53\u524d\u6a21\u578b"),
+                show_work_condition=self._leaf_supports_work_condition(self.current_path),
             )
             return
 
@@ -973,6 +974,11 @@ class ModelFilesDocsWidget(QWidget):
     def _build_doc_man_records(self) -> Dict[str, List[Dict]]:
         return {path_key: [] for path_key in self.doc_man_configs}
 
+    def _leaf_supports_work_condition(self, path_list: List[str] | None = None) -> bool:
+        target_path = list(path_list or self.current_path)
+        node = self._get_node_by_path(target_path)
+        return bool(node and node.get("type") == "leaf" and node.get("model_key") in {"fatigue", "collapse"})
+
     def _pick_category_option(self, categories: List[str], *keywords: str, fallback: str = "其他") -> str:
         for option in categories:
             if all(word in option for word in keywords):
@@ -1064,13 +1070,15 @@ class ModelFilesDocsWidget(QWidget):
         logical_path = rec.get("logical_path") or self._upload_logical_path_for_category(path_key, current_category)
         record_id = rec.get("record_id")
         if record_id is not None and not self._category_allows_multiple_files(current_category):
-            soft_delete_record(int(record_id))
+            hard_delete_record(int(record_id))
         result = upload_file(
             file_path,
             file_type_code=self._doc_category_to_file_type_code(current_category),
             module_code="model_files",
             logical_path=logical_path,
             facility_code=self.facility_code,
+            category_name=current_category,
+            work_condition=rec.get("work_condition") or "",
             remark=rec.get("remark") or "",
         )
         dt = result.get("source_modified_at") or result.get("uploaded_at")
@@ -1083,6 +1091,7 @@ class ModelFilesDocsWidget(QWidget):
         rec["path"] = resolved_path
         rec["record_id"] = result.get("id")
         rec["logical_path"] = str(result.get("logical_path") or logical_path)
+        rec["work_condition"] = str(result.get("work_condition") or rec.get("work_condition") or "")
         rec["_force_visible"] = True
 
         self.row_paths_by_path.pop(path_key, None)
@@ -1207,7 +1216,8 @@ class ModelFilesDocsWidget(QWidget):
                     {
                         "index": len(rows) + 1,
                         "checked": False,
-                        "category": self._category_from_db_row(row, categories),
+                        "category": str(row.get("category_name") or "").strip() or self._category_from_db_row(row, categories),
+                        "work_condition": str(row.get("work_condition") or "").strip(),
                         "fmt": self._format_from_original_name(str(row.get("original_name") or "")),
                         "filename": str(row.get("original_name") or ""),
                         "mtime": dt.strftime("%Y/%m/%d") if dt else "",
@@ -1217,7 +1227,14 @@ class ModelFilesDocsWidget(QWidget):
                         "remark": str(row.get("remark") or ""),
                     }
                 )
-        rows.sort(key=lambda item: (str(item.get("category") or ""), str(item.get("logical_path") or ""), str(item.get("filename") or "")))
+        rows.sort(
+            key=lambda item: (
+                str(item.get("category") or ""),
+                str(item.get("work_condition") or ""),
+                str(item.get("logical_path") or ""),
+                str(item.get("filename") or ""),
+            )
+        )
         for index, row in enumerate(rows, start=1):
             row["index"] = index
         return rows

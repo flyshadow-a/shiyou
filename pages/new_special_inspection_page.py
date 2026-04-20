@@ -16,22 +16,24 @@ from PyQt5.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QSplitter
 )
 from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 
-from app_paths import external_path, external_root, first_existing_path
-from base_page import BasePage
-from file_db_adapter import (
+from core.app_paths import external_path, external_root, first_existing_path
+from core.base_page import BasePage
+from services.file_db_adapter import (
     DEFAULT_DB_CONFIG,
     FileBackendError,
+    hard_delete_storage_path,
     is_file_db_configured,
     list_files,
     list_files_by_prefix,
     resolve_storage_path,
-    soft_delete_storage_path,
     upload_file as upload_file_to_db,
 )
 from pages.model_files_page import ModelFilesDocsWidget
 from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
-from special_strategy_runtime import load_base_config, load_latest_strategy_params, run_special_strategy_calculation
+from services.special_strategy_runtime import load_base_config, load_latest_strategy_params, run_special_strategy_calculation
+
 
 
 class _SystemFilePickerDialog(QDialog):
@@ -323,6 +325,12 @@ class _SystemLibraryPickerDialog(QDialog):
         return list(self._selected_rows)
 
 
+class _NoWheelFileTable(QTableWidget):
+    def wheelEvent(self, event):
+        # 不在表格内部滚动，把滚轮交回外层滚动区域
+        event.ignore()
+
+
 class NewSpecialInspectionPage(BasePage):
     """
     新增检测策略打开的页面：
@@ -334,6 +342,7 @@ class NewSpecialInspectionPage(BasePage):
     CATEGORY_MODEL = "model"
     CATEGORY_COLLAPSE = "collapse"
     CATEGORY_FATIGUE = "fatigue"
+    FILE_TABLE_HEADERS = ["序号", "文件类别", "工况", "文件名", "文件格式", "修改时间", "备注"]
     strategy_calculated = pyqtSignal(str, object)
 
     def __init__(self, facility_code: str, parent=None):
@@ -354,13 +363,11 @@ class NewSpecialInspectionPage(BasePage):
 
         super().__init__("", parent)
         self._build_ui()
-        self._refresh_model_files_table()
-        self._refresh_files_table()
-        self._refresh_model_preview()
-        # 页面初始化时所有文件列表为空，用户需要点击导入按钮手动导入文件
+        self._reload_system_files_from_backend()
 
     def showEvent(self, event):
         super().showEvent(event)
+        QTimer.singleShot(0, self._adjust_files_table_widths)
         # 每次显示页面时重置为空白状态，不自动加载任何文件
 
     def _params_json_path(self) -> Path | None:
@@ -589,22 +596,18 @@ class NewSpecialInspectionPage(BasePage):
     # ---------------- 左侧：上下拼接 ----------------
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()
+        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(12)
 
-        # 上半部分：结构模型信息 + 模型文件 + 分析结果文件
         v.addWidget(self._build_model_info_block(), 0)
-        self.model_files_block = self._build_model_files_block()
+
+        # 只保留一个文件设置块
         self.analysis_files_block = self._build_analysis_files_block()
-        self.model_files_block.setParent(panel)
-        self.analysis_files_block.setParent(panel)
-        self.model_files_block.show()
-        self.analysis_files_block.show()
-        v.addWidget(self.model_files_block, 0)
         v.addWidget(self.analysis_files_block, 0)
 
-        # 下半部分：按你新截图增加的"用户设置/风险等级参数"
         v.addWidget(self._build_risk_level_settings_block(), 1)
         return panel
 
@@ -678,47 +681,84 @@ class NewSpecialInspectionPage(BasePage):
         block.setMinimumHeight(block.sizeHint().height())
         return block
 
-    # ---------------- 上半：模型文件（新增） ----------------
+    # # ---------------- 上半：模型文件（新增） ----------------
     def _build_model_files_block(self) -> QFrame:
         block = QFrame()
         block_lay = QVBoxLayout(block)
         block_lay.setContentsMargins(0, 0, 0, 0)
         block_lay.setSpacing(6)
 
-        self.model_files_table = QTableWidget(0, 2)
-        self.model_files_table.horizontalHeader().setVisible(False)
-        self.model_files_table.verticalHeader().setVisible(False)
-        self.model_files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
-        self.model_files_table.setColumnWidth(0, 60)
-        self.model_files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.model_files_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.model_files_table = _NoWheelFileTable(0, len(self.FILE_TABLE_HEADERS))
+        self._configure_file_table(self.model_files_table)
 
-        block_lay.addWidget(self.model_files_table, 1)
+        block_lay.addWidget(self.model_files_table)
         return block
 
-    # ---------------- 上半：倒塌分析结果文件 ----------------
+    # # ---------------- 上半：倒塌分析结果文件 ----------------
     def _build_analysis_files_block(self) -> QFrame:
         block = QFrame()
+        block.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
         block_lay = QVBoxLayout(block)
         block_lay.setContentsMargins(0, 0, 0, 0)
-        block_lay.setSpacing(6)
+        block_lay.setSpacing(0)
 
-        # 2. 初始化核心单表
-        self.files_table = QTableWidget(0, 2)
-        self.files_table.horizontalHeader().setVisible(False)
-        self.files_table.verticalHeader().setVisible(False)
+        self.files_table = _NoWheelFileTable(0, len(self.FILE_TABLE_HEADERS))
+        self._configure_file_table(self.files_table)
 
-        # 将第 0 列（序号列）设为固定模式，并指定宽度为 60 像素
-        self.files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
-        self.files_table.setColumnWidth(0, 60)
-
-        # 第 1 列（路径列）继续保持拉伸，填满剩余空间
-        self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.files_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-
-        block_lay.addWidget(self.files_table, 1)
-
+        block_lay.addWidget(self.files_table)
         return block
+
+    def _configure_file_table(self, table: QTableWidget) -> None:
+        table.setColumnCount(len(self.FILE_TABLE_HEADERS))
+        table.setHorizontalHeaderLabels(self.FILE_TABLE_HEADERS)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        table.verticalHeader().setVisible(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setWordWrap(False)
+
+        header = table.horizontalHeader()
+        header.setVisible(True)
+        header.setHighlightSections(False)
+
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.Interactive)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.Interactive)
+
+        table.setColumnWidth(0, 60)
+    def _adjust_files_table_widths(self) -> None:
+        if not hasattr(self, "files_table") or self.files_table is None:
+            return
+
+        table = self.files_table
+        if table.viewport().width() <= 0:
+            return
+
+        # 先只让固定列按内容收缩
+        for c in [0, 1, 2, 4, 5]:
+            table.resizeColumnToContents(c)
+
+        fixed_cols = [0, 1, 2, 4, 5]
+        fixed_width = sum(table.columnWidth(c) for c in fixed_cols)
+
+        remaining = max(320, table.viewport().width() - fixed_width - 8)
+
+        file_name_w = int(remaining * 0.62)
+        remark_w = remaining - file_name_w
+
+        table.setColumnWidth(3, max(220, file_name_w))
+        table.setColumnWidth(6, max(120, remark_w))
+
+        self._fit_table_height(table)
 
     # ---------------- 下半：风险等级参数（新增） ----------------
     def _build_risk_level_settings_block(self) -> QFrame:
@@ -890,8 +930,16 @@ class NewSpecialInspectionPage(BasePage):
         QMessageBox.information(self, "更新风险等级", "已按当前参数完成风险结果计算。")
 
     def _validate_fatigue_groups(self) -> bool:
-        result_files = [path for path in self.fatigue_result_files if os.path.exists(path)]
-        input_files = [path for path in self.fatigue_input_files if os.path.exists(path)]
+        result_files = self._sorted_existing_paths(
+            self.fatigue_result_files,
+            category=self.CATEGORY_FATIGUE,
+            branch="result",
+        )
+        input_files = self._sorted_existing_paths(
+            self.fatigue_input_files,
+            category=self.CATEGORY_FATIGUE,
+            branch="input",
+        )
         if not result_files and not input_files:
             return True
         if not result_files or not input_files:
@@ -975,14 +1023,7 @@ class NewSpecialInspectionPage(BasePage):
         rows: List[dict[str, Any]],
         branch: str | None,
     ) -> List[dict[str, Any]]:
-        if category != self.CATEGORY_FATIGUE or not branch:
-            return rows
-        filtered: List[dict[str, Any]] = []
-        for row in rows:
-            path = str(row.get("storage_path") or "").strip()
-            if self._fatigue_branch_for_path(path) == branch:
-                filtered.append(row)
-        return filtered
+        return [row for row in rows if self._is_runtime_supported_row(row, category, branch)]
 
     def _db_fetch_file_rows(self, category: str, branch: str | None = None) -> List[dict[str, Any]]:
         """
@@ -998,7 +1039,15 @@ class NewSpecialInspectionPage(BasePage):
                 resolved_path = self._resolve_db_storage_path(current)
                 current["storage_path"] = resolved_path
                 current["display_path"] = self._display_storage_path(resolved_path)
-                normalized.append(current)
+                if self._is_runtime_supported_row(current, category, branch):
+                    normalized.append(current)
+            normalized.sort(
+                key=lambda item: (
+                    str(item.get("work_condition") or "").strip().lower(),
+                    str(item.get("logical_path") or "").replace("\\", "/").strip().lower(),
+                    str(item.get("original_name") or "").strip().lower(),
+                )
+            )
             return normalized
 
         if is_file_db_configured():
@@ -1033,11 +1082,15 @@ class NewSpecialInspectionPage(BasePage):
         """
         rows = self._db_fetch_file_rows(category, branch)
         self._remember_file_rows(rows)
-        return [
-            os.path.normpath(str(row.get("storage_path") or "").strip())
-            for row in rows
-            if str(row.get("storage_path") or "").strip()
-        ]
+        return self._sorted_existing_paths(
+            [
+                os.path.normpath(str(row.get("storage_path") or "").strip())
+                for row in rows
+                if str(row.get("storage_path") or "").strip()
+            ],
+            category=category,
+            branch=branch,
+        )
 
     def _db_store_local_file(self, local_path: str, category: str, branch: str | None = None) -> str:
         """
@@ -1046,11 +1099,11 @@ class NewSpecialInspectionPage(BasePage):
         """
         return self._store_local_file_to_upload(local_path, category, branch)
 
-    def _db_soft_delete_file(self, storage_path: str, category: str) -> bool:
+    def _db_delete_file(self, storage_path: str, category: str) -> bool:
         if not is_file_db_configured():
             return False
         try:
-            deleted = soft_delete_storage_path(
+            deleted = hard_delete_storage_path(
                 storage_path,
                 file_type_code=category,
                 module_code="model_files",
@@ -1058,7 +1111,7 @@ class NewSpecialInspectionPage(BasePage):
             )
             if deleted:
                 return True
-            return soft_delete_storage_path(
+            return hard_delete_storage_path(
                 storage_path,
                 file_type_code=category,
                 module_code="special_strategy",
@@ -1156,25 +1209,24 @@ class NewSpecialInspectionPage(BasePage):
         return overrides
 
     def _collect_runtime_input_overrides(self) -> dict[str, Any]:
-        def existing_paths(values: List[str]) -> List[str]:
-            out: List[str] = []
-            for value in values:
-                path = str(value or "").strip()
-                if not path or not os.path.exists(path):
-                    continue
-                out.append(os.path.normpath(path))
-            return out
-
         overrides: dict[str, Any] = {}
-        model_candidates = existing_paths(self.model_files)
+        model_candidates = self._sorted_existing_paths(self.model_files, category=self.CATEGORY_MODEL)
         if model_candidates:
             overrides["model"] = model_candidates[0]
 
-        collapse_candidates = existing_paths(self.collapse_files)
+        collapse_candidates = self._sorted_existing_paths(self.collapse_files, category=self.CATEGORY_COLLAPSE)
         if collapse_candidates:
             overrides["clplog"] = collapse_candidates
-        fatigue_result_candidates = existing_paths(self.fatigue_result_files)
-        fatigue_input_candidates = existing_paths(self.fatigue_input_files)
+        fatigue_result_candidates = self._sorted_existing_paths(
+            self.fatigue_result_files,
+            category=self.CATEGORY_FATIGUE,
+            branch="result",
+        )
+        fatigue_input_candidates = self._sorted_existing_paths(
+            self.fatigue_input_files,
+            category=self.CATEGORY_FATIGUE,
+            branch="input",
+        )
         if fatigue_result_candidates and fatigue_input_candidates:
             overrides["ftglst"] = fatigue_result_candidates
             overrides["ftginp"] = fatigue_input_candidates
@@ -1204,13 +1256,23 @@ class NewSpecialInspectionPage(BasePage):
             path = os.path.normpath(str(raw_path or "").strip())
             if not path:
                 continue
-            branch = self._fatigue_branch_for_path(path)
+            branch = self._runtime_fatigue_branch_for_name(path)
             if branch == "input":
                 if path not in self.fatigue_input_files:
                     self.fatigue_input_files.append(path)
-            else:
+            elif branch == "result":
                 if path not in self.fatigue_result_files:
                     self.fatigue_result_files.append(path)
+        self.fatigue_result_files = self._sorted_existing_paths(
+            self.fatigue_result_files,
+            category=self.CATEGORY_FATIGUE,
+            branch="result",
+        )
+        self.fatigue_input_files = self._sorted_existing_paths(
+            self.fatigue_input_files,
+            category=self.CATEGORY_FATIGUE,
+            branch="input",
+        )
 
     def _fetch_system_files_from_upload(self, category: str, branch: str | None = None) -> List[str]:
         search_roots = []
@@ -1220,11 +1282,6 @@ class NewSpecialInspectionPage(BasePage):
 
         if not search_roots:
             return []
-
-        ext_map = {
-            self.CATEGORY_COLLAPSE: {"clplog", "clplst", "clprst"},
-            self.CATEGORY_FATIGUE: {"ftglst", "wvrinp", "wit", "wjt"},
-        }
 
         records = []
         code_lower = (self.facility_code or "").strip().lower()
@@ -1246,18 +1303,9 @@ class NewSpecialInspectionPage(BasePage):
                             keep = True
                             score += name_score
                     else:
-                        allow = ext_map.get(category, set())
-                        in_special_bucket = f"special_strategy{os.sep}{category}".lower() in full_low
-                        if category == self.CATEGORY_FATIGUE and self._fatigue_branch_for_path(full_path):
+                        if self._is_runtime_supported_path(full_path, category, branch):
                             keep = True
                             score += 100
-                        elif in_special_bucket or (ext_no_dot in allow):
-                            keep = True
-                            score += 100
-
-                    if category == self.CATEGORY_FATIGUE and branch:
-                        if self._fatigue_branch_for_path(full_path) != branch:
-                            keep = False
 
                     if not keep:
                         continue
@@ -1374,6 +1422,9 @@ class NewSpecialInspectionPage(BasePage):
         logical_path: str | None = None,
         display_path: str | None = None,
         remark: str | None = None,
+        category_name: str | None = None,
+        work_condition: str | None = None,
+        modified_at: Any = None,
         branch_label: str | None = None,
         format_label: str | None = None,
         source_label: str | None = None,
@@ -1389,6 +1440,9 @@ class NewSpecialInspectionPage(BasePage):
                     "logical_path": row.get("logical_path"),
                     "display_path": row.get("display_path"),
                     "remark": row.get("remark"),
+                    "category_name": row.get("category_name"),
+                    "work_condition": row.get("work_condition"),
+                    "modified_at": row.get("source_modified_at") or row.get("uploaded_at") or row.get("updated_at"),
                     "branch_label": row.get("branch_label"),
                     "format_label": row.get("format_label"),
                     "source_label": row.get("source_label"),
@@ -1403,6 +1457,12 @@ class NewSpecialInspectionPage(BasePage):
             meta["display_path"] = display_path
         if remark:
             meta["remark"] = remark
+        if category_name:
+            meta["category_name"] = category_name
+        if work_condition:
+            meta["work_condition"] = work_condition
+        if modified_at is not None:
+            meta["modified_at"] = modified_at
         if branch_label:
             meta["branch_label"] = branch_label
         if format_label:
@@ -1432,6 +1492,120 @@ class NewSpecialInspectionPage(BasePage):
         suffix = os.path.splitext(name)[1].lstrip(".")
         return suffix.upper() if suffix else ""
 
+    @staticmethod
+    def _name_stem(text: str) -> str:
+        return os.path.splitext(os.path.basename(str(text or "").strip()).lower())[0]
+
+    def _runtime_fatigue_branch_for_name(self, name: str, logical_path: str = "") -> str:
+        stem = self._name_stem(name)
+        normalized_logical = str(logical_path or "").replace("\\", "/").lower()
+        if stem.startswith("ftginp"):
+            return "input"
+        if stem.startswith("ftglst"):
+            return "result"
+        if stem == "ftg" and "/疲劳分析/" in normalized_logical and "/输入/" in normalized_logical:
+            return "input"
+        if stem == "ftg" and "/疲劳分析/" in normalized_logical and "/结果/" in normalized_logical:
+            return "result"
+        return ""
+
+    def _is_runtime_supported_name(self, name: str, category: str, branch: str | None = None, logical_path: str = "") -> bool:
+        stem = self._name_stem(name)
+        if category == self.CATEGORY_MODEL:
+            return stem.startswith("sacinp")
+        if category == self.CATEGORY_COLLAPSE:
+            return stem.startswith("clplog")
+        if category == self.CATEGORY_FATIGUE:
+            file_branch = self._runtime_fatigue_branch_for_name(name, logical_path)
+            if branch:
+                return file_branch == branch
+            return file_branch in {"input", "result"}
+        return False
+
+    def _is_runtime_supported_path(self, path: str, category: str, branch: str | None = None) -> bool:
+        return self._is_runtime_supported_name(path, category, branch)
+
+    def _is_runtime_supported_row(self, row: dict[str, Any], category: str, branch: str | None = None) -> bool:
+        logical_path = str(row.get("logical_path") or "")
+        name = str(row.get("original_name") or row.get("storage_path") or "").strip()
+        return self._is_runtime_supported_name(name, category, branch, logical_path)
+
+    def _path_sort_key(self, path: str) -> tuple[str, str, str]:
+        meta = self._file_meta(path)
+        return (
+            str(meta.get("work_condition") or "").strip().lower(),
+            str(meta.get("logical_path") or "").replace("\\", "/").strip().lower(),
+            str(meta.get("original_name") or os.path.basename(str(path or ""))).strip().lower(),
+        )
+
+    def _sorted_existing_paths(self, values: List[str], *, category: str, branch: str | None = None) -> List[str]:
+        ordered: List[str] = []
+        seen: set[str] = set()
+        for value in values:
+            path = os.path.normpath(str(value or "").strip())
+            if not path or path in seen or not os.path.exists(path):
+                continue
+            if not self._is_runtime_supported_path(path, category, branch):
+                continue
+            seen.add(path)
+            ordered.append(path)
+        return sorted(ordered, key=self._path_sort_key)
+
+    def _path_modified_text(self, path: str) -> str:
+        meta = self._file_meta(path)
+        modified_at = meta.get("modified_at")
+        if hasattr(modified_at, "strftime"):
+            return modified_at.strftime("%Y/%m/%d")
+        normalized = os.path.normpath(str(path or "").strip())
+        if normalized and os.path.exists(normalized):
+            try:
+                stamp = datetime.datetime.fromtimestamp(os.path.getmtime(normalized))
+                return stamp.strftime("%Y/%m/%d")
+            except Exception:
+                return ""
+        return ""
+
+    def _default_category_label(self, category: str, branch: str | None = None) -> str:
+        if category == self.CATEGORY_MODEL:
+            return "结构模型文件"
+        if category == self.CATEGORY_COLLAPSE:
+            return "倒塌分析日志文件"
+        if category == self.CATEGORY_FATIGUE and branch == "input":
+            return "疲劳分析模型文件"
+        if category == self.CATEGORY_FATIGUE:
+            return "疲劳分析结果文件"
+        return ""
+
+    def _infer_category_from_meta(self, meta: dict[str, Any]) -> str:
+        logical_path = str(meta.get("logical_path") or "").replace("\\", "/")
+        filename = str(meta.get("original_name") or meta.get("storage_path") or "").strip()
+        if self._is_runtime_supported_name(filename, self.CATEGORY_MODEL):
+            return self.CATEGORY_MODEL
+        if self._is_runtime_supported_name(filename, self.CATEGORY_COLLAPSE):
+            return self.CATEGORY_COLLAPSE
+        if self._runtime_fatigue_branch_for_name(filename, logical_path):
+            return self.CATEGORY_FATIGUE
+        return ""
+
+    def _infer_branch_from_meta(self, meta: dict[str, Any]) -> str | None:
+        logical_path = str(meta.get("logical_path") or "").replace("\\", "/")
+        filename = str(meta.get("original_name") or meta.get("storage_path") or "").strip()
+        if self._infer_category_from_meta(meta) != self.CATEGORY_FATIGUE:
+            return None
+        branch = self._runtime_fatigue_branch_for_name(filename, logical_path)
+        return branch or None
+
+    def _file_display_payload(self, path: str, *, category: str, branch: str | None = None) -> dict[str, str]:
+        meta = self._file_meta(path)
+        return {
+            "category": str(meta.get("category_name") or self._default_category_label(category, branch)).strip(),
+            "work_condition": str(meta.get("work_condition") or "").strip(),
+            "filename": str(meta.get("original_name") or os.path.basename(str(path or ""))).strip(),
+            "format": str(meta.get("format_label") or self._path_format_label(path)).strip(),
+            "modified": self._path_modified_text(path),
+            "remark": str(meta.get("remark") or "").strip(),
+        }
+
     def _display_marks_for_path(self, path: str) -> list[str]:
         meta = self._file_meta(path)
         marks: list[str] = []
@@ -1457,7 +1631,16 @@ class NewSpecialInspectionPage(BasePage):
     def _friendly_tooltip(self, path: str) -> str:
         normalized = os.path.normpath(str(path or "").strip())
         meta = self._file_meta(normalized)
-        lines = [f"文件名：{str(meta.get('original_name') or os.path.basename(normalized)).strip()}"]
+        payload = self._file_display_payload(normalized, category=self._infer_category_from_meta(meta), branch=self._infer_branch_from_meta(meta))
+        lines = [f"文件名：{payload['filename']}"]
+        if payload["category"]:
+            lines.append(f"文件类别：{payload['category']}")
+        if payload["work_condition"]:
+            lines.append(f"工况：{payload['work_condition']}")
+        if payload["format"]:
+            lines.append(f"文件格式：{payload['format']}")
+        if payload["modified"]:
+            lines.append(f"修改时间：{payload['modified']}")
         marks = self._display_marks_for_path(normalized)
         display_path = str(meta.get("display_path") or normalized).strip()
         logical_path = str(meta.get("logical_path") or "").replace("\\", "/").strip().strip("/")
@@ -1514,17 +1697,18 @@ class NewSpecialInspectionPage(BasePage):
         if category == self.CATEGORY_MODEL:
             return {"sacinp"}
         if category == self.CATEGORY_COLLAPSE:
-            return {"clplog", "clplst", "clprst"}
+            return {"clplog"}
         if branch == "input":
             return {"ftginp"}
-        return {"ftglst", "wvrinp"}
+        return {"ftglst"}
 
     @staticmethod
-    def _system_library_row_sort_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    def _system_library_row_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
+        work_condition = str(row.get("work_condition") or "").strip().lower()
         logical_path = str(row.get("logical_path") or "").replace("\\", "/").strip().strip("/").lower()
         original_name = str(row.get("original_name") or "").lower()
         uploaded_at = str(row.get("uploaded_at") or "")
-        return (logical_path, original_name, uploaded_at)
+        return (work_condition, logical_path, original_name, uploaded_at)
 
     def _system_library_tree_spec(self, category: str, branch: str | None = None) -> list[dict[str, Any]]:
         helper = self._model_files_helper()
@@ -1737,11 +1921,22 @@ class NewSpecialInspectionPage(BasePage):
             return path
 
     def _fit_table_height(self, table: QTableWidget):
+        # 这里只处理行高和总高度，不再动列宽
+        table.resizeRowsToContents()
+        table.doItemsLayout()
+        table.updateGeometry()
+
         total = table.frameWidth() * 2 + 2
+
         if table.horizontalHeader().isVisible():
             total += table.horizontalHeader().height()
+
         for r in range(table.rowCount()):
             total += table.rowHeight(r)
+
+        if table.horizontalScrollBar().isVisible():
+            total += table.horizontalScrollBar().height()
+
         table.setFixedHeight(max(total, 42))
 
     def _lock_table_full_display(self, table: QTableWidget, row_height: int = 34, show_header: bool = True):
@@ -1781,17 +1976,93 @@ class NewSpecialInspectionPage(BasePage):
         table.setFixedHeight(max(total, 120))
 
     def _reload_system_files_from_backend(self):
-        # 从系统文件库加载所有文件（模型、倒塌、疲劳）
         self.model_files = self._db_fetch_file_records(self.CATEGORY_MODEL)
         self.collapse_files = self._db_fetch_file_records(self.CATEGORY_COLLAPSE)
-        self._set_fatigue_groups_from_candidates(self._db_fetch_file_records(self.CATEGORY_FATIGUE))
+        self._set_fatigue_groups_from_candidates(
+            self._db_fetch_file_records(self.CATEGORY_FATIGUE)
+        )
 
-        self._refresh_model_files_table()
         self._refresh_files_table()
         self._refresh_model_preview()
 
     # ---------------- 文件动态表格刷新与事件 ----------------
-    def _refresh_model_files_table(self):
+    def _set_file_table_row(
+        self,
+        table: QTableWidget,
+        row: int,
+        index: int,
+        path: str,
+        *,
+        category: str,
+        branch: str | None = None,
+    ) -> None:
+        payload = self._file_display_payload(path, category=category, branch=branch)
+        values = [
+            str(index),
+            payload["category"],
+            payload["work_condition"],
+            payload["filename"],
+            payload["format"],
+            payload["modified"],
+            payload["remark"],
+        ]
+        for col, text in enumerate(values):
+            item = QTableWidgetItem(text)
+            if col in {0, 1, 2, 4, 5}:
+                item.setTextAlignment(Qt.AlignCenter)
+            else:
+                item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            if col == 3:
+                item.setToolTip(self._friendly_tooltip(path))
+            table.setItem(row, col, item)
+        table.setRowHeight(row, 40)
+
+    def _insert_empty_hint_row(self, table: QTableWidget, text: str) -> None:
+        row = table.rowCount()
+        table.insertRow(row)
+        table.setSpan(row, 0, 1, table.columnCount())
+        empty_widget = QWidget()
+        empty_widget.setStyleSheet("background-color: #ffffff;")
+        empty_layout = QHBoxLayout(empty_widget)
+        empty_layout.setContentsMargins(10, 0, 10, 0)
+        empty_label = QLabel(text)
+        empty_label.setStyleSheet(
+            'color: #666; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;'
+        )
+        empty_layout.addWidget(empty_label)
+        empty_layout.addStretch(1)
+        table.setCellWidget(row, 0, empty_widget)
+        table.setRowHeight(row, 36)
+
+    def _append_file_section(
+        self,
+        table: QTableWidget,
+        *,
+        title: str,
+        buttons_info: list[tuple[str, Any]],
+        paths: List[str],
+        row_map: dict[int, int] | None,
+        category: str,
+        branch: str | None = None,
+        empty_hint: str,
+    ) -> None:
+        header_row = table.rowCount()
+        table.insertRow(header_row)
+        table.setSpan(header_row, 0, 1, table.columnCount())
+        table.setCellWidget(header_row, 0, self._create_title_row_widget(title, buttons_info))
+        table.setRowHeight(header_row, 38)
+        if not paths:
+            self._insert_empty_hint_row(table, empty_hint)
+            return
+        for i, path in enumerate(paths, start=1):
+            row = table.rowCount()
+            table.insertRow(row)
+            self._set_file_table_row(table, row, i, path, category=category, branch=branch)
+            if row_map is not None:
+                row_map[row] = i - 1
+
+    def _refresh_model_files_table_legacy(self):
         self.model_files_table.clearContents()
         self.model_files_table.setRowCount(0)
 
@@ -1839,7 +2110,7 @@ class NewSpecialInspectionPage(BasePage):
 
         self._fit_table_height(self.model_files_table)
 
-    def _refresh_files_table(self):
+    def _refresh_files_table_legacy_old(self):
         self.files_table.clearContents()
         self.files_table.setRowCount(0)
         self._collapse_row_map: dict[int, int] = {}
@@ -1984,9 +2255,86 @@ class NewSpecialInspectionPage(BasePage):
 
         self._fit_table_height(self.files_table)
 
+    def _refresh_model_files_table(self):
+        self._refresh_files_table()
+
+    def _refresh_files_table(self):
+        self.files_table.clearSpans()
+        self.files_table.clearContents()
+        self.files_table.setRowCount(0)
+
+        self._model_row_map = {}
+        self._collapse_row_map = {}
+        self._fatigue_result_row_map = {}
+        self._fatigue_input_row_map = {}
+
+        # 先放模型文件
+        self._append_file_section(
+            self.files_table,
+            title="设置模型文件",
+            buttons_info=[
+                ("上传", self._on_add_model_local),
+                ("删除选中行", self._on_del_model),
+            ],
+            paths=self.model_files,
+            row_map=self._model_row_map,
+            category=self.CATEGORY_MODEL,
+            empty_hint="暂无选择模型文件。",
+        )
+
+        # 再放倒塌
+        self._append_file_section(
+            self.files_table,
+            title="设置倒塌分析结果文件",
+            buttons_info=[
+                ("上传", self._on_add_collapse_local),
+                ("删除选中行", self._on_del_collapse),
+            ],
+            paths=self.collapse_files,
+            row_map=self._collapse_row_map,
+            category=self.CATEGORY_COLLAPSE,
+            empty_hint="暂无选择倒塌分析结果文件。",
+        )
+
+        # 疲劳结果
+        self._append_file_section(
+            self.files_table,
+            title="设置疲劳分析结果文件组",
+            buttons_info=[
+                ("上传", self._on_add_fatigue_result_local),
+                ("删除选中行", self._on_del_fatigue_result),
+            ],
+            paths=self.fatigue_result_files,
+            row_map=self._fatigue_result_row_map,
+            category=self.CATEGORY_FATIGUE,
+            branch="result",
+            empty_hint="暂无选择疲劳分析结果文件。",
+        )
+
+        # 疲劳输入
+        self._append_file_section(
+            self.files_table,
+            title="设置疲劳分析输入文件组",
+            buttons_info=[
+                ("上传", self._on_add_fatigue_input_local),
+                ("删除选中行", self._on_del_fatigue_input),
+            ],
+            paths=self.fatigue_input_files,
+            row_map=self._fatigue_input_row_map,
+            category=self.CATEGORY_FATIGUE,
+            branch="input",
+            empty_hint="暂无选择疲劳分析输入文件。",
+        )
+
+        self._fit_table_height(self.files_table)
+        QTimer.singleShot(0, self._adjust_files_table_widths)
+
     def _on_add_model_local(self):
         fp, _ = QFileDialog.getOpenFileName(self, "选择模型文件", "", "所有文件 (*.*)")
         if not fp:
+            return
+        if self._sacinp_name_score(fp) <= 0 or not self._scan_model_signature(fp):
+            QMessageBox.warning(self, "导入失败", "当前选择的文件不是可参与计算的结构模型文件，请重新选择 sacinp 模型文件。")
             return
         try:
             system_path = self._db_store_local_file(fp, self.CATEGORY_MODEL)
@@ -1999,6 +2347,8 @@ class NewSpecialInspectionPage(BasePage):
             original_name=os.path.basename(fp),
             logical_path=self._db_logical_path(self.CATEGORY_MODEL),
             display_path=self._display_storage_path(system_path),
+            category_name=self._default_category_label(self.CATEGORY_MODEL),
+            modified_at=datetime.datetime.fromtimestamp(os.path.getmtime(fp)),
             remark="本地导入",
         )
         self._remember_file_meta(
@@ -2019,23 +2369,26 @@ class NewSpecialInspectionPage(BasePage):
         return
 
     def _on_del_model(self):
-        selected = self.model_files_table.selectionModel().selectedRows()
-        if not selected:
-            QMessageBox.warning(self, "提示", "请先在模型文件表中选中要删除的行。")
+        selected = self.files_table.selectionModel().selectedRows()
+        indexes = sorted(
+            {self._model_row_map[idx.row()] for idx in selected if idx.row() in self._model_row_map},
+            reverse=True
+        )
+        if not indexes:
+            QMessageBox.warning(self, "提示", "请先在“设置模型文件”区域选中要删除的行。")
             return
 
-        rows_to_delete = sorted([idx.row() for idx in selected], reverse=True)
         failed = False
-        for r in rows_to_delete:
-            if 1 <= r <= len(self.model_files):
-                path = self.model_files[r - 1]
-                deleted = self._db_soft_delete_file(path, self.CATEGORY_MODEL)
+        for idx in indexes:
+            if 0 <= idx < len(self.model_files):
+                path = self.model_files[idx]
+                deleted = self._db_delete_file(path, self.CATEGORY_MODEL)
                 if is_file_db_configured() and not deleted:
                     failed = True
                     continue
-                del self.model_files[r - 1]
+                del self.model_files[idx]
 
-        self._refresh_model_files_table()
+        self._refresh_files_table()
         self._refresh_model_preview()
         if failed:
             QMessageBox.warning(self, "警告", "部分文件未能同步更新数据库删除状态，已保留在列表中。")
@@ -2043,6 +2396,9 @@ class NewSpecialInspectionPage(BasePage):
     def _on_add_collapse_local(self):
         fp, _ = QFileDialog.getOpenFileName(self, "选择倒塌分析结果文件", "", "所有文件 (*.*)")
         if not fp:
+            return
+        if not self._is_runtime_supported_path(fp, self.CATEGORY_COLLAPSE):
+            QMessageBox.warning(self, "导入失败", "当前选择的文件不是可参与计算的 clplog 文件，请重新选择。")
             return
         try:
             system_path = self._db_store_local_file(fp, self.CATEGORY_COLLAPSE)
@@ -2055,6 +2411,8 @@ class NewSpecialInspectionPage(BasePage):
             original_name=os.path.basename(fp),
             logical_path=self._db_logical_path(self.CATEGORY_COLLAPSE),
             display_path=self._display_storage_path(system_path),
+            category_name=self._default_category_label(self.CATEGORY_COLLAPSE),
+            modified_at=datetime.datetime.fromtimestamp(os.path.getmtime(fp)),
             remark="本地导入",
         )
         self._remember_file_meta(
@@ -2077,7 +2435,7 @@ class NewSpecialInspectionPage(BasePage):
         for r in rows_to_delete:
             if 1 <= r <= len(self.collapse_files):
                 path = self.collapse_files[r - 1]
-                deleted = self._db_soft_delete_file(path, self.CATEGORY_COLLAPSE)
+                deleted = self._db_delete_file(path, self.CATEGORY_COLLAPSE)
                 if is_file_db_configured() and not deleted:
                     failed = True
                     continue
@@ -2098,9 +2456,10 @@ class NewSpecialInspectionPage(BasePage):
         fp, _ = QFileDialog.getOpenFileName(self, f"选择疲劳分析{branch_label}", "", "所有文件 (*.*)")
         if not fp:
             return
-        actual_branch = self._fatigue_branch_for_path(fp)
-        if actual_branch and actual_branch != branch:
-            QMessageBox.warning(self, "导入失败", f"当前选择的文件更像疲劳分析{self._fatigue_branch_label(actual_branch)}，请检查后重新导入。")
+        actual_branch = self._runtime_fatigue_branch_for_name(fp)
+        if actual_branch != branch:
+            target_label = "ftginp" if branch == "input" else "ftglst"
+            QMessageBox.warning(self, "导入失败", f"当前选择的文件不是可参与计算的 {target_label} 文件，请检查后重新导入。")
             return
         try:
             system_path = self._db_store_local_file(fp, self.CATEGORY_FATIGUE, branch)
@@ -2113,6 +2472,8 @@ class NewSpecialInspectionPage(BasePage):
             original_name=os.path.basename(fp),
             logical_path=self._db_logical_path(self.CATEGORY_FATIGUE, branch),
             display_path=self._display_storage_path(system_path),
+            category_name=self._default_category_label(self.CATEGORY_FATIGUE, branch),
+            modified_at=datetime.datetime.fromtimestamp(os.path.getmtime(fp)),
             remark="本地导入",
         )
         self._remember_file_meta(
@@ -2147,7 +2508,7 @@ class NewSpecialInspectionPage(BasePage):
         for idx in indexes:
             if 0 <= idx < len(target_list):
                 path = target_list[idx]
-                deleted = self._db_soft_delete_file(path, self.CATEGORY_FATIGUE)
+                deleted = self._db_delete_file(path, self.CATEGORY_FATIGUE)
                 if is_file_db_configured() and not deleted:
                     failed = True
                     continue

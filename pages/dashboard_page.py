@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget,
     QListWidgetItem
 )
-from base_page import BasePage
+from core.base_page import BasePage
 
 
 class DashboardPage(BasePage):

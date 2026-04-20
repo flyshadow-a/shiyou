@@ -14,9 +14,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtGui import QColor, QFont, QFontMetrics
 
-from app_paths import external_path, first_existing_path
+from core.app_paths import external_path, first_existing_path
 from pages.hover_tip_table import HoverTipTable
-from base_page import BasePage
+from core.base_page import BasePage
 
 
 

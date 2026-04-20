@@ -28,7 +28,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from base_page import BasePage
+from core.base_page import BasePage
 
 try:
     import pandas as pd

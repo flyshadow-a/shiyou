@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
 
 # 兼容你项目里可能存在的 base（如果不存在也不影响运行）
 try:
-    from base_page import BasePage  # type: ignore
+    from core.base_page import BasePage  # type: ignore
 except Exception:
     BasePage = QWidget  # fallback
 

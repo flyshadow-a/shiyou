@@ -1,10 +1,6 @@
 # shiyou
 
-海洋平台文件管理与特检策略桌面程序。
-
-项目目前包含两部分：
-- 主程序：PyQt5 桌面界面、文件管理、历史检测、特检策略
-- 数据库模块：`shiyou_db/`，负责 MySQL 元数据存储和文件落盘管理
+海上平台结构载荷管理系统桌面程序，技术栈为 `Python + PyQt5`。
 
 ## 环境要求
 
@@ -26,13 +22,13 @@ pip install -r requirements.txt
 CREATE DATABASE shiyou_files CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
-2. 复制数据库配置模板：
+2. 复制配置模板：
 
 ```powershell
 copy shiyou_db\db_config.example.json shiyou_db\db_config.json
 ```
 
-3. 修改 `shiyou_db\db_config.json` 中的连接信息和存储目录。
+3. 修改 `shiyou_db\db_config.json` 中的数据库连接和存储路径。
 
 4. 初始化表结构：
 
@@ -40,43 +36,36 @@ copy shiyou_db\db_config.example.json shiyou_db\db_config.json
 python shiyou_db\init_db.py
 ```
 
-## 启动程序
+## 启动
 
 ```powershell
 python main.py
 ```
 
-## 特检策略配置
-
-仓库中提供两类运行配置：
-
-- 本地开发配置  
-  `pages/output_special_strategy/wc19_1d_run_config.json`  
-  `pages/output_special_strategy/wc9_7_run_config.json`
-
-- 示例配置  
-  `pages/output_special_strategy/wc19_1d_run_config.example.json`  
-  `pages/output_special_strategy/wc9_7_run_config.example.json`
-
-新环境建议先复制示例配置，再改成自己的实际路径。
-
 ## 目录说明
 
-- `main.py`：程序入口
-- `pages/`：各业务页面
-- `pages/output_special_strategy/`：特检策略算法、配置、报告生成
-- `shiyou_db/`：数据库模型、服务、初始化脚本
-- `pict/`：界面资源
+- `main.py`：程序入口。
+- `core/`：页面基类、公共路径、通用下拉控件等基础模块。
+- `pages/`：各业务页面及导航配置。
+- `services/`：文件管理、特检策略等业务服务与适配层。
+- `shiyou_db/`：数据库模型、服务、初始化脚本。
+- `scripts/`：运维或修复脚本。
+- `docs/`：方案与说明文档。
+- `data/`：示例与联调用数据。
+- `upload/`：统一上传目录；原 `uploads/` 已合并废弃。
+- `pict/`：界面资源。
+- `pages/output_special_strategy/`：特检策略算法配置与输出目录。
 
-## 不提交的本地内容
+## 本地运行说明
 
-默认忽略以下内容：
+- 文件上传只保留 `upload/` 一套目录。
+- `special_strategy_runtime/`、测试缓存和各类临时渲染目录均属于可再生运行产物。
+- 本地敏感配置和运行数据默认不提交。
+
+## 默认忽略的本地内容
 
 - `shiyou_db/db_config.json`
 - `shiyou_db/shiyou_file_storage/`
 - `upload/`
-- `uploads/`
 - `special_strategy_runtime/`
 - 本地生成的 `docx/xlsx` 结果文件
-
-这样可以避免把本地密码、数据库文件和运行产物一起提交。

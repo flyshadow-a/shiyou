@@ -30,6 +30,8 @@ Recommended tables:
    - logical_path
    - facility_code
    - storage_path
+   - category_name
+   - work_condition
    - file_size
    - file_hash
    - source_modified_at

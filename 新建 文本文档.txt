@@ -1,4 +1,0 @@
-处于proiect目录下激活环境 .\venv_pack\Scripts\activate
-
-
-运行命令 pyinstaller main.spec --clean

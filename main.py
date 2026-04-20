@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QSplitter, QFrame
 )
 
-from nav_config import NAV_CONFIG
+from pages.nav_config import NAV_CONFIG
 
 # 业务页面 / 对话框
 from pages.new_special_inspection_page import NewSpecialInspectionPage

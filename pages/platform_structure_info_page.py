@@ -20,8 +20,8 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 
-from base_page import BasePage
-from dropdown_bar import DropdownBar
+from core.base_page import BasePage
+from core.dropdown_bar import DropdownBar
 
 
 class PlatformStructureInfoPage(BasePage):

@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy, QAbstractScrollArea, QHeaderView
 )
 
-from base_page import BasePage
+from core.base_page import BasePage
 
 
 class PersonalCenterPage(BasePage):

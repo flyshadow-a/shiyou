@@ -1,4 +1,5 @@
-﻿__pycache__/
+__pycache__/
+.pytest_cache/
 *.pyc
 .idea/
 patch_file.py
@@ -11,7 +12,6 @@ build/
 dist/
 special_strategy_runtime/
 upload/
-uploads/
 img_test_*/
 pages/output_special_strategy/appendix_pdf_render_*/
 pages/output_special_strategy/img_test_*/
@@ -24,5 +24,4 @@ pages/output_special_strategy/*.preview.json
 pages/output_special_strategy/*.preview.xlsx
 pages/output_special_strategy/*.preview.pipeline.xlsx
 pages/output_special_strategy/*.preview.docx
-模型/
 模型/

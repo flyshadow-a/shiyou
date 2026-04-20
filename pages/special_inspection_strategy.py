@@ -15,13 +15,13 @@ from PyQt5.QtWidgets import (
     QDialog, QAbstractItemView, QMessageBox
 )
 
-from app_paths import first_existing_path
-from base_page import BasePage
-from dropdown_bar import DropdownBar
+from core.app_paths import first_existing_path
+from core.base_page import BasePage
+from core.dropdown_bar import DropdownBar
 from pages.file_management_platforms import FILE_MANAGEMENT_PLATFORMS, default_platform, find_platform, sync_platform_dropdowns
 from pages.read_table_xls import ReadTableXls
 from pages.special_strategy_history_dialog import SpecialStrategyHistoryDialog as SpecialStrategyHistoryDialogView
-from special_strategy_services import (
+from services.special_strategy_services import (
     NodeYearLabelMapper,
     SpecialStrategyResultService,
     SpecialStrategySummaryBuilder,

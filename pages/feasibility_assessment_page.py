@@ -40,11 +40,11 @@ from PyQt5.QtGui import QDesktopServices
 
 from sqlalchemy import create_engine, text
 
-from base_page import BasePage
+from core.base_page import BasePage
 
 from pages.feasibility_assessment_results_page import FeasibilityAssessmentResultsPage
 from pages.sacs_create_model_service import create_new_model_files
-from app_paths import first_existing_path
+from core.app_paths import first_existing_path
 
 SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
 

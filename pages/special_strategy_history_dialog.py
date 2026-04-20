@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
     QHeaderView,
 )
 
-from special_strategy_services import SpecialStrategyResultService
+from services.special_strategy_services import SpecialStrategyResultService
 
 
 class SpecialStrategyHistoryDialog(QDialog):

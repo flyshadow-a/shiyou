@@ -31,9 +31,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtGui import QColor, QFont, QFontMetrics
 
-from app_paths import existing_dirs, external_path, first_existing_path
-from base_page import BasePage
-from dropdown_bar import DropdownBar  # 复用平台基本信息页的顶部下拉条样式
+from core.app_paths import existing_dirs, external_path, first_existing_path
+from core.base_page import BasePage
+from core.dropdown_bar import DropdownBar  # 复用平台基本信息页的顶部下拉条样式
 # 从样表提取下拉选项（兼容：pages 包内相对导入 / 直接运行）
 from pages.read_table_xls import ReadTableXls
 from pages.hover_tip_table import HoverTipTable

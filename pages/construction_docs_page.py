@@ -12,12 +12,12 @@ from PyQt5.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
 )
-from base_page import BasePage
-from dropdown_bar import DropdownBar
+from core.base_page import BasePage
+from core.dropdown_bar import DropdownBar
 from pages.construction_docs_widget import ConstructionDocsWidget
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
 from pages.file_management_header import build_platform_description
-from inspection_business_db_adapter import load_facility_profile, save_facility_profile
+from services.inspection_business_db_adapter import load_facility_profile, save_facility_profile
 
 
 class PlatformDescriptionDialog(QDialog):

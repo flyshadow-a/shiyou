@@ -21,19 +21,30 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from file_db_adapter import (
+from services.file_db_adapter import (
     append_docman_file,
     FileBackendError,
+    hard_delete_record,
     is_file_db_configured,
     load_docman_records,
     load_docman_record_list,
     replace_docman_list_file,
     replace_docman_file,
-    soft_delete_record,
+    resolve_storage_path,
+    update_file_record,
 )
 
 
 class DocManWidget(QFrame):
+    COL_INDEX = 0
+    COL_CATEGORY = 1
+    COL_WORK_CONDITION = 2
+    COL_FILENAME = 3
+    COL_FMT = 4
+    COL_MTIME = 5
+    COL_UPLOAD = 6
+    COL_REMARK = 7
+
     def __init__(self, storage_dir_getter: Callable[[List[str]], str], parent=None):
         super().__init__(parent)
         self._storage_dir_getter = storage_dir_getter
@@ -44,6 +55,7 @@ class DocManWidget(QFrame):
         self._hide_empty_templates = False
         self._db_list_mode = False
         self._visible_row_indices: List[int] = []
+        self._show_work_condition = False
         self._custom_upload_handler = None
         self._custom_delete_handler = None
         self._custom_download_handler = None
@@ -119,8 +131,8 @@ class DocManWidget(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        self.table = QTableWidget(0, 7, self)
-        self.table.setHorizontalHeaderLabels(["序号", "文件类别", "文件名", "文件格式", "修改时间", "上传/修改", "备注"])
+        self.table = QTableWidget(0, 8, self)
+        self.table.setHorizontalHeaderLabels(["序号", "文件类别", "工况", "文件名", "文件格式", "修改时间", "上传/修改", "备注"])
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(False)
         self.table.setSelectionMode(QTableWidget.NoSelection)
@@ -133,18 +145,21 @@ class DocManWidget(QFrame):
 
         header = self.table.horizontalHeader()
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, header.Fixed)
-        header.setSectionResizeMode(1, header.Stretch)
-        header.setSectionResizeMode(2, header.Stretch)
-        header.setSectionResizeMode(3, header.Fixed)
-        header.setSectionResizeMode(4, header.Fixed)
-        header.setSectionResizeMode(5, header.Fixed)
-        header.setSectionResizeMode(6, header.Stretch)
-        self.table.setColumnWidth(0, 88)
-        self.table.setColumnWidth(3, 110)
-        self.table.setColumnWidth(4, 150)
-        self.table.setColumnWidth(5, 120)
+        header.setSectionResizeMode(self.COL_INDEX, header.Fixed)
+        header.setSectionResizeMode(self.COL_CATEGORY, header.Stretch)
+        header.setSectionResizeMode(self.COL_WORK_CONDITION, header.Stretch)
+        header.setSectionResizeMode(self.COL_FILENAME, header.Stretch)
+        header.setSectionResizeMode(self.COL_FMT, header.Fixed)
+        header.setSectionResizeMode(self.COL_MTIME, header.Fixed)
+        header.setSectionResizeMode(self.COL_UPLOAD, header.Fixed)
+        header.setSectionResizeMode(self.COL_REMARK, header.Stretch)
+        self.table.setColumnWidth(self.COL_INDEX, 88)
+        self.table.setColumnWidth(self.COL_WORK_CONDITION, 150)
+        self.table.setColumnWidth(self.COL_FMT, 110)
+        self.table.setColumnWidth(self.COL_MTIME, 150)
+        self.table.setColumnWidth(self.COL_UPLOAD, 120)
         self.table.verticalHeader().setDefaultSectionSize(40)
+        self._apply_column_visibility()
         layout.addWidget(self.table, 1)
 
         action_row = QHBoxLayout()
@@ -178,6 +193,7 @@ class DocManWidget(QFrame):
         overlay_from_db: bool = True,
         hide_empty_templates: bool = False,
         db_list_mode: bool = False,
+        show_work_condition: bool = False,
     ):
         self._path_segments = list(path_segments)
         self._db_list_mode = bool(db_list_mode)
@@ -187,6 +203,7 @@ class DocManWidget(QFrame):
         self._category_options = list(category_options)
         self._facility_code = (facility_code or "").strip() or None
         self._hide_empty_templates = bool(hide_empty_templates)
+        self._show_work_condition = bool(show_work_condition)
         if self._db_list_mode:
             self._load_record_list_from_db()
         elif overlay_from_db:
@@ -222,6 +239,7 @@ class DocManWidget(QFrame):
             rec["index"] = index
             rec.setdefault("checked", False)
             rec.setdefault("category", "")
+            rec.setdefault("work_condition", "")
             rec.setdefault("fmt", "")
             rec.setdefault("filename", "")
             rec.setdefault("mtime", "")
@@ -235,7 +253,7 @@ class DocManWidget(QFrame):
     def _record_has_content(rec: dict) -> bool:
         return any(
             bool(rec.get(key))
-            for key in ("filename", "path", "mtime", "record_id", "remark")
+            for key in ("filename", "path", "mtime", "record_id", "remark", "work_condition")
         )
 
     def _record_index_for_row(self, row: int) -> int | None:
@@ -249,18 +267,27 @@ class DocManWidget(QFrame):
             if not self._hide_empty_templates or self._record_has_content(rec) or rec.get("_force_visible"):
                 self._visible_row_indices.append(idx)
 
+        self._apply_column_visibility()
+        self.table.blockSignals(True)
         self.table.clearContents()
         self.table.setRowCount(len(self._visible_row_indices))
 
-        for row, record_index in enumerate(self._visible_row_indices):
-            rec = self._records[record_index]
-            self._set_checkbox_index_cell(row, rec, row + 1)
-            self._set_category_cell(row, rec)
-            self._set_readonly_item(row, 2, rec.get("filename", ""), Qt.AlignVCenter | Qt.AlignLeft)
-            self._set_readonly_item(row, 3, rec.get("fmt", ""), Qt.AlignCenter)
-            self._set_readonly_item(row, 4, rec.get("mtime", ""), Qt.AlignCenter)
-            self._set_upload_button(row)
-            self._set_remark_item(row, rec.get("remark", ""))
+        try:
+            for row, record_index in enumerate(self._visible_row_indices):
+                rec = self._records[record_index]
+                self._set_checkbox_index_cell(row, rec, row + 1)
+                self._set_category_cell(row, rec)
+                self._set_work_condition_item(row, rec.get("work_condition", ""))
+                self._set_readonly_item(row, self.COL_FILENAME, rec.get("filename", ""), Qt.AlignVCenter | Qt.AlignLeft)
+                self._set_readonly_item(row, self.COL_FMT, rec.get("fmt", ""), Qt.AlignCenter)
+                self._set_readonly_item(row, self.COL_MTIME, rec.get("mtime", ""), Qt.AlignCenter)
+                self._set_upload_button(row)
+                self._set_remark_item(row, rec.get("remark", ""))
+        finally:
+            self.table.blockSignals(False)
+
+    def _apply_column_visibility(self):
+        self.table.setColumnHidden(self.COL_WORK_CONDITION, not self._show_work_condition)
 
     def _set_checkbox_index_cell(self, row: int, rec: dict, display_index: int):
         box = QCheckBox(self.table)
@@ -300,18 +327,23 @@ class DocManWidget(QFrame):
         else:
             combo.setCurrentIndex(0)
         combo.currentTextChanged.connect(lambda text, r=row: self._on_category_changed(r, text))
-        self.table.setCellWidget(row, 1, combo)
+        self.table.setCellWidget(row, self.COL_CATEGORY, combo)
+
+    def _set_work_condition_item(self, row: int, text: str):
+        item = QTableWidgetItem(text)
+        item.setTextAlignment(int(Qt.AlignVCenter | Qt.AlignLeft))
+        self.table.setItem(row, self.COL_WORK_CONDITION, item)
 
     def _set_upload_button(self, row: int):
         btn = QPushButton("上传/修改", self.table)
         btn.setProperty("class", "DocManCellButton")
         btn.clicked.connect(lambda _=False, r=row: self._upload_or_modify(r))
-        self.table.setCellWidget(row, 5, btn)
+        self.table.setCellWidget(row, self.COL_UPLOAD, btn)
 
     def _set_remark_item(self, row: int, text: str):
         item = QTableWidgetItem(text)
         item.setTextAlignment(int(Qt.AlignVCenter | Qt.AlignLeft))
-        self.table.setItem(row, 6, item)
+        self.table.setItem(row, self.COL_REMARK, item)
 
     def _set_readonly_item(self, row: int, col: int, text: str, align: Qt.AlignmentFlag):
         item = QTableWidgetItem(text)
@@ -328,6 +360,12 @@ class DocManWidget(QFrame):
         record_index = self._record_index_for_row(row)
         if record_index is not None:
             self._records[record_index]["category"] = text
+            record_id = self._records[record_index].get("record_id")
+            if record_id is not None and is_file_db_configured():
+                try:
+                    update_file_record(int(record_id), category_name=text)
+                except FileBackendError as exc:
+                    QMessageBox.warning(self, "保存失败", str(exc))
 
     def _add_row(self):
         if self._hide_empty_templates:
@@ -343,6 +381,7 @@ class DocManWidget(QFrame):
                 "index": len(self._records) + 1,
                 "checked": False,
                 "category": "",
+                "work_condition": "",
                 "fmt": "",
                 "filename": "",
                 "mtime": "",
@@ -376,7 +415,7 @@ class DocManWidget(QFrame):
                 if record_id is None:
                     continue
                 try:
-                    soft_delete_record(int(record_id))
+                    hard_delete_record(int(record_id))
                 except FileBackendError as exc:
                     failures.append(str(exc))
                     failed_ids.add(int(record_id))
@@ -434,6 +473,7 @@ class DocManWidget(QFrame):
                         logical_path=logical_path,
                         record_id=int(record_id),
                         category=current_category,
+                        work_condition=rec.get("work_condition", ""),
                         remark=rec.get("remark", ""),
                         facility_code=self._facility_code,
                     )
@@ -442,6 +482,7 @@ class DocManWidget(QFrame):
                         file_path,
                         path_segments=self._path_segments,
                         category=current_category,
+                        work_condition=rec.get("work_condition", ""),
                         remark=rec.get("remark", ""),
                         facility_code=self._facility_code,
                     )
@@ -460,13 +501,17 @@ class DocManWidget(QFrame):
                     path_segments=self._path_segments,
                     row_index=row + 1,
                     category=current_category,
+                    work_condition=rec.get("work_condition", ""),
                     remark=rec.get("remark", ""),
                     facility_code=self._facility_code,
                 )
                 rec["record_id"] = result.get("id")
-                rec["path"] = result.get("storage_path") or ""
+                rec["path"] = resolve_storage_path(result)
                 rec["fmt"] = (result.get("file_ext") or "").upper()
                 rec["filename"] = result.get("original_name") or os.path.basename(file_path)
+                rec["category"] = result.get("category_name") or current_category
+                rec["work_condition"] = result.get("work_condition") or rec.get("work_condition", "")
+                rec["logical_path"] = result.get("logical_path") or rec.get("logical_path", "")
                 dt = result.get("source_modified_at") or result.get("uploaded_at")
                 rec["mtime"] = dt.strftime("%Y/%m/%d %H:%M") if dt else QDateTime.currentDateTime().toString("yyyy/M/d HH:mm")
                 self.refresh()
@@ -503,11 +548,33 @@ class DocManWidget(QFrame):
         return ext or ""
 
     def _on_item_changed(self, item: Optional[QTableWidgetItem]):
-        if item is None or item.column() != 6:
+        if item is None:
             return
         record_index = self._record_index_for_row(item.row())
-        if record_index is not None:
-            self._records[record_index]["remark"] = item.text().strip()
+        if record_index is None:
+            return
+
+        record = self._records[record_index]
+        record_id = record.get("record_id")
+        if item.column() == self.COL_WORK_CONDITION:
+            work_condition = item.text().strip()
+            record["work_condition"] = work_condition
+            if record_id is not None and is_file_db_configured():
+                try:
+                    update_file_record(int(record_id), work_condition=work_condition)
+                except FileBackendError as exc:
+                    QMessageBox.warning(self, "保存失败", str(exc))
+            return
+        if item.column() != self.COL_REMARK:
+            return
+
+        remark = item.text().strip()
+        record["remark"] = remark
+        if record_id is not None and is_file_db_configured():
+            try:
+                update_file_record(int(record_id), remark=remark)
+            except FileBackendError as exc:
+                QMessageBox.warning(self, "保存失败", str(exc))
 
     def _download_checked_rows(self):
         selected = [rec for rec in self._records if rec.get("checked")]

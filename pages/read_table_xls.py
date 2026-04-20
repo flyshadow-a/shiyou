@@ -7,7 +7,7 @@ import os
 from typing import Dict, List, Optional, Any
 
 import pandas as pd
-from app_paths import external_path, first_existing_path
+from core.app_paths import external_path, first_existing_path
 
 
 class ReadTableXls:

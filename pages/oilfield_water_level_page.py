@@ -9,8 +9,8 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QWidget, QLabel, QHeaderView, QAbstractItemView, QSizePolicy, QMessageBox
 )
 from PyQt5.QtCore import Qt
-from base_page import BasePage
-from dropdown_bar import DropdownBar
+from core.base_page import BasePage
+from core.dropdown_bar import DropdownBar
 from pages.read_table_xls import ReadTableXls
 
 

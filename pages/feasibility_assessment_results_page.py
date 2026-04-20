@@ -13,7 +13,7 @@
 import os
 from typing import Dict, List, Tuple
 
-from app_paths import first_existing_path
+from core.app_paths import first_existing_path
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QPen, QBrush, QFontMetrics
 from PyQt5.QtWidgets import (
@@ -37,12 +37,12 @@ from PyQt5.QtWidgets import (
     QComboBox,
 )
 
-from base_page import BasePage
+from core.base_page import BasePage
 
 from sqlalchemy import create_engine, text
 from pages.sacs_compare_view import SacsComparePanel
 
-from dropdown_bar import DropdownBar
+from core.dropdown_bar import DropdownBar
 
 
 class InpWireframeView(QGraphicsView):

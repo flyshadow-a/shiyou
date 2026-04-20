@@ -7,9 +7,9 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 
-from base_page import BasePage
+from core.base_page import BasePage
 from pages.construction_docs_widget import ConstructionDocsWidget
-from dropdown_bar import DropdownBar
+from core.dropdown_bar import DropdownBar
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
 from pages.important_history_rebuild_info_page import ImportantHistoryEventsPage
 from pages.history_inspection_summary_page import HistoryInspectionSummaryPage

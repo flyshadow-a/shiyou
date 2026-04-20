@@ -26,15 +26,15 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from base_page import BasePage
-from dropdown_bar import DropdownBar
-from inspection_business_db_adapter import (
+from core.base_page import BasePage
+from core.dropdown_bar import DropdownBar
+from services.inspection_business_db_adapter import (
     create_inspection_project,
     list_inspection_projects,
     soft_delete_inspection_project,
     update_inspection_project,
 )
-from file_db_adapter import DOC_MAN_MODULE_CODE, soft_delete_files_by_prefix
+from services.file_db_adapter import DOC_MAN_MODULE_CODE, soft_delete_files_by_prefix
 from .file_management_platforms import default_platform, sync_platform_dropdowns
 from .construction_docs_widget import ConstructionDocsWidget
 from .doc_man import DocManWidget
@@ -640,7 +640,7 @@ class ImportantHistoryDetailWidget(QWidget):
         self._reload_current_folder(selected_id=created.get("id"))
 
     def _get_doc_man_upload_dir(self, path_segments):
-        root = os.path.join(self._project_root, "uploads", "history_rebuild")
+        root = os.path.join(self._project_root, "upload", "history_rebuild")
         return os.path.join(root, *path_segments)
 
     def _edit_project(self):

@@ -44,11 +44,11 @@ from PyQt5.QtWidgets import (
     QSpacerItem,
 )
 
-from base_page import BasePage
-from dropdown_bar import DropdownBar
+from core.base_page import BasePage
+from core.dropdown_bar import DropdownBar
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
 from pages.doc_man import DocManWidget
-from inspection_business_db_adapter import (
+from services.inspection_business_db_adapter import (
     create_inspection_project,
     list_inspection_findings,
     list_inspection_projects,
@@ -56,7 +56,7 @@ from inspection_business_db_adapter import (
     soft_delete_inspection_project,
     update_inspection_project,
 )
-from file_db_adapter import DOC_MAN_MODULE_CODE, soft_delete_files_by_prefix
+from services.file_db_adapter import DOC_MAN_MODULE_CODE, soft_delete_files_by_prefix
 
 # ✅ 直接复用 ConstructionDocsWidget 的文件夹布局样式
 from pages.construction_docs_widget import ConstructionDocsWidget
@@ -1424,7 +1424,7 @@ class HistoryInspectionSummaryPage(BasePage):
         """历史检测及结论上传文件根目录。"""
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         facility = (self.facility_code or default_platform()["facility_code"]).strip()
-        return os.path.join(project_root, "uploads", "history_inspection", facility)
+        return os.path.join(project_root, "upload", "history_inspection", facility)
 
     def _get_doc_man_upload_dir(self, path_segments: List[str]) -> str:
         target_dir = os.path.join(self._get_upload_root(), *path_segments)

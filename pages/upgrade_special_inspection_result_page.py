@@ -11,8 +11,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 
-from base_page import BasePage
-from special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService
+from core.base_page import BasePage
+from services.special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService
 
 
 NODE_SUMMARY_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]

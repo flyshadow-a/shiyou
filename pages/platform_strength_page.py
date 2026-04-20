@@ -29,9 +29,9 @@ from PyQt5.QtWidgets import (
     QGraphicsScene, QMessageBox, QPushButton, QHeaderView,QSlider,
 )
 
-from app_paths import first_existing_path
-from base_page import BasePage
-from dropdown_bar import DropdownBar
+from core.app_paths import first_existing_path
+from core.base_page import BasePage
+from core.dropdown_bar import DropdownBar
 from pages.feasibility_assessment_page import FeasibilityAssessmentPage
 from pages.read_table_xls import ReadTableXls
 

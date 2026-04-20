@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
-from app_paths import first_existing_path
+from core.app_paths import first_existing_path
 from pages.sacs_wellslot_service import generate_wellslot_to_db
 from pages.sacs_riser_service import generate_riser_to_db
 from pages.sacs_topside_service import transform_topside_weights_to_db

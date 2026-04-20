@@ -13,8 +13,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from base_page import BasePage
-from dropdown_bar import DropdownBar
+from core.base_page import BasePage
+from core.dropdown_bar import DropdownBar
 from .file_management_platforms import default_platform, sync_platform_dropdowns
 from .construction_docs_widget import ConstructionDocsWidget
 from .important_history_rebuild_info_page import ImportantHistoryDetailWidget
@@ -36,7 +36,7 @@ class HistoryRebuildDocsWidget(ConstructionDocsWidget):
 
     def _get_upload_root(self) -> str:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        return os.path.join(project_root, "uploads", "history_rebuild")
+        return os.path.join(project_root, "upload", "history_rebuild")
 
     def _on_folder_clicked(self, folder_name: str):
         if folder_name == "历史改造信息":

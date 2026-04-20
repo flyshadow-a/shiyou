@@ -58,7 +58,7 @@ class ConstructionDocsWidget(QWidget):
         """
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         facility = (getattr(self, "facility_code", "") or "").strip()
-        return os.path.join(project_root, "uploads", facility) if facility else os.path.join(project_root, "uploads")
+        return os.path.join(project_root, "upload", facility) if facility else os.path.join(project_root, "upload")
     # =================================================
 
     def __init__(self, parent=None, show_platform_description=False):

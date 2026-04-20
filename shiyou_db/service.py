@@ -1,16 +1,17 @@
 ﻿from __future__ import annotations
 
 import hashlib
+import os
+import re
 import shutil
-import uuid
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select
-from sqlalchemy.orm import joinedload
+from sqlalchemy import inspect, select
+from sqlalchemy.orm import joinedload, sessionmaker
 
 from .config import AppSettings, load_settings
-from .database import build_session_factory
+from .database import Base, build_engine
 from .models import (
     FacilityProfile,
     FileRecord,
@@ -31,17 +32,48 @@ DEFAULT_FILE_TYPES = [
     {"code": "other", "name": "其他", "description": "其他文件"},
 ]
 
+_UNSET = object()
+FILE_MANAGEMENT_MODULES = {"model_files", "doc_man"}
+ROW_SEGMENT_RE = re.compile(r"^row_\d+$", re.IGNORECASE)
+
 
 class FileMetadataService:
     def __init__(self, settings: AppSettings):
         self.settings = settings
-        self.session_factory = build_session_factory(settings)
+        self.engine = build_engine(settings)
+        self.session_factory = sessionmaker(
+            bind=self.engine,
+            autoflush=False,
+            autocommit=False,
+            expire_on_commit=False,
+        )
+        self._ensure_schema()
         self.storage_root = Path(settings.storage_root)
         self.storage_root.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def from_config(cls, config_path: str | None = None) -> "FileMetadataService":
         return cls(load_settings(config_path))
+
+    def _ensure_schema(self) -> None:
+        Base.metadata.create_all(self.engine)
+        inspector = inspect(self.engine)
+        if not inspector.has_table("file_records"):
+            return
+
+        columns = {str(col.get("name") or "") for col in inspector.get_columns("file_records")}
+        statements: list[str] = []
+        if "storage_rel_path" not in columns:
+            statements.append("ALTER TABLE file_records ADD COLUMN storage_rel_path VARCHAR(500) NULL AFTER storage_path")
+        if "category_name" not in columns:
+            statements.append("ALTER TABLE file_records ADD COLUMN category_name VARCHAR(255) NULL AFTER updated_at")
+        if "work_condition" not in columns:
+            statements.append("ALTER TABLE file_records ADD COLUMN work_condition VARCHAR(255) NULL AFTER category_name")
+
+        if statements:
+            with self.engine.begin() as conn:
+                for sql in statements:
+                    conn.exec_driver_sql(sql)
 
     def seed_file_types(self) -> None:
         with self.session_factory() as session:
@@ -82,6 +114,8 @@ class FileMetadataService:
         module_code: str,
         logical_path: str | None = None,
         facility_code: str | None = None,
+        category_name: str | None = None,
+        work_condition: str | None = None,
         remark: str | None = None,
         source_modified_at: datetime | None = None,
     ) -> dict:
@@ -89,7 +123,17 @@ class FileMetadataService:
         if not source.exists() or not source.is_file():
             raise FileNotFoundError(f"Local file not found: {source}")
 
-        stored = self._store_file(source, module_code=module_code, logical_path=logical_path)
+        normalized_facility = (facility_code or "").strip() or None
+        normalized_logical = self._normalize_logical_path(logical_path)
+        normalized_category = (category_name or "").strip() or None
+        normalized_work_condition = (work_condition or "").strip() or None
+        stored = self._store_file(
+            source,
+            module_code=module_code,
+            logical_path=normalized_logical,
+            facility_code=normalized_facility,
+            category_name=normalized_category,
+        )
         if source_modified_at is None:
             source_modified_at = datetime.fromtimestamp(source.stat().st_mtime)
 
@@ -104,12 +148,15 @@ class FileMetadataService:
                 file_ext=source.suffix.lower().lstrip("."),
                 file_type_id=file_type.id,
                 module_code=module_code,
-                logical_path=self._normalize_logical_path(logical_path),
-                facility_code=(facility_code or "").strip() or None,
+                logical_path=normalized_logical,
+                facility_code=normalized_facility,
                 storage_path=stored["absolute_path"],
+                storage_rel_path=stored["relative_path"],
                 file_size=stored["size"],
                 file_hash=stored["sha256"],
                 source_modified_at=source_modified_at,
+                category_name=normalized_category,
+                work_condition=normalized_work_condition,
                 remark=(remark or "").strip() or None,
                 is_deleted=False,
             )
@@ -149,7 +196,7 @@ class FileMetadataService:
             row = session.get(FileRecord, record_id)
             if row is None or row.is_deleted:
                 raise ValueError(f"File record not found: {record_id}")
-            source = Path(row.storage_path)
+            source = self._resolve_row_storage_path(row)
             if not source.exists():
                 raise FileNotFoundError(f"Stored file missing on disk: {source}")
             target_root = Path(target_dir).expanduser().resolve()
@@ -166,6 +213,47 @@ class FileMetadataService:
             row.is_deleted = True
             row.updated_at = datetime.utcnow()
             session.commit()
+
+    def hard_delete(self, record_id: int) -> None:
+        with self.session_factory() as session:
+            row = session.get(FileRecord, int(record_id))
+            if row is None:
+                raise ValueError(f"File record not found: {record_id}")
+            target_path = self._resolve_row_storage_path(row)
+            session.delete(row)
+            session.commit()
+
+        if target_path and target_path.exists():
+            try:
+                target_path.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+            self._cleanup_empty_parents(target_path.parent)
+
+    def update_file_record(
+        self,
+        record_id: int,
+        *,
+        category_name: str | object = _UNSET,
+        work_condition: str | object = _UNSET,
+        remark: str | object = _UNSET,
+    ) -> dict:
+        with self.session_factory() as session:
+            row = session.get(FileRecord, int(record_id))
+            if row is None:
+                raise ValueError(f"File record not found: {record_id}")
+            if category_name is not _UNSET:
+                row.category_name = (str(category_name or "").strip() or None)
+            if work_condition is not _UNSET:
+                row.work_condition = (str(work_condition or "").strip() or None)
+            if remark is not _UNSET:
+                row.remark = (str(remark or "").strip() or None)
+            row.updated_at = datetime.utcnow()
+            session.commit()
+            session.refresh(row)
+            return self._record_to_dict(row)
 
     def get_facility_profile(self, facility_code: str) -> dict | None:
         code = (facility_code or "").strip()
@@ -332,23 +420,89 @@ class FileMetadataService:
             session.commit()
         return self.list_inspection_findings(int(project_id))
 
-    def _store_file(self, source: Path, *, module_code: str, logical_path: str | None) -> dict:
-        safe_module = self._safe_segment(module_code or "general")
-        safe_logical = self._normalize_logical_path(logical_path)
-        logical_segments = [self._safe_segment(part) for part in safe_logical.split("/") if part]
-        day = datetime.utcnow().strftime("%Y%m%d")
-        target_dir = self.storage_root / safe_module / Path(*logical_segments) / day
+    def _store_file(
+        self,
+        source: Path,
+        *,
+        module_code: str,
+        logical_path: str | None,
+        facility_code: str | None,
+        category_name: str | None,
+    ) -> dict:
+        target_dir = self._build_target_dir(
+            module_code=module_code,
+            logical_path=logical_path,
+            facility_code=facility_code,
+        )
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        stored_name = f"{uuid.uuid4().hex}{source.suffix.lower()}"
+        stored_name = self._build_stored_name(
+            source.name,
+            target_dir=target_dir,
+            keep_readable=(module_code in FILE_MANAGEMENT_MODULES),
+        )
         target = target_dir / stored_name
         shutil.copy2(source, target)
         return {
             "stored_name": stored_name,
             "absolute_path": str(target.resolve()),
+            "relative_path": target.relative_to(self.storage_root).as_posix(),
             "size": target.stat().st_size,
             "sha256": self._sha256(target),
         }
+
+    def _build_target_dir(
+        self,
+        *,
+        module_code: str,
+        logical_path: str | None,
+        facility_code: str | None,
+    ) -> Path:
+        safe_module = self._safe_segment(module_code or "general")
+        logical_segments = self._storage_segments(
+            module_code=module_code,
+            logical_path=logical_path,
+            facility_code=facility_code,
+        )
+        if module_code in FILE_MANAGEMENT_MODULES:
+            return self.storage_root / safe_module / Path(*logical_segments)
+
+        day = datetime.utcnow().strftime("%Y%m%d")
+        return self.storage_root / safe_module / Path(*logical_segments) / day
+
+    def _storage_segments(
+        self,
+        *,
+        module_code: str,
+        logical_path: str | None,
+        facility_code: str | None,
+    ) -> list[str]:
+        normalized_logical = self._normalize_logical_path(logical_path)
+        logical_segments = [self._safe_storage_segment(part) for part in (normalized_logical or "").split("/") if part]
+        facility_segment = self._safe_storage_segment(facility_code or "") if facility_code else ""
+        if facility_segment:
+            if logical_segments and logical_segments[0].casefold() == facility_segment.casefold():
+                logical_segments = logical_segments[1:]
+            logical_segments.insert(0, facility_segment)
+        if module_code in FILE_MANAGEMENT_MODULES and logical_segments and ROW_SEGMENT_RE.match(logical_segments[-1]):
+            logical_segments = logical_segments[:-1]
+        return logical_segments or ["root"]
+
+    def _build_stored_name(self, original_name: str, *, target_dir: Path, keep_readable: bool) -> str:
+        original = str(original_name or "").strip() or "unnamed"
+        if not keep_readable:
+            stem, suffix = os.path.splitext(original)
+            return f"{self._safe_segment(stem)}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}{suffix.lower()}"
+
+        candidate = self._safe_filename(original)
+        stem, suffix = os.path.splitext(candidate)
+        target = target_dir / candidate
+        counter = 1
+        while target.exists():
+            candidate = f"{stem} ({counter}){suffix}"
+            target = target_dir / candidate
+            counter += 1
+        return candidate
 
     @staticmethod
     def _sha256(path: Path) -> str:
@@ -366,6 +520,38 @@ class FileMetadataService:
         return text or None
 
     @staticmethod
+    def _normalize_storage_rel_path(storage_rel_path: str | None) -> str | None:
+        if storage_rel_path is None:
+            return None
+        text = str(storage_rel_path).replace("\\", "/").strip().strip("/")
+        return text or None
+
+    def _resolve_row_storage_path(self, row: FileRecord) -> Path:
+        storage_rel = self._normalize_storage_rel_path(getattr(row, "storage_rel_path", None))
+        if storage_rel:
+            rel_segments = [segment for segment in storage_rel.split("/") if segment]
+            return (self.storage_root / Path(*rel_segments)).resolve()
+
+        raw_storage = str(getattr(row, "storage_path", "") or "").strip()
+        raw_path = Path(raw_storage)
+        if raw_path.is_absolute():
+            return raw_path.resolve()
+
+        return (self.storage_root / raw_path).resolve()
+
+    def _cleanup_empty_parents(self, path: Path) -> None:
+        current = path
+        stop = self.storage_root.resolve()
+        while True:
+            try:
+                if current == stop or not current.exists():
+                    break
+                current.rmdir()
+                current = current.parent
+            except OSError:
+                break
+
+    @staticmethod
     def _safe_segment(text: str) -> str:
         filtered = []
         for ch in text.strip():
@@ -374,6 +560,28 @@ class FileMetadataService:
             else:
                 filtered.append("_")
         return "".join(filtered).strip("._") or "default"
+
+    @staticmethod
+    def _safe_storage_segment(text: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return "default"
+        invalid = '<>:"/\\\\|?*'
+        filtered = []
+        for ch in raw:
+            if ord(ch) < 32 or ch in invalid:
+                filtered.append("_")
+            else:
+                filtered.append(ch)
+        cleaned = "".join(filtered).strip(" .")
+        return cleaned or "default"
+
+    @classmethod
+    def _safe_filename(cls, text: str) -> str:
+        cleaned = cls._safe_storage_segment(text)
+        if cleaned in {"default", ".", ".."}:
+            return "unnamed"
+        return cleaned
 
     @staticmethod
     def _file_type_to_dict(row: FileType) -> dict:
@@ -399,11 +607,14 @@ class FileMetadataService:
             "logical_path": row.logical_path,
             "facility_code": row.facility_code,
             "storage_path": row.storage_path,
+            "storage_rel_path": row.storage_rel_path,
             "file_size": row.file_size,
             "file_hash": row.file_hash,
             "source_modified_at": row.source_modified_at,
             "uploaded_at": row.uploaded_at,
             "updated_at": row.updated_at,
+            "category_name": row.category_name,
+            "work_condition": row.work_condition,
             "remark": row.remark,
             "is_deleted": row.is_deleted,
         }

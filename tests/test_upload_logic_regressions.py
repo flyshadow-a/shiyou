@@ -51,7 +51,7 @@ class UploadLogicRegressionTests(unittest.TestCase):
                 self.assertIn(snippet, text)
 
     def test_runtime_scans_current_model_branches(self) -> None:
-        text = (REPO_ROOT / "special_strategy_runtime.py").read_text(encoding="utf-8")
+        text = (REPO_ROOT / "services" / "special_strategy_runtime.py").read_text(encoding="utf-8")
         for snippet in (
             'logical_path_prefix=f"{normalize_facility_code(facility_code)}/当前模型"',
             '_logical_has_segment(logical_path, "当前模型/结构模型")',
@@ -64,15 +64,15 @@ class UploadLogicRegressionTests(unittest.TestCase):
     def test_model_files_uploads_keep_user_upload_suffix(self) -> None:
         text = (REPO_ROOT / "pages/model_files_page.py").read_text(encoding="utf-8")
         for snippet in (
-            'return f"{base}/结构模型/用户上传"',
-            'return f"{base}/疲劳分析/{branch}/用户上传"',
-            'return f"{base}/倒塌分析/{branch}/用户上传"',
+            'return f"{base}/结构模型/用户上传/{category}"',
+            'return f"{base}/疲劳分析/{branch}/用户上传/{category}"',
+            'return f"{base}/倒塌分析/{branch}/用户上传/{category}"',
         ):
             with self.subTest(snippet=snippet):
                 self.assertIn(snippet, text)
 
     def test_runtime_only_overrides_complete_fatigue_groups(self) -> None:
-        text = (REPO_ROOT / "special_strategy_runtime.py").read_text(encoding="utf-8")
+        text = (REPO_ROOT / "services" / "special_strategy_runtime.py").read_text(encoding="utf-8")
         for snippet in (
             "def _should_override_fatigue_groups(",
             "if result_count <= 0 or input_count <= 0:",
