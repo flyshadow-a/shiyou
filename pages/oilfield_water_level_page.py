@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # pages/oilfield_water_level_page.py
-from typing import List, Dict, Optional
+import re
+from typing import Any, List, Dict, Optional
 
 from PyQt5.QtGui import QFont, QFontMetrics
 from PyQt5.QtWidgets import (
@@ -11,7 +12,16 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from base_page import BasePage
 from dropdown_bar import DropdownBar
-from pages.read_table_xls import ReadTableXls
+from feasibility_analysis_services.oilfield_env_service import (
+    get_env_profile_id,
+    load_env_profiles,
+    load_metric_items,
+    load_water_level_items,
+    replace_metric_items,
+    replace_water_level_items,
+)
+from inspection_business_db_adapter import load_facility_profile
+from pages.file_management_platforms import default_platform
 
 
 SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
@@ -49,18 +59,15 @@ class OilfieldWaterLevelPage(BasePage):
         super().__init__("", parent)
         self.tab_buttons = []
         self.tab_pages = None
-
-        self._excel_provider = ReadTableXls()
-        self._excel_loaded = False
-        try:
-            self._excel_provider.load()
-            self._excel_loaded = True
-        except Exception:
-            self._excel_loaded = False
-
-        self._top_records: List[Dict[str, str]] = self._load_top_records_from_excel()
-        self._top_cascade_enabled: bool = len(self._top_records) > 0
-        self._top_cascade_lock: bool = False
+        self.water_table = None
+        self.wind_table = None
+        self.wave_table = None
+        self.current_table = None
+        self._syncing_top_dropdowns = False
+        self._default_water_items: list[dict[str, Any]] = []
+        self._default_wind_items: list[dict[str, Any]] = []
+        self._default_wave_items: list[dict[str, Any]] = []
+        self._default_current_items: list[dict[str, Any]] = []
 
         self.build_ui()
 
@@ -124,6 +131,230 @@ class OilfieldWaterLevelPage(BasePage):
             return p
         return options[0] if options else ""
 
+    def _table_text(self, table: QTableWidget, row: int, col: int) -> str:
+        item = table.item(row, col)
+        if item is None:
+            return ""
+        return str(item.text() or "").strip()
+
+    def _parse_decimal(self, value: Any) -> float:
+        text = str(value or "").strip().replace(",", "")
+        if not text:
+            raise ValueError("empty numeric value")
+        return float(text)
+
+    def _extract_unit_from_item_name(self, item_name: str, default_unit: str) -> str:
+        match = re.search(r"\(([^()]+)\)\s*$", item_name)
+        if not match:
+            return default_unit
+        unit = match.group(1).strip()
+        if (not unit) or any(token in unit for token in ("倍水深", "@")):
+            return default_unit
+        return unit
+
+    def _get_env_context(self) -> dict[str, str]:
+        platform_defaults = default_platform()
+        facility_code = str(platform_defaults.get("facility_code") or "").strip()
+        profile = load_facility_profile(facility_code, defaults=platform_defaults)
+        values = self.dropdown_bar.get_all_values() if hasattr(self, "dropdown_bar") else {}
+        return {
+            "facility_code": facility_code,
+            "branch": self._normalize_top_value(values.get("branch") or profile.get("branch") or ""),
+            "op_company": self._normalize_top_value(values.get("op_company") or profile.get("op_company") or ""),
+            "oilfield": self._normalize_top_value(values.get("oilfield") or profile.get("oilfield") or ""),
+        }
+
+    def _format_number_display(self, value: Any) -> str:
+        text = self._normalize_top_value(value)
+        if not text:
+            return ""
+        try:
+            number = float(text)
+        except Exception:
+            return text
+        return f"{number:.3f}".rstrip("0").rstrip(".")
+
+    def _load_env_top_records(self) -> list[dict[str, str]]:
+        records: list[dict[str, str]] = []
+        try:
+            for row in load_env_profiles():
+                records.append({
+                    "branch": self._normalize_top_value(row.get("分公司", "")),
+                    "op_company": self._normalize_top_value(row.get("作业公司", "")),
+                    "oilfield": self._normalize_top_value(row.get("油气田", "")),
+                })
+        except Exception:
+            pass
+
+        platform_defaults = default_platform()
+        profile = load_facility_profile(platform_defaults["facility_code"], defaults=platform_defaults)
+        records.append({
+            "branch": self._normalize_top_value(profile.get("branch") or platform_defaults.get("branch") or ""),
+            "op_company": self._normalize_top_value(profile.get("op_company") or platform_defaults.get("op_company") or ""),
+            "oilfield": self._normalize_top_value(profile.get("oilfield") or platform_defaults.get("oilfield") or ""),
+        })
+
+        deduped: list[dict[str, str]] = []
+        seen = set()
+        for row in records:
+            key = (row.get("branch", ""), row.get("op_company", ""), row.get("oilfield", ""))
+            if not all(key) or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(row)
+        return deduped
+
+    def _restore_default_tables(self):
+        self._apply_water_level_items(self._default_water_items)
+        self._apply_metric_items(self.wind_table, self._default_wind_items)
+        self._apply_metric_items(self.wave_table, self._default_wave_items)
+        self._apply_metric_items(self.current_table, self._default_current_items)
+
+    def _apply_cell_text(self, table: QTableWidget, row: int, col: int, text: str):
+        item = table.item(row, col)
+        if item is None:
+            self._set_item(table, row, col, text)
+            return
+        item.setText(text)
+
+    def _apply_water_level_items(self, items: list[dict[str, Any]]):
+        if self.water_table is None:
+            return
+        values = {
+            (
+                self._normalize_top_value(item.get("group_name", "")),
+                self._normalize_top_value(item.get("item_name", "")),
+            ): self._format_number_display(item.get("value", ""))
+            for item in items
+        }
+
+        current_group = ""
+        for row in range(2, self.water_table.rowCount()):
+            group_text = self._table_text(self.water_table, row, 0)
+            item_name = self._table_text(self.water_table, row, 1)
+            if group_text:
+                current_group = group_text
+            if not item_name:
+                item_name = group_text
+                group_name = ""
+            else:
+                group_name = current_group
+            text = values.get((group_name, item_name), "")
+            self._apply_cell_text(self.water_table, row, 2, text)
+
+    def _apply_metric_items(self, table: QTableWidget | None, items: list[dict[str, Any]]):
+        if table is None:
+            return
+        values = {
+            (
+                self._normalize_top_value(item.get("group_name", "")),
+                self._normalize_top_value(item.get("item_name", "")),
+                int(item.get("return_period", 0) or 0),
+            ): self._format_number_display(item.get("value", ""))
+            for item in items
+        }
+        periods = [int(self._table_text(table, 2, col) or 0) for col in range(2, 7)]
+
+        current_group = ""
+        for row in range(3, table.rowCount()):
+            group_text = self._table_text(table, row, 0)
+            item_name = self._table_text(table, row, 1)
+            if group_text:
+                current_group = group_text
+            if not item_name:
+                continue
+            for offset, period in enumerate(periods):
+                text = values.get((current_group, item_name, period), "")
+                self._apply_cell_text(table, row, 2 + offset, text)
+
+    def _load_tables_for_current_profile(self):
+        context = self._get_env_context()
+        if not (context["branch"] and context["op_company"] and context["oilfield"]):
+            self._restore_default_tables()
+            return
+
+        profile_id = get_env_profile_id(
+            branch=context["branch"],
+            op_company=context["op_company"],
+            oilfield=context["oilfield"],
+            create_if_missing=False,
+        )
+        if not profile_id:
+            self._restore_default_tables()
+            return
+
+        water_items = load_water_level_items(profile_id)
+        wind_items = load_metric_items("oilfield_wind_param_item", profile_id)
+        wave_items = load_metric_items("oilfield_wave_param_item", profile_id)
+        current_items = load_metric_items("oilfield_current_param_item", profile_id)
+
+        self._apply_water_level_items(water_items if water_items else self._default_water_items)
+        self._apply_metric_items(self.wind_table, wind_items if wind_items else self._default_wind_items)
+        self._apply_metric_items(self.wave_table, wave_items if wave_items else self._default_wave_items)
+        self._apply_metric_items(self.current_table, current_items if current_items else self._default_current_items)
+
+    def _collect_water_level_items(self) -> list[dict[str, Any]]:
+        if self.water_table is None:
+            return []
+
+        items: list[dict[str, Any]] = []
+        sort_order = 1
+        current_group = ""
+        for row in range(2, self.water_table.rowCount()):
+            group_text = self._table_text(self.water_table, row, 0)
+            item_name = self._table_text(self.water_table, row, 1)
+            if group_text:
+                current_group = group_text
+            if not item_name:
+                item_name = group_text
+                group_name = ""
+            else:
+                group_name = current_group
+            value_text = self._table_text(self.water_table, row, 2)
+            if not (item_name and value_text):
+                continue
+            items.append({
+                "group_name": group_name,
+                "item_name": item_name,
+                "value": self._parse_decimal(value_text),
+                "unit": "m",
+                "sort_order": sort_order,
+            })
+            sort_order += 1
+        return items
+
+    def _collect_metric_items(self, table: QTableWidget, default_unit: str) -> list[dict[str, Any]]:
+        periods = [self._table_text(table, 2, col) for col in range(2, 7)]
+        period_values = [int(period) for period in periods if period]
+        if len(period_values) != 5:
+            raise ValueError("回归周期表头不完整")
+
+        items: list[dict[str, Any]] = []
+        sort_order = 1
+        current_group = ""
+        for row in range(3, table.rowCount()):
+            group_text = self._table_text(table, row, 0)
+            item_name = self._table_text(table, row, 1)
+            if group_text:
+                current_group = group_text
+            if not item_name:
+                continue
+            unit = self._extract_unit_from_item_name(item_name, default_unit)
+            for offset, return_period in enumerate(period_values):
+                value_text = self._table_text(table, row, 2 + offset)
+                if not value_text:
+                    continue
+                items.append({
+                    "group_name": current_group,
+                    "item_name": item_name,
+                    "return_period": return_period,
+                    "value": self._parse_decimal(value_text),
+                    "unit": unit,
+                    "sort_order": sort_order,
+                })
+                sort_order += 1
+        return items
+
     def _mock_top_options(self, field: str, default: str) -> List[str]:
         options_map = {
             "分公司": ["渤江分公司", "南海分公司", "东海分公司", "湛江分公司"],
@@ -134,10 +365,13 @@ class OilfieldWaterLevelPage(BasePage):
         return opts if default in opts else [default] + opts
 
     def _build_top_dropdown_fields(self) -> List[Dict]:
+        platform_defaults = default_platform()
+        profile = load_facility_profile(platform_defaults["facility_code"], defaults=platform_defaults)
+        records = self._load_env_top_records()
         defaults = {
-            "branch": "渤江分公司",
-            "op_company": "文昌油田群作业公司",
-            "oilfield": "文昌19-1油田",
+            "branch": str(profile.get("branch") or self.TOP_FIELDS[0][1]),
+            "op_company": str(profile.get("op_company") or self.TOP_FIELDS[1][1]),
+            "oilfield": str(profile.get("oilfield") or self.TOP_FIELDS[2][1]),
         }
         stretch_map = {
             "branch": 0,
@@ -149,12 +383,10 @@ class OilfieldWaterLevelPage(BasePage):
         for key in self.TOP_KEY_ORDER:
             label = self.KEY_TO_FIELD[key]
             fallback = defaults[key]
-            if self._top_cascade_enabled:
-                opts = self._unique_record_values(self._top_records, label)
-                default = opts[0] if opts else fallback
-            else:
-                opts = self._mock_top_options(label, fallback)
-                default = fallback
+            opts = self._unique_record_values(records, key)
+            if fallback and fallback not in opts:
+                opts.insert(0, fallback)
+            default = fallback
 
             fields.append({
                 "key": key,
@@ -167,44 +399,45 @@ class OilfieldWaterLevelPage(BasePage):
         return fields
 
     def _apply_top_cascade(self, changed_key: Optional[str] = None, changed_value: str = ""):
-        if (not self._top_cascade_enabled) or (not hasattr(self, "dropdown_bar")):
+        if not hasattr(self, "dropdown_bar"):
+            return
+        if self._syncing_top_dropdowns:
             return
 
-        current = {k: self.dropdown_bar.get_value(k) for k in self.TOP_KEY_ORDER}
-        if changed_key:
-            current[changed_key] = self._normalize_top_value(changed_value)
+        records = self._load_env_top_records()
+        values = self.dropdown_bar.get_all_values()
+        branch = self._normalize_top_value(changed_value if changed_key == "branch" else values.get("branch", ""))
+        op_company = self._normalize_top_value(changed_value if changed_key == "op_company" else values.get("op_company", ""))
+        oilfield = self._normalize_top_value(changed_value if changed_key == "oilfield" else values.get("oilfield", ""))
 
-        reset_downstream = {
-            "branch": {"op_company", "oilfield"},
-            "op_company": {"oilfield"},
-        }
-        reset = reset_downstream.get(changed_key or "", set())
+        branch_options = self._unique_record_values(records, "branch")
+        branch = self._pick_option(branch_options, branch)
 
-        branches = self._unique_record_values(self._top_records, "分公司")
-        branch = self._pick_option(branches, current.get("branch", ""))
-        branch_rows = [r for r in self._top_records if r.get("分公司", "") == branch] if branch else list(self._top_records)
+        company_records = [row for row in records if row.get("branch") == branch] if branch else records
+        company_options = self._unique_record_values(company_records, "op_company")
+        op_company = self._pick_option(company_options, op_company)
 
-        op_opts = self._unique_record_values(branch_rows, "作业公司")
-        op_pref = "" if "op_company" in reset else current.get("op_company", "")
-        op_company = self._pick_option(op_opts, op_pref)
-        op_rows = [r for r in branch_rows if r.get("作业公司", "") == op_company] if op_company else list(branch_rows)
+        oilfield_records = [
+            row for row in company_records
+            if (not op_company) or row.get("op_company") == op_company
+        ]
+        oilfield_options = self._unique_record_values(oilfield_records, "oilfield")
+        oilfield = self._pick_option(oilfield_options, oilfield)
 
-        oil_opts = self._unique_record_values(op_rows, "油气田")
-        oil_pref = "" if "oilfield" in reset else current.get("oilfield", "")
-        oilfield = self._pick_option(oil_opts, oil_pref)
-
-        self._top_cascade_lock = True
+        self._syncing_top_dropdowns = True
         try:
-            self.dropdown_bar.set_options("branch", branches, branch)
-            self.dropdown_bar.set_options("op_company", op_opts, op_company)
-            self.dropdown_bar.set_options("oilfield", oil_opts, oilfield)
+            self.dropdown_bar.set_options("branch", branch_options, branch)
+            self.dropdown_bar.set_options("op_company", company_options, op_company)
+            self.dropdown_bar.set_options("oilfield", oilfield_options, oilfield)
         finally:
-            self._top_cascade_lock = False
+            self._syncing_top_dropdowns = False
+
+        self._load_tables_for_current_profile()
 
     def _on_top_key_changed(self, key: str, txt: str):
-        if key in self.TOP_KEY_ORDER and self._top_cascade_enabled:
-            if self._top_cascade_lock:
-                return
+        if self._syncing_top_dropdowns:
+            return
+        if key in self.TOP_KEY_ORDER:
             self._apply_top_cascade(changed_key=key, changed_value=txt)
 
     def build_ui(self):
@@ -259,8 +492,7 @@ class OilfieldWaterLevelPage(BasePage):
         self.dropdown_bar = DropdownBar(self._build_top_dropdown_fields(), parent=self)
         self.dropdown_bar.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         self.dropdown_bar.valueChanged.connect(self._on_top_key_changed)
-        if self._top_cascade_enabled:
-            self._apply_top_cascade()
+        self._apply_top_cascade()
         top_layout.addWidget(self.dropdown_bar, 0, Qt.AlignLeft | Qt.AlignTop)
 
         # “保存”按钮布局设计
@@ -343,6 +575,11 @@ class OilfieldWaterLevelPage(BasePage):
             btn.clicked.connect(lambda checked, i=index: self.switch_tab(i))
 
         self.switch_tab(0)
+        self._default_water_items = self._collect_water_level_items()
+        self._default_wind_items = self._collect_metric_items(self.wind_table, default_unit="m/s")
+        self._default_wave_items = self._collect_metric_items(self.wave_table, default_unit="m")
+        self._default_current_items = self._collect_metric_items(self.current_table, default_unit="m/s")
+        self._load_tables_for_current_profile()
 
     # ---------- 小工具：设置单元格 ----------
     def _set_item(self, table: QTableWidget, r: int, c: int, text: str,
@@ -445,6 +682,7 @@ class OilfieldWaterLevelPage(BasePage):
 
         # 2行表头 + 12行数据 = 14行，3列：分组 | 元素 | 值
         table = QTableWidget(14, 3, page)
+        self.water_table = table
         self._finalize_table_style(table)
 
         # 外框直接给 table 自己加（不要用 frame 扩张）
@@ -556,6 +794,7 @@ class OilfieldWaterLevelPage(BasePage):
         # 结构：标题行 + 表头两行 + 12行数据 = 15 行
         # 列：组别 | 时长 | 1 | 10 | 25 | 50 | 100 = 7 列
         table = QTableWidget(15, 7, frame)
+        self.wind_table = table
         self._finalize_table_style(table)
 
         # 行高（你可按审美调）
@@ -654,6 +893,7 @@ class OilfieldWaterLevelPage(BasePage):
         # 标题行 + 表头两行 + 16行数据 = 19行
         # 列：组别 | 元素 | 1 | 10 | 25 | 50 | 100 = 7 列
         table = QTableWidget(19, 7, frame)
+        self.wave_table = table
         self._finalize_table_style(table)
 
         for r in range(table.rowCount()):
@@ -747,6 +987,7 @@ class OilfieldWaterLevelPage(BasePage):
         # 标题行 + 表头两行 + 12行数据 = 15行
         # 列：组别 | 分层 | 1 | 10 | 25 | 50 | 100
         table = QTableWidget(15, 7, frame)
+        self.current_table = table
         self._finalize_table_style(table)
 
         for r in range(table.rowCount()):
@@ -849,4 +1090,38 @@ class OilfieldWaterLevelPage(BasePage):
 
     # ----------------- “保存”按钮逻辑 ----------------- #
     def _on_save(self):
-        QMessageBox.information(self, "保存", "示例：保存（后续接真实存储逻辑）。")
+        try:
+            context = self._get_env_context()
+            if not (context["branch"] and context["op_company"] and context["oilfield"]):
+                raise ValueError("facility_profile 中缺少分公司/作业公司/油气田信息，无法保存海洋环境数据。")
+
+            profile_id = get_env_profile_id(
+                branch=context["branch"],
+                op_company=context["op_company"],
+                oilfield=context["oilfield"],
+                create_if_missing=True,
+            )
+            if not profile_id:
+                raise ValueError("未能创建或获取油气田环境主表记录。")
+
+            water_items = self._collect_water_level_items()
+            wind_items = self._collect_metric_items(self.wind_table, default_unit="m/s")
+            wave_items = self._collect_metric_items(self.wave_table, default_unit="m")
+            current_items = self._collect_metric_items(self.current_table, default_unit="m/s")
+
+            replace_water_level_items(profile_id, water_items)
+            replace_metric_items("oilfield_wind_param_item", profile_id, wind_items)
+            replace_metric_items("oilfield_wave_param_item", profile_id, wave_items)
+            replace_metric_items("oilfield_current_param_item", profile_id, current_items)
+
+            QMessageBox.information(
+                self,
+                "保存成功",
+                (
+                    f"已保存油气田“{context['oilfield']}”海洋环境数据。\n"
+                    f"水深水位 {len(water_items)} 条，风参数 {len(wind_items)} 条，"
+                    f"波浪参数 {len(wave_items)} 条，海流参数 {len(current_items)} 条。"
+                ),
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "保存失败", f"海洋环境数据保存失败：\n{exc}")
