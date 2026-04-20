@@ -14,13 +14,13 @@ from PyQt5.QtWidgets import (
     QGraphicsView,
 )
 
-from file_db_adapter import (
+from services.file_db_adapter import (
     FileBackendError,
     is_file_db_configured,
     list_storage_paths,
     list_storage_paths_by_prefix,
 )
-from app_paths import external_path, first_existing_path
+from core.app_paths import external_path, first_existing_path
 
 import openpyxl
 import csv
@@ -448,7 +448,11 @@ class SacsElevationRiskView(QGraphicsView):
 
     def _resolve_risk_workbook_path(self) -> str:
         root = self._project_root()
+        strategy_root = os.path.join(root, "pages", "output_special_strategy")
         candidates = [
+            os.path.join(strategy_root, "检验策略- wc19-1d-10.30.xlsm"),
+            os.path.join(strategy_root, "wc19_1d_compare_source.xlsm"),
+            os.path.join(strategy_root, "wc19_1d_source.xlsm"),
             os.path.join(root, "检验策略- wc19-1d-10.30.xlsm"),
             os.path.join(root, "检验策略-wc19-1d-10.30.xlsm"),
             os.path.join(root, "检验策略_wc19-1d-10.30.xlsm"),

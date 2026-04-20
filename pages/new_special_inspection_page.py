@@ -326,14 +326,11 @@ class _SystemLibraryPickerDialog(QDialog):
         return list(self._selected_rows)
 
 
-<<<<<<< HEAD
 class _NoWheelFileTable(QTableWidget):
     def wheelEvent(self, event):
         # 不在表格内部滚动，把滚轮交回外层滚动区域
         event.ignore()
 
-=======
->>>>>>> origin/main
 
 class NewSpecialInspectionPage(BasePage):
     """

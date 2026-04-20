@@ -1,21 +1,21 @@
-{
-  "template_xlsm": "C:/path/to/wc19-1d-source.xlsm",
+﻿{
+  "template_xlsm": "pages/output_special_strategy/检验策略- wc19-1d-10.30.xlsm",
   "params_json": "pages/output_special_strategy/wc19_1d_calc_params.json",
-  "report_template": "pages/output_special_strategy/xxx平台风险评级及检测策略报告.docx",
+  "report_template": "pages/output_special_strategy/xxx骞冲彴椋庨櫓璇勭骇鍙婃娴嬬瓥鐣ユ姤鍛?docx",
   "output_report": "pages/output_special_strategy/wc19_1d_user_paths_report.docx",
   "intermediate_workbook": "pages/output_special_strategy/wc19_1d_user_paths_report.pipeline.xlsx",
   "policy": "strict",
   "enable_topology_inference": false,
   "interactive_manual_fill": true,
   "manual_fill_workbook": "pages/output_special_strategy/manual_fill.xlsx",
-  "appendix_a_file": "pages/output_special_strategy/附件A 节点风险等级计算表.pdf",
-  "appendix_b_file": "pages/output_special_strategy/附件B 构件风险等级计算表.pdf",
+  "appendix_a_file": "pages/output_special_strategy/闄勪欢A 鑺傜偣椋庨櫓绛夌骇璁＄畻琛?pdf",
+  "appendix_b_file": "pages/output_special_strategy/闄勪欢B 鏋勪欢椋庨櫓绛夌骇璁＄畻琛?pdf",
   "appendix_c_dirs": [
-    "pages/output_special_strategy/附件C.1 第5年检测节点构件位置",
-    "pages/output_special_strategy/附件C.2 第10年检测节点构件位置",
-    "pages/output_special_strategy/附件C.3 第15年检测节点构件位置",
-    "pages/output_special_strategy/附件C.4 第20年检测节点构件位置",
-    "pages/output_special_strategy/附件C.5 第25年检测节点构件位置"
+    "pages/output_special_strategy/闄勪欢C.1 绗?骞存娴嬭妭鐐规瀯浠朵綅缃?,
+    "pages/output_special_strategy/闄勪欢C.2 绗?0骞存娴嬭妭鐐规瀯浠朵綅缃?,
+    "pages/output_special_strategy/闄勪欢C.3 绗?5骞存娴嬭妭鐐规瀯浠朵綅缃?,
+    "pages/output_special_strategy/闄勪欢C.4 绗?0骞存娴嬭妭鐐规瀯浠朵綅缃?,
+    "pages/output_special_strategy/闄勪欢C.5 绗?5骞存娴嬭妭鐐规瀯浠朵綅缃?
   ],
   "include_word_plan_detail_tables": true,
   "platform_name": "{{platform_name}}",

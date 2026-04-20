@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # pages/platform_strength_page.py
 
 import os
@@ -29,14 +29,9 @@ from PyQt5.QtWidgets import (
     QGraphicsScene, QMessageBox, QPushButton, QHeaderView,QSlider,
 )
 
-<<<<<<< HEAD
 from core.app_paths import first_existing_path
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar
-=======
-from app_paths import first_existing_path
-from base_page import BasePage
-from dropdown_bar import DropdownBar
 from feasibility_analysis_services.oilfield_env_service import (
     get_env_profile_id,
     load_platform_strength_marine_items,
@@ -46,8 +41,7 @@ from feasibility_analysis_services.oilfield_env_service import (
     replace_platform_strength_pile_items,
     replace_platform_strength_splash_items,
 )
-from inspection_business_db_adapter import load_facility_profile
->>>>>>> origin/main
+from services.inspection_business_db_adapter import load_facility_profile
 from pages.feasibility_assessment_page import FeasibilityAssessmentPage
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
 

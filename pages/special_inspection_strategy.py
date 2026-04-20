@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # pages/special_inspection_strategy.py
 
 
@@ -12,8 +12,7 @@ from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QPushButton, QScrollArea, QSizePolicy, QLabel,
-<<<<<<< HEAD
-    QDialog, QAbstractItemView, QMessageBox
+    QDialog, QAbstractItemView, QMessageBox, QSlider, QLineEdit
 )
 
 from core.app_paths import first_existing_path
@@ -23,37 +22,10 @@ from pages.file_management_platforms import FILE_MANAGEMENT_PLATFORMS, default_p
 from pages.read_table_xls import ReadTableXls
 from pages.special_strategy_history_dialog import SpecialStrategyHistoryDialog as SpecialStrategyHistoryDialogView
 from services.special_strategy_services import (
-=======
-    QDialog, QAbstractItemView, QMessageBox, QSlider, QLineEdit
-)
-
-from app_paths import first_existing_path
-from base_page import BasePage
-from dropdown_bar import DropdownBar
-from pages.file_management_platforms import FILE_MANAGEMENT_PLATFORMS, default_platform, find_platform, sync_platform_dropdowns
-from pages.read_table_xls import ReadTableXls
-from pages.special_strategy_history_dialog import SpecialStrategyHistoryDialog as SpecialStrategyHistoryDialogView
-from special_strategy_services import (
->>>>>>> origin/main
     NodeYearLabelMapper,
     SpecialStrategyResultService,
     SpecialStrategySummaryBuilder,
 )
-<<<<<<< HEAD
-
-
-NODE_YEAR_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]
-NODE_YEAR_CONTEXT_MAP = {
-    "当前": "当前",
-    "+5年": "第5年",
-    "+10年": "第10年",
-    "+15年": "第15年",
-    "+20年": "第20年",
-    "+25年": "第25年",
-}
-
-
-=======
 
 from pages.sacs_elevation_risk_view import SacsElevationRiskView
 from pages.platform_strength_page import PlatformStrengthPage
@@ -69,7 +41,6 @@ NODE_YEAR_CONTEXT_MAP = {
 }
 
 
->>>>>>> origin/main
 class SimpleTowerDiagram(QWidget):
     """右侧黑底“塔架示意图”占位控件（不依赖图片）。"""
     def __init__(self, variant: int = 0, parent=None):
@@ -1009,11 +980,6 @@ class SpecialInspectionStrategy(BasePage):
             self._clear_summary_table(self.node_table)
             self._active_facility_code = facility_code
             self._active_run_id = run_id
-<<<<<<< HEAD
-            return
-
-        context = bundle["context"]
-=======
             if hasattr(self, "elevation_view"):
                 self.elevation_view._draw_message("当前没有可用的特检结果")
             return
@@ -1027,23 +993,17 @@ class SpecialInspectionStrategy(BasePage):
             elif isinstance(v, (str, dict)):
                 print("[Strategy]", k, "=", v)
 
->>>>>>> origin/main
         self._active_facility_code = facility_code
         self._active_run_id = run_id
         self._fill_component_from_context(context)
         self._fill_node_from_context(context, self.current_year)
-<<<<<<< HEAD
-=======
         self._refresh_elevation_view(context)
->>>>>>> origin/main
 
     def _fill_component_from_context(self, context: Dict):
         self._fill_rows(self.component_table, self._summary_builder.build_component_inspection_rows(context))
 
     def _fill_node_from_context(self, context: Dict, year: str):
         self._fill_rows(self.node_table, self._summary_builder.build_node_inspection_rows(context, year))
-<<<<<<< HEAD
-=======
 
     def _refresh_elevation_view(self, context: Optional[Dict] = None):
         if not hasattr(self, "elevation_view"):
@@ -1074,7 +1034,6 @@ class SpecialInspectionStrategy(BasePage):
         )
 
         self._sync_dynamic_row_combo_from_view()
->>>>>>> origin/main
 
     def _fill_rows(self, table: QTableWidget, rows: List[Tuple[str, str, str, str]]):
         for r, row in enumerate(rows):
@@ -1121,8 +1080,6 @@ class SpecialInspectionStrategy(BasePage):
         self.current_year = year
         self._sync_year_buttons(year)
         self._load_runtime_summary(self._get_dropdown_value("facility_code"), self._active_run_id)
-<<<<<<< HEAD
-=======
 
     def _get_workpoint_value(self) -> Optional[float]:
         if not hasattr(self, "edt_workpoint"):
@@ -1154,7 +1111,6 @@ class SpecialInspectionStrategy(BasePage):
 
     def _on_row_changed(self, _row_text: str):
         self._refresh_elevation_view()
->>>>>>> origin/main
 
     def _sync_year_buttons(self, year: str):
         for btn in getattr(self, "year_buttons", []):

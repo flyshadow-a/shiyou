@@ -10,13 +10,9 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QWidget, QLabel, QHeaderView, QAbstractItemView, QSizePolicy, QMessageBox
 )
 from PyQt5.QtCore import Qt
-<<<<<<< HEAD
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar
 from pages.read_table_xls import ReadTableXls
-=======
-from base_page import BasePage
-from dropdown_bar import DropdownBar
 from feasibility_analysis_services.oilfield_env_service import (
     get_env_profile_id,
     load_env_profiles,
@@ -25,9 +21,9 @@ from feasibility_analysis_services.oilfield_env_service import (
     replace_metric_items,
     replace_water_level_items,
 )
-from inspection_business_db_adapter import load_facility_profile
+from services.inspection_business_db_adapter import load_facility_profile
 from pages.file_management_platforms import default_platform
->>>>>>> origin/main
+
 
 
 SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
