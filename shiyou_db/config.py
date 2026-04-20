@@ -22,7 +22,7 @@ class DatabaseSettings:
     def sqlalchemy_url(self) -> str:
         password = self.password.replace("@", "%40")
         return (
-            f"mysql+mysqlconnector://{self.user}:{password}@{self.host}:{self.port}/"
+            f"mysql+pymysql://{self.user}:{password}@{self.host}:{self.port}/"
             f"{self.database}?charset={self.charset}"
         )
 

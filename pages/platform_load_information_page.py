@@ -31,12 +31,20 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtGui import QColor, QFont, QFontMetrics
 
+<<<<<<< HEAD
 from core.app_paths import existing_dirs, external_path, first_existing_path
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar  # 复用平台基本信息页的顶部下拉条样式
 # 从样表提取下拉选项（兼容：pages 包内相对导入 / 直接运行）
 from pages.read_table_xls import ReadTableXls
+=======
+from app_paths import existing_dirs, external_path, first_existing_path
+from base_page import BasePage
+from dropdown_bar import DropdownBar  # 复用平台基本信息页的顶部下拉条样式
+>>>>>>> origin/main
 from pages.hover_tip_table import HoverTipTable
+from pages.file_management_platforms import default_platform, sync_platform_dropdowns
+from inspection_business_db_adapter import load_facility_profile
 
 # 上部组块分项目计算表页面（点击重量/重心单元格跳转编辑）
 try:
@@ -255,22 +263,6 @@ class PlatformLoadInformationPage(BasePage):
         self._row_radio_group: Optional[QButtonGroup] = None
         # 缓存子计算表用户输入的数据
         self._uppercalc_saved_data: Dict[int, dict] = {}
-        # 从《platform_total.xls》加载下拉选项（失败则回退到原 mock 逻辑）
-        self._excel_provider = ReadTableXls()
-        self._excel_loaded = False
-        try:
-            self._excel_provider.load()  # 默认路径：data/platform_total.xls
-            self._excel_loaded = True
-        except Exception:
-            self._excel_loaded = False
-
-        # 顶部下拉：优先使用汇总信息样表构建级联数据
-        self._top_records: List[Dict[str, str]] = self._load_top_records_from_excel()
-        self._top_cascade_enabled: bool = len(self._top_records) > 0
-        self._top_cascade_lock: bool = False
-
-
-
         self._build_ui()
         self._ensure_demo_files()
         self.load_from_csv(os.path.join(self.data_dir, self.DEMO_MAIN_CSV))
@@ -316,8 +308,19 @@ class PlatformLoadInformationPage(BasePage):
         top_layout.setSpacing(10)
 
         top_layout.setAlignment(Qt.AlignTop)
-        # 顶部下拉条：优先按样表记录构建级联；失败时回退 mock 选项
-        fallback_defaults = {k: v for k, v in self.TOP_FIELDS}
+        platform_defaults = default_platform()
+        profile = load_facility_profile(platform_defaults["facility_code"], defaults=platform_defaults)
+        fallback_defaults = {
+            "分公司": str(profile.get("branch") or self.TOP_FIELDS[0][1]),
+            "作业公司": str(profile.get("op_company") or self.TOP_FIELDS[1][1]),
+            "油气田": str(profile.get("oilfield") or self.TOP_FIELDS[2][1]),
+            "设施编码": str(profile.get("facility_code") or self.TOP_FIELDS[3][1]),
+            "设施名称": str(profile.get("facility_name") or self.TOP_FIELDS[4][1]),
+            "设施类型": str(profile.get("facility_type") or self.TOP_FIELDS[5][1]),
+            "分类": str(profile.get("category") or self.TOP_FIELDS[6][1]),
+            "投产时间": str(profile.get("start_time") or self.TOP_FIELDS[7][1]),
+            "设计年限": str(profile.get("design_life") or self.TOP_FIELDS[8][1]),
+        }
         stretch_map = {
             "branch": 1,
             "op_company": 2,
@@ -333,12 +336,8 @@ class PlatformLoadInformationPage(BasePage):
         for key in self.TOP_KEY_ORDER:
             label = self.KEY_TO_FIELD[key]
             fallback = fallback_defaults.get(label, "")
-            if self._top_cascade_enabled:
-                opts = self._unique_record_values(self._top_records, label)
-                default = opts[0] if opts else fallback
-            else:
-                opts = self._mock_top_options(label, fallback)
-                default = fallback
+            opts = [fallback] if fallback else []
+            default = fallback
             fields.append({
                 "key": key,
                 "label": label,
@@ -349,8 +348,7 @@ class PlatformLoadInformationPage(BasePage):
 
         self.dropdown_bar = DropdownBar(fields, parent=self)
         self.dropdown_bar.valueChanged.connect(self._on_top_key_changed)
-        if self._top_cascade_enabled:
-            self._apply_top_cascade()
+        self._sync_platform_ui()
         top_layout.addWidget(self.dropdown_bar, 1)
 
         self.btn_save = QPushButton("保存")
@@ -541,93 +539,31 @@ class PlatformLoadInformationPage(BasePage):
             return p
         return options[0] if options else ""
 
-    def _apply_top_cascade(self, changed_key: Optional[str] = None, changed_value: str = ""):
-        if (not self._top_cascade_enabled) or (not hasattr(self, "dropdown_bar")):
+    def _sync_platform_ui(self, changed_key: str | None = None):
+        if not hasattr(self, "dropdown_bar"):
             return
-
-        records = self._top_records
-        current = {k: self.dropdown_bar.get_value(k) for k in self.TOP_KEY_ORDER}
-        if changed_key:
-            current[changed_key] = self._normalize_top_value(changed_value)
-
-        reset_downstream = {
-            "branch": {"op_company", "oilfield", "facility_code", "facility_name"},
-            "op_company": {"oilfield", "facility_code", "facility_name"},
-            "oilfield": {"facility_code", "facility_name"},
-            "facility_code": {"facility_name"},
-            "facility_name": {"facility_code"},
-        }
-        reset = reset_downstream.get(changed_key or "", set())
-
-        branches = self._unique_record_values(records, "分公司")
-        branch = self._pick_option(branches, current.get("branch", ""))
-        branch_rows = [r for r in records if r.get("分公司", "") == branch] if branch else list(records)
-
-        op_opts = self._unique_record_values(branch_rows, "作业公司")
-        op_pref = "" if "op_company" in reset else current.get("op_company", "")
-        op = self._pick_option(op_opts, op_pref)
-        op_rows = [r for r in branch_rows if r.get("作业公司", "") == op] if op else list(branch_rows)
-
-        oil_opts = self._unique_record_values(op_rows, "油气田")
-        oil_pref = "" if "oilfield" in reset else current.get("oilfield", "")
-        oilfield = self._pick_option(oil_opts, oil_pref)
-        oil_rows = [r for r in op_rows if r.get("油气田", "") == oilfield] if oilfield else list(op_rows)
-
-        code_opts = self._unique_record_values(oil_rows, "设施编码")
-        name_opts = self._unique_record_values(oil_rows, "设施名称")
-
-        selected_row: Optional[Dict[str, str]] = None
-        if changed_key == "facility_name":
-            name_pref = current.get("facility_name", "")
-            selected_name = self._pick_option(name_opts, name_pref)
-            for rec in oil_rows:
-                if rec.get("设施名称", "") == selected_name:
-                    selected_row = rec
-                    break
-        else:
-            code_pref = "" if "facility_code" in reset else current.get("facility_code", "")
-            selected_code = self._pick_option(code_opts, code_pref)
-            for rec in oil_rows:
-                if rec.get("设施编码", "") == selected_code:
-                    selected_row = rec
-                    break
-
-        if selected_row is None and oil_rows:
-            selected_row = oil_rows[0]
-
-        selected_code = self._normalize_top_value((selected_row or {}).get("设施编码", ""))
-        selected_name = self._normalize_top_value((selected_row or {}).get("设施名称", ""))
-
-        if selected_code and selected_code not in code_opts:
-            code_opts = [selected_code] + code_opts
-        if selected_name and selected_name not in name_opts:
-            name_opts = [selected_name] + name_opts
-
-        fixed_key_to_field = {
-            "facility_type": "设施类型",
-            "category": "分类",
-            "start_time": "投产时间",
-            "design_life": "设计年限",
-        }
-        fixed_values: Dict[str, str] = {}
-        for k, field_cn in fixed_key_to_field.items():
-            val = self._normalize_top_value((selected_row or {}).get(field_cn, ""))
-            fixed_values[k] = val
-
-        self._top_cascade_lock = True
-        try:
-            self.dropdown_bar.set_options("branch", branches, branch)
-            self.dropdown_bar.set_options("op_company", op_opts, op)
-            self.dropdown_bar.set_options("oilfield", oil_opts, oilfield)
-            self.dropdown_bar.set_options("facility_code", code_opts, selected_code)
-            self.dropdown_bar.set_options("facility_name", name_opts, selected_name)
-
-            for k in ("facility_type", "category", "start_time", "design_life"):
-                v = fixed_values.get(k, "")
-                self.dropdown_bar.set_options(k, [v] if v else [], v)
-        finally:
-            self._top_cascade_lock = False
-
+        platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
+        profile = load_facility_profile(
+            platform["facility_code"],
+            defaults={
+                "branch": platform["branch"],
+                "op_company": platform["op_company"],
+                "oilfield": platform["oilfield"],
+                "facility_code": platform["facility_code"],
+                "facility_name": platform["facility_name"],
+                "facility_type": platform["facility_type"],
+                "category": platform["category"],
+                "start_time": platform["start_time"],
+                "design_life": platform["design_life"],
+            },
+        )
+        self.dropdown_bar.set_options("branch", [profile["branch"]], profile["branch"])
+        self.dropdown_bar.set_options("op_company", [profile["op_company"]], profile["op_company"])
+        self.dropdown_bar.set_options("oilfield", [profile["oilfield"]], profile["oilfield"])
+        self.dropdown_bar.set_options("facility_type", [profile["facility_type"]], profile["facility_type"])
+        self.dropdown_bar.set_options("category", [profile["category"]], profile["category"])
+        self.dropdown_bar.set_options("start_time", [profile["start_time"]], profile["start_time"])
+        self.dropdown_bar.set_options("design_life", [profile["design_life"]], profile["design_life"])
         self._sync_all_top_meta_values()
 
     def _sync_all_top_meta_values(self):
@@ -664,10 +600,8 @@ class PlatformLoadInformationPage(BasePage):
         - 级联刷新下拉值
         - 同步回填主表所属信息区（字段名用中文）
         """
-        if self._top_cascade_enabled:
-            if self._top_cascade_lock:
-                return
-            self._apply_top_cascade(changed_key=key, changed_value=txt)
+        if key in {"branch", "op_company", "oilfield", "facility_code", "facility_name"}:
+            self._sync_platform_ui(changed_key=key)
             return
 
         field = self.KEY_TO_FIELD.get(key, key)

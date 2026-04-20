@@ -46,7 +46,17 @@ from pages.feasibility_assessment_results_page import FeasibilityAssessmentResul
 from pages.sacs_create_model_service import create_new_model_files
 from core.app_paths import first_existing_path
 
+from shiyou_db.runtime_db import get_mysql_url
+
 SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
+
+
+class ScrollSafeComboBox(QComboBox):
+    def wheelEvent(self, event):
+        if self.view().isVisible():
+            super().wheelEvent(event)
+            return
+        event.ignore()
 
 
 class FeasibilityAssessmentPage(BasePage):
@@ -92,7 +102,7 @@ class FeasibilityAssessmentPage(BasePage):
             }
         """
 
-    def __init__(self, main_window, facility_code, elevations=None, parent=None):
+    def __init__(self, main_window, facility_code, elevations=None, platform_overview_text="", inspection_record_summary_text="", env_branch="", env_op_company="", env_oilfield="", parent=None):
         if parent is None:
             parent = main_window
         super().__init__("", parent)
@@ -105,10 +115,12 @@ class FeasibilityAssessmentPage(BasePage):
         self._dynamic_table_meta = {}
 
         self.job_name = facility_code
-        self.mysql_url = os.environ.get(
-            "MYSQL_URL",
-            "mysql+pymysql://root:ljm020918**@127.0.0.1:3306/SACS_new?charset=utf8mb4"
-        ).strip()
+        self.mysql_url = get_mysql_url()
+        self.platform_overview_text = str(platform_overview_text or "").strip()
+        self.inspection_record_summary_text = str(inspection_record_summary_text or "").strip()
+        self.env_branch = str(env_branch or "").strip()
+        self.env_op_company = str(env_op_company or "").strip()
+        self.env_oilfield = str(env_oilfield or "").strip()
 
         self.elevations = list(elevations) if elevations is not None else []
         self._use_dynamic_elevations = bool(elevations)
@@ -247,7 +259,7 @@ class FeasibilityAssessmentPage(BasePage):
         cell_lay.setContentsMargins(0, 0, 0, 0)
         cell_lay.setSpacing(0)
 
-        combo = QComboBox(cell_wrap)
+        combo = ScrollSafeComboBox(cell_wrap)
         combo.addItems(self.CONNECT_OPTIONS)
         combo.setFont(self._songti_small_four_font())
 
@@ -498,7 +510,9 @@ class FeasibilityAssessmentPage(BasePage):
             return
 
         hbar_h = scroll.horizontalScrollBar().sizeHint().height()
-        content_h = self._table_content_height(table) + hbar_h + 4
+        table_content_h = self._table_content_height(table)
+        table.setFixedHeight(table_content_h)
+        content_h = table_content_h + hbar_h + 4
         visible_h = min(content_h, max_height)
 
         scroll.setMinimumHeight(visible_h)
@@ -753,10 +767,12 @@ class FeasibilityAssessmentPage(BasePage):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+        table_content_h = self._table_content_height(table)
+        table.setFixedHeight(table_content_h)
         scroll.setWidget(table)
 
         hbar_h = scroll.horizontalScrollBar().sizeHint().height()
-        content_h = self._table_content_height(table) + hbar_h + 4
+        content_h = table_content_h + hbar_h + 4
         visible_h = min(content_h, max_height)
 
         scroll.setMinimumHeight(visible_h)
@@ -863,18 +879,13 @@ class FeasibilityAssessmentPage(BasePage):
             c += 1
 
         # --- 数据区 ---
-        demo = [
-            ["1", "1.314", "1.714", "914", "25", "406", "19", "1000"],
-            ["2", "1.314", "-0.572", "610", "25", "406", "19", "1000"],
-            ["3", "1.314", "-2.858", "610", "25", "406", "19", "1000"],
-        ]
         for r in range(data_rows):
             rr = header_rows + r
             # 编号
-            self._set_cell(self.tbl1, rr, 0, demo[r][0], bg=QColor("#e9eef5"), editable=False)
+            self._set_cell(self.tbl1, rr, 0, str(r + 1), bg=QColor("#e9eef5"), editable=False)
             # 基础字段
             for c in range(1, base_cols):
-                self._set_cell(self.tbl1, rr, c, demo[r][c], bg=self.DATA_BG, editable=True)
+                self._set_cell(self.tbl1, rr, c, "", bg=self.DATA_BG, editable=True)
 
             # 连接形式下拉
             start = base_cols
@@ -989,16 +1000,11 @@ class FeasibilityAssessmentPage(BasePage):
             c += 1
 
         # 数据区
-        demo = [
-            ["1", "1.314", "1.714", "914", "25", "406", "19", "0.1", "0.1"],
-            ["2", "1.314", "-0.572", "610", "25", "406", "19", "0.1", "0.1"],
-            ["3", "1.314", "-2.858", "610", "25", "406", "19", "0.1", "0.1"],
-        ]
         for r in range(data_rows):
             rr = header_rows + r
-            self._set_cell(self.tbl2, rr, 0, demo[r][0], bg=QColor("#e9eef5"), editable=False)
+            self._set_cell(self.tbl2, rr, 0, str(r + 1), bg=QColor("#e9eef5"), editable=False)
             for c in range(1, base_cols):
-                self._set_cell(self.tbl2, rr, c, demo[r][c], bg=self.DATA_BG, editable=True)
+                self._set_cell(self.tbl2, rr, c, "", bg=self.DATA_BG, editable=True)
             start = base_cols
             for i, e in enumerate(self.table2_elevations):
                 col = start + i
@@ -1076,21 +1082,13 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl3, 1, 3, "Z(m)", bg=self.SUBHDR_BG, bold=True, editable=False)
         self._set_cell(self.tbl3, 1, 4, "(t)", bg=self.SUBHDR_BG, bold=True, editable=False)
 
-        demo = [
-            ["1", "1.314", "1.714", "10", "5"],
-            ["2", "1.314", "-0.572", "10", "5"],
-            ["3", "1.314", "-2.858", "10", "5"],
-            ["4", "-24", "1.714", "10", "5"],
-            ["5", "-24", "-0.572", "10", "5"],
-            ["6", "-24", "-2.858", "10", "5"],
-        ]
         for r in range(data_rows):
             rr = header_rows + r
-            self._set_cell(self.tbl3, rr, 0, demo[r][0], bg=QColor("#e9eef5"), editable=False)
-            self._set_cell(self.tbl3, rr, 1, demo[r][1], bg=self.DATA_BG, editable=True)
-            self._set_cell(self.tbl3, rr, 2, demo[r][2], bg=self.DATA_BG, editable=True)
-            self._set_cell(self.tbl3, rr, 3, demo[r][3], bg=self.DATA_BG, editable=True)
-            self._set_cell(self.tbl3, rr, 4, demo[r][4], bg=self.DATA_BG, editable=True)
+            self._set_cell(self.tbl3, rr, 0, str(r + 1), bg=QColor("#e9eef5"), editable=False)
+            self._set_cell(self.tbl3, rr, 1, "", bg=self.DATA_BG, editable=True)
+            self._set_cell(self.tbl3, rr, 2, "", bg=self.DATA_BG, editable=True)
+            self._set_cell(self.tbl3, rr, 3, "", bg=self.DATA_BG, editable=True)
+            self._set_cell(self.tbl3, rr, 4, "", bg=self.DATA_BG, editable=True)
 
         groups_tbl3 = [
             [1, 2, 3]  # X, Y, Z
@@ -1108,10 +1106,9 @@ class FeasibilityAssessmentPage(BasePage):
         self.tbl3.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         # 单独把第0列（编号列）设置为按内容自适应，保持紧凑
         self.tbl3.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        # === 2. 替换为直接添加表格，并明确启用表格自身的滚动条 ===
+        self._install_row_hover_actions(self.tbl3, "tbl3", header_rows)
         self.tbl3.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.tbl3.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._install_row_hover_actions(self.tbl3, "tbl3", header_rows)
         lay.addWidget(self.tbl3, 1)
 
         # lay.addWidget(self.tbl3, 1)
@@ -1541,6 +1538,11 @@ class FeasibilityAssessmentPage(BasePage):
                 facility_code=self.facility_code,
                 job_name=self.job_name,
                 mysql_url=self.mysql_url,
+                platform_overview_text=self.platform_overview_text,
+                inspection_record_summary_text=self.inspection_record_summary_text,
+                env_branch=self.env_branch,
+                env_op_company=self.env_op_company,
+                env_oilfield=self.env_oilfield,
             )
 
             idx = mw.tab_widget.addTab(page, title)

@@ -10,11 +10,17 @@
 #
 # 说明：本页面只负责 UI 与基础占位逻辑；真实的结果解析/着色显示可后续接入。
 
+import json
 import os
+import sys
+from pathlib import Path
 from typing import Dict, List, Tuple
+from urllib import error, request
+
 
 from core.app_paths import first_existing_path
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QRectF
+
 from PyQt5.QtGui import QColor, QPen, QBrush, QFontMetrics
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -42,7 +48,19 @@ from core.base_page import BasePage
 from sqlalchemy import create_engine, text
 from pages.sacs_compare_view import SacsComparePanel
 
+
+from shiyou_db.runtime_db import get_mysql_url
+
 from core.dropdown_bar import DropdownBar
+from feasibility_analysis_services.history_rebuild_service import build_history_rebuild_summary, get_history_rebuild_projects
+from feasibility_analysis_services.oilfield_env_service import (
+    get_env_profile_id,
+    load_metric_items,
+    load_platform_strength_marine_items,
+    load_platform_strength_splash_items,
+    load_water_level_items,
+)
+
 
 
 class InpWireframeView(QGraphicsView):
@@ -219,8 +237,13 @@ class FeasibilityAssessmentResultsPage(BasePage):
         ["P208", "110887", "117019", "6864.3", "OL22", "36242.6", "-", "-", "2.57", "-"],
         ["P308", "110887", "117019", "6864.3", "OL22", "32245.5", "-", "-", "2.84", "-"],
     ]
+    INSPECTION_RECORD_SUMMARY_PLACEHOLDER = (
+        "来自检验记录最近一次检验（包括定期检验1-N和特殊事件检测）的信息和结论"
+        "（可在事件名称后增加“描述”一栏））"
+    )
+    DEFAULT_REPORT_API_URL = "http://127.0.0.1:8000/generate-report"
 
-    def __init__(self, main_window, facility_code, job_name="", mysql_url="", parent=None):
+    def __init__(self, main_window, facility_code, job_name="", mysql_url="", platform_overview_text="", inspection_record_summary_text="", env_branch="", env_op_company="", env_oilfield="", parent=None):
         if parent is None:
             parent = main_window
         super().__init__("", parent)
@@ -228,10 +251,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self.main_window = main_window
         self.facility_code = facility_code
         self.job_name = job_name or facility_code
-        self.mysql_url = (mysql_url or os.environ.get(
-            "MYSQL_URL",
-            "mysql+pymysql://root:ljm020918**@127.0.0.1:3306/SACS_new?charset=utf8mb4"
-        )).strip()
+        self.mysql_url = (mysql_url or get_mysql_url()).strip()
+        self.platform_overview_text = str(platform_overview_text or "").strip()
+        self.inspection_record_summary_text = str(inspection_record_summary_text or "").strip()
+        self.env_branch = str(env_branch or "").strip()
+        self.env_op_company = str(env_op_company or "").strip()
+        self.env_oilfield = str(env_oilfield or "").strip()
         self.current_tab = "构件"
 
         self._build_ui()
@@ -785,6 +810,242 @@ class FeasibilityAssessmentResultsPage(BasePage):
             raise ValueError("MYSQL_URL 未配置")
         return create_engine(self.mysql_url, future=True, pool_pre_ping=True)
 
+    def _build_report_payload(self) -> dict:
+        factor_path = first_existing_path("upload", "model_files", "psilst.factor")
+        if not factor_path or not os.path.exists(factor_path):
+            raise FileNotFoundError("未找到报告所需结果文件：upload/model_files/psilst.factor")
+
+        platform_overview = ""
+        platform_overview_blocks = []
+        if self.platform_overview_text:
+            platform_overview_blocks.append(
+                {
+                    "text": self.platform_overview_text,
+                    "anchor_prefix": "例子：",
+                    "anchor_occurrence": 1,
+                }
+            )
+
+        history_rebuild_summary = build_history_rebuild_summary(
+            self.facility_code,
+            mysql_url=self.mysql_url,
+        )
+        history_rebuild_projects = get_history_rebuild_projects(
+            self.facility_code,
+            mysql_url=self.mysql_url,
+        )
+        if history_rebuild_summary:
+            platform_overview_blocks.append(
+                {
+                    "text": history_rebuild_summary,
+                    "anchor_prefix": "（第二部分：来自历次改造信息里每一个改造项目的信息和结论）",
+                    "replace_next_paragraph": True,
+                    "preserve_anchor_style": True,
+                }
+            )
+
+        inspection_record_summary_text = (
+            self.inspection_record_summary_text or self.INSPECTION_RECORD_SUMMARY_PLACEHOLDER
+        )
+        if inspection_record_summary_text:
+            platform_overview_blocks.append(
+                {
+                    "text": inspection_record_summary_text,
+                    "anchor_prefix": "例子：",
+                    "anchor_occurrence": 3,
+                    "preserve_anchor_style": True,
+                }
+            )
+
+        if platform_overview_blocks:
+            platform_overview = {
+                "mode": "replace_region",
+                "blocks": platform_overview_blocks,
+            }
+
+        chapter_1_3 = {
+            "platform_overview": platform_overview,
+            "retrofit_history": {
+                "table_rows": [
+                    {
+                        "index": project.get("index", ""),
+                        "name": project.get("name", ""),
+                        "year": project.get("year", ""),
+                    }
+                    for project in history_rebuild_projects
+                ]
+            },
+            "platform_evaluation_conclusion": "",
+            "basis_data": "",
+            "environment_conditions": self._build_environment_conditions_section(),
+            "analysis_model": "",
+        }
+
+        return {
+            "factor_path": factor_path,
+            "output_filename": f"{self.facility_code}_可行性评估报告.docx",
+            "chapter_1_3": chapter_1_3,
+        }
+
+    def _build_environment_conditions_section(self) -> dict:
+        if not (self.mysql_url and self.env_branch and self.env_op_company and self.env_oilfield):
+            return {}
+
+        profile_id = get_env_profile_id(
+            branch=self.env_branch,
+            op_company=self.env_op_company,
+            oilfield=self.env_oilfield,
+            mysql_url=self.mysql_url,
+            create_if_missing=False,
+        )
+        if not profile_id:
+            return {}
+
+        water_level_rows = load_water_level_items(profile_id, mysql_url=self.mysql_url)
+        wind_rows = load_metric_items("oilfield_wind_param_item", profile_id, mysql_url=self.mysql_url)
+        wave_rows = load_metric_items("oilfield_wave_param_item", profile_id, mysql_url=self.mysql_url)
+        current_rows = load_metric_items("oilfield_current_param_item", profile_id, mysql_url=self.mysql_url)
+        marine_growth_rows = load_platform_strength_marine_items(
+            profile_id,
+            self.facility_code,
+            mysql_url=self.mysql_url,
+        )
+        splash_zone_rows = load_platform_strength_splash_items(
+            profile_id,
+            self.facility_code,
+            mysql_url=self.mysql_url,
+        )
+
+        if not (water_level_rows or wind_rows or wave_rows or current_rows or marine_growth_rows or splash_zone_rows):
+            return {}
+
+        return {
+            "water_level_rows": [self._normalize_environment_row(row) for row in water_level_rows],
+            "wind_rows": [self._normalize_environment_row(row) for row in wind_rows],
+            "wave_rows": [self._normalize_environment_row(row) for row in wave_rows],
+            "current_rows": [self._normalize_environment_row(row) for row in current_rows],
+            "marine_growth_rows": [self._normalize_environment_row(row) for row in marine_growth_rows],
+            "splash_zone_rows": [self._normalize_environment_row(row) for row in splash_zone_rows],
+        }
+
+    def _validate_environment_conditions_for_report(self) -> str:
+        if not (self.env_branch and self.env_op_company and self.env_oilfield):
+            return "当前平台未关联完整的环境条件上下文，缺少分公司/作业公司/油气田信息，无法生成包含第 2.5 节的报告。"
+
+        if not self.mysql_url:
+            return "MYSQL_URL 未配置，无法校验当前油气田的环境条件数据。"
+
+        profile_id = get_env_profile_id(
+            branch=self.env_branch,
+            op_company=self.env_op_company,
+            oilfield=self.env_oilfield,
+            mysql_url=self.mysql_url,
+            create_if_missing=False,
+        )
+        if not profile_id:
+            return f"当前油气田“{self.env_oilfield}”未配置环境条件数据，无法填充报告第 2.5 节。"
+
+        missing_tables = []
+        if not load_water_level_items(profile_id, mysql_url=self.mysql_url):
+            missing_tables.append("水深水位表")
+        if not load_metric_items("oilfield_wave_param_item", profile_id, mysql_url=self.mysql_url):
+            missing_tables.append("波浪参数表")
+        if not load_metric_items("oilfield_current_param_item", profile_id, mysql_url=self.mysql_url):
+            missing_tables.append("海流参数表")
+        if not load_metric_items("oilfield_wind_param_item", profile_id, mysql_url=self.mysql_url):
+            missing_tables.append("风参数表")
+        if not load_platform_strength_marine_items(profile_id, self.facility_code, mysql_url=self.mysql_url):
+            missing_tables.append("海生物信息表")
+        if not load_platform_strength_splash_items(profile_id, self.facility_code, mysql_url=self.mysql_url):
+            missing_tables.append("飞溅区腐蚀余量表")
+        if missing_tables:
+            return f"当前油气田“{self.env_oilfield}”环境条件数据不完整，缺少{'、'.join(missing_tables)}，无法完整生成报告第 2.5 节。"
+        return ""
+
+    def _normalize_environment_row(self, row: dict) -> dict:
+        return {
+            "group_name": str(row.get("group_name") or "").strip(),
+            "item_name": str(row.get("item_name") or "").strip(),
+            "return_period": "" if row.get("return_period") is None else str(row.get("return_period")).strip(),
+            "value": "" if row.get("value") is None else str(row.get("value")).strip(),
+            "unit": str(row.get("unit") or "").strip(),
+            "layer_no": "" if row.get("layer_no") is None else str(row.get("layer_no")).strip(),
+            "upper_limit_m": "" if row.get("upper_limit_m") is None else str(row.get("upper_limit_m")).strip(),
+            "lower_limit_m": "" if row.get("lower_limit_m") is None else str(row.get("lower_limit_m")).strip(),
+            "thickness_mm": "" if row.get("thickness_mm") is None else str(row.get("thickness_mm")).strip(),
+            "density_t_per_m3": "" if row.get("density_t_per_m3") is None else str(row.get("density_t_per_m3")).strip(),
+            "corrosion_allowance_mm_per_y": "" if row.get("corrosion_allowance_mm_per_y") is None else str(row.get("corrosion_allowance_mm_per_y")).strip(),
+        }
+
+    def _post_report_request(self, payload: dict) -> dict:
+        api_url = self.DEFAULT_REPORT_API_URL
+        body = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            api_url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=120) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            if "Permission denied" in detail and ".docx" in detail:
+                try:
+                    detail_payload = json.loads(detail)
+                    raw_detail = str(detail_payload.get("detail", "")).strip()
+                except Exception:
+                    raw_detail = detail.strip()
+                locked_file = raw_detail.split(":", 1)[-1].strip().strip("'\"")
+                raise RuntimeError(
+                    "报告生成失败：目标 Word 文件正被占用，请先关闭已打开的报告后重试。\n"
+                    f"被占用文件：{locked_file}"
+                ) from exc
+            raise RuntimeError(f"报告服务返回错误：HTTP {exc.code}\n{detail}") from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"无法连接报告服务，请确认 WordTemplate_v2 API 已启动：{self.DEFAULT_REPORT_API_URL}") from exc
+
+    def _get_report_mode(self) -> str:
+        mode = str(os.environ.get("REPORT_GENERATION_MODE", "auto")).strip().lower()
+        return mode if mode in {"auto", "http", "local"} else "auto"
+
+    def _get_wordtemplate_project_root(self) -> Path:
+        return Path(__file__).resolve().parents[2] / "WordTemplate_v2"
+
+    def _generate_report_locally(self, payload: dict) -> dict:
+        project_root = self._get_wordtemplate_project_root()
+        if not (project_root / "src").exists():
+            raise FileNotFoundError(f"未找到本地报告项目源码目录：{project_root / 'src'}")
+        project_root_text = str(project_root)
+        if project_root_text not in sys.path:
+            sys.path.insert(0, project_root_text)
+        from src.report_service import generate_report_with_project_defaults
+
+        output_filename = str(payload.get("output_filename", "")).strip()
+        output_path = str(project_root / "output" / output_filename) if output_filename else None
+        result = generate_report_with_project_defaults(
+            project_root=project_root,
+            chapter_1_3_sources=payload.get("chapter_1_3", {}),
+            factor_path=payload.get("factor_path"),
+            template_path=payload.get("template_path"),
+            output_path=output_path,
+        )
+        return {"message": "report generated (local)", "output_path": result}
+
+    def _generate_report(self, payload: dict) -> dict:
+        mode = self._get_report_mode()
+        if mode == "http":
+            return self._post_report_request(payload)
+        if mode == "local":
+            return self._generate_report_locally(payload)
+        try:
+            return self._post_report_request(payload)
+        except RuntimeError as exc:
+            if "无法连接报告服务" not in str(exc):
+                raise
+        return self._generate_report_locally(payload)
+
     def _fetch_model_paths(self):
         sql = text("""
             SELECT model_file, new_model_file, workpoint
@@ -817,4 +1078,17 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 self.model_panel.compare_view.clear_view(f"右侧模型加载失败：\n{e}")
 
     def _on_generate_report(self):
-        QMessageBox.information(self, "生成评估报告", "已点击“生成评估报告”。\n\n后续可在此处按你定义的格式生成报告文件（Word/PDF/Excel）。")
+        try:
+            environment_error = self._validate_environment_conditions_for_report()
+            if environment_error:
+                QMessageBox.warning(self, "环境条件缺失", environment_error)
+                return
+
+            payload = self._build_report_payload()
+            result = self._generate_report(payload)
+            output_path = str(result.get("output_path", "")).strip()
+            if not output_path:
+                raise RuntimeError(f"报告服务返回异常：{result}")
+            QMessageBox.information(self, "生成成功", f"报告已生成：\n{output_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "生成报告失败", str(e))

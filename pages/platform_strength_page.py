@@ -29,13 +29,31 @@ from PyQt5.QtWidgets import (
     QGraphicsScene, QMessageBox, QPushButton, QHeaderView,QSlider,
 )
 
+<<<<<<< HEAD
 from core.app_paths import first_existing_path
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar
+=======
+from app_paths import first_existing_path
+from base_page import BasePage
+from dropdown_bar import DropdownBar
+from feasibility_analysis_services.oilfield_env_service import (
+    get_env_profile_id,
+    load_platform_strength_marine_items,
+    load_platform_strength_pile_items,
+    load_platform_strength_splash_items,
+    replace_platform_strength_marine_items,
+    replace_platform_strength_pile_items,
+    replace_platform_strength_splash_items,
+)
+from inspection_business_db_adapter import load_facility_profile
+>>>>>>> origin/main
 from pages.feasibility_assessment_page import FeasibilityAssessmentPage
-from pages.read_table_xls import ReadTableXls
+from pages.file_management_platforms import default_platform, sync_platform_dropdowns
 
 from pages.sacs_import_service import import_model_bundle_to_db
+
+from shiyou_db.runtime_db import get_mysql_url
 
 from collections import Counter
 
@@ -403,20 +421,14 @@ class PlatformStrengthPage(BasePage):
         self.upload_dir = first_existing_path("upload")
         self.model_files_root = first_existing_path("upload", "model_files")
 
-        self._excel_provider = ReadTableXls()
-        self._excel_loaded = False
-        try:
-            self._excel_provider.load()
-            self._excel_loaded = True
-        except Exception:
-            self._excel_loaded = False
-
-        self._top_records: List[Dict[str, str]] = self._load_top_records_from_excel()
-        self._top_cascade_enabled: bool = len(self._top_records) > 0
-        self._top_cascade_lock: bool = False
         self._model_signature_cache: Dict[str, Tuple[float, bool]] = {}
+        self._default_splash_items: List[Dict] = []
+        self._default_pile_items: List[Dict] = []
+        self._default_marine_items: List[Dict] = []
 
         self._build_ui()
+        self._capture_default_strength_env_tables()
+        self._load_strength_env_tables()
         self._autoload_inp_to_view()
 
     # ---------------- 顶部下拉 ----------------
@@ -496,7 +508,19 @@ class PlatformStrengthPage(BasePage):
         return opts if default in opts else [default] + opts
 
     def _build_top_dropdown_fields(self) -> List[Dict]:
-        fallback_defaults = {k: v for k, v in self.TOP_FIELDS}
+        platform_defaults = default_platform()
+        profile = load_facility_profile(platform_defaults["facility_code"], defaults=platform_defaults)
+        fallback_defaults = {
+            "分公司": str(profile.get("branch") or self.TOP_FIELDS[0][1]),
+            "作业公司": str(profile.get("op_company") or self.TOP_FIELDS[1][1]),
+            "油气田": str(profile.get("oilfield") or self.TOP_FIELDS[2][1]),
+            "设施编码": str(profile.get("facility_code") or self.TOP_FIELDS[3][1]),
+            "设施名称": str(profile.get("facility_name") or self.TOP_FIELDS[4][1]),
+            "设施类型": str(profile.get("facility_type") or self.TOP_FIELDS[5][1]),
+            "分类": str(profile.get("category") or self.TOP_FIELDS[6][1]),
+            "投产时间": str(profile.get("start_time") or self.TOP_FIELDS[7][1]),
+            "设计年限": str(profile.get("design_life") or self.TOP_FIELDS[8][1]),
+        }
         stretch_map = {
             "branch": 1,
             "op_company": 2,
@@ -512,12 +536,8 @@ class PlatformStrengthPage(BasePage):
         for key in self.TOP_KEY_ORDER:
             label = self.KEY_TO_FIELD[key]
             fallback = fallback_defaults.get(label, "")
-            if self._top_cascade_enabled:
-                opts = self._unique_record_values(self._top_records, label)
-                default = opts[0] if opts else fallback
-            else:
-                opts = self._mock_top_options(label, fallback)
-                default = fallback
+            opts = [fallback] if fallback else []
+            default = fallback
             fields.append({
                 "key": key,
                 "label": label,
@@ -582,91 +602,37 @@ class PlatformStrengthPage(BasePage):
 
         grid.addWidget(self.evaluate_btn, row, col, row_span, col_span)
 
-    def _apply_top_cascade(self, changed_key: Optional[str] = None, changed_value: str = ""):
-        if (not self._top_cascade_enabled) or (not hasattr(self, "dropdown_bar")):
+    def _sync_platform_ui(self, changed_key: str | None = None):
+        if not hasattr(self, "dropdown_bar"):
             return
-
-        records = self._top_records
-        current = {k: self.dropdown_bar.get_value(k) for k in self.TOP_KEY_ORDER}
-        if changed_key:
-            current[changed_key] = self._normalize_top_value(changed_value)
-
-        reset_downstream = {
-            "branch": {"op_company", "oilfield", "facility_code", "facility_name"},
-            "op_company": {"oilfield", "facility_code", "facility_name"},
-            "oilfield": {"facility_code", "facility_name"},
-            "facility_code": {"facility_name"},
-            "facility_name": {"facility_code"},
-        }
-        reset = reset_downstream.get(changed_key or "", set())
-
-        branches = self._unique_record_values(records, "分公司")
-        branch = self._pick_option(branches, current.get("branch", ""))
-        branch_rows = [r for r in records if r.get("分公司", "") == branch] if branch else list(records)
-
-        op_opts = self._unique_record_values(branch_rows, "作业公司")
-        op_pref = "" if "op_company" in reset else current.get("op_company", "")
-        op_company = self._pick_option(op_opts, op_pref)
-        op_rows = [r for r in branch_rows if r.get("作业公司", "") == op_company] if op_company else list(branch_rows)
-
-        oil_opts = self._unique_record_values(op_rows, "油气田")
-        oil_pref = "" if "oilfield" in reset else current.get("oilfield", "")
-        oilfield = self._pick_option(oil_opts, oil_pref)
-        oil_rows = [r for r in op_rows if r.get("油气田", "") == oilfield] if oilfield else list(op_rows)
-
-        code_opts = self._unique_record_values(oil_rows, "设施编码")
-        name_opts = self._unique_record_values(oil_rows, "设施名称")
-
-        selected_row: Optional[Dict[str, str]] = None
-        if changed_key == "facility_name":
-            name_pref = current.get("facility_name", "")
-            selected_name = self._pick_option(name_opts, name_pref)
-            for rec in oil_rows:
-                if rec.get("设施名称", "") == selected_name:
-                    selected_row = rec
-                    break
-        else:
-            code_pref = "" if "facility_code" in reset else current.get("facility_code", "")
-            selected_code = self._pick_option(code_opts, code_pref)
-            for rec in oil_rows:
-                if rec.get("设施编码", "") == selected_code:
-                    selected_row = rec
-                    break
-
-        if selected_row is None and oil_rows:
-            selected_row = oil_rows[0]
-
-        selected_code = self._normalize_top_value((selected_row or {}).get("设施编码", ""))
-        selected_name = self._normalize_top_value((selected_row or {}).get("设施名称", ""))
-
-        fixed_map = {
-            "facility_type": "设施类型",
-            "category": "分类",
-            "start_time": "投产时间",
-            "design_life": "设计年限",
-        }
-
-        self._top_cascade_lock = True
-        try:
-            self.dropdown_bar.set_options("branch", branches, branch)
-            self.dropdown_bar.set_options("op_company", op_opts, op_company)
-            self.dropdown_bar.set_options("oilfield", oil_opts, oilfield)
-            self.dropdown_bar.set_options("facility_code", code_opts, selected_code)
-            self.dropdown_bar.set_options("facility_name", name_opts, selected_name)
-
-            for key, field_cn in fixed_map.items():
-                val = self._normalize_top_value((selected_row or {}).get(field_cn, ""))
-                self.dropdown_bar.set_options(key, [val] if val else [], val)
-        finally:
-            self._top_cascade_lock = False
+        platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
+        profile = load_facility_profile(
+            platform["facility_code"],
+            defaults={
+                "branch": platform["branch"],
+                "op_company": platform["op_company"],
+                "oilfield": platform["oilfield"],
+                "facility_code": platform["facility_code"],
+                "facility_name": platform["facility_name"],
+                "facility_type": platform["facility_type"],
+                "category": platform["category"],
+                "start_time": platform["start_time"],
+                "design_life": platform["design_life"],
+            },
+        )
+        self.dropdown_bar.set_options("branch", [profile["branch"]], profile["branch"])
+        self.dropdown_bar.set_options("op_company", [profile["op_company"]], profile["op_company"])
+        self.dropdown_bar.set_options("oilfield", [profile["oilfield"]], profile["oilfield"])
+        self.dropdown_bar.set_options("facility_type", [profile["facility_type"]], profile["facility_type"])
+        self.dropdown_bar.set_options("category", [profile["category"]], profile["category"])
+        self.dropdown_bar.set_options("start_time", [profile["start_time"]], profile["start_time"])
+        self.dropdown_bar.set_options("design_life", [profile["design_life"]], profile["design_life"])
+        if hasattr(self, "tbl_splash") and hasattr(self, "tbl_pile") and hasattr(self, "tbl_marine"):
+            self._load_strength_env_tables()
 
     def _on_top_key_changed(self, key: str, txt: str):
-        if self._top_cascade_enabled:
-            if self._top_cascade_lock:
-                return
-            self._apply_top_cascade(changed_key=key, changed_value=txt)
-
         if key in {"branch", "op_company", "oilfield", "facility_code", "facility_name"}:
+            self._sync_platform_ui(changed_key=key)
             self._autoload_inp_to_view()
 
     def _get_top_value(self, key: str) -> str:
@@ -689,6 +655,180 @@ class PlatformStrengthPage(BasePage):
         except Exception:
             return default
 
+    def _table_text(self, table: QTableWidget, row: int, col: int) -> str:
+        item = table.item(row, col)
+        if item is None:
+            return ""
+        return (item.text() or "").strip()
+
+    def _parse_optional_float(self, text: str) -> float | None:
+        value = (text or "").strip()
+        if not value:
+            return None
+        return float(value)
+
+    def _format_optional_number(self, value: object) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if not text:
+            return ""
+        try:
+            number = float(text)
+        except Exception:
+            return text
+        return f"{number:.3f}".rstrip("0").rstrip(".")
+
+    def _set_table_text(self, table: QTableWidget, row: int, col: int, text: str):
+        item = table.item(row, col)
+        if item is None:
+            self._set_center_item(table, row, col, text)
+            return
+        item.setText(text)
+
+    def _capture_default_strength_env_tables(self):
+        self._default_splash_items = [{
+            "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 0)),
+            "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 1)),
+            "corrosion_allowance_mm_per_y": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 2)),
+        }]
+        self._default_pile_items = [{
+            "scour_depth_m": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 0)),
+            "compressive_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 1)),
+            "uplift_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 2)),
+            "submerged_weight_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 3)),
+        }]
+        density_value = self._parse_optional_float(self._table_text(self.tbl_marine, 4, 3))
+        self._default_marine_items = []
+        for i in range(9):
+            col = 3 + i
+            self._default_marine_items.append({
+                "layer_no": i + 1,
+                "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 1, col)),
+                "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 2, col)),
+                "thickness_mm": self._parse_optional_float(self._table_text(self.tbl_marine, 3, col)),
+                "density_t_per_m3": density_value,
+            })
+
+    def _apply_splash_items(self, items: List[Dict]):
+        source = items[0] if items else (self._default_splash_items[0] if self._default_splash_items else {})
+        self._set_table_text(self.tbl_splash, 0, 0, self._format_optional_number(source.get("upper_limit_m")))
+        self._set_table_text(self.tbl_splash, 0, 1, self._format_optional_number(source.get("lower_limit_m")))
+        self._set_table_text(self.tbl_splash, 0, 2, self._format_optional_number(source.get("corrosion_allowance_mm_per_y")))
+
+    def _apply_pile_items(self, items: List[Dict]):
+        source = items[0] if items else (self._default_pile_items[0] if self._default_pile_items else {})
+        self._set_table_text(self.tbl_pile, 0, 0, self._format_optional_number(source.get("scour_depth_m")))
+        self._set_table_text(self.tbl_pile, 0, 1, self._format_optional_number(source.get("compressive_capacity_t")))
+        self._set_table_text(self.tbl_pile, 0, 2, self._format_optional_number(source.get("uplift_capacity_t")))
+        self._set_table_text(self.tbl_pile, 0, 3, self._format_optional_number(source.get("submerged_weight_t")))
+
+    def _apply_marine_items(self, items: List[Dict]):
+        source_items = items if items else self._default_marine_items
+        by_layer = {
+            int(item.get("layer_no", 0) or 0): item
+            for item in source_items
+            if int(item.get("layer_no", 0) or 0) > 0
+        }
+        density_text = ""
+        for i in range(9):
+            layer_no = i + 1
+            source = by_layer.get(layer_no, {})
+            col = 3 + i
+            self._set_table_text(self.tbl_marine, 1, col, self._format_optional_number(source.get("upper_limit_m")))
+            self._set_table_text(self.tbl_marine, 2, col, self._format_optional_number(source.get("lower_limit_m")))
+            self._set_table_text(self.tbl_marine, 3, col, self._format_optional_number(source.get("thickness_mm")))
+            if not density_text:
+                density_text = self._format_optional_number(source.get("density_t_per_m3"))
+        self._set_table_text(self.tbl_marine, 4, 3, density_text)
+
+    def _load_strength_env_tables(self):
+        branch = self._get_top_value("branch")
+        op_company = self._get_top_value("op_company")
+        oilfield = self._get_top_value("oilfield")
+        facility_code = self._get_top_value("facility_code")
+
+        if not (branch and op_company and oilfield and facility_code):
+            self._apply_splash_items([])
+            self._apply_pile_items([])
+            self._apply_marine_items([])
+            return
+
+        try:
+            profile_id = get_env_profile_id(
+                branch=branch,
+                op_company=op_company,
+                oilfield=oilfield,
+                create_if_missing=False,
+            )
+            if not profile_id:
+                self._apply_splash_items([])
+                self._apply_pile_items([])
+                self._apply_marine_items([])
+                return
+
+            self._apply_splash_items(load_platform_strength_splash_items(profile_id, facility_code))
+            self._apply_pile_items(load_platform_strength_pile_items(profile_id, facility_code))
+            self._apply_marine_items(load_platform_strength_marine_items(profile_id, facility_code))
+        except Exception:
+            self._apply_splash_items([])
+            self._apply_pile_items([])
+            self._apply_marine_items([])
+
+    def _save_strength_env_tables(self) -> tuple[int, int, int]:
+        branch = self._get_top_value("branch")
+        op_company = self._get_top_value("op_company")
+        oilfield = self._get_top_value("oilfield")
+        facility_code = self._get_top_value("facility_code")
+
+        if not (branch and op_company and oilfield):
+            raise ValueError("缺少分公司/作业公司/油气田信息，无法保存结构强度环境数据。")
+        if not facility_code:
+            raise ValueError("缺少设施编码，无法保存结构强度环境数据。")
+
+        profile_id = get_env_profile_id(
+            branch=branch,
+            op_company=op_company,
+            oilfield=oilfield,
+            create_if_missing=True,
+        )
+        if not profile_id:
+            raise ValueError("未能创建或获取环境主表记录。")
+
+        splash_items = [{
+            "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 0)),
+            "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 1)),
+            "corrosion_allowance_mm_per_y": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 2)),
+            "sort_order": 1,
+        }]
+
+        pile_items = [{
+            "scour_depth_m": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 0)),
+            "compressive_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 1)),
+            "uplift_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 2)),
+            "submerged_weight_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 3)),
+            "sort_order": 1,
+        }]
+
+        marine_items = []
+        density_text = self._table_text(self.tbl_marine, 4, 3)
+        density_value = self._parse_optional_float(density_text)
+        for i in range(9):
+            col = 3 + i
+            marine_items.append({
+                "layer_no": i + 1,
+                "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 1, col)),
+                "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 2, col)),
+                "thickness_mm": self._parse_optional_float(self._table_text(self.tbl_marine, 3, col)),
+                "density_t_per_m3": density_value,
+                "sort_order": i + 1,
+            })
+
+        replace_platform_strength_splash_items(profile_id, facility_code, splash_items)
+        replace_platform_strength_pile_items(profile_id, facility_code, pile_items)
+        replace_platform_strength_marine_items(profile_id, facility_code, marine_items)
+        return len(splash_items), len(pile_items), len(marine_items)
+
     def _get_level_threshold(self) -> int:
         if not hasattr(self, "edt_node_limit"):
             return 40
@@ -700,10 +840,7 @@ class PlatformStrengthPage(BasePage):
         return self._safe_float(self.edt_workpoint.text(), 9.1)
 
     def _get_mysql_url(self) -> str:
-        url = os.environ.get("MYSQL_URL", "mysql+pymysql://root:ljm020918**@127.0.0.1:3306/SACS_new?charset=utf8mb4").strip()
-        if not url:
-            raise ValueError("MYSQL_URL 未配置")
-        return url
+        return get_mysql_url()
 
     def _find_matching_sea_file(self, model_path: str) -> Optional[str]:
         if not model_path:
@@ -840,8 +977,7 @@ class PlatformStrengthPage(BasePage):
 
         self.dropdown_bar = DropdownBar(self._build_top_dropdown_fields(), parent=self)
         self.dropdown_bar.valueChanged.connect(self._on_top_key_changed)
-        if self._top_cascade_enabled:
-            self._apply_top_cascade()
+        self._sync_platform_ui()
         top_layout.addWidget(self.dropdown_bar, 1)
         self._embed_operation_button_in_dropdown()
 
@@ -889,6 +1025,12 @@ class PlatformStrengthPage(BasePage):
         facility_code = self._get_top_value("facility_code") or "XXXX"
         title = f"{facility_code}平台强度/改造可行性评估"
 
+        try:
+            self._save_strength_env_tables()
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", f"结构强度环境参数保存失败：\n{e}")
+            return
+
         # 当前页面动态水平层高程
         levels = self._compute_horizontal_levels()
         elevations = [z for z, occ, selected in levels]
@@ -925,6 +1067,9 @@ class PlatformStrengthPage(BasePage):
                 del mw.page_tab_map[key]
 
             page = FeasibilityAssessmentPage(mw, facility_code, elevations=elevations)
+            page.env_branch = self._get_top_value("branch")
+            page.env_op_company = self._get_top_value("op_company")
+            page.env_oilfield = self._get_top_value("oilfield")
 
             # 保证保存按钮和后续创建新模型都用同一个 job_name / mysql_url
             page.job_name = job_name
@@ -1406,6 +1551,7 @@ class PlatformStrengthPage(BasePage):
         splash_layout.setContentsMargins(8, 8, 8, 8)
 
         tbl_splash = QTableWidget(1, 3, splash_box)
+        self.tbl_splash = tbl_splash
         tbl_splash.setHorizontalHeaderLabels(["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm/y)"])
         self._init_table_common(tbl_splash, show_vertical_header=False)
         for c in range(3):
@@ -1436,6 +1582,7 @@ class PlatformStrengthPage(BasePage):
         pile_layout.setContentsMargins(8, 8, 8, 8)
 
         tbl_pile = QTableWidget(1, 4, pile_box)
+        self.tbl_pile = tbl_pile
         tbl_pile.setHorizontalHeaderLabels(["基础冲刷(m)", "桩基础抗压承载能力(t)", "桩基础抗拔承载能力(t)", "单根桩泥下自重(t)"])
         self._init_table_common(tbl_pile, show_vertical_header=False)
         for c in range(4):
@@ -1466,6 +1613,7 @@ class PlatformStrengthPage(BasePage):
         marine_layout.setContentsMargins(8, 8, 8, 8)
 
         tbl_marine = QTableWidget(5, 12, marine_box)
+        self.tbl_marine = tbl_marine
         self._init_table_common(tbl_marine, show_vertical_header=False)
         tbl_marine.horizontalHeader().setVisible(False)
         tbl_marine.verticalHeader().setVisible(False)

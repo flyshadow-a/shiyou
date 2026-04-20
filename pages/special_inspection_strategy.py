@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QPushButton, QScrollArea, QSizePolicy, QLabel,
+<<<<<<< HEAD
     QDialog, QAbstractItemView, QMessageBox
 )
 
@@ -22,10 +23,23 @@ from pages.file_management_platforms import FILE_MANAGEMENT_PLATFORMS, default_p
 from pages.read_table_xls import ReadTableXls
 from pages.special_strategy_history_dialog import SpecialStrategyHistoryDialog as SpecialStrategyHistoryDialogView
 from services.special_strategy_services import (
+=======
+    QDialog, QAbstractItemView, QMessageBox, QSlider, QLineEdit
+)
+
+from app_paths import first_existing_path
+from base_page import BasePage
+from dropdown_bar import DropdownBar
+from pages.file_management_platforms import FILE_MANAGEMENT_PLATFORMS, default_platform, find_platform, sync_platform_dropdowns
+from pages.read_table_xls import ReadTableXls
+from pages.special_strategy_history_dialog import SpecialStrategyHistoryDialog as SpecialStrategyHistoryDialogView
+from special_strategy_services import (
+>>>>>>> origin/main
     NodeYearLabelMapper,
     SpecialStrategyResultService,
     SpecialStrategySummaryBuilder,
 )
+<<<<<<< HEAD
 
 
 NODE_YEAR_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]
@@ -39,6 +53,23 @@ NODE_YEAR_CONTEXT_MAP = {
 }
 
 
+=======
+
+from pages.sacs_elevation_risk_view import SacsElevationRiskView
+from pages.platform_strength_page import PlatformStrengthPage
+
+NODE_YEAR_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]
+NODE_YEAR_CONTEXT_MAP = {
+    "当前": "当前",
+    "+5年": "第5年",
+    "+10年": "第10年",
+    "+15年": "第15年",
+    "+20年": "第20年",
+    "+25年": "第25年",
+}
+
+
+>>>>>>> origin/main
 class SimpleTowerDiagram(QWidget):
     """右侧黑底“塔架示意图”占位控件（不依赖图片）。"""
     def __init__(self, variant: int = 0, parent=None):
@@ -492,27 +523,24 @@ class SpecialInspectionStrategy(BasePage):
 
     # ---------------- UI ----------------
     def _build_ui(self):
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        self.main_layout.addWidget(scroll, 1)
+        self.main_layout.setContentsMargins(10, 10, 10, 10)
+        self.main_layout.setSpacing(8)
 
-        container = QWidget()
-        scroll.setWidget(container)
-        root = QVBoxLayout(container)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(10)
-
-        root.addWidget(self._build_top_bar_dropdown_style(), 0)
+        self.main_layout.addWidget(self._build_top_bar_dropdown_style(), 0)
 
         bottom = QFrame()
         bottom_lay = QHBoxLayout(bottom)
         bottom_lay.setContentsMargins(0, 0, 0, 0)
         bottom_lay.setSpacing(10)
 
-        bottom_lay.addWidget(self._build_left_tables(), 3)
-        bottom_lay.addWidget(self._build_right_diagrams(), 2)
+        left = self._build_left_tables()
+        right = self._build_right_diagrams()
 
-        root.addWidget(bottom, 1)  # 填满剩余空间（减少底部留白）
+        # 右侧再给大一点，但不要夸张
+        bottom_lay.addWidget(left, 6)
+        bottom_lay.addWidget(right, 5)
+
+        self.main_layout.addWidget(bottom, 1)
 
     # ---------------- 顶部：DropdownBar + 补充操作栏（同风格） ----------------
     def _build_top_bar_dropdown_style(self) -> QWidget:
@@ -658,9 +686,158 @@ class SpecialInspectionStrategy(BasePage):
         h = QHBoxLayout(right)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(10)
-        h.addWidget(SimpleTowerDiagram(variant=0), 1)
-        h.addWidget(SimpleTowerDiagram(variant=1), 1)
+
+        panel = QFrame()
+        panel.setStyleSheet("QFrame { background: #ffffff; border: 1px solid #b9c6d6; }")
+        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        panel.setMinimumWidth(620)
+        panel.setMaximumWidth(700)
+
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(6)
+
+        title = QLabel("模型立面风险图")
+        title.setStyleSheet("""
+            color: #1d2b3a;
+            font-weight: bold;
+            font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+            font-size: 12pt;
+        """)
+        outer.addWidget(title, 0)
+
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(8)
+
+        lbl_row = QLabel("立面：")
+        lbl_row.setStyleSheet('color:#1d2b3a; font-size:12pt;')
+
+        self.row_combo = QComboBox()
+        self.row_combo.setStyleSheet("""
+            QComboBox {
+                background: #ffffff;
+                border: 1px solid #b9c6d6;
+                min-height: 28px;
+                padding: 2px 8px;
+                font-size: 12pt;
+            }
+        """)
+        self.row_combo.addItems(["XZ 前"])
+        self.row_combo.setCurrentText("XZ 前")
+        self.row_combo.currentTextChanged.connect(self._on_row_changed)
+
+        top_row.addWidget(lbl_row, 0)
+        top_row.addWidget(self.row_combo, 0)
+        top_row.addStretch(1)
+        outer.addLayout(top_row, 0)
+
+        self.elevation_hint_label = QLabel("当前显示：XZ 1 立面轮廓图；滚轮缩放，双击恢复初始视图。")
+        self.elevation_hint_label.setWordWrap(False)
+        self.elevation_hint_label.setFixedHeight(24)
+        self.elevation_hint_label.setStyleSheet("color:#5d6f85; font-size:12px;")
+        outer.addWidget(self.elevation_hint_label, 0)
+
+        view_row = QHBoxLayout()
+        view_row.setContentsMargins(0, 0, 0, 0)
+        view_row.setSpacing(6)
+
+        self.elevation_view = SacsElevationRiskView(panel)
+        self.elevation_view.set_info_label(self.elevation_hint_label)
+
+        # 改成立方形规格，接近三维结构图的显示感觉
+        self.elevation_view.setMinimumSize(560, 560)
+        self.elevation_view.setMaximumSize(620, 620)
+        self.elevation_view.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
+        self.slider_v = QSlider(Qt.Vertical)
+        self.slider_v.setRange(-100, 100)
+        self.slider_v.setValue(0)
+        self.slider_v.setFixedHeight(560)
+
+        view_row.addStretch(1)
+        view_row.addWidget(self.elevation_view, 0, Qt.AlignHCenter | Qt.AlignVCenter)
+        view_row.addWidget(self.slider_v, 0)
+        view_row.addStretch(1)
+
+        outer.addLayout(view_row, 1)
+
+        self.slider_h = QSlider(Qt.Horizontal)
+        self.slider_h.setRange(-100, 100)
+        self.slider_h.setValue(0)
+        self.slider_h.setFixedWidth(560)
+
+        slider_row = QHBoxLayout()
+        slider_row.setContentsMargins(0, 0, 0, 0)
+        slider_row.setSpacing(0)
+        slider_row.addStretch(1)
+        slider_row.addWidget(self.slider_h, 0)
+        slider_row.addStretch(1)
+
+        outer.addLayout(slider_row, 0)
+
+        self.elevation_view.bind_sliders(self.slider_h, self.slider_v)
+
+        self.slider_h.valueChanged.connect(
+            lambda v: self.elevation_view.pan_view(v, self.slider_v.value())
+        )
+        self.slider_v.valueChanged.connect(
+            lambda v: self.elevation_view.pan_view(self.slider_h.value(), v)
+        )
+
+        h.addWidget(panel, 1)
         return right
+
+    def _find_platform_strength_page(self):
+        mw = self.window()
+        tab_widget = getattr(mw, "tab_widget", None)
+        if tab_widget is None:
+            return None
+
+        facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
+        for i in range(tab_widget.count()):
+            page = tab_widget.widget(i)
+            if isinstance(page, PlatformStrengthPage):
+                try:
+                    if page._get_top_value("facility_code") == facility_code:
+                        return page
+                except Exception:
+                    pass
+        return None
+
+    def _get_shared_section_params(self, context: Dict) -> tuple[float, int]:
+        page = self._find_platform_strength_page()
+        if page is not None:
+            return page._get_workpoint_value(), page._get_level_threshold()
+
+        # 回退：结构强度页没开时，再从 context 里取
+        wp = self.elevation_view._extract_workpoint_from_context(context)
+        thr = self.elevation_view._extract_level_threshold_from_context(context)
+        return wp, thr
+
+    def _sync_dynamic_row_combo_from_view(self):
+        if not hasattr(self, "row_combo") or not hasattr(self, "elevation_view"):
+            return
+
+        options = self.elevation_view.available_row_names()
+        if not options:
+            return
+
+        current = getattr(self.elevation_view, "_row_name", "") or self.row_combo.currentText().strip()
+        old_options = [self.row_combo.itemText(i) for i in range(self.row_combo.count())]
+
+        self.row_combo.blockSignals(True)
+        try:
+            if old_options != options:
+                self.row_combo.clear()
+                self.row_combo.addItems(options)
+
+            if current in options:
+                self.row_combo.setCurrentText(current)
+            else:
+                self.row_combo.setCurrentText(options[1] if len(options) > 1 else options[0])
+        finally:
+            self.row_combo.blockSignals(False)
 
     def _build_year_bar(self) -> QWidget:
         bar = QFrame()
@@ -832,19 +1009,72 @@ class SpecialInspectionStrategy(BasePage):
             self._clear_summary_table(self.node_table)
             self._active_facility_code = facility_code
             self._active_run_id = run_id
+<<<<<<< HEAD
             return
 
         context = bundle["context"]
+=======
+            if hasattr(self, "elevation_view"):
+                self.elevation_view._draw_message("当前没有可用的特检结果")
+            return
+
+        context = bundle["context"]
+
+        print("[Strategy] context keys =", list(context.keys()))
+        for k, v in context.items():
+            if isinstance(v, list) and v:
+                print("[Strategy]", k, "sample =", v[0])
+            elif isinstance(v, (str, dict)):
+                print("[Strategy]", k, "=", v)
+
+>>>>>>> origin/main
         self._active_facility_code = facility_code
         self._active_run_id = run_id
         self._fill_component_from_context(context)
         self._fill_node_from_context(context, self.current_year)
+<<<<<<< HEAD
+=======
+        self._refresh_elevation_view(context)
+>>>>>>> origin/main
 
     def _fill_component_from_context(self, context: Dict):
         self._fill_rows(self.component_table, self._summary_builder.build_component_inspection_rows(context))
 
     def _fill_node_from_context(self, context: Dict, year: str):
         self._fill_rows(self.node_table, self._summary_builder.build_node_inspection_rows(context, year))
+<<<<<<< HEAD
+=======
+
+    def _refresh_elevation_view(self, context: Optional[Dict] = None):
+        if not hasattr(self, "elevation_view"):
+            return
+
+        if context is None:
+            facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
+            if not facility_code:
+                return
+            bundle = self._result_service.load_result_bundle(facility_code, self._active_run_id)
+            if not bundle:
+                self.elevation_view._draw_message("当前没有可用的特检结果")
+                return
+            context = bundle.get("context") or {}
+
+        facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
+        row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 1"
+
+        workpoint_override, level_threshold_override = self._get_shared_section_params(context)
+
+        self.elevation_view.load_for_facility(
+            facility_code=facility_code,
+            context=context,
+            year_label=self.current_year,
+            row_name=row_name,
+            workpoint_override=workpoint_override,
+            level_threshold_override=level_threshold_override,
+        )
+
+        self._sync_dynamic_row_combo_from_view()
+>>>>>>> origin/main
 
     def _fill_rows(self, table: QTableWidget, rows: List[Tuple[str, str, str, str]]):
         for r, row in enumerate(rows):
@@ -891,6 +1121,40 @@ class SpecialInspectionStrategy(BasePage):
         self.current_year = year
         self._sync_year_buttons(year)
         self._load_runtime_summary(self._get_dropdown_value("facility_code"), self._active_run_id)
+<<<<<<< HEAD
+=======
+
+    def _get_workpoint_value(self) -> Optional[float]:
+        if not hasattr(self, "edt_workpoint"):
+            return None
+        txt = self.edt_workpoint.text().strip()
+        if not txt:
+            return None
+        try:
+            return float(txt)
+        except Exception:
+            return None
+
+    def _get_level_threshold_value(self) -> Optional[int]:
+        if not hasattr(self, "edt_level_threshold"):
+            return None
+        txt = self.edt_level_threshold.text().strip()
+        if not txt:
+            return None
+        try:
+            return int(float(txt))
+        except Exception:
+            return None
+
+    def _on_level_threshold_changed(self):
+        self._refresh_elevation_view()
+
+    def _on_workpoint_changed(self):
+        self._refresh_elevation_view()
+
+    def _on_row_changed(self, _row_text: str):
+        self._refresh_elevation_view()
+>>>>>>> origin/main
 
     def _sync_year_buttons(self, year: str):
         for btn in getattr(self, "year_buttons", []):

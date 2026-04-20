@@ -30,6 +30,7 @@ from services.file_db_adapter import (
     resolve_storage_path,
     upload_file as upload_file_to_db,
 )
+
 from pages.model_files_page import ModelFilesDocsWidget
 from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
 from services.special_strategy_runtime import load_base_config, load_latest_strategy_params, run_special_strategy_calculation
@@ -325,11 +326,14 @@ class _SystemLibraryPickerDialog(QDialog):
         return list(self._selected_rows)
 
 
+<<<<<<< HEAD
 class _NoWheelFileTable(QTableWidget):
     def wheelEvent(self, event):
         # 不在表格内部滚动，把滚轮交回外层滚动区域
         event.ignore()
 
+=======
+>>>>>>> origin/main
 
 class NewSpecialInspectionPage(BasePage):
     """
