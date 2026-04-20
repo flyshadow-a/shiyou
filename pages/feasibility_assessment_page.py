@@ -879,18 +879,13 @@ class FeasibilityAssessmentPage(BasePage):
             c += 1
 
         # --- 数据区 ---
-        demo = [
-            ["1", "1.314", "1.714", "914", "25", "406", "19", "1000"],
-            ["2", "1.314", "-0.572", "610", "25", "406", "19", "1000"],
-            ["3", "1.314", "-2.858", "610", "25", "406", "19", "1000"],
-        ]
         for r in range(data_rows):
             rr = header_rows + r
             # 编号
-            self._set_cell(self.tbl1, rr, 0, demo[r][0], bg=QColor("#e9eef5"), editable=False)
+            self._set_cell(self.tbl1, rr, 0, str(r + 1), bg=QColor("#e9eef5"), editable=False)
             # 基础字段
             for c in range(1, base_cols):
-                self._set_cell(self.tbl1, rr, c, demo[r][c], bg=self.DATA_BG, editable=True)
+                self._set_cell(self.tbl1, rr, c, "", bg=self.DATA_BG, editable=True)
 
             # 连接形式下拉
             start = base_cols
@@ -1005,16 +1000,11 @@ class FeasibilityAssessmentPage(BasePage):
             c += 1
 
         # 数据区
-        demo = [
-            ["1", "1.314", "1.714", "914", "25", "406", "19", "0.1", "0.1"],
-            ["2", "1.314", "-0.572", "610", "25", "406", "19", "0.1", "0.1"],
-            ["3", "1.314", "-2.858", "610", "25", "406", "19", "0.1", "0.1"],
-        ]
         for r in range(data_rows):
             rr = header_rows + r
-            self._set_cell(self.tbl2, rr, 0, demo[r][0], bg=QColor("#e9eef5"), editable=False)
+            self._set_cell(self.tbl2, rr, 0, str(r + 1), bg=QColor("#e9eef5"), editable=False)
             for c in range(1, base_cols):
-                self._set_cell(self.tbl2, rr, c, demo[r][c], bg=self.DATA_BG, editable=True)
+                self._set_cell(self.tbl2, rr, c, "", bg=self.DATA_BG, editable=True)
             start = base_cols
             for i, e in enumerate(self.table2_elevations):
                 col = start + i
@@ -1092,21 +1082,13 @@ class FeasibilityAssessmentPage(BasePage):
         self._set_cell(self.tbl3, 1, 3, "Z(m)", bg=self.SUBHDR_BG, bold=True, editable=False)
         self._set_cell(self.tbl3, 1, 4, "(t)", bg=self.SUBHDR_BG, bold=True, editable=False)
 
-        demo = [
-            ["1", "1.314", "1.714", "10", "5"],
-            ["2", "1.314", "-0.572", "10", "5"],
-            ["3", "1.314", "-2.858", "10", "5"],
-            ["4", "-24", "1.714", "10", "5"],
-            ["5", "-24", "-0.572", "10", "5"],
-            ["6", "-24", "-2.858", "10", "5"],
-        ]
         for r in range(data_rows):
             rr = header_rows + r
-            self._set_cell(self.tbl3, rr, 0, demo[r][0], bg=QColor("#e9eef5"), editable=False)
-            self._set_cell(self.tbl3, rr, 1, demo[r][1], bg=self.DATA_BG, editable=True)
-            self._set_cell(self.tbl3, rr, 2, demo[r][2], bg=self.DATA_BG, editable=True)
-            self._set_cell(self.tbl3, rr, 3, demo[r][3], bg=self.DATA_BG, editable=True)
-            self._set_cell(self.tbl3, rr, 4, demo[r][4], bg=self.DATA_BG, editable=True)
+            self._set_cell(self.tbl3, rr, 0, str(r + 1), bg=QColor("#e9eef5"), editable=False)
+            self._set_cell(self.tbl3, rr, 1, "", bg=self.DATA_BG, editable=True)
+            self._set_cell(self.tbl3, rr, 2, "", bg=self.DATA_BG, editable=True)
+            self._set_cell(self.tbl3, rr, 3, "", bg=self.DATA_BG, editable=True)
+            self._set_cell(self.tbl3, rr, 4, "", bg=self.DATA_BG, editable=True)
 
         groups_tbl3 = [
             [1, 2, 3]  # X, Y, Z
