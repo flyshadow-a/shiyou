@@ -31,10 +31,11 @@ try:
 except Exception:
     pd = None
 
+
 class RiskNodeItem(QGraphicsEllipseItem):
-    def __init__(self, rect: QRectF, tooltip: str, hover_callback=None, *args, **kwargs):
+    def __init__(self, rect: QRectF, tooltip: str = "", hover_callback=None, *args, **kwargs):
         super().__init__(rect, *args, **kwargs)
-        self.setAcceptHoverEvents(True)
+        self.setAcceptHoverEvents(False)
         self.setToolTip(tooltip)
         self._hover_callback = hover_callback
 
@@ -50,9 +51,9 @@ class RiskNodeItem(QGraphicsEllipseItem):
 
 
 class RiskMemberItem(QGraphicsLineItem):
-    def __init__(self, x1, y1, x2, y2, tooltip: str, hover_callback=None, *args, **kwargs):
+    def __init__(self, x1, y1, x2, y2, tooltip: str = "", hover_callback=None, *args, **kwargs):
         super().__init__(x1, y1, x2, y2, *args, **kwargs)
-        self.setAcceptHoverEvents(True)
+        self.setAcceptHoverEvents(False)
         self.setToolTip(tooltip)
         self._hover_callback = hover_callback
 
@@ -68,18 +69,15 @@ class RiskMemberItem(QGraphicsLineItem):
 
 
 class SacsElevationRiskView(QGraphicsView):
-    COLOR_BG = QColor(255, 255, 255)
-    COLOR_MEMBER_DEFAULT = QColor(205, 210, 218)  # 非风险构件：浅灰
-    COLOR_NODE_DEFAULT = QColor(180, 185, 195)
-    COLOR_GRID = QColor(190, 190, 190)
 
-    RISK_COLORS = {
-        "1": QColor("#ff3b30"),   # 一：红
-        "2": QColor("#f5c400"),   # 二：黄
-        "3": QColor("#ead94c"),   # 三：浅黄
-        "4": QColor("#2f84d6"),   # 四：蓝
-        "5": QColor("#6b4a3b"),   # 五：棕
-    }
+    COLOR_BG = QColor(255, 255, 255)
+
+    # 轮廓颜色：单立面更清晰，全部总览略浅但不能太淡
+    COLOR_MEMBER_ROW = QColor("#5f84b8")      # 单立面：中蓝
+    COLOR_MEMBER_ALL = QColor("#a7b6c8")      # 全部：灰蓝
+    COLOR_GRID = QColor("#d7dde6")            # 背景网格
+    COLOR_AXIS = QColor("#5c6470")            # 轴线/文字
+    COLOR_TEXT = QColor("#5c6470")
 
     SHOW_NODE_TEXT = False
     SHOW_MEMBER_TEXT = False
@@ -117,11 +115,14 @@ class SacsElevationRiskView(QGraphicsView):
         self.members: List[Tuple[str, str, str]] = []
         self.node_risk_map: Dict[str, str] = {}
         self.member_risk_map: Dict[Tuple[str, str], str] = {}
+        self._groups_od: Dict[str, float] = {}
 
         self._facility_code = ""
         self._model_path = ""
         self._row_name = "ROW A"
         self._info_label = None
+        self._workpoint_z = 9.1
+        self._level_threshold = 40
 
     # ---------------- UI helper ----------------
     def set_info_label(self, label):
@@ -157,53 +158,49 @@ class SacsElevationRiskView(QGraphicsView):
 
         self.centerOn(QPointF(cx, cy))
 
-    def _show_hover_info(self, text: str):
+    def _show_hover_info(self, _text: str = ""):
         if self._info_label is None:
             return
-
-        if not text:
-            self._info_label.setText(f"当前显示：{self._row_name} 立面风险图；滚轮缩放，按住左键可拖动。")
-            return
-
-        compact = str(text).replace("\n", "  |  ")
-        self._info_label.setText(compact)
+        self._info_label.setText(
+            f"当前显示：{self._row_name} 立面轮廓图；滚轮缩放，双击恢复初始视图。"
+        )
 
     def reset_view(self):
-        rect = self._scene.itemsBoundingRect()
+        rect = self._scene.sceneRect()
+        if (not rect.isValid()) or rect.isNull():
+            rect = self._scene.itemsBoundingRect()
         if not rect.isValid():
             return
 
-        # 上方留少一点，下方留多一点，避免模型底部被截掉
-        rect = rect.adjusted(-70, -90, 70, 140)
+        # 改成更均衡的四周留白，避免图像被“视觉上往下压”
+        rect = rect.adjusted(-10, -10, 10, 10)
         self._scene.setSceneRect(rect)
 
         self.resetTransform()
         self.fitInView(rect, Qt.KeepAspectRatio)
 
-        # 初始只轻微放大，不要放太大
-        self.scale(1.04, 1.04)
-
         self._initial_scene_rect = QRectF(rect)
         self._fit_done = True
-        self._zoom_steps = 1
+        self._zoom_steps = 0
 
-        # 关键：把中心点稍微往下压一点，这样模型在屏幕里会上移
-        cx = rect.center().x()
-        cy = rect.center().y() + rect.height() * 0.06
-        self.centerOn(QPointF(cx, cy))
+        # 直接严格居中，不再额外做上下偏移
+        self.centerOn(rect.center())
 
         self.reset_pan_state()
+        self._show_hover_info()
 
     # ---------------- 外部入口 ----------------
     def load_for_facility(
-        self,
-        facility_code: str,
-        context: Dict,
-        year_label: str,
-        row_name: str = "ROW A",
+            self,
+            facility_code: str,
+            context: Dict,
+            year_label: str,
+            row_name: str = "XZ 前",
+            workpoint_override: Optional[float] = None,
+            level_threshold_override: Optional[int] = None,
     ) -> None:
         self._facility_code = (facility_code or "").strip()
-        self._row_name = (row_name or "ROW A").strip()
+        self._row_name = (row_name or "XZ 1").strip()
 
         self._model_path = self._resolve_model_path(self._facility_code)
 
@@ -215,17 +212,30 @@ class SacsElevationRiskView(QGraphicsView):
             self._draw_message("未找到结构模型文件")
             return
 
-        self.nodes, self.members, _groups = self.parse_sacs_full_robust(self._model_path)
+        self.nodes, self.members, self._groups_od = self.parse_sacs_full_robust(self._model_path)
         if not self.nodes or not self.members:
             self._draw_message("模型文件未解析到有效 JOINT/MEMBER")
             return
 
-        self.node_risk_map = self._extract_node_risks_from_context(context, year_label)
-        self.member_risk_map = self._extract_member_risks_from_context(context, year_label)
+        self.node_risk_map = {}
+        self.member_risk_map = {}
 
-        print("[Elevation] year =", year_label)
-        print("[Elevation] node_risk_count =", len(self.node_risk_map))
-        print("[Elevation] member_risk_count =", len(self.member_risk_map))
+
+        auto_wp = self._extract_workpoint_from_context(context)
+        self._workpoint_z = auto_wp if workpoint_override in (None, "") else self._safe_float(workpoint_override,
+                                                                                              auto_wp)
+        auto_thr = self._extract_level_threshold_from_context(context)
+        if level_threshold_override in (None, ""):
+            self._level_threshold = auto_thr
+        else:
+            try:
+                self._level_threshold = int(level_threshold_override)
+            except Exception:
+                self._level_threshold = auto_thr
+
+        row_names = self.available_row_names()
+        if row_names and self._row_name not in row_names:
+            self._row_name = row_names[0]
 
         self._render_row_elevation()
         self._fit_done = False
@@ -326,6 +336,40 @@ class SacsElevationRiskView(QGraphicsView):
 
         return ""
 
+    def _detect_leg_joint_nodes(self) -> Dict[str, Tuple[float, float, float]]:
+        if not self.nodes or not self.members:
+            return {}
+
+        node_to_max_od = {nid: 0.0 for nid in self.nodes}
+        for na, nb, gid in self.members:
+            if na in self.nodes and nb in self.nodes:
+                od = float(self._groups_od.get(gid, 0.0))
+                node_to_max_od[na] = max(node_to_max_od[na], od)
+                node_to_max_od[nb] = max(node_to_max_od[nb], od)
+
+        tolerance = 1.0
+        elevation_nodes = {
+            nid: self.nodes[nid]
+            for nid in self.nodes
+            if abs(float(self.nodes[nid][2]) - float(self._workpoint_z)) < tolerance
+        }
+        if not elevation_nodes:
+            return {}
+
+        local_max_od = max(node_to_max_od[nid] for nid in elevation_nodes)
+        return {
+            nid: self.nodes[nid]
+            for nid in elevation_nodes
+            if node_to_max_od[nid] >= local_max_od * 0.95
+        }
+
+    def _get_leg_plane_clusters(self) -> tuple[list[float], list[float]]:
+        leg_nodes = self._detect_leg_joint_nodes()
+
+        # 优先用主腿；主腿识别不到时再退回 workpoint 以下节点
+        base_nodes = leg_nodes if leg_nodes else self._nodes_below_workpoint()
+        return self._get_axis_clusters(base_nodes)
+
     def _score_model_candidate(self, path: str, facility_code: str) -> int:
         name = os.path.basename(path).lower()
         path_low = path.lower()
@@ -400,14 +444,9 @@ class SacsElevationRiskView(QGraphicsView):
         return nodes, members, groups_od
 
     def _project_root(self) -> str:
-        # pages 目录的上一级就是项目根目录 D:\shiyou
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     def _resolve_risk_workbook_path(self) -> str:
-        """
-        先从项目根目录读取你放进去的 xlsm：
-        D:\shiyou\检验策略- wc19-1d-10.30.xlsm
-        """
         root = self._project_root()
         candidates = [
             os.path.join(root, "检验策略- wc19-1d-10.30.xlsm"),
@@ -613,7 +652,7 @@ class SacsElevationRiskView(QGraphicsView):
 
         return False
 
-    # ---------------- 风险提取 ----------------
+    # 下面两个函数保留，后续重新打开风险标注时可直接恢复使用
     def _extract_node_risks_from_context(self, context: Dict, year_label: str) -> Dict[str, str]:
         result: Dict[str, str] = {}
 
@@ -702,9 +741,11 @@ class SacsElevationRiskView(QGraphicsView):
                 groups.append([v])
         return [sum(g) / len(g) for g in groups]
 
-    def _get_axis_clusters(self):
-        xs = [coord[0] for coord in self.nodes.values()]
-        ys = [coord[1] for coord in self.nodes.values()]
+    def _get_axis_clusters(self, node_map: Optional[Dict[str, Tuple[float, float, float]]] = None):
+        src = node_map if node_map is not None else self.nodes
+
+        xs = [coord[0] for coord in src.values()]
+        ys = [coord[1] for coord in src.values()]
         if not xs or not ys:
             return [], []
 
@@ -719,48 +760,429 @@ class SacsElevationRiskView(QGraphicsView):
 
         return x_clusters, y_clusters
 
-    def _resolve_row_definition(self):
-        x_clusters, y_clusters = self._get_axis_clusters()
-        row = self._row_name.upper().strip()
+    def _nodes_below_workpoint(self) -> Dict[str, Tuple[float, float, float]]:
+        return {
+            nid: coord
+            for nid, coord in self.nodes.items()
+            if float(coord[2]) <= self._workpoint_z + 1e-6
+        }
 
-        if row in ("ROW A", "A"):
-            plane_axis = "Y"
-            plane_value = min(y_clusters) if y_clusters else 0.0
-            proj_axis = "X"
-            top_labels = [(v, str(i + 1)) for i, v in enumerate(sorted(x_clusters))]
-        elif row in ("ROW B", "B"):
-            plane_axis = "Y"
-            plane_value = max(y_clusters) if y_clusters else 0.0
-            proj_axis = "X"
-            top_labels = [(v, str(i + 1)) for i, v in enumerate(sorted(x_clusters))]
-        elif row.startswith("ROW "):
-            suffix = row[4:].strip()
-            if suffix.isdigit():
-                idx = int(suffix) - 1
-                xs = sorted(x_clusters)
-                if 0 <= idx < len(xs):
-                    plane_axis = "X"
-                    plane_value = xs[idx]
-                else:
-                    plane_axis = "X"
-                    plane_value = xs[0] if xs else 0.0
-                proj_axis = "Y"
+    def _safe_float(self, value: object, default: float = 9.1) -> float:
+        try:
+            return float(str(value).strip())
+        except Exception:
+            return default
 
-                y_sorted = sorted(y_clusters)
-                names = ["A", "B", "C", "D", "E", "F"]
-                top_labels = [(v, names[i] if i < len(names) else f"C{i+1}") for i, v in enumerate(y_sorted)]
-            else:
-                plane_axis = "Y"
-                plane_value = min(y_clusters) if y_clusters else 0.0
-                proj_axis = "X"
-                top_labels = [(v, str(i + 1)) for i, v in enumerate(sorted(x_clusters))]
+    def _extract_workpoint_from_context(self, context: Optional[Dict]) -> float:
+        direct_keys = [
+            "workpoint", "target_z", "targetZ", "work_point",
+            "Workpoint", "工作平面高程", "工作平面高程Workpoint",
+        ]
+
+        if isinstance(context, dict):
+            for key in direct_keys:
+                if key in context and context.get(key) not in ("", None):
+                    return self._safe_float(context.get(key), 9.1)
+
+            for value in context.values():
+                if isinstance(value, dict):
+                    for key in direct_keys:
+                        if key in value and value.get(key) not in ("", None):
+                            return self._safe_float(value.get(key), 9.1)
+
+        return 9.1
+
+    def _extract_level_threshold_from_context(self, context: Optional[Dict]) -> int:
+        direct_keys = [
+            "level_threshold",
+            "node_limit",
+            "node_count_limit",
+            "水平层高程节点数量限制",
+        ]
+
+        if isinstance(context, dict):
+            for key in direct_keys:
+                if key in context and context.get(key) not in ("", None):
+                    try:
+                        return int(float(str(context.get(key)).strip()))
+                    except Exception:
+                        pass
+
+            for value in context.values():
+                if isinstance(value, dict):
+                    for key in direct_keys:
+                        if key in value and value.get(key) not in ("", None):
+                            try:
+                                return int(float(str(value.get(key)).strip()))
+                            except Exception:
+                                pass
+
+        return 40
+
+    def _row_index_to_letters(self, idx: int) -> str:
+        # 0 -> A, 1 -> B, ..., 25 -> Z, 26 -> AA
+        out = ""
+        n = idx
+        while True:
+            out = chr(ord("A") + (n % 26)) + out
+            n = n // 26 - 1
+            if n < 0:
+                break
+        return out
+
+    def _row_letters_to_index(self, text: str) -> int:
+        s = (text or "").strip().upper()
+        if not s:
+            return 0
+
+        value = 0
+        for ch in s:
+            if not ("A" <= ch <= "Z"):
+                return 0
+            value = value * 26 + (ord(ch) - ord("A") + 1)
+        return max(0, value - 1)
+
+    def _get_horizontal_z_clusters(self) -> List[float]:
+        zs = [float(coord[2]) for coord in self.nodes.values() if float(coord[2]) <= self._workpoint_z + 1e-6]
+        if not zs:
+            return []
+
+        z_span = max(zs) - min(zs)
+        z_tol = max(0.5, z_span * 0.01)
+
+        raw_clusters = self._cluster_axis_values(zs, z_tol)
+        if not raw_clusters:
+            return []
+
+        selected = []
+        for c in raw_clusters:
+            cnt = sum(1 for z in zs if abs(z - c) <= z_tol)
+            if cnt >= self._level_threshold:
+                selected.append(c)
+
+        selected.sort(reverse=True)
+        return selected
+
+    def _build_dynamic_row_specs(self, node_map: Optional[Dict[str, Tuple[float, float, float]]] = None):
+        z_clusters = self._get_horizontal_z_clusters()
+
+        specs = [
+            {"name": "XZ 前", "plane_axis": None, "plane_value": None, "proj_mode": "XZ_FRONT"},
+            {"name": "XZ 后", "plane_axis": None, "plane_value": None, "proj_mode": "XZ_BACK"},
+            {"name": "YZ 左", "plane_axis": None, "plane_value": None, "proj_mode": "YZ_LEFT"},
+            {"name": "YZ 右", "plane_axis": None, "plane_value": None, "proj_mode": "YZ_RIGHT"},
+        ]
+
+        for zv in z_clusters:
+            z_label = f"{zv:.3f}".rstrip("0").rstrip(".")
+            specs.append({
+                "name": f"XY {z_label}",
+                "plane_axis": "Z",
+                "plane_value": zv,
+                "proj_mode": "XY",
+            })
+
+        return specs
+
+    def _select_face_clusters(self, clusters: List[float], side: str) -> List[float]:
+        vals = sorted(float(v) for v in clusters)
+        if not vals:
+            return []
+
+        if len(vals) <= 2:
+            return vals
+
+        if side in ("front", "left"):
+            return vals[:2]
+
+        if side in ("back", "right"):
+            return vals[-2:]
+
+        return vals
+
+    def _labels_from_segments_by_projection(self, segments, proj_mode: str):
+        if not segments:
+            return []
+
+        xs = []
+        for p1, p2 in segments:
+            xs.extend([p1[0], p2[0]])
+
+        if not xs:
+            return []
+
+        span = max(xs) - min(xs) if len(xs) >= 2 else 0.0
+        tol = max(0.8, span * 0.03)
+        clusters = self._cluster_axis_values(xs, tol)
+
+        if proj_mode in ("XZ_FRONT", "XZ_BACK"):
+            return [(v, str(i + 1)) for i, v in enumerate(sorted(clusters))]
         else:
-            plane_axis = "Y"
-            plane_value = min(y_clusters) if y_clusters else 0.0
-            proj_axis = "X"
-            top_labels = [(v, str(i + 1)) for i, v in enumerate(sorted(x_clusters))]
+            return [(v, self._row_index_to_letters(i)) for i, v in enumerate(sorted(clusters))]
 
-        return plane_axis, plane_value, proj_axis, top_labels, x_clusters, y_clusters
+    def _collect_side_face_segments(self, proj_mode: str):
+        leg_x_clusters, leg_y_clusters = self._get_leg_plane_clusters()
+
+        if proj_mode == "XZ_FRONT":
+            plane_axis = "Y"
+            face_clusters = self._select_face_clusters(leg_y_clusters, "front")
+        elif proj_mode == "XZ_BACK":
+            plane_axis = "Y"
+            face_clusters = self._select_face_clusters(leg_y_clusters, "back")
+        elif proj_mode == "YZ_LEFT":
+            plane_axis = "X"
+            face_clusters = self._select_face_clusters(leg_x_clusters, "left")
+        elif proj_mode == "YZ_RIGHT":
+            plane_axis = "X"
+            face_clusters = self._select_face_clusters(leg_x_clusters, "right")
+        else:
+            return [], []
+
+        if not face_clusters:
+            return [], []
+
+        kept_segments = []
+        seen = set()
+
+        all_clusters = leg_y_clusters if plane_axis == "Y" else leg_x_clusters
+
+        for na, nb, _gid in self.members:
+            if na not in self.nodes or nb not in self.nodes:
+                continue
+
+            clipped = self._clip_member_3d_to_workpoint(self.nodes[na], self.nodes[nb])
+            if clipped is None:
+                continue
+
+            p1, p2 = clipped
+
+            if plane_axis == "Y":
+                c1 = self._nearest_cluster(float(p1[1]), all_clusters)
+                c2 = self._nearest_cluster(float(p2[1]), all_clusters)
+
+                if c1 not in face_clusters or c2 not in face_clusters:
+                    continue
+
+                seg2d_p1 = (float(p1[0]), float(p1[2]))
+                seg2d_p2 = (float(p2[0]), float(p2[2]))
+            else:
+                c1 = self._nearest_cluster(float(p1[0]), all_clusters)
+                c2 = self._nearest_cluster(float(p2[0]), all_clusters)
+
+                if c1 not in face_clusters or c2 not in face_clusters:
+                    continue
+
+                seg2d_p1 = (float(p1[1]), float(p1[2]))
+                seg2d_p2 = (float(p2[1]), float(p2[2]))
+
+            a = (round(seg2d_p1[0], 3), round(seg2d_p1[1], 3))
+            b = (round(seg2d_p2[0], 3), round(seg2d_p2[1], 3))
+            key = tuple(sorted((a, b)))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            kept_segments.append((seg2d_p1, seg2d_p2))
+
+        top_labels = self._labels_from_segments_by_projection(kept_segments, proj_mode)
+        return kept_segments, top_labels
+
+    def _labels_from_face_segments(self, segments, proj_mode: str):
+        if not segments:
+            return []
+
+        vals = []
+        for p1, p2 in segments:
+            vals.extend([p1[0], p2[0]])
+
+        if not vals:
+            return []
+
+        span = max(vals) - min(vals) if len(vals) >= 2 else 0.0
+        tol = max(0.8, span * 0.03)
+        used_clusters = self._cluster_axis_values(vals, tol)
+
+        if proj_mode in ("XZ_FRONT", "XZ_BACK"):
+            return [(v, str(i + 1)) for i, v in enumerate(sorted(used_clusters))]
+        else:
+            return [(v, self._row_index_to_letters(i)) for i, v in enumerate(sorted(used_clusters))]
+
+    def _clip_member_3d_to_workpoint(
+            self,
+            p1: Tuple[float, float, float],
+            p2: Tuple[float, float, float],
+    ) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
+        wp = float(self._workpoint_z)
+
+        x1, y1, z1 = p1
+        x2, y2, z2 = p2
+
+        # 整根都在 workpoint 上方：不画
+        if z1 > wp and z2 > wp:
+            return None
+
+        # 整根都在 workpoint 以下：直接保留
+        if z1 <= wp and z2 <= wp:
+            return p1, p2
+
+        # 穿过 workpoint：裁到 workpoint 平面
+        dz = z2 - z1
+        if abs(dz) < 1e-12:
+            return None
+
+        t = (wp - z1) / dz
+        t = max(0.0, min(1.0, t))
+        cut = (
+            x1 + t * (x2 - x1),
+            y1 + t * (y2 - y1),
+            wp,
+        )
+
+        if z1 > wp:
+            return cut, p2
+        return p1, cut
+
+    def _segment_sample_bins(
+            self,
+            p1: Tuple[float, float],
+            p2: Tuple[float, float],
+            grid: float = 1.5,
+            samples: int = 10,
+    ) -> set:
+        bins = set()
+        for i in range(samples + 1):
+            t = i / samples
+            x = p1[0] + t * (p2[0] - p1[0])
+            y = p1[1] + t * (p2[1] - p1[1])
+            bins.add((round(x / grid), round(y / grid)))
+        return bins
+
+    def _top_labels_for_directional_view(self, proj_mode: str):
+        leg_x_clusters, leg_y_clusters = self._get_leg_plane_clusters()
+
+        if proj_mode in ("XZ_FRONT", "XZ_BACK"):
+            return [(v, str(i + 1)) for i, v in enumerate(sorted(leg_x_clusters))]
+
+        if proj_mode in ("YZ_LEFT", "YZ_RIGHT"):
+            return [(v, self._row_index_to_letters(i)) for i, v in enumerate(sorted(leg_y_clusters))]
+
+        return []
+
+    def _collect_directional_view_segments(self, proj_mode: str):
+        candidates = []
+
+        for na, nb, _gid in self.members:
+            if na not in self.nodes or nb not in self.nodes:
+                continue
+
+            raw1 = self.nodes[na]
+            raw2 = self.nodes[nb]
+
+            clipped_3d = self._clip_member_3d_to_workpoint(raw1, raw2)
+            if clipped_3d is None:
+                continue
+
+            p1, p2 = clipped_3d
+
+            if proj_mode in ("XZ_FRONT", "XZ_BACK"):
+                seg2d_p1 = (p1[0], p1[2])
+                seg2d_p2 = (p2[0], p2[2])
+                depth = (p1[1] + p2[1]) * 0.5
+                prefer_smaller = (proj_mode == "XZ_FRONT")
+            else:
+                seg2d_p1 = (p1[1], p1[2])
+                seg2d_p2 = (p2[1], p2[2])
+                depth = (p1[0] + p2[0]) * 0.5
+                prefer_smaller = (proj_mode == "YZ_LEFT")
+
+            bins = self._segment_sample_bins(seg2d_p1, seg2d_p2, grid=1.5, samples=10)
+
+            candidates.append({
+                "p1": seg2d_p1,
+                "p2": seg2d_p2,
+                "depth": depth,
+                "bins": bins,
+            })
+
+        if not candidates:
+            return [], self._top_labels_for_directional_view(proj_mode)
+
+        winners: Dict[Tuple[int, int], int] = {}
+
+        for idx, cand in enumerate(candidates):
+            for b in cand["bins"]:
+                prev_idx = winners.get(b)
+                if prev_idx is None:
+                    winners[b] = idx
+                    continue
+
+                prev = candidates[prev_idx]
+                if prefer_smaller:
+                    if cand["depth"] < prev["depth"] - 1e-6:
+                        winners[b] = idx
+                else:
+                    if cand["depth"] > prev["depth"] + 1e-6:
+                        winners[b] = idx
+
+        keep_idx = sorted(set(winners.values()))
+        kept_segments = [(candidates[i]["p1"], candidates[i]["p2"]) for i in keep_idx]
+        top_labels = self._top_labels_for_directional_view(proj_mode)
+        return kept_segments, top_labels
+
+    def available_row_names(self) -> List[str]:
+        if not self.nodes:
+            return ["XZ 前"]
+        specs = self._build_dynamic_row_specs()
+        return [item["name"] for item in specs] if specs else ["XZ 前"]
+
+    def _clip_projected_member_to_workpoint(
+            self,
+            p1: Tuple[float, float],
+            p2: Tuple[float, float],
+    ) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
+        wp = float(self._workpoint_z)
+
+        x1, z1 = p1
+        x2, z2 = p2
+
+        # 整根都在 workpoint 上方：不画
+        if z1 > wp and z2 > wp:
+            return None
+
+        # 整根都在 workpoint 以下：直接保留
+        if z1 <= wp and z2 <= wp:
+            return p1, p2
+
+        # 穿过 workpoint：裁到 workpoint 平面
+        dz = z2 - z1
+        if abs(dz) < 1e-12:
+            return None
+
+        t = (wp - z1) / dz
+        t = max(0.0, min(1.0, t))
+        xc = x1 + t * (x2 - x1)
+        cut_point = (xc, wp)
+
+        if z1 > wp:
+            return cut_point, p2
+        return p1, cut_point
+
+    def _resolve_row_definition(self):
+        specs = self._build_dynamic_row_specs()
+        if not specs:
+            return {
+                "name": "XZ 前",
+                "plane_axis": "Y",
+                "plane_value": 0.0,
+                "proj_mode": "XZ",
+            }
+
+        target = (self._row_name or "").strip()
+        for spec in specs:
+            if spec["name"] == target:
+                return spec
+
+        return specs[0]
 
     def _nearest_cluster(self, value: float, clusters: List[float]) -> float:
         if not clusters:
@@ -768,20 +1190,21 @@ class SacsElevationRiskView(QGraphicsView):
         return min(clusters, key=lambda c: abs(c - value))
 
     def _filter_row_members(self):
-        
-        if self._row_name == "全部":
-            x_clusters, y_clusters = self._get_axis_clusters()
-            node_map = dict(self.nodes)
-            selected_members = list(self.members)
-            top_labels = [(v, str(i + 1)) for i, v in enumerate(sorted(x_clusters))]
-            proj_axis = "X"
-            return node_map, selected_members, proj_axis, top_labels
+        spec = self._resolve_row_definition()
+        plane_axis = spec["plane_axis"]
+        plane_value = spec["plane_value"]
+        proj_mode = spec["proj_mode"]
 
-        plane_axis, plane_value, proj_axis, top_labels, x_clusters, y_clusters = self._resolve_row_definition()
+        # XZ/YZ 不再在这里按平面筛
+        if proj_mode in ("XZ_FRONT", "XZ_BACK", "YZ_LEFT", "YZ_RIGHT"):
+            return {}, [], proj_mode, self._top_labels_for_directional_view(proj_mode)
 
-        axis_clusters = y_clusters if plane_axis == "Y" else x_clusters
+        # 这里只处理 XY 截面
+        z_clusters = self._get_horizontal_z_clusters()
+        axis_clusters = z_clusters
+
         if not axis_clusters:
-            return {}, [], proj_axis, []
+            return {}, [], proj_mode, []
 
         target_cluster = self._nearest_cluster(plane_value, axis_clusters)
 
@@ -795,207 +1218,146 @@ class SacsElevationRiskView(QGraphicsView):
             xa, ya, za = self.nodes[na]
             xb, yb, zb = self.nodes[nb]
 
-            va = ya if plane_axis == "Y" else xa
-            vb = yb if plane_axis == "Y" else xb
-
-            ca = self._nearest_cluster(va, axis_clusters)
-            cb = self._nearest_cluster(vb, axis_clusters)
+            ca = self._nearest_cluster(za, axis_clusters)
+            cb = self._nearest_cluster(zb, axis_clusters)
 
             if abs(ca - target_cluster) < 1e-6 and abs(cb - target_cluster) < 1e-6:
+                if target_cluster > self._workpoint_z + 1e-6:
+                    continue
                 selected_members.append((na, nb, gid))
                 selected_nodes.add(na)
                 selected_nodes.add(nb)
 
         node_map = {nid: self.nodes[nid] for nid in selected_nodes}
+        return node_map, selected_members, proj_mode, []
 
-        if proj_axis == "X":
-            used_vals = sorted({self._nearest_cluster(coord[0], x_clusters) for coord in node_map.values()})
-            top_labels = [(v, str(i + 1)) for i, v in enumerate(used_vals)]
-        else:
-            used_vals = sorted({self._nearest_cluster(coord[1], y_clusters) for coord in node_map.values()})
-            names = ["A", "B", "C", "D", "E", "F"]
-            top_labels = [(v, names[i] if i < len(names) else f"C{i + 1}") for i, v in enumerate(used_vals)]
-
-        return node_map, selected_members, proj_axis, top_labels
-
-    # ---------------- ROW立面绘制 ----------------
+    # ---------------- ROW立面绘制：当前只画轮廓 ----------------
     def _render_row_elevation(self):
         self._scene.clear()
 
-        row_nodes, row_members, proj_axis, top_labels = self._filter_row_members()
+        spec = self._resolve_row_definition()
+        proj_mode = spec["proj_mode"]
 
-        row_risk_nodes = [nid for nid in row_nodes if nid in self.node_risk_map]
-        row_risk_members = [
-            (na, nb) for na, nb, _gid in row_members
-            if tuple(sorted((na, nb))) in self.member_risk_map
-        ]
+        # 前后左右：按“两列外侧主腿面”取构件
+        if proj_mode in ("XZ_FRONT", "XZ_BACK", "YZ_LEFT", "YZ_RIGHT"):
+            clipped_segments, top_labels = self._collect_side_face_segments(proj_mode)
 
-        print("[Elevation] row =", self._row_name)
-        print("[Elevation] row_node_total =", len(row_nodes))
-        print("[Elevation] row_member_total =", len(row_members))
-        print("[Elevation] row_risk_node_count =", len(row_risk_nodes))
-        print("[Elevation] row_risk_member_count =", len(row_risk_members))
+            print("[Elevation] row =", self._row_name)
+            print("[Elevation] proj_mode =", proj_mode)
+            print("[Elevation] side_face_segment_total =", len(clipped_segments))
+            print("[Elevation] workpoint =", self._workpoint_z)
 
-        if not row_nodes or not row_members:
-            self._draw_message(f"{self._row_name} 未识别到有效排架")
-            return
+            if not clipped_segments:
+                self._draw_message(f"{self._row_name} 没有可绘制轮廓")
+                return
 
-        if proj_axis == "X":
-            projected_nodes = {nid: (coord[0], coord[2]) for nid, coord in row_nodes.items()}
         else:
-            projected_nodes = {nid: (coord[1], coord[2]) for nid, coord in row_nodes.items()}
+            row_nodes, row_members, proj_mode, top_labels = self._filter_row_members()
 
-        xs = [p[0] for p in projected_nodes.values()]
-        zs = [p[1] for p in projected_nodes.values()]
-        if not xs or not zs:
-            self._draw_message("没有可绘制的立面数据")
-            return
+            print("[Elevation] row =", self._row_name)
+            print("[Elevation] row_node_total =", len(row_nodes))
+            print("[Elevation] row_member_total =", len(row_members))
+            print("[Elevation] workpoint =", self._workpoint_z)
+
+            if not row_nodes or not row_members:
+                self._draw_message(f"{self._row_name} 未识别到有效截面")
+                return
+
+            projected_nodes = {nid: (coord[0], coord[1]) for nid, coord in row_nodes.items()}
+
+            clipped_segments: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
+            for na, nb, _gid in row_members:
+                if na not in projected_nodes or nb not in projected_nodes:
+                    continue
+                clipped_segments.append((projected_nodes[na], projected_nodes[nb]))
+
+            if not clipped_segments:
+                self._draw_message(f"{self._row_name} 没有可绘制轮廓")
+                return
+
+        xs = []
+        ys = []
+        for p1, p2 in clipped_segments:
+            xs.extend([p1[0], p2[0]])
+            ys.extend([p1[1], p2[1]])
 
         min_x, max_x = min(xs), max(xs)
-        min_z, max_z = min(zs), max(zs)
+        min_y, max_y = min(ys), max(ys)
 
-        if self._row_name == "全部":
-            view_w = 1500.0
-            view_h = 2000.0
-            margin_left = 90.0
-            margin_right = 50.0
-            margin_top = 60.0
-            margin_bottom = 110.0
-            x_factor = self.HORIZONTAL_EXAGGERATION_ALL
-        else:
-            view_w = 1100.0
-            view_h = 1550.0
-            margin_left = 80.0
-            margin_right = 40.0
-            margin_top = 55.0
-            margin_bottom = 95.0
-            x_factor = self.HORIZONTAL_EXAGGERATION_ROW
+        view_w = 760.0
+        view_h = 760.0
+        margin_left = 40.0
+        margin_right = 24.0
+        margin_top = 32.0
+        margin_bottom = 32.0
+        member_color = self.COLOR_MEMBER_ROW
+        member_width = 1.30
 
         dx = max(max_x - min_x, 1e-6)
-        dz = max(max_z - min_z, 1e-6)
+        dy = max(max_y - min_y, 1e-6)
 
         avail_w = view_w - margin_left - margin_right
         avail_h = view_h - margin_top - margin_bottom
 
-        scale_z = avail_h / dz
-        scale_x_raw = avail_w / dx
-        scale_x = min(scale_x_raw, scale_z * x_factor)
-
-        used_w = dx * scale_x
-        used_h = dz * scale_z
+        scale = min(avail_w / dx, avail_h / dy)
+        used_w = dx * scale
+        used_h = dy * scale
 
         x_origin = (view_w - used_w) / 2.0
-        y_base = view_h - margin_bottom - max(0.0, (avail_h - used_h) / 2.0)
+        y_base = view_h - margin_bottom - (avail_h - used_h) / 2.0
 
-        def map_pt(xv: float, zv: float) -> Tuple[float, float]:
-            px = x_origin + (xv - min_x) * scale_x
-            py = y_base - (zv - min_z) * scale_z
+        def map_pt(xv: float, yv: float) -> Tuple[float, float]:
+            px = x_origin + (xv - min_x) * scale
+            py = y_base - (yv - min_y) * scale
             return px, py
 
-        # 高程虚线
-        z_vals = sorted(set(round(v[1], 1) for v in projected_nodes.values()))
-        z_levels = []
-        for z in z_vals:
-            if not z_levels or abs(z - z_levels[-1]) > 3.0:
-                z_levels.append(z)
+        # XZ / YZ：画高程虚线
+        if proj_mode in ("XZ_FRONT", "XZ_BACK", "YZ_LEFT", "YZ_RIGHT"):
+            y_levels = sorted(set(round(v, 1) for v in ys))
+            sampled = []
+            for yv in y_levels:
+                if not sampled or abs(yv - sampled[-1]) > 3.0:
+                    sampled.append(yv)
 
-        for z in z_levels:
-            x1, y1 = map_pt(min_x, z)
-            x2, y2 = map_pt(max_x, z)
-            line = RiskMemberItem(x1, y1, x2, y2, f"高程 {z:.2f}")
-            line.setPen(QPen(self.COLOR_GRID, 0.8, Qt.DashLine))
-            self._scene.addItem(line)
+            for yv in sampled:
+                x1, py = map_pt(min_x, yv)
+                x2, _ = map_pt(max_x, yv)
 
-            txt = QGraphicsSimpleTextItem(f"{z:.0f}")
-            txt.setBrush(QBrush(QColor(90, 90, 90)))
-            txt.setFont(QFont("Arial", 8))
-            txt.setPos(max(8, x_origin - 40), y1 - 8)
-            self._scene.addItem(txt)
+                line = RiskMemberItem(x1, py, x2, py)
+                line.setPen(QPen(self.COLOR_GRID, 0.8, Qt.DashLine))
+                self._scene.addItem(line)
 
-        # 顶部轴线
+                txt = QGraphicsSimpleTextItem(f"{yv:.0f}")
+                txt.setBrush(QBrush(self.COLOR_TEXT))
+                txt.setFont(QFont("Arial", 8))
+                txt.setPos(max(8, x_origin - 34), py - 8)
+                self._scene.addItem(txt)
+
+        # 顶部轴线标签
         for axis_value, axis_name in top_labels:
-            px, py = map_pt(axis_value, max_z)
-            mark = RiskMemberItem(px, margin_top - 10, px, margin_top - 2, str(axis_name))
-            mark.setPen(QPen(QColor(80, 80, 80), 1.0))
-            self._scene.addItem(mark)
+            px, _ = map_pt(axis_value, max_y)
+
+            tick = RiskMemberItem(px, margin_top - 8, px, margin_top - 1)
+            tick.setPen(QPen(self.COLOR_AXIS, 1.0))
+            self._scene.addItem(tick)
 
             txt = QGraphicsSimpleTextItem(str(axis_name))
-            txt.setBrush(QBrush(QColor(40, 40, 40)))
+            txt.setBrush(QBrush(self.COLOR_AXIS))
             txt.setFont(QFont("Arial", 9, QFont.Bold))
-            txt.setPos(px - 6, 10)
+            txt.setPos(px - 8, 8)
             self._scene.addItem(txt)
 
-        # 构件：风险高亮，非风险浅灰
-        for na, nb, gid in row_members:
-            if na not in projected_nodes or nb not in projected_nodes:
-                continue
+        # 只画当前方向的轮廓
+        for p1, p2 in clipped_segments:
+            x1, y1 = map_pt(p1[0], p1[1])
+            x2, y2 = map_pt(p2[0], p2[1])
 
-            x1, z1 = projected_nodes[na]
-            x2, z2 = projected_nodes[nb]
-            p1 = map_pt(x1, z1)
-            p2 = map_pt(x2, z2)
-
-            risk = self.member_risk_map.get(tuple(sorted((na, nb))), "")
-
-            if risk:
-                color = self.RISK_COLORS.get(risk, self.COLOR_MEMBER_DEFAULT)
-                pen = QPen(color, 2.2)
-            else:
-                color = self.COLOR_MEMBER_DEFAULT
-                pen = QPen(color, 0.8)
-
-            tooltip = f"{self._row_name}\n构件: {na} - {nb}\n风险等级: {risk or '未标注'}"
-            item = RiskMemberItem(
-                p1[0], p1[1], p2[0], p2[1],
-                tooltip,
-                hover_callback=self._show_hover_info,
-            )
-            item.setPen(pen)
+            item = RiskMemberItem(x1, y1, x2, y2)
+            item.setPen(QPen(member_color, member_width))
             self._scene.addItem(item)
 
-            if risk and self.SHOW_MEMBER_TEXT:
-                mx = (p1[0] + p2[0]) * 0.5
-                my = (p1[1] + p2[1]) * 0.5
-                txt = QGraphicsSimpleTextItem(str(risk))
-                txt.setBrush(QBrush(color))
-                txt.setFont(QFont("Arial", 8, QFont.Bold))
-                txt.setPos(mx + 2, my - 12)
-                txt.setZValue(20)
-                self._scene.addItem(txt)
-
-        # 节点：只画风险节点
-        for nid, (px_raw, pz_raw) in projected_nodes.items():
-            px, py = map_pt(px_raw, pz_raw)
-            risk = self.node_risk_map.get(nid, "")
-
-            if not risk and not self.DRAW_NONRISK_NODES:
-                continue
-
-            color = self.RISK_COLORS.get(risk, self.COLOR_NODE_DEFAULT)
-            r = 3.8 if risk else 1.4
-
-            item = RiskNodeItem(
-                QRectF(px - r, py - r, 2 * r, 2 * r),
-                f"{self._row_name}\n节点: {nid}\n风险等级: {risk or '未标注'}\nX={row_nodes[nid][0]:.3f}, Y={row_nodes[nid][1]:.3f}, Z={row_nodes[nid][2]:.3f}",
-                hover_callback=self._show_hover_info,
-            )
-            item.setPen(QPen(Qt.NoPen))
-            item.setBrush(QBrush(color))
-            item.setZValue(30)
-            self._scene.addItem(item)
-
-            if risk and self.SHOW_NODE_TEXT:
-                txt = QGraphicsSimpleTextItem(str(risk))
-                txt.setBrush(QBrush(color))
-                txt.setFont(QFont("Arial", 8, QFont.Bold))
-                txt.setPos(px + 5, py - 14)
-                txt.setZValue(40)
-                self._scene.addItem(txt)
-
-        rect = self._scene.itemsBoundingRect()
-        if rect.isValid():
-            self._scene.setSceneRect(rect.adjusted(-40, -40, 40, 40))
-        self._show_hover_info("")
+        self._scene.setSceneRect(QRectF(0, 0, view_w, view_h))
+        self._show_hover_info()
 
     def _draw_message(self, text: str):
         self._scene.clear()

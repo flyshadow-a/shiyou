@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QPushButton, QScrollArea, QSizePolicy, QLabel,
-    QDialog, QAbstractItemView, QMessageBox, QSlider
+    QDialog, QAbstractItemView, QMessageBox, QSlider, QLineEdit
 )
 
 from app_paths import first_existing_path
@@ -28,6 +28,7 @@ from special_strategy_services import (
 )
 
 from pages.sacs_elevation_risk_view import SacsElevationRiskView
+from pages.platform_strength_page import PlatformStrengthPage
 
 NODE_YEAR_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]
 NODE_YEAR_CONTEXT_MAP = {
@@ -661,12 +662,13 @@ class SpecialInspectionStrategy(BasePage):
         panel.setStyleSheet("QFrame { background: #ffffff; border: 1px solid #b9c6d6; }")
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         panel.setMinimumWidth(620)
+        panel.setMaximumWidth(700)
 
         outer = QVBoxLayout(panel)
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(6)
 
-        title = QLabel("ROW立面风险图")
+        title = QLabel("模型立面风险图")
         title.setStyleSheet("""
             color: #1d2b3a;
             font-weight: bold;
@@ -692,7 +694,8 @@ class SpecialInspectionStrategy(BasePage):
                 font-size: 12pt;
             }
         """)
-        self.row_combo.addItems(["全部", "ROW A", "ROW B", "ROW 1", "ROW 2", "ROW 3", "ROW 4"])
+        self.row_combo.addItems(["XZ 前"])
+        self.row_combo.setCurrentText("XZ 前")
         self.row_combo.currentTextChanged.connect(self._on_row_changed)
 
         top_row.addWidget(lbl_row, 0)
@@ -700,7 +703,7 @@ class SpecialInspectionStrategy(BasePage):
         top_row.addStretch(1)
         outer.addLayout(top_row, 0)
 
-        self.elevation_hint_label = QLabel("当前显示：全部 立面风险图；滚轮缩放，按住左键可拖动。")
+        self.elevation_hint_label = QLabel("当前显示：XZ 1 立面轮廓图；滚轮缩放，双击恢复初始视图。")
         self.elevation_hint_label.setWordWrap(False)
         self.elevation_hint_label.setFixedHeight(24)
         self.elevation_hint_label.setStyleSheet("color:#5d6f85; font-size:12px;")
@@ -712,21 +715,37 @@ class SpecialInspectionStrategy(BasePage):
 
         self.elevation_view = SacsElevationRiskView(panel)
         self.elevation_view.set_info_label(self.elevation_hint_label)
-        self.elevation_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.elevation_view.setMinimumSize(560, 760)
-        view_row.addWidget(self.elevation_view, 1)
+
+        # 改成立方形规格，接近三维结构图的显示感觉
+        self.elevation_view.setMinimumSize(560, 560)
+        self.elevation_view.setMaximumSize(620, 620)
+        self.elevation_view.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
 
         self.slider_v = QSlider(Qt.Vertical)
         self.slider_v.setRange(-100, 100)
         self.slider_v.setValue(0)
+        self.slider_v.setFixedHeight(560)
+
+        view_row.addStretch(1)
+        view_row.addWidget(self.elevation_view, 0, Qt.AlignHCenter | Qt.AlignVCenter)
         view_row.addWidget(self.slider_v, 0)
+        view_row.addStretch(1)
 
         outer.addLayout(view_row, 1)
 
         self.slider_h = QSlider(Qt.Horizontal)
         self.slider_h.setRange(-100, 100)
         self.slider_h.setValue(0)
-        outer.addWidget(self.slider_h, 0)
+        self.slider_h.setFixedWidth(560)
+
+        slider_row = QHBoxLayout()
+        slider_row.setContentsMargins(0, 0, 0, 0)
+        slider_row.setSpacing(0)
+        slider_row.addStretch(1)
+        slider_row.addWidget(self.slider_h, 0)
+        slider_row.addStretch(1)
+
+        outer.addLayout(slider_row, 0)
 
         self.elevation_view.bind_sliders(self.slider_h, self.slider_v)
 
@@ -739,6 +758,57 @@ class SpecialInspectionStrategy(BasePage):
 
         h.addWidget(panel, 1)
         return right
+
+    def _find_platform_strength_page(self):
+        mw = self.window()
+        tab_widget = getattr(mw, "tab_widget", None)
+        if tab_widget is None:
+            return None
+
+        facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
+        for i in range(tab_widget.count()):
+            page = tab_widget.widget(i)
+            if isinstance(page, PlatformStrengthPage):
+                try:
+                    if page._get_top_value("facility_code") == facility_code:
+                        return page
+                except Exception:
+                    pass
+        return None
+
+    def _get_shared_section_params(self, context: Dict) -> tuple[float, int]:
+        page = self._find_platform_strength_page()
+        if page is not None:
+            return page._get_workpoint_value(), page._get_level_threshold()
+
+        # 回退：结构强度页没开时，再从 context 里取
+        wp = self.elevation_view._extract_workpoint_from_context(context)
+        thr = self.elevation_view._extract_level_threshold_from_context(context)
+        return wp, thr
+
+    def _sync_dynamic_row_combo_from_view(self):
+        if not hasattr(self, "row_combo") or not hasattr(self, "elevation_view"):
+            return
+
+        options = self.elevation_view.available_row_names()
+        if not options:
+            return
+
+        current = getattr(self.elevation_view, "_row_name", "") or self.row_combo.currentText().strip()
+        old_options = [self.row_combo.itemText(i) for i in range(self.row_combo.count())]
+
+        self.row_combo.blockSignals(True)
+        try:
+            if old_options != options:
+                self.row_combo.clear()
+                self.row_combo.addItems(options)
+
+            if current in options:
+                self.row_combo.setCurrentText(current)
+            else:
+                self.row_combo.setCurrentText(options[1] if len(options) > 1 else options[0])
+        finally:
+            self.row_combo.blockSignals(False)
 
     def _build_year_bar(self) -> QWidget:
         bar = QFrame()
@@ -950,14 +1020,20 @@ class SpecialInspectionStrategy(BasePage):
             context = bundle.get("context") or {}
 
         facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
-        row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "ROW A"
+        row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 1"
+
+        workpoint_override, level_threshold_override = self._get_shared_section_params(context)
 
         self.elevation_view.load_for_facility(
             facility_code=facility_code,
             context=context,
             year_label=self.current_year,
             row_name=row_name,
+            workpoint_override=workpoint_override,
+            level_threshold_override=level_threshold_override,
         )
+
+        self._sync_dynamic_row_combo_from_view()
 
     def _fill_rows(self, table: QTableWidget, rows: List[Tuple[str, str, str, str]]):
         for r, row in enumerate(rows):
@@ -1004,6 +1080,34 @@ class SpecialInspectionStrategy(BasePage):
         self.current_year = year
         self._sync_year_buttons(year)
         self._load_runtime_summary(self._get_dropdown_value("facility_code"), self._active_run_id)
+
+    def _get_workpoint_value(self) -> Optional[float]:
+        if not hasattr(self, "edt_workpoint"):
+            return None
+        txt = self.edt_workpoint.text().strip()
+        if not txt:
+            return None
+        try:
+            return float(txt)
+        except Exception:
+            return None
+
+    def _get_level_threshold_value(self) -> Optional[int]:
+        if not hasattr(self, "edt_level_threshold"):
+            return None
+        txt = self.edt_level_threshold.text().strip()
+        if not txt:
+            return None
+        try:
+            return int(float(txt))
+        except Exception:
+            return None
+
+    def _on_level_threshold_changed(self):
+        self._refresh_elevation_view()
+
+    def _on_workpoint_changed(self):
+        self._refresh_elevation_view()
 
     def _on_row_changed(self, _row_text: str):
         self._refresh_elevation_view()
