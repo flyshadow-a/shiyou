@@ -51,6 +51,14 @@ from shiyou_db.runtime_db import get_mysql_url
 SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
 
 
+class ScrollSafeComboBox(QComboBox):
+    def wheelEvent(self, event):
+        if self.view().isVisible():
+            super().wheelEvent(event)
+            return
+        event.ignore()
+
+
 class FeasibilityAssessmentPage(BasePage):
     """
     WC19-1DPPA平台强度/改造可行性评估（feasibility_assessment_page）
@@ -251,7 +259,7 @@ class FeasibilityAssessmentPage(BasePage):
         cell_lay.setContentsMargins(0, 0, 0, 0)
         cell_lay.setSpacing(0)
 
-        combo = QComboBox(cell_wrap)
+        combo = ScrollSafeComboBox(cell_wrap)
         combo.addItems(self.CONNECT_OPTIONS)
         combo.setFont(self._songti_small_four_font())
 
@@ -502,7 +510,9 @@ class FeasibilityAssessmentPage(BasePage):
             return
 
         hbar_h = scroll.horizontalScrollBar().sizeHint().height()
-        content_h = self._table_content_height(table) + hbar_h + 4
+        table_content_h = self._table_content_height(table)
+        table.setFixedHeight(table_content_h)
+        content_h = table_content_h + hbar_h + 4
         visible_h = min(content_h, max_height)
 
         scroll.setMinimumHeight(visible_h)
@@ -757,10 +767,12 @@ class FeasibilityAssessmentPage(BasePage):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+        table_content_h = self._table_content_height(table)
+        table.setFixedHeight(table_content_h)
         scroll.setWidget(table)
 
         hbar_h = scroll.horizontalScrollBar().sizeHint().height()
-        content_h = self._table_content_height(table) + hbar_h + 4
+        content_h = table_content_h + hbar_h + 4
         visible_h = min(content_h, max_height)
 
         scroll.setMinimumHeight(visible_h)
@@ -1112,10 +1124,9 @@ class FeasibilityAssessmentPage(BasePage):
         self.tbl3.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         # 单独把第0列（编号列）设置为按内容自适应，保持紧凑
         self.tbl3.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        # === 2. 替换为直接添加表格，并明确启用表格自身的滚动条 ===
+        self._install_row_hover_actions(self.tbl3, "tbl3", header_rows)
         self.tbl3.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.tbl3.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._install_row_hover_actions(self.tbl3, "tbl3", header_rows)
         lay.addWidget(self.tbl3, 1)
 
         # lay.addWidget(self.tbl3, 1)
