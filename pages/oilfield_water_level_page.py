@@ -531,13 +531,13 @@ class OilfieldWaterLevelPage(BasePage):
                     border: 1px solid #888;
                     border-bottom: none;
                     padding: 7px 20px;
-                    background-color: #f0f0f0;
+                    background-color: #efefef;
                     font-family: {SONGTI_FONT_FALLBACK};
                     font-size: 12pt;
                     font-weight: 600;
                 }}
                 QPushButton:checked {{
-                    background-color: #ffffff;
+                    background-color: #d6f0d0;
                     font-weight: bold;
                 }}
             """)

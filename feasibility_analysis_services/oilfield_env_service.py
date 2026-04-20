@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import create_engine, text
@@ -16,29 +15,6 @@ def _create_mysql_engine(mysql_url: str | None = None):
     if not raw_url:
         raise ValueError("sea_env 数据库连接未配置")
     return create_engine(raw_url, future=True, pool_pre_ping=True)
-
-
-def _platform_strength_schema_sql_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "platform_strength_env_schema.sql"
-
-
-def ensure_platform_strength_env_schema(mysql_url: str | None = None) -> None:
-    sql_path = _platform_strength_schema_sql_path()
-    if not sql_path.exists():
-        raise FileNotFoundError(f"未找到结构强度建表 SQL 文件：{sql_path}")
-
-    sql_text = sql_path.read_text(encoding="utf-8").strip()
-    if not sql_text:
-        return
-
-    statements = [stmt.strip() for stmt in sql_text.split(";") if stmt.strip()]
-    if not statements:
-        return
-
-    engine = _create_mysql_engine(mysql_url)
-    with engine.begin() as conn:
-        for statement in statements:
-            conn.execute(text(statement))
 
 
 def ensure_oilfield_env_schema(mysql_url: str | None = None) -> None:
@@ -420,7 +396,6 @@ def load_platform_strength_splash_items(
     mysql_url: str | None = None,
 ) -> list[dict[str, Any]]:
     ensure_oilfield_env_schema(mysql_url)
-    ensure_platform_strength_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     sql = text(
         """
@@ -448,7 +423,6 @@ def replace_platform_strength_splash_items(
     mysql_url: str | None = None,
 ) -> None:
     ensure_oilfield_env_schema(mysql_url)
-    ensure_platform_strength_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     delete_sql = text(
         """
@@ -494,7 +468,6 @@ def load_platform_strength_pile_items(
     mysql_url: str | None = None,
 ) -> list[dict[str, Any]]:
     ensure_oilfield_env_schema(mysql_url)
-    ensure_platform_strength_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     sql = text(
         """
@@ -522,7 +495,6 @@ def replace_platform_strength_pile_items(
     mysql_url: str | None = None,
 ) -> None:
     ensure_oilfield_env_schema(mysql_url)
-    ensure_platform_strength_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     delete_sql = text(
         """
@@ -569,7 +541,6 @@ def load_platform_strength_marine_items(
     mysql_url: str | None = None,
 ) -> list[dict[str, Any]]:
     ensure_oilfield_env_schema(mysql_url)
-    ensure_platform_strength_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     sql = text(
         """
@@ -597,7 +568,6 @@ def replace_platform_strength_marine_items(
     mysql_url: str | None = None,
 ) -> None:
     ensure_oilfield_env_schema(mysql_url)
-    ensure_platform_strength_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     delete_sql = text(
         """
