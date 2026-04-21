@@ -893,16 +893,13 @@ class SacsElevationRiskView(QGraphicsView):
         if not vals:
             return []
 
-        if len(vals) <= 2:
-            return vals
-
         if side in ("front", "left"):
-            return vals[:2]
+            return [vals[0]]
 
         if side in ("back", "right"):
-            return vals[-2:]
+            return [vals[-1]]
 
-        return vals
+        return [vals[0]]
 
     def _labels_from_segments_by_projection(self, segments, proj_mode: str):
         if not segments:
@@ -924,32 +921,76 @@ class SacsElevationRiskView(QGraphicsView):
         else:
             return [(v, self._row_index_to_letters(i)) for i, v in enumerate(sorted(clusters))]
 
+    def _get_xz_upper_zone_min_z(self) -> float:
+        """
+        前后立面中，顶部/上部甲板区的最低 z。
+        取前 5 个水平高程层，补全前后图顶部。
+        """
+        z_levels = self._get_horizontal_z_clusters()  # 已按从高到低排序
+        if len(z_levels) >= 5:
+            return float(z_levels[4]) - 0.5
+        if len(z_levels) >= 4:
+            return float(z_levels[3]) - 0.5
+        if z_levels:
+            return float(z_levels[-1]) - 0.5
+        return float(self._workpoint_z - 20.0)
+
+    def _merge_unique_segments(self, segs_a, segs_b):
+        out = []
+        seen = set()
+
+        for p1, p2 in list(segs_a) + list(segs_b):
+            a = (round(float(p1[0]), 3), round(float(p1[1]), 3))
+            b = (round(float(p2[0]), 3), round(float(p2[1]), 3))
+            key = tuple(sorted((a, b)))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((p1, p2))
+        return out
+
     def _collect_side_face_segments(self, proj_mode: str):
         leg_x_clusters, leg_y_clusters = self._get_leg_plane_clusters()
 
         if proj_mode == "XZ_FRONT":
             plane_axis = "Y"
-            face_clusters = self._select_face_clusters(leg_y_clusters, "front")
+            all_clusters = sorted(leg_y_clusters)
+            if not all_clusters:
+                return [], []
+            outer_cluster = all_clusters[0]
+            upper_zone_min_z = self._get_xz_upper_zone_min_z()
+
         elif proj_mode == "XZ_BACK":
             plane_axis = "Y"
-            face_clusters = self._select_face_clusters(leg_y_clusters, "back")
+            all_clusters = sorted(leg_y_clusters)
+            if not all_clusters:
+                return [], []
+            outer_cluster = all_clusters[-1]
+            upper_zone_min_z = self._get_xz_upper_zone_min_z()
+
         elif proj_mode == "YZ_LEFT":
             plane_axis = "X"
-            face_clusters = self._select_face_clusters(leg_x_clusters, "left")
+            all_clusters = sorted(leg_x_clusters)
+            if not all_clusters:
+                return [], []
+            outer_cluster = all_clusters[0]
+            upper_zone_min_z = None
+
         elif proj_mode == "YZ_RIGHT":
             plane_axis = "X"
-            face_clusters = self._select_face_clusters(leg_x_clusters, "right")
-        else:
-            return [], []
+            all_clusters = sorted(leg_x_clusters)
+            if not all_clusters:
+                return [], []
+            outer_cluster = all_clusters[-1]
+            upper_zone_min_z = None
 
-        if not face_clusters:
+        else:
             return [], []
 
         kept_segments = []
         seen = set()
 
-        all_clusters = leg_y_clusters if plane_axis == "Y" else leg_x_clusters
-
+        # 第一步：主体/下部继续严格按外侧主腿面取
         for na, nb, _gid in self.members:
             if na not in self.nodes or nb not in self.nodes:
                 continue
@@ -959,12 +1000,17 @@ class SacsElevationRiskView(QGraphicsView):
                 continue
 
             p1, p2 = clipped
+            zmax = max(float(p1[2]), float(p2[2]))
+
+            # 前后图：上部甲板区交给专门补线逻辑处理
+            if plane_axis == "Y" and upper_zone_min_z is not None and zmax >= upper_zone_min_z:
+                continue
 
             if plane_axis == "Y":
                 c1 = self._nearest_cluster(float(p1[1]), all_clusters)
                 c2 = self._nearest_cluster(float(p2[1]), all_clusters)
 
-                if c1 not in face_clusters or c2 not in face_clusters:
+                if abs(c1 - outer_cluster) > 1e-6 or abs(c2 - outer_cluster) > 1e-6:
                     continue
 
                 seg2d_p1 = (float(p1[0]), float(p1[2]))
@@ -973,11 +1019,14 @@ class SacsElevationRiskView(QGraphicsView):
                 c1 = self._nearest_cluster(float(p1[0]), all_clusters)
                 c2 = self._nearest_cluster(float(p2[0]), all_clusters)
 
-                if c1 not in face_clusters or c2 not in face_clusters:
+                if abs(c1 - outer_cluster) > 1e-6 or abs(c2 - outer_cluster) > 1e-6:
                     continue
 
                 seg2d_p1 = (float(p1[1]), float(p1[2]))
                 seg2d_p2 = (float(p2[1]), float(p2[2]))
+
+            if abs(seg2d_p1[0] - seg2d_p2[0]) < 1e-6 and abs(seg2d_p1[1] - seg2d_p2[1]) < 1e-6:
+                continue
 
             a = (round(seg2d_p1[0], 3), round(seg2d_p1[1], 3))
             b = (round(seg2d_p2[0], 3), round(seg2d_p2[1], 3))
@@ -988,8 +1037,153 @@ class SacsElevationRiskView(QGraphicsView):
 
             kept_segments.append((seg2d_p1, seg2d_p2))
 
+        # 第二步：前/后图单独补上部甲板线
+        if proj_mode in ("XZ_FRONT", "XZ_BACK"):
+            upper_face_segments = self._collect_xz_upper_face_segments(proj_mode)
+            kept_segments = self._merge_unique_segments(kept_segments, upper_face_segments)
+
         top_labels = self._labels_from_segments_by_projection(kept_segments, proj_mode)
         return kept_segments, top_labels
+
+    def _collect_xz_upper_face_segments(self, proj_mode: str):
+        """
+        前/后视图上部甲板补线：
+        - 不再按 Y-band 选构件
+        - 改成只对上部区域做 XZ 投影可见轮廓提取
+        - 前视取最小 Y（更靠前）
+        - 后视取最大 Y（更靠后）
+        """
+        z_min = self._get_xz_upper_zone_min_z()
+
+        candidates = []
+
+        for na, nb, _gid in self.members:
+            if na not in self.nodes or nb not in self.nodes:
+                continue
+
+            clipped = self._clip_member_3d_to_workpoint(self.nodes[na], self.nodes[nb])
+            if clipped is None:
+                continue
+
+            p1, p2 = clipped
+            zmax = max(float(p1[2]), float(p2[2]))
+            if zmax < z_min:
+                continue
+
+            # 只处理上部区域
+            seg2d_p1 = (float(p1[0]), float(p1[2]))  # XZ 投影
+            seg2d_p2 = (float(p2[0]), float(p2[2]))
+            depth = (float(p1[1]) + float(p2[1])) * 0.5  # Y 作为前后深度
+
+            bins = self._segment_sample_bins(seg2d_p1, seg2d_p2, grid=1.4, samples=12)
+
+            candidates.append({
+                "p1": seg2d_p1,
+                "p2": seg2d_p2,
+                "depth": depth,
+                "bins": bins,
+            })
+
+        if not candidates:
+            return []
+
+        winners = {}
+
+        prefer_smaller = (proj_mode == "XZ_FRONT")
+
+        for idx, cand in enumerate(candidates):
+            for b in cand["bins"]:
+                prev_idx = winners.get(b)
+                if prev_idx is None:
+                    winners[b] = idx
+                    continue
+
+                prev = candidates[prev_idx]
+                if prefer_smaller:
+                    if cand["depth"] < prev["depth"] - 1e-6:
+                        winners[b] = idx
+                else:
+                    if cand["depth"] > prev["depth"] + 1e-6:
+                        winners[b] = idx
+
+        keep_idx = sorted(set(winners.values()))
+
+        kept = []
+        seen = set()
+        for i in keep_idx:
+            p1 = candidates[i]["p1"]
+            p2 = candidates[i]["p2"]
+
+            a = (round(p1[0], 3), round(p1[1], 3))
+            b = (round(p2[0], 3), round(p2[1], 3))
+            key = tuple(sorted((a, b)))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            kept.append((p1, p2))
+
+        return kept
+
+    def _collect_xz_upper_point_markers(self, proj_mode: str):
+        """
+        前/后视图里，投影到 XZ 后退化成点的上部构件。
+        这些构件本来在前后图中“看得到位置”，但不是线段。
+        用短标记补出来，避免顶部看起来缺结构。
+        """
+        z_min = self._get_xz_upper_zone_min_z()
+
+        candidates = []
+        prefer_smaller = (proj_mode == "XZ_FRONT")
+
+        for na, nb, _gid in self.members:
+            if na not in self.nodes or nb not in self.nodes:
+                continue
+
+            clipped = self._clip_member_3d_to_workpoint(self.nodes[na], self.nodes[nb])
+            if clipped is None:
+                continue
+
+            p1, p2 = clipped
+            zmax = max(float(p1[2]), float(p2[2]))
+            if zmax < z_min:
+                continue
+
+            x1, z1 = float(p1[0]), float(p1[2])
+            x2, z2 = float(p2[0]), float(p2[2])
+
+            # 只收集“投影成点”的构件
+            if abs(x1 - x2) > 1e-6 or abs(z1 - z2) > 1e-6:
+                continue
+
+            depth = (float(p1[1]) + float(p2[1])) * 0.5
+            key = (round(x1 / 1.2), round(z1 / 1.2))
+
+            candidates.append({
+                "pt": (x1, z1),
+                "depth": depth,
+                "key": key,
+            })
+
+        if not candidates:
+            return []
+
+        winners = {}
+        for item in candidates:
+            key = item["key"]
+            prev = winners.get(key)
+            if prev is None:
+                winners[key] = item
+                continue
+
+            if prefer_smaller:
+                if item["depth"] < prev["depth"] - 1e-6:
+                    winners[key] = item
+            else:
+                if item["depth"] > prev["depth"] + 1e-6:
+                    winners[key] = item
+
+        return [v["pt"] for v in winners.values()]
 
     def _labels_from_face_segments(self, segments, proj_mode: str):
         if not segments:
@@ -1072,7 +1266,7 @@ class SacsElevationRiskView(QGraphicsView):
 
         return []
 
-    def _collect_directional_view_segments(self, proj_mode: str):
+    def _collect_directional_view_segments(self, proj_mode: str, z_min: Optional[float] = None):
         candidates = []
 
         for na, nb, _gid in self.members:
@@ -1087,6 +1281,10 @@ class SacsElevationRiskView(QGraphicsView):
                 continue
 
             p1, p2 = clipped_3d
+
+            zmax = max(float(p1[2]), float(p2[2]))
+            if z_min is not None and zmax < float(z_min):
+                continue
 
             if proj_mode in ("XZ_FRONT", "XZ_BACK"):
                 seg2d_p1 = (p1[0], p1[2])
@@ -1241,17 +1439,22 @@ class SacsElevationRiskView(QGraphicsView):
 
         spec = self._resolve_row_definition()
         proj_mode = spec["proj_mode"]
+        point_markers = []
 
         # 前后左右：按“两列外侧主腿面”取构件
         if proj_mode in ("XZ_FRONT", "XZ_BACK", "YZ_LEFT", "YZ_RIGHT"):
             clipped_segments, top_labels = self._collect_side_face_segments(proj_mode)
 
+            if proj_mode in ("XZ_FRONT", "XZ_BACK"):
+                point_markers = self._collect_xz_upper_point_markers(proj_mode)
+
             print("[Elevation] row =", self._row_name)
             print("[Elevation] proj_mode =", proj_mode)
             print("[Elevation] side_face_segment_total =", len(clipped_segments))
+            print("[Elevation] point_marker_total =", len(point_markers))
             print("[Elevation] workpoint =", self._workpoint_z)
 
-            if not clipped_segments:
+            if not clipped_segments and not point_markers:
                 self._draw_message(f"{self._row_name} 没有可绘制轮廓")
                 return
 
@@ -1284,6 +1487,10 @@ class SacsElevationRiskView(QGraphicsView):
         for p1, p2 in clipped_segments:
             xs.extend([p1[0], p2[0]])
             ys.extend([p1[1], p2[1]])
+
+        for px, py in point_markers:
+            xs.append(px)
+            ys.append(py)
 
         min_x, max_x = min(xs), max(xs)
         min_y, max_y = min(ys), max(ys)
@@ -1359,6 +1566,13 @@ class SacsElevationRiskView(QGraphicsView):
             item = RiskMemberItem(x1, y1, x2, y2)
             item.setPen(QPen(member_color, member_width))
             self._scene.addItem(item)
+
+        # 前后图：把投影成点的上部构件画成短竖线标记
+        for px0, py0 in point_markers:
+            px, py = map_pt(px0, py0)
+            marker = RiskMemberItem(px, py - 6, px, py + 6)
+            marker.setPen(QPen(member_color, 1.1))
+            self._scene.addItem(marker)
 
         self._scene.setSceneRect(QRectF(0, 0, view_w, view_h))
         self._show_hover_info()
