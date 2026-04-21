@@ -14,9 +14,12 @@ class SpecialStrategyHistoryRegressionTests(unittest.TestCase):
             "def load_result_bundle(facility_code: str, run_id: int | None = None)",
             "if run_id and run_payload is None:",
             "load_strategy_result_snapshot_by_run(run_id)",
+            "def run_artifact_paths(facility_code: str, stamp: str)",
+            'run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")',
+            "_prune_runtime_artifacts(code)",
             "def list_result_run_history(facility_code: str, limit: int = 50)",
             "def generate_special_strategy_report(",
-            'paths["root"] / f"special_strategy_run_{int(run_id)}.docx"',
+            'report_output_path = Path(str(state.get("output_report") or "")).resolve()',
         ):
             with self.subTest(snippet=snippet):
                 self.assertIn(snippet, text)
@@ -63,6 +66,13 @@ class SpecialStrategyHistoryRegressionTests(unittest.TestCase):
         ):
             with self.subTest(snippet=snippet):
                 self.assertIn(snippet, text)
+
+    def test_special_strategy_page_view_result_opens_latest_run(self) -> None:
+        text = (REPO_ROOT / "pages/special_inspection_strategy.py").read_text(encoding="utf-8")
+        self.assertIn(
+            "self.main_window.open_upgrade_special_inspection_result_tab(facility_code, run_id=None)",
+            text,
+        )
 
     def test_history_dialog_uses_service(self) -> None:
         text = (REPO_ROOT / "pages/special_strategy_history_dialog.py").read_text(encoding="utf-8")

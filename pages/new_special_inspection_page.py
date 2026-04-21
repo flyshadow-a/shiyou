@@ -387,7 +387,7 @@ class NewSpecialInspectionPage(BasePage):
             if not path or not path.exists():
                 return {}
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
+                return json.loads(path.read_text(encoding="utf-8-sig"))
             except Exception:
                 return {}
 

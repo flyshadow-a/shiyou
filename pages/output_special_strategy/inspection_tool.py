@@ -1787,7 +1787,7 @@ def load_from_params_json(params_json: str | Path) -> Dict[str, Any]:
     p = Path(params_json)
     if not p.exists():
         raise FileNotFoundError(f"params json not found: {p}")
-    raw = json.loads(p.read_text(encoding="utf-8"))
+    raw = json.loads(p.read_text(encoding="utf-8-sig"))
     return {
         "template": str(p),
         "model_path": _safe_str(raw.get("model_path")),

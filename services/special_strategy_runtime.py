@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -50,6 +51,27 @@ FACILITY_CONFIG_MAP = {
 }
 
 TIME_CURRENT = "当前"
+MAX_RUNTIME_ARTIFACT_SETS = 3
+CONFIG_PATH_KEYS = {
+    "template_xlsm",
+    "config_xlsm",
+    "params_json",
+    "report_template",
+    "manual_fill_workbook",
+    "appendix_a_file",
+    "appendix_b_file",
+    "model",
+}
+CONFIG_RUNTIME_OUTPUT_KEYS = {
+    "output_report",
+    "intermediate_workbook",
+}
+CONFIG_MULTI_PATH_KEYS = {
+    "appendix_c_dirs",
+    "clplog",
+    "ftglst",
+    "ftginp",
+}
 
 
 def normalize_facility_code(facility_code: str) -> str:
@@ -84,13 +106,92 @@ def runtime_paths(facility_code: str) -> dict[str, Path]:
         "params_json": root / "runtime_params.json",
         "intermediate_workbook": root / "special_strategy.pipeline.xlsx",
         "output_report": root / "special_strategy.docx",
+        "report_metadata_json": root / "report_metadata.json",
         "state_json": root / "runtime_state.json",
     }
 
 
+def run_artifact_paths(facility_code: str, stamp: str) -> dict[str, Path]:
+    root = runtime_dir(facility_code)
+    root.mkdir(parents=True, exist_ok=True)
+    stem = f"special_strategy_run_{stamp}"
+    return {
+        "root": root,
+        "params_json": root / f"{stem}.params.json",
+        "intermediate_workbook": root / f"{stem}.pipeline.xlsx",
+        "output_report": root / f"{stem}.docx",
+        "report_metadata_json": root / f"{stem}.report_metadata.json",
+        "state_json": root / f"{stem}.state.json",
+    }
+
+
+def _read_json_file(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def _resolve_config_path(path: Path, value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    candidate = Path(text)
+    if candidate.is_absolute():
+        return str(candidate)
+    return str((path.parent / candidate).resolve())
+
+
+def _resolve_runtime_output_path(facility_code: str, value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return str((runtime_dir(facility_code) / Path(text).name).resolve())
+
+
+def _normalize_config_paths(facility_code: str, config_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    cfg = dict(payload)
+    for key in CONFIG_PATH_KEYS:
+        if key in cfg:
+            cfg[key] = _resolve_config_path(config_path, cfg.get(key))
+    for key in CONFIG_RUNTIME_OUTPUT_KEYS:
+        if key in cfg:
+            cfg[key] = _resolve_runtime_output_path(facility_code, cfg.get(key))
+    for key in CONFIG_MULTI_PATH_KEYS:
+        values = cfg.get(key)
+        if not isinstance(values, list):
+            continue
+        cfg[key] = [_resolve_config_path(config_path, value) for value in values if str(value or "").strip()]
+    return cfg
+
+
+def _prune_runtime_artifacts(facility_code: str, keep_latest: int = MAX_RUNTIME_ARTIFACT_SETS) -> None:
+    root = runtime_dir(facility_code)
+    if keep_latest <= 0 or not root.exists():
+        return
+
+    groups: dict[str, list[Path]] = {}
+    for path in root.iterdir():
+        if not path.is_file():
+            continue
+        match = re.match(r"(special_strategy_run_\d{8}_\d{6}_\d{6})\.", path.name)
+        if not match:
+            continue
+        groups.setdefault(match.group(1), []).append(path)
+
+    stale_groups = sorted(groups.items(), key=lambda item: item[0], reverse=True)[keep_latest:]
+    for _, paths in stale_groups:
+        for artifact in paths:
+            try:
+                artifact.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 def load_base_config(facility_code: str) -> dict[str, Any]:
-    path = FACILITY_CONFIG_MAP[normalize_facility_code(facility_code)]
-    return json.loads(path.read_text(encoding="utf-8"))
+    code = normalize_facility_code(facility_code)
+    path = FACILITY_CONFIG_MAP[code]
+    payload = _read_json_file(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid special strategy config: {path}")
+    return _normalize_config_paths(code, path, payload)
 
 
 def load_default_params(facility_code: str) -> dict[str, Any]:
@@ -98,7 +199,7 @@ def load_default_params(facility_code: str) -> dict[str, Any]:
     params_path = Path(str(cfg.get("params_json", ""))).resolve()
     if not params_path.exists():
         return {}
-    return json.loads(params_path.read_text(encoding="utf-8"))
+    return _read_json_file(params_path)
 
 
 def load_latest_strategy_params(facility_code: str) -> dict[str, Any]:
@@ -122,6 +223,34 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _load_report_metadata_json(facility_code: str, run_id: int | None = None) -> dict[str, Any]:
+    paths = runtime_paths(facility_code)
+    candidates: list[Path] = []
+    if run_id is not None:
+        candidates.append(paths["root"] / f"special_strategy_run_{int(run_id)}.report_metadata.json")
+    candidates.extend(
+        [
+            paths["report_metadata_json"],
+            paths["root"] / "metadata.json",
+        ]
+    )
+
+    seen: set[Path] = set()
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen or not resolved.exists():
+            continue
+        seen.add(resolved)
+        try:
+            payload = _read_json_file(resolved)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"报告占位符 JSON 解析失败：{resolved}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"报告占位符 JSON 顶层必须是对象：{resolved}")
+        return payload
+    return {}
+
+
 def load_runtime_state(facility_code: str) -> dict[str, Any] | None:
     db_state = load_latest_strategy_run(normalize_facility_code(facility_code))
     if db_state:
@@ -129,7 +258,7 @@ def load_runtime_state(facility_code: str) -> dict[str, Any] | None:
     path = state_path(facility_code)
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _read_json_file(path)
 
 
 def _state_from_run_payload(run_payload: dict[str, Any]) -> dict[str, Any]:
@@ -440,7 +569,9 @@ def run_special_strategy_calculation(
 ) -> dict[str, Any]:
     code = normalize_facility_code(facility_code)
     cfg = load_base_config(code)
-    paths = runtime_paths(code)
+    latest_paths = runtime_paths(code)
+    run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    paths = run_artifact_paths(code, run_stamp)
     params = merge_runtime_params(code, param_overrides)
     _write_json(paths["params_json"], params)
 
@@ -478,6 +609,7 @@ def run_special_strategy_calculation(
         "config_path": str(FACILITY_CONFIG_MAP[code]),
         "inputs": resolved_inputs,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "artifact_stamp": run_stamp,
     }
     run_id = save_strategy_run(
         facility_code=code,
@@ -518,7 +650,8 @@ def run_special_strategy_calculation(
         },
     )
     state["db_snapshot_id"] = snapshot_id
-    _write_json(paths["state_json"], state)
+    _write_json(latest_paths["state_json"], state)
+    _prune_runtime_artifacts(code)
     result_bundle["state"] = state
     return result_bundle
 
@@ -584,6 +717,7 @@ def generate_special_strategy_report(
     cfg = load_base_config(code)
     metadata_payload = dict(default_metadata(code))
     metadata_payload.update(state.get("metadata") or {})
+    metadata_payload.update(_load_report_metadata_json(code, run_id=run_id))
     if metadata:
         metadata_payload.update({k: v for k, v in metadata.items() if v not in ("", None)})
 
@@ -601,11 +735,9 @@ def generate_special_strategy_report(
     context["include_word_plan_detail_tables"] = bool(cfg.get("include_word_plan_detail_tables", False))
 
     paths = runtime_paths(code)
-    report_output_path = (
-        paths["root"] / f"special_strategy_run_{int(run_id)}.docx"
-        if run_id
-        else paths["output_report"]
-    )
+    report_output_path = Path(str(state.get("output_report") or "")).resolve()
+    if not str(report_output_path).strip() or report_output_path == Path(".").resolve():
+        report_output_path = paths["output_report"]
     report_template = Path(str(cfg["report_template"])).resolve()
     render_report(report_template, report_output_path, context)
     insert_appendix_pdf_images(report_output_path, context)
@@ -618,4 +750,5 @@ def generate_special_strategy_report(
         update_strategy_report(int(state_run_id), output_report=str(report_output_path))
     if not run_id:
         _write_json(paths["state_json"], state)
+    _prune_runtime_artifacts(code)
     return report_output_path

@@ -704,6 +704,19 @@ def ratio_text(part: int, total: int) -> str:
     return f"{(part / total) * 100:.2f}%"
 
 
+def merge_metadata_into_context(context: dict[str, Any], metadata: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(context)
+    metadata_payload = dict(metadata or {})
+    payload["report_metadata"] = metadata_payload
+
+    for key, value in metadata_payload.items():
+        if value in ("", None):
+            continue
+        if key in ("platform_name", "report_date") or key not in payload:
+            payload[str(key)] = value
+    return payload
+
+
 def build_context(
     node_risk_rows: list[dict[str, Any]],
     node_strategy_rows: list[dict[str, Any]],
@@ -961,7 +974,7 @@ def build_context(
     member_inspection_rows_disp = cap_rows(member_inspection_rows, limits.get("member_inspection_rows"))
     node_inspection_rows_future_disp = cap_rows(node_inspection_rows_future, limits.get("node_inspection_rows_future"))
 
-    return {
+    context = {
         "platform_name": metadata.get("platform_name", ""),
         "report_date": metadata.get("report_date", ""),
         "fatigue_failure_rows": fatigue_failure_rows_disp,
@@ -991,6 +1004,7 @@ def build_context(
             "node_inspection_rows_future_total": len(node_inspection_rows_future),
         },
     }
+    return merge_metadata_into_context(context, metadata)
 
 
 def load_context_from_legacy_workbook(
@@ -2104,6 +2118,25 @@ def fill_cover_paragraphs(document_root: ET.Element, context: dict[str, Any], en
             set_paragraph_text(p, date_tpl.render(report_date=context["report_date"]))
 
 
+def render_text_placeholders(document_root: ET.Element, context: dict[str, Any], env: Environment) -> None:
+    for paragraph in document_root.findall(".//w:p", NS):
+        text = paragraph_text(paragraph)
+        if not text or ("{{" not in text and "{%" not in text and "{#" not in text):
+            continue
+        try:
+            rendered = env.from_string(text).render(context)
+        except Exception as exc:
+            detail = str(exc).strip()
+            missing_match = re.search(r"'([^']+)' is undefined", detail)
+            if missing_match:
+                missing_key = missing_match.group(1)
+                raise ValueError(f"Word 占位符渲染失败：缺少字段 `{missing_key}`。原文：{text}") from exc
+            if detail:
+                raise ValueError(f"Word 占位符渲染失败：{detail}。原文：{text}") from exc
+            raise ValueError(f"Word 占位符渲染失败：{text}") from exc
+        set_paragraph_text(paragraph, rendered)
+
+
 def build_missing_requirements(context: dict[str, Any]) -> list[str]:
     missing: list[str] = []
     if to_text(context.get("platform_name")) == "":
@@ -2187,6 +2220,7 @@ def render_report(template_docx: Path, output_docx: Path, context: dict[str, Any
         fill_summary_tables(root, context)
         if not context.get("appendix_pdf_plan"):
             fill_appendix_sections(root, rels_root, context)
+        render_text_placeholders(root, context, env)
 
         out_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
         out_rels_xml = ET.tostring(rels_root, encoding="utf-8", xml_declaration=True)

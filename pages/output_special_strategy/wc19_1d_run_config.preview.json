@@ -1,44 +1,28 @@
-﻿{
-  "template_xlsm": "d:/pyproject/shiyou/pages/output_special_strategy/检验策略- wc19-1d-10.30.xlsm",
-  "params_json": "d:/pyproject/shiyou/pages/output_special_strategy/wc19_1d_calc_params.json",
-  "report_template": "d:/pyproject/shiyou/pages/output_special_strategy/xxx骞冲彴椋庨櫓璇勭骇鍙婃娴嬬瓥鐣ユ姤鍛?docx",
-  "output_report": "d:/pyproject/shiyou/pages/output_special_strategy/wc19_1d_user_paths_report.preview.docx",
-  "intermediate_workbook": "d:/pyproject/shiyou/pages/output_special_strategy/wc19_1d_user_paths_report.preview.pipeline.xlsx",
+{
+  "template_xlsm": "检验策略- wc19-1d-10.30.xlsm",
+  "config_xlsm": "检验策略- wc19-1d-10.30.xlsm",
+  "params_json": "wc19_1d_calc_params.json",
+  "report_template": "xxx平台风险评级及检测策略报告.docx",
+  "output_report": "special_strategy.preview.docx",
+  "intermediate_workbook": "special_strategy.preview.pipeline.xlsx",
   "policy": "strict",
   "enable_topology_inference": false,
   "interactive_manual_fill": false,
-  "manual_fill_workbook": "d:/pyproject/shiyou/pages/output_special_strategy/manual_fill.xlsx",
-  "appendix_a_file": "d:/pyproject/shiyou/pages/output_special_strategy/闄勪欢A 鑺傜偣椋庨櫓绛夌骇璁＄畻琛?pdf",
-  "appendix_b_file": "d:/pyproject/shiyou/pages/output_special_strategy/闄勪欢B 鏋勪欢椋庨櫓绛夌骇璁＄畻琛?pdf",
+  "manual_fill_workbook": "manual_fill.xlsx",
+  "appendix_a_file": "附件A 节点风险等级计算表.pdf",
+  "appendix_b_file": "附件B 构件风险等级计算表.pdf",
   "appendix_c_dirs": [
-    "d:/pyproject/shiyou/pages/output_special_strategy/闄勪欢C.1 鏈嶅焦绗?骞寸殑妫€楠岃妭鐐规瀯浠朵綅缃?,
-    "d:/pyproject/shiyou/pages/output_special_strategy/闄勪欢C.2 鏈嶅焦绗?0骞寸殑妫€楠岃妭鐐规瀯浠朵綅缃?,
-    "d:/pyproject/shiyou/pages/output_special_strategy/闄勪欢C.3 鏈嶅焦绗?5骞寸殑妫€楠岃妭鐐规瀯浠朵綅缃?,
-    "d:/pyproject/shiyou/pages/output_special_strategy/闄勪欢C.4 鏈嶅焦绗?0骞寸殑妫€楠岃妭鐐规瀯浠朵綅缃?,
-    "d:/pyproject/shiyou/pages/output_special_strategy/闄勪欢C.5 鏈嶅焦绗?5骞寸殑妫€楠岃妭鐐规瀯浠朵綅缃?
+    "附件C.1 服役第5年的检验节点构件位置",
+    "附件C.2 服役第10年的检验节点构件位置",
+    "附件C.3 服役第15年的检验节点构件位置",
+    "附件C.4 服役第20年的检验节点构件位置",
+    "附件C.5 服役第25年的检验节点构件位置"
   ],
   "include_word_plan_detail_tables": true,
   "platform_name": "{{platform_name}}",
   "report_date": "{{report_date}}",
-  "model": "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/Static/sacinp.JKnew",
-  "clplog": [
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/pushover/90/clplog",
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/pushover/128/clplog",
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/pushover/180/clplog",
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/pushover/231/clplog"
-  ],
-  "ftglst": [
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/fatigue/4.1WJT/ftglst",
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/fatigue/4.2WJT WITH RING/ftglst",
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/fatigue/4.3WJ1/ftglst",
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/fatigue/4.4WJ1 WITH RING/ftglst",
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/fatigue/4.5D/ftglst.d"
-  ],
-  "ftginp": [
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/fatigue/4.1WJT/ftginp.19-1d WJT",
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/fatigue/4.2WJT WITH RING/ftginp.19-1d WJT WITH RING",
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/fatigue/4.3WJ1/ftginp.19-1d WJ1",
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/fatigue/4.4WJ1 WITH RING/ftginp.19-1d WJ1 WITH RING",
-    "D:/desk/妯悜/WC9-7&191D妫€娴嬬瓥鐣?103/WC19-1D妫€娴嬬瓥鐣?103/妯″瀷/fatigue/4.5D/ftginp.19-1d D"
-  ]
+  "model": "",
+  "clplog": [],
+  "ftglst": [],
+  "ftginp": []
 }

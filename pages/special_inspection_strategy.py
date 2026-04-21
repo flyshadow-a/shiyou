@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # pages/special_inspection_strategy.py
 
 
@@ -12,9 +12,10 @@ from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QPushButton, QScrollArea, QSizePolicy, QLabel,
-    QDialog, QAbstractItemView, QMessageBox, QSlider, QLineEdit
-)
 
+    QDialog, QAbstractItemView, QMessageBox
+)
+from PyQt5.QtWidgets import QSlider
 from core.app_paths import first_existing_path
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar
@@ -22,10 +23,12 @@ from pages.file_management_platforms import FILE_MANAGEMENT_PLATFORMS, default_p
 from pages.read_table_xls import ReadTableXls
 from pages.special_strategy_history_dialog import SpecialStrategyHistoryDialog as SpecialStrategyHistoryDialogView
 from services.special_strategy_services import (
+
     NodeYearLabelMapper,
     SpecialStrategyResultService,
     SpecialStrategySummaryBuilder,
 )
+
 
 from pages.sacs_elevation_risk_view import SacsElevationRiskView
 from pages.platform_strength_page import PlatformStrengthPage
@@ -980,6 +983,7 @@ class SpecialInspectionStrategy(BasePage):
             self._clear_summary_table(self.node_table)
             self._active_facility_code = facility_code
             self._active_run_id = run_id
+
             if hasattr(self, "elevation_view"):
                 self.elevation_view._draw_message("当前没有可用的特检结果")
             return
@@ -993,17 +997,21 @@ class SpecialInspectionStrategy(BasePage):
             elif isinstance(v, (str, dict)):
                 print("[Strategy]", k, "=", v)
 
+
         self._active_facility_code = facility_code
         self._active_run_id = run_id
         self._fill_component_from_context(context)
         self._fill_node_from_context(context, self.current_year)
+
         self._refresh_elevation_view(context)
+
 
     def _fill_component_from_context(self, context: Dict):
         self._fill_rows(self.component_table, self._summary_builder.build_component_inspection_rows(context))
 
     def _fill_node_from_context(self, context: Dict, year: str):
         self._fill_rows(self.node_table, self._summary_builder.build_node_inspection_rows(context, year))
+
 
     def _refresh_elevation_view(self, context: Optional[Dict] = None):
         if not hasattr(self, "elevation_view"):
@@ -1034,6 +1042,7 @@ class SpecialInspectionStrategy(BasePage):
         )
 
         self._sync_dynamic_row_combo_from_view()
+
 
     def _fill_rows(self, table: QTableWidget, rows: List[Tuple[str, str, str, str]]):
         for r, row in enumerate(rows):
@@ -1081,6 +1090,7 @@ class SpecialInspectionStrategy(BasePage):
         self._sync_year_buttons(year)
         self._load_runtime_summary(self._get_dropdown_value("facility_code"), self._active_run_id)
 
+
     def _get_workpoint_value(self) -> Optional[float]:
         if not hasattr(self, "edt_workpoint"):
             return None
@@ -1111,6 +1121,7 @@ class SpecialInspectionStrategy(BasePage):
 
     def _on_row_changed(self, _row_text: str):
         self._refresh_elevation_view()
+
 
     def _sync_year_buttons(self, year: str):
         for btn in getattr(self, "year_buttons", []):
@@ -1144,7 +1155,7 @@ class SpecialInspectionStrategy(BasePage):
     def _on_view_strategy(self):
         facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
         if self.main_window is not None and hasattr(self.main_window, "open_upgrade_special_inspection_result_tab"):
-            self.main_window.open_upgrade_special_inspection_result_tab(facility_code, run_id=self._active_run_id)
+            self.main_window.open_upgrade_special_inspection_result_tab(facility_code, run_id=None)
 
     def _on_view_history(self):
         facility_code = self._get_dropdown_value("facility_code")
@@ -1163,74 +1174,3 @@ class SpecialInspectionStrategy(BasePage):
         self.refresh_runtime_summary(facility_code=facility_code, run_id=selected_run_id, sync_dropdown=True)
 
     # Clean overrides for platform linkage.
-    def _build_top_dropdown_fields(self) -> List[Dict]:
-        platform_default = default_platform()
-        stretch_map = {
-            "branch": 1,
-            "op_company": 2,
-            "oilfield": 2,
-            "facility_code": 2,
-            "facility_name": 3,
-            "inspect_seq": 1,
-            "inspect_time": 2,
-        }
-        return [
-            {
-                "key": "branch",
-                "label": "分公司",
-                "options": [platform_default["branch"]],
-                "default": platform_default["branch"],
-                "stretch": stretch_map["branch"],
-            },
-            {
-                "key": "op_company",
-                "label": "作业公司",
-                "options": [platform_default["op_company"]],
-                "default": platform_default["op_company"],
-                "stretch": stretch_map["op_company"],
-            },
-            {
-                "key": "oilfield",
-                "label": "油田",
-                "options": [platform_default["oilfield"]],
-                "default": platform_default["oilfield"],
-                "stretch": stretch_map["oilfield"],
-            },
-            {
-                "key": "facility_code",
-                "label": "设施编码",
-                "options": [item["facility_code"] for item in FILE_MANAGEMENT_PLATFORMS],
-                "default": platform_default["facility_code"],
-                "stretch": stretch_map["facility_code"],
-            },
-            {
-                "key": "facility_name",
-                "label": "设施名称",
-                "options": [item["facility_name"] for item in FILE_MANAGEMENT_PLATFORMS],
-                "default": platform_default["facility_name"],
-                "stretch": stretch_map["facility_name"],
-            },
-            {
-                "key": "inspect_seq",
-                "label": "检测序号",
-                "options": ["0", "1", "2", "3"],
-                "default": "0",
-                "stretch": stretch_map["inspect_seq"],
-            },
-            {
-                "key": "inspect_time",
-                "label": "检测时间",
-                "options": ["2008-06-26", "2008-07-12", "2008-08-21"],
-                "default": "2008-06-26",
-                "stretch": stretch_map["inspect_time"],
-            },
-        ]
-
-    def _sync_platform_ui(self, changed_key: str | None = None):
-        platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
-        facility_code = platform["facility_code"]
-        platform_name = platform["facility_name"]
-        window = self.window()
-        if hasattr(window, "set_current_platform_name"):
-            window.set_current_platform_name(platform_name)
-        self._load_runtime_summary(facility_code)
