@@ -13,6 +13,7 @@
 import json
 import os
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Dict, List, Tuple
 from urllib import error, request
@@ -57,9 +58,11 @@ from feasibility_analysis_services.oilfield_env_service import (
     get_env_profile_id,
     load_metric_items,
     load_platform_strength_marine_items,
+    load_platform_strength_pile_items,
     load_platform_strength_splash_items,
     load_water_level_items,
 )
+from services.inspection_business_db_adapter import load_facility_profile
 
 
 
@@ -817,14 +820,19 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         platform_overview = ""
         platform_overview_blocks = []
-        if self.platform_overview_text:
-            platform_overview_blocks.append(
-                {
-                    "text": self.platform_overview_text,
-                    "anchor_prefix": "例子：",
-                    "anchor_occurrence": 1,
-                }
+        facility_profile = load_facility_profile(self.facility_code)
+        platform_description = str(facility_profile.get("description_text") or "").strip()
+        if not platform_description:
+            raise ValueError(
+                f"当前平台 {self.facility_code} 未维护平台描述，请先在“建设阶段完工文件”页面补充“平台描述”后再生成报告。"
             )
+        platform_overview_blocks.append(
+            {
+                "text": platform_description,
+                "anchor_prefix": "例子：",
+                "anchor_occurrence": 1,
+            }
+        )
 
         history_rebuild_summary = build_history_rebuild_summary(
             self.facility_code,
@@ -910,16 +918,30 @@ class FeasibilityAssessmentResultsPage(BasePage):
             self.facility_code,
             mysql_url=self.mysql_url,
         )
+        pile_rows = load_platform_strength_pile_items(
+            profile_id,
+            self.facility_code,
+            mysql_url=self.mysql_url,
+        )
         splash_zone_rows = load_platform_strength_splash_items(
             profile_id,
             self.facility_code,
             mysql_url=self.mysql_url,
         )
+        foundation_scour_text = self._extract_foundation_scour_text(pile_rows)
 
-        if not (water_level_rows or wind_rows or wave_rows or current_rows or marine_growth_rows or splash_zone_rows):
+        if not (
+            water_level_rows
+            or wind_rows
+            or wave_rows
+            or current_rows
+            or marine_growth_rows
+            or splash_zone_rows
+            or foundation_scour_text
+        ):
             return {}
 
-        return {
+        section = {
             "water_level_rows": [self._normalize_environment_row(row) for row in water_level_rows],
             "wind_rows": [self._normalize_environment_row(row) for row in wind_rows],
             "wave_rows": [self._normalize_environment_row(row) for row in wave_rows],
@@ -927,6 +949,15 @@ class FeasibilityAssessmentResultsPage(BasePage):
             "marine_growth_rows": [self._normalize_environment_row(row) for row in marine_growth_rows],
             "splash_zone_rows": [self._normalize_environment_row(row) for row in splash_zone_rows],
         }
+        if foundation_scour_text:
+            section["blocks"] = [
+                {
+                    "text": f"在分析中，考虑{foundation_scour_text}m（来自平台基本信息的桩基信息基础冲刷）冲刷深度。",
+                    "anchor_prefix": "在分析中，考虑",
+                    "preserve_anchor_style": True,
+                }
+            ]
+        return section
 
     def _validate_environment_conditions_for_report(self) -> str:
         if not (self.env_branch and self.env_op_company and self.env_oilfield):
@@ -956,10 +987,40 @@ class FeasibilityAssessmentResultsPage(BasePage):
             missing_tables.append("风参数表")
         if not load_platform_strength_marine_items(profile_id, self.facility_code, mysql_url=self.mysql_url):
             missing_tables.append("海生物信息表")
+        pile_rows = load_platform_strength_pile_items(
+            profile_id,
+            self.facility_code,
+            mysql_url=self.mysql_url,
+        )
+        if not self._extract_foundation_scour_text(pile_rows):
+            missing_tables.append("桩基信息表（基础冲刷）")
         if not load_platform_strength_splash_items(profile_id, self.facility_code, mysql_url=self.mysql_url):
             missing_tables.append("飞溅区腐蚀余量表")
         if missing_tables:
             return f"当前油气田“{self.env_oilfield}”环境条件数据不完整，缺少{'、'.join(missing_tables)}，无法完整生成报告第 2.5 节。"
+        return ""
+
+    @staticmethod
+    def _format_report_number(value) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if not text:
+            return ""
+        try:
+            decimal_value = Decimal(text)
+        except (InvalidOperation, ValueError):
+            return text
+        normalized = format(decimal_value, "f")
+        if "." in normalized:
+            normalized = normalized.rstrip("0").rstrip(".")
+        return "0" if normalized in {"", "-0", "+0"} else normalized
+
+    def _extract_foundation_scour_text(self, pile_rows: List[dict]) -> str:
+        for row in pile_rows:
+            scour_text = self._format_report_number(row.get("scour_depth_m"))
+            if scour_text:
+                return scour_text
         return ""
 
     def _normalize_environment_row(self, row: dict) -> dict:
