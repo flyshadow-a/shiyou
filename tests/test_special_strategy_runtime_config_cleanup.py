@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from services.special_strategy_runtime import _prune_runtime_artifacts, load_base_config
+from services.special_strategy_runtime import _prune_runtime_artifacts, load_base_config, run_artifact_paths
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -66,20 +66,41 @@ class SpecialStrategyRuntimeConfigCleanupTests(unittest.TestCase):
             root = Path(tmp) / "WC19-1D"
             root.mkdir(parents=True, exist_ok=True)
             for stamp in stamps:
+                run_root = root / f"special_strategy_run_{stamp}"
+                run_root.mkdir(parents=True, exist_ok=True)
                 for suffix in suffixes:
-                    (root / f"special_strategy_run_{stamp}{suffix}").write_text("demo", encoding="utf-8")
+                    name = {
+                        ".params.json": "runtime_params.json",
+                        ".pipeline.xlsx": "special_strategy.pipeline.xlsx",
+                        ".docx": "special_strategy.docx",
+                        ".report_metadata.json": "report_metadata.json",
+                        ".state.json": "runtime_state.json",
+                    }[suffix]
+                    (run_root / name).write_text("demo", encoding="utf-8")
             (root / "runtime_state.json").write_text("{}", encoding="utf-8")
 
             with patch("services.special_strategy_runtime.shared_storage_dir", return_value=tmp):
                 _prune_runtime_artifacts("WC19-1D", keep_latest=3)
 
-            remaining = sorted(path.name for path in root.iterdir() if path.is_file())
-            for suffix in suffixes:
-                self.assertNotIn(f"special_strategy_run_{stamps[0]}{suffix}", remaining)
+            remaining = sorted(path.name for path in root.iterdir())
+            remaining_dirs = sorted(path.name for path in root.iterdir() if path.is_dir())
+            self.assertNotIn(f"special_strategy_run_{stamps[0]}", remaining_dirs)
             for stamp in stamps[1:]:
-                for suffix in suffixes:
-                    self.assertIn(f"special_strategy_run_{stamp}{suffix}", remaining)
+                self.assertIn(f"special_strategy_run_{stamp}", remaining_dirs)
             self.assertIn("runtime_state.json", remaining)
+
+    def test_run_artifact_paths_groups_each_run_into_its_own_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("services.special_strategy_runtime.shared_storage_dir", return_value=tmp):
+                paths = run_artifact_paths("WC19-1D", "20260421_090000_000001")
+
+        run_root = (Path(tmp) / "WC19-1D" / "special_strategy_run_20260421_090000_000001").resolve()
+        self.assertEqual(paths["root"], run_root)
+        self.assertEqual(paths["params_json"], run_root / "runtime_params.json")
+        self.assertEqual(paths["intermediate_workbook"], run_root / "special_strategy.pipeline.xlsx")
+        self.assertEqual(paths["output_report"], run_root / "special_strategy.docx")
+        self.assertEqual(paths["report_metadata_json"], run_root / "report_metadata.json")
+        self.assertEqual(paths["state_json"], run_root / "runtime_state.json")
 
 
 if __name__ == "__main__":

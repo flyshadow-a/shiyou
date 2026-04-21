@@ -589,6 +589,7 @@ class SpecialInspectionStrategy(BasePage):
         self.btn_view_history = QPushButton("查看历史")
         self.btn_add = QPushButton("新增特检策略")
         self.btn_add.setObjectName("AddBtn")
+        self.btn_view_history.setEnabled(False)
 
         for b in [self.btn_view_strategy, self.btn_view_history]:
             b.setFixedSize(90, 30)
@@ -1158,19 +1159,6 @@ class SpecialInspectionStrategy(BasePage):
             self.main_window.open_upgrade_special_inspection_result_tab(facility_code, run_id=None)
 
     def _on_view_history(self):
-        facility_code = self._get_dropdown_value("facility_code")
-        dialog = SpecialStrategyHistoryDialogView(
-            facility_code,
-            self,
-            result_service=self._result_service,
-        )
-        if dialog.exec_() != QDialog.Accepted or dialog.selected_run_id is None:
-            return
-        selected_run_id = int(dialog.selected_run_id)
-        if dialog.selected_action == "result":
-            if self.main_window is not None and hasattr(self.main_window, "open_upgrade_special_inspection_result_tab"):
-                self.main_window.open_upgrade_special_inspection_result_tab(facility_code, run_id=selected_run_id)
-            return
-        self.refresh_runtime_summary(facility_code=facility_code, run_id=selected_run_id, sync_dropdown=True)
+        return None
 
     # Clean overrides for platform linkage.

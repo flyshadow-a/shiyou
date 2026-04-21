@@ -79,7 +79,7 @@ class AddPeriodicInspectionDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("新增定期检测")
         self.setModal(True)
-        self.resize(420, 180)
+        self.resize(420, 220)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -91,10 +91,13 @@ class AddPeriodicInspectionDialog(QDialog):
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.name_edit = QLineEdit(self)
+        self.description_edit = QLineEdit(self)
+        self.description_edit.setPlaceholderText("请输入项目描述")
         self.year_edit = QLineEdit(self)
         self.year_edit.setPlaceholderText("例如：2025")
 
         form.addRow("检测名称", self.name_edit)
+        form.addRow("描述", self.description_edit)
         form.addRow("年份", self.year_edit)
         layout.addLayout(form)
 
@@ -116,8 +119,12 @@ class AddPeriodicInspectionDialog(QDialog):
             return
         self.accept()
 
-    def get_values(self):
-        return self.name_edit.text().strip(), self.year_edit.text().strip()
+    def get_values(self) -> dict[str, str]:
+        return {
+            "project_name": self.name_edit.text().strip(),
+            "summary_text": self.description_edit.text().strip(),
+            "project_year": self.year_edit.text().strip(),
+        }
 
 
 class AddSpecialEventInspectionDialog(QDialog):
@@ -125,7 +132,7 @@ class AddSpecialEventInspectionDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("新增特殊事件检测")
         self.setModal(True)
-        self.resize(420, 180)
+        self.resize(420, 220)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -137,10 +144,13 @@ class AddSpecialEventInspectionDialog(QDialog):
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.name_edit = QLineEdit(self)
+        self.description_edit = QLineEdit(self)
+        self.description_edit.setPlaceholderText("请输入事件描述")
         self.year_edit = QLineEdit(self)
         self.year_edit.setPlaceholderText("例如：2025")
 
         form.addRow("事件名称", self.name_edit)
+        form.addRow("描述", self.description_edit)
         form.addRow("年份", self.year_edit)
         layout.addLayout(form)
 
@@ -162,8 +172,12 @@ class AddSpecialEventInspectionDialog(QDialog):
             return
         self.accept()
 
-    def get_values(self):
-        return self.name_edit.text().strip(), self.year_edit.text().strip()
+    def get_values(self) -> dict[str, str]:
+        return {
+            "project_name": self.name_edit.text().strip(),
+            "summary_text": self.description_edit.text().strip(),
+            "project_year": self.year_edit.text().strip(),
+        }
 
 
 class InspectionProjectEditDialog(QDialog):
@@ -175,10 +189,10 @@ class InspectionProjectEditDialog(QDialog):
         project_year: str = "",
         summary_text: str = "",
         parent=None,
-    ):
+        ):
         super().__init__(parent)
         self.setWindowTitle(title_text)
-        self.resize(520, 320)
+        self.resize(520, 220)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
@@ -190,16 +204,15 @@ class InspectionProjectEditDialog(QDialog):
         form.setSpacing(10)
         self.name_edit = QLineEdit(self)
         self.name_edit.setText(project_name)
+        self.summary_edit = QLineEdit(self)
+        self.summary_edit.setText(summary_text or "")
+        self.summary_edit.setPlaceholderText("请输入项目描述")
         self.year_edit = QLineEdit(self)
         self.year_edit.setText(project_year)
         form.addRow("项目名称", self.name_edit)
+        form.addRow("描述", self.summary_edit)
         form.addRow("年份", self.year_edit)
         layout.addLayout(form)
-
-        self.summary_edit = QTextEdit(self)
-        self.summary_edit.setPlaceholderText("请输入项目说明")
-        self.summary_edit.setPlainText(summary_text or "")
-        layout.addWidget(self.summary_edit, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
         buttons.button(QDialogButtonBox.Ok).setText("保存")
@@ -218,7 +231,7 @@ class InspectionProjectEditDialog(QDialog):
         return {
             "project_name": self.name_edit.text().strip(),
             "project_year": self.year_edit.text().strip(),
-            "summary_text": self.summary_edit.toPlainText().strip(),
+            "summary_text": self.summary_edit.text().strip(),
         }
 
 
@@ -447,11 +460,13 @@ class HistoryInspectionSummaryPage(BasePage):
         for index, row in enumerate(rows, start=1):
             title = row.get("project_name") or ""
             year = row.get("project_year") or row.get("event_date") or ""
+            summary_text = row.get("summary_text") or ""
             items.append(
                 {
                     "id": row.get("id"),
                     "index": index,
                     "title": title,
+                    "summary_text": summary_text,
                     "year": year,
                     "file_section_title": f"{title}{file_title_suffix}" if title else file_title_suffix,
                     "sampling_section_title": f"{title}{record_title_suffix}" if title else record_title_suffix,
@@ -663,9 +678,9 @@ class HistoryInspectionSummaryPage(BasePage):
         layout.setContentsMargins(0, 10, 0, 18)
         layout.setSpacing(14)
 
-        self.periodic_overview_table = QTableWidget(len(self.periodic_demo_data), 3, page)
+        self.periodic_overview_table = QTableWidget(len(self.periodic_demo_data), 4, page)
         self.periodic_overview_table.setObjectName("PeriodicOverviewTable")
-        self.periodic_overview_table.setHorizontalHeaderLabels(["序号", "项目名称", "年份"])
+        self.periodic_overview_table.setHorizontalHeaderLabels(["序号", "项目名称", "描述", "年份"])
         self.periodic_overview_table.verticalHeader().setVisible(False)
         self.periodic_overview_table.setAlternatingRowColors(False)
         self.periodic_overview_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -674,9 +689,10 @@ class HistoryInspectionSummaryPage(BasePage):
         self.periodic_overview_table.setShowGrid(True)
         self.periodic_overview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.periodic_overview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.periodic_overview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        self.periodic_overview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.periodic_overview_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
         self.periodic_overview_table.setColumnWidth(0, 92)
-        self.periodic_overview_table.setColumnWidth(2, 138)
+        self.periodic_overview_table.setColumnWidth(3, 138)
         self.periodic_overview_table.setMinimumHeight(182)
 
         for row, item in enumerate(self.periodic_demo_data):
@@ -690,10 +706,15 @@ class HistoryInspectionSummaryPage(BasePage):
             title_item.setFlags(title_item.flags() & ~Qt.ItemIsEditable)
             self.periodic_overview_table.setItem(row, 1, title_item)
 
+            summary_item = QTableWidgetItem(item.get("summary_text", ""))
+            summary_item.setTextAlignment(Qt.AlignCenter)
+            summary_item.setFlags(summary_item.flags() & ~Qt.ItemIsEditable)
+            self.periodic_overview_table.setItem(row, 2, summary_item)
+
             year_item = QTableWidgetItem(item["year"])
             year_item.setTextAlignment(Qt.AlignCenter)
             year_item.setFlags(year_item.flags() & ~Qt.ItemIsEditable)
-            self.periodic_overview_table.setItem(row, 2, year_item)
+            self.periodic_overview_table.setItem(row, 3, year_item)
 
         self.periodic_overview_table.itemSelectionChanged.connect(self._on_periodic_project_changed)
         layout.addWidget(self.periodic_overview_table, 0)
@@ -791,9 +812,9 @@ class HistoryInspectionSummaryPage(BasePage):
         layout.setContentsMargins(0, 10, 0, 18)
         layout.setSpacing(14)
 
-        self.special_event_overview_table = QTableWidget(len(self.special_event_demo_data), 3, page)
+        self.special_event_overview_table = QTableWidget(len(self.special_event_demo_data), 4, page)
         self.special_event_overview_table.setObjectName("SpecialEventOverviewTable")
-        self.special_event_overview_table.setHorizontalHeaderLabels(["序号", "事件名称", "年份"])
+        self.special_event_overview_table.setHorizontalHeaderLabels(["序号", "事件名称", "描述", "年份"])
         self.special_event_overview_table.verticalHeader().setVisible(False)
         self.special_event_overview_table.setAlternatingRowColors(False)
         self.special_event_overview_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -802,9 +823,10 @@ class HistoryInspectionSummaryPage(BasePage):
         self.special_event_overview_table.setShowGrid(True)
         self.special_event_overview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.special_event_overview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.special_event_overview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        self.special_event_overview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.special_event_overview_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
         self.special_event_overview_table.setColumnWidth(0, 92)
-        self.special_event_overview_table.setColumnWidth(2, 138)
+        self.special_event_overview_table.setColumnWidth(3, 138)
         self.special_event_overview_table.setMinimumHeight(182)
 
         for row, item in enumerate(self.special_event_demo_data):
@@ -818,10 +840,15 @@ class HistoryInspectionSummaryPage(BasePage):
             title_item.setFlags(title_item.flags() & ~Qt.ItemIsEditable)
             self.special_event_overview_table.setItem(row, 1, title_item)
 
+            summary_item = QTableWidgetItem(item.get("summary_text", ""))
+            summary_item.setTextAlignment(Qt.AlignCenter)
+            summary_item.setFlags(summary_item.flags() & ~Qt.ItemIsEditable)
+            self.special_event_overview_table.setItem(row, 2, summary_item)
+
             year_item = QTableWidgetItem(item["year"])
             year_item.setTextAlignment(Qt.AlignCenter)
             year_item.setFlags(year_item.flags() & ~Qt.ItemIsEditable)
-            self.special_event_overview_table.setItem(row, 2, year_item)
+            self.special_event_overview_table.setItem(row, 3, year_item)
 
         self.special_event_overview_table.itemSelectionChanged.connect(self._on_special_event_changed)
         layout.addWidget(self.special_event_overview_table, 0)
@@ -953,12 +980,13 @@ class HistoryInspectionSummaryPage(BasePage):
         if dialog.exec_() != QDialog.Accepted:
             return
 
-        title, year = dialog.get_values()
+        values = dialog.get_values()
         create_inspection_project(
             facility_code=(self.facility_code or default_platform()["facility_code"]).strip(),
             project_type="periodic",
-            project_name=title,
-            project_year=year,
+            project_name=values["project_name"],
+            project_year=values["project_year"],
+            summary_text=values["summary_text"],
         )
         self._reload_database_backed_data()
 
@@ -967,12 +995,13 @@ class HistoryInspectionSummaryPage(BasePage):
         if dialog.exec_() != QDialog.Accepted:
             return
 
-        title, year = dialog.get_values()
+        values = dialog.get_values()
         create_inspection_project(
             facility_code=(self.facility_code or default_platform()["facility_code"]).strip(),
             project_type="special_event",
-            project_name=title,
-            project_year=year,
+            project_name=values["project_name"],
+            project_year=values["project_year"],
+            summary_text=values["summary_text"],
         )
         self._reload_database_backed_data()
 
@@ -1494,7 +1523,12 @@ class HistoryInspectionSummaryPage(BasePage):
         self.periodic_overview_table.setRowCount(len(self.periodic_demo_data))
         for row, item in enumerate(self.periodic_demo_data):
             item["index"] = row + 1
-            values = (item["index"], item.get("title", ""), item.get("year", ""))
+            values = (
+                item["index"],
+                item.get("title", ""),
+                item.get("summary_text", ""),
+                item.get("year", ""),
+            )
             for col, value in enumerate(values):
                 table_item = QTableWidgetItem(str(value))
                 table_item.setTextAlignment(Qt.AlignCenter)
@@ -1525,7 +1559,12 @@ class HistoryInspectionSummaryPage(BasePage):
         self.special_event_overview_table.setRowCount(len(self.special_event_demo_data))
         for row, item in enumerate(self.special_event_demo_data):
             item["index"] = row + 1
-            values = (item["index"], item.get("title", ""), item.get("year", ""))
+            values = (
+                item["index"],
+                item.get("title", ""),
+                item.get("summary_text", ""),
+                item.get("year", ""),
+            )
             for col, value in enumerate(values):
                 table_item = QTableWidgetItem(str(value))
                 table_item.setTextAlignment(Qt.AlignCenter)
@@ -1599,8 +1638,8 @@ class HistoryInspectionSummaryPage(BasePage):
         dialog = InspectionProjectEditDialog(
             title_text="编辑定期检测",
             project_name=project.get("title", ""),
+            summary_text=project.get("summary_text", ""),
             project_year=project.get("year", ""),
-            summary_text="",
             parent=self,
         )
         if dialog.exec_() != QDialog.Accepted:
@@ -1644,8 +1683,8 @@ class HistoryInspectionSummaryPage(BasePage):
         dialog = InspectionProjectEditDialog(
             title_text="编辑特殊事件检测",
             project_name=project.get("title", ""),
+            summary_text=project.get("summary_text", ""),
             project_year=project.get("year", ""),
-            summary_text="",
             parent=self,
         )
         if dialog.exec_() != QDialog.Accepted:

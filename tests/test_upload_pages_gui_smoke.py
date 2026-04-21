@@ -322,6 +322,28 @@ class HistoryInspectionSummaryPageSmokeTests(GuiSmokeBase):
             self.assertEqual(page._project_file_key("periodic", {"id": 12}, 0), "periodic_project_12")
             self.assertEqual(page._project_file_key("special_event", None, 3), "special_event_row_3")
 
+    def test_top_tables_include_description_column(self) -> None:
+        with patch(
+            "pages.history_inspection_summary_page.list_inspection_projects",
+            return_value=[
+                {
+                    "id": 1,
+                    "project_name": "2025年定期检测",
+                    "project_year": "2025",
+                    "summary_text": "北侧平台复核",
+                }
+            ],
+        ), patch("pages.history_inspection_summary_page.list_inspection_findings", return_value=[]):
+            page = HistoryInspectionSummaryPage()
+            self.addCleanup(page.deleteLater)
+
+            self.assertEqual(page.periodic_overview_table.columnCount(), 4)
+            self.assertEqual(page.periodic_overview_table.horizontalHeaderItem(2).text(), "描述")
+            self.assertEqual(page.periodic_overview_table.item(0, 2).text(), "北侧平台复核")
+
+            self.assertEqual(page.special_event_overview_table.columnCount(), 4)
+            self.assertEqual(page.special_event_overview_table.horizontalHeaderItem(2).text(), "描述")
+
 
 if __name__ == "__main__":
     unittest.main()

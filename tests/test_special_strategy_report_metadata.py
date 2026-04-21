@@ -193,6 +193,98 @@ class SpecialStrategyReportMetadataTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "报告占位符 JSON 解析失败"):
                     generate_special_strategy_report("WC19-1D")
 
+    def test_generate_report_auto_writes_report_metadata_json_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_root = root / "special_strategy_run_20260421_090000_000001"
+            run_root.mkdir(parents=True, exist_ok=True)
+            workbook_path = run_root / "special_strategy.pipeline.xlsx"
+            template_path = root / "template.docx"
+            workbook_path.write_text("demo", encoding="utf-8")
+            template_path.write_text("demo", encoding="utf-8")
+
+            fake_paths = {
+                "root": root,
+                "params_json": root / "runtime_params.json",
+                "intermediate_workbook": workbook_path,
+                "output_report": root / "special_strategy.docx",
+                "report_metadata_json": root / "report_metadata.json",
+                "state_json": root / "runtime_state.json",
+            }
+            run_payload = {
+                "id": 12,
+                "facility_code": "WC19-1D",
+                "intermediate_workbook": str(workbook_path),
+                "output_report": str(run_root / "special_strategy.docx"),
+                "metadata_json": {"report_date": "2026-04-21"},
+                "params_json": {
+                    "no_legs": 8,
+                    "life_safety_level": "S-2",
+                    "failure_consequence_level": "C-1",
+                    "global_level_tag": "L-2",
+                    "design_life": 26,
+                },
+            }
+            fake_cfg = {
+                "report_template": str(template_path),
+                "appendix_a_file": "",
+                "appendix_b_file": "",
+                "appendix_c_dirs": [],
+                "include_word_plan_detail_tables": False,
+            }
+            captured: dict[str, dict] = {}
+
+            def fake_context(_workbook_path: Path, _cfg: dict, metadata: dict) -> dict:
+                captured["metadata"] = dict(metadata)
+                return {
+                    "platform_name": metadata.get("platform_name", ""),
+                    "report_date": metadata.get("report_date", ""),
+                }
+
+            with patch("services.special_strategy_runtime.load_strategy_run_by_id", return_value=run_payload), patch(
+                "services.special_strategy_runtime.load_base_config",
+                return_value=fake_cfg,
+            ), patch(
+                "services.special_strategy_runtime.runtime_paths",
+                return_value=fake_paths,
+            ), patch(
+                "services.special_strategy_runtime.find_platform",
+                return_value={
+                    "facility_code": "WC19-1D",
+                    "facility_name": "WC19-1D平台",
+                    "oilfield": "文昌19-1油田",
+                    "facility_type": "平台",
+                    "category": "导管架平台",
+                    "start_time": "2013-07-15",
+                    "design_life": "15",
+                },
+            ), patch(
+                "services.special_strategy_runtime.default_metadata",
+                return_value={"platform_name": "WC19-1D平台", "report_date": "2026-04-21"},
+            ), patch(
+                "services.special_strategy_runtime._context_from_workbook",
+                side_effect=fake_context,
+            ), patch(
+                "services.special_strategy_runtime.render_report",
+            ), patch(
+                "services.special_strategy_runtime.insert_appendix_pdf_images",
+            ), patch(
+                "services.special_strategy_runtime.update_strategy_report",
+            ):
+                generate_special_strategy_report("WC19-1D", run_id=12)
+
+            metadata_path = run_root / "report_metadata.json"
+            self.assertTrue(metadata_path.exists())
+            payload = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+            self.assertEqual(payload["oilfield_name"], "文昌19-1油田")
+            self.assertEqual(payload["leg_count"], "8")
+            self.assertEqual(payload["platform_type"], "导管架平台")
+            self.assertEqual(payload["life_safety_level"], "S-2")
+            self.assertEqual(payload["failure_consequence_level"], "C-1")
+            self.assertEqual(payload["exposure_level"], "L-2")
+            self.assertEqual(captured["metadata"]["oilfield_name"], "文昌19-1油田")
+            self.assertEqual(captured["metadata"]["leg_count"], "8")
+
     def test_render_text_placeholders_reports_missing_placeholder_key(self) -> None:
         root = ET.fromstring(
             f"""

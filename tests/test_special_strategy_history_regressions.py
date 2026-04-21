@@ -50,7 +50,7 @@ class SpecialStrategyHistoryRegressionTests(unittest.TestCase):
             with self.subTest(snippet=snippet):
                 self.assertIn(snippet, text)
 
-    def test_special_strategy_page_uses_dialog_and_service_objects(self) -> None:
+    def test_special_strategy_page_uses_service_objects_and_disables_history_button(self) -> None:
         text = (REPO_ROOT / "pages/special_inspection_strategy.py").read_text(encoding="utf-8")
         for snippet in (
             "from pages.special_strategy_history_dialog import SpecialStrategyHistoryDialog as SpecialStrategyHistoryDialogView",
@@ -62,7 +62,9 @@ class SpecialStrategyHistoryRegressionTests(unittest.TestCase):
             "bundle = self._result_service.load_result_bundle(facility_code, run_id)",
             "self._summary_builder.build_component_inspection_rows(context)",
             "self._summary_builder.build_node_inspection_rows(context, year)",
-            "dialog = SpecialStrategyHistoryDialogView(",
+            "self.btn_view_history.setEnabled(False)",
+            "def _on_view_history(self):",
+            "return None",
         ):
             with self.subTest(snippet=snippet):
                 self.assertIn(snippet, text)

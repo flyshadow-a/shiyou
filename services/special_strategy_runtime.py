@@ -50,8 +50,10 @@ FACILITY_CONFIG_MAP = {
     "WC9-7": OUTPUT_SPECIAL_STRATEGY_DIR / "wc9_7_run_config.json",
 }
 
+REPORT_METADATA_TEMPLATE_PATH = OUTPUT_SPECIAL_STRATEGY_DIR / "report_metadata.template.json"
 TIME_CURRENT = "当前"
 MAX_RUNTIME_ARTIFACT_SETS = 3
+REPORT_METADATA_PLACEHOLDER = "待填写"
 CONFIG_PATH_KEYS = {
     "template_xlsm",
     "config_xlsm",
@@ -72,6 +74,29 @@ CONFIG_MULTI_PATH_KEYS = {
     "ftglst",
     "ftginp",
 }
+
+
+def _normalize_metadata_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _overlay_non_empty_metadata(target: dict[str, str], source: dict[str, Any] | None) -> None:
+    if not isinstance(source, dict):
+        return
+    for key, value in source.items():
+        text = _normalize_metadata_value(value)
+        if text:
+            target[str(key)] = text
+
+
+def _extract_year_text(value: Any) -> str:
+    text = _normalize_metadata_value(value)
+    match = re.search(r"(19|20)\d{2}", text)
+    return match.group(0) if match else ""
 
 
 def normalize_facility_code(facility_code: str) -> str:
@@ -112,16 +137,17 @@ def runtime_paths(facility_code: str) -> dict[str, Path]:
 
 
 def run_artifact_paths(facility_code: str, stamp: str) -> dict[str, Path]:
-    root = runtime_dir(facility_code)
+    facility_root = runtime_dir(facility_code)
+    facility_root.mkdir(parents=True, exist_ok=True)
+    root = facility_root / f"special_strategy_run_{stamp}"
     root.mkdir(parents=True, exist_ok=True)
-    stem = f"special_strategy_run_{stamp}"
     return {
         "root": root,
-        "params_json": root / f"{stem}.params.json",
-        "intermediate_workbook": root / f"{stem}.pipeline.xlsx",
-        "output_report": root / f"{stem}.docx",
-        "report_metadata_json": root / f"{stem}.report_metadata.json",
-        "state_json": root / f"{stem}.state.json",
+        "params_json": root / "runtime_params.json",
+        "intermediate_workbook": root / "special_strategy.pipeline.xlsx",
+        "output_report": root / "special_strategy.docx",
+        "report_metadata_json": root / "report_metadata.json",
+        "state_json": root / "runtime_state.json",
     }
 
 
@@ -169,9 +195,10 @@ def _prune_runtime_artifacts(facility_code: str, keep_latest: int = MAX_RUNTIME_
 
     groups: dict[str, list[Path]] = {}
     for path in root.iterdir():
-        if not path.is_file():
-            continue
-        match = re.match(r"(special_strategy_run_\d{8}_\d{6}_\d{6})\.", path.name)
+        if path.is_dir():
+            match = re.fullmatch(r"(special_strategy_run_\d{8}_\d{6}_\d{6})", path.name)
+        else:
+            match = re.match(r"(special_strategy_run_\d{8}_\d{6}_\d{6})\.", path.name)
         if not match:
             continue
         groups.setdefault(match.group(1), []).append(path)
@@ -180,7 +207,15 @@ def _prune_runtime_artifacts(facility_code: str, keep_latest: int = MAX_RUNTIME_
     for _, paths in stale_groups:
         for artifact in paths:
             try:
-                artifact.unlink(missing_ok=True)
+                if artifact.is_dir():
+                    for child in sorted(artifact.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+                        if child.is_file():
+                            child.unlink(missing_ok=True)
+                        elif child.is_dir():
+                            child.rmdir()
+                    artifact.rmdir()
+                else:
+                    artifact.unlink(missing_ok=True)
             except Exception:
                 pass
 
@@ -196,8 +231,11 @@ def load_base_config(facility_code: str) -> dict[str, Any]:
 
 def load_default_params(facility_code: str) -> dict[str, Any]:
     cfg = load_base_config(facility_code)
-    params_path = Path(str(cfg.get("params_json", ""))).resolve()
-    if not params_path.exists():
+    params_text = str(cfg.get("params_json", "") or "").strip()
+    if not params_text:
+        return {}
+    params_path = Path(params_text).resolve()
+    if not params_path.exists() or not params_path.is_file():
         return {}
     return _read_json_file(params_path)
 
@@ -223,11 +261,156 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _load_report_metadata_json(facility_code: str, run_id: int | None = None) -> dict[str, Any]:
+def _load_report_metadata_template() -> dict[str, Any]:
+    if not REPORT_METADATA_TEMPLATE_PATH.exists():
+        return {}
+    payload = _read_json_file(REPORT_METADATA_TEMPLATE_PATH)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _artifact_dir_from_state(state: dict[str, Any] | None) -> Path | None:
+    if not isinstance(state, dict):
+        return None
+    for key in ("intermediate_workbook", "output_report", "params_json", "state_json", "artifact_dir"):
+        text = str(state.get(key) or "").strip()
+        if not text:
+            continue
+        try:
+            candidate = Path(text).resolve()
+        except Exception:
+            continue
+        if key == "artifact_dir":
+            return candidate
+        return candidate if candidate.is_dir() else candidate.parent
+    return None
+
+
+def _legacy_run_report_metadata_path(facility_code: str, run_id: int) -> Path:
+    paths = runtime_paths(facility_code)
+    return paths["root"] / f"special_strategy_run_{int(run_id)}.report_metadata.json"
+
+
+def _report_metadata_target_paths(
+    facility_code: str,
+    *,
+    run_id: int | None = None,
+    state: dict[str, Any] | None = None,
+    run_payload: dict[str, Any] | None = None,
+) -> list[Path]:
+    paths = runtime_paths(facility_code)
+    targets: list[Path] = []
+    artifact_dir = _artifact_dir_from_state(state) or _artifact_dir_from_state(_state_from_run_payload(run_payload or {}))
+    if artifact_dir is not None:
+        targets.append(artifact_dir / "report_metadata.json")
+    elif run_id is not None:
+        targets.append(_legacy_run_report_metadata_path(facility_code, int(run_id)))
+    if run_id is None:
+        targets.append(paths["report_metadata_json"])
+    return targets
+
+
+def _build_report_metadata_payload(
+    facility_code: str,
+    *,
+    run_id: int | None = None,
+    state: dict[str, Any] | None = None,
+    run_payload: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    code = normalize_facility_code(facility_code)
+    template_payload = _load_report_metadata_template()
+    payload: dict[str, str] = {str(key): "" for key in template_payload}
+
+    platform = find_platform(facility_code=code)
+    params: dict[str, Any] = {}
+    if run_payload and isinstance(run_payload.get("params_json"), dict):
+        params.update(run_payload["params_json"])
+    elif state and isinstance(state.get("params"), dict):
+        params.update(state["params"])
+    else:
+        try:
+            params.update(load_latest_strategy_params(code))
+        except Exception:
+            pass
+
+    base_metadata = default_metadata(code)
+    runtime_metadata: dict[str, Any] = {}
+    if state and isinstance(state.get("metadata"), dict):
+        runtime_metadata.update(state["metadata"])
+    if run_payload and isinstance(run_payload.get("metadata_json"), dict):
+        runtime_metadata.update(run_payload["metadata_json"])
+
+    existing_payload = _load_report_metadata_json(
+        code,
+        run_id=run_id,
+        state=state,
+        run_payload=run_payload,
+    )
+
+    derived_payload = {
+        "platform_name": platform.get("facility_name") or base_metadata.get("platform_name", ""),
+        "report_date": runtime_metadata.get("report_date") or base_metadata.get("report_date", ""),
+        "oilfield_name": platform.get("oilfield", ""),
+        "water_depth_m": "",
+        "leg_count": params.get("no_legs", ""),
+        "platform_type": platform.get("category") or platform.get("facility_type") or "",
+        "start_year": _extract_year_text(platform.get("start_time")),
+        "design_life_years": params.get("design_life") or platform.get("design_life") or "",
+        "life_safety_level": params.get("life_safety_level", ""),
+        "failure_consequence_level": params.get("failure_consequence_level", ""),
+        "exposure_level": params.get("global_level_tag", ""),
+    }
+
+    _overlay_non_empty_metadata(payload, derived_payload)
+    _overlay_non_empty_metadata(payload, runtime_metadata)
+    _overlay_non_empty_metadata(payload, existing_payload)
+    _overlay_non_empty_metadata(payload, metadata)
+
+    for key in template_payload:
+        if not _normalize_metadata_value(payload.get(key, "")):
+            payload[str(key)] = REPORT_METADATA_PLACEHOLDER
+    return payload
+
+
+def _prepare_runtime_report_metadata(
+    facility_code: str,
+    *,
+    run_id: int | None = None,
+    state: dict[str, Any] | None = None,
+    run_payload: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    payload = _build_report_metadata_payload(
+        facility_code,
+        run_id=run_id,
+        state=state,
+        run_payload=run_payload,
+        metadata=metadata,
+    )
+    for path in _report_metadata_target_paths(
+        facility_code,
+        run_id=run_id,
+        state=state,
+        run_payload=run_payload,
+    ):
+        _write_json(path, payload)
+    return payload
+
+
+def _load_report_metadata_json(
+    facility_code: str,
+    run_id: int | None = None,
+    *,
+    state: dict[str, Any] | None = None,
+    run_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     paths = runtime_paths(facility_code)
     candidates: list[Path] = []
+    artifact_dir = _artifact_dir_from_state(state) or _artifact_dir_from_state(_state_from_run_payload(run_payload or {}))
+    if artifact_dir is not None:
+        candidates.append(artifact_dir / "report_metadata.json")
     if run_id is not None:
-        candidates.append(paths["root"] / f"special_strategy_run_{int(run_id)}.report_metadata.json")
+        candidates.append(_legacy_run_report_metadata_path(facility_code, int(run_id)))
     candidates.extend(
         [
             paths["report_metadata_json"],
@@ -269,6 +452,9 @@ def _state_from_run_payload(run_payload: dict[str, Any]) -> dict[str, Any]:
         "params": run_payload.get("params_json") or {},
         "intermediate_workbook": str(run_payload.get("intermediate_workbook") or ""),
         "output_report": str(run_payload.get("output_report") or ""),
+        "artifact_dir": str(Path(str(run_payload.get("intermediate_workbook") or "")).resolve().parent)
+        if str(run_payload.get("intermediate_workbook") or "").strip()
+        else "",
         "config_path": str(run_payload.get("config_path") or ""),
         "updated_at": run_payload.get("updated_at").isoformat(timespec="seconds") if run_payload.get("updated_at") else "",
         "inputs": run_payload.get("inputs_json") or {},
@@ -606,6 +792,7 @@ def run_special_strategy_calculation(
         "params_json": str(paths["params_json"]),
         "intermediate_workbook": str(paths["intermediate_workbook"]),
         "output_report": str(paths["output_report"]),
+        "artifact_dir": str(paths["root"]),
         "config_path": str(FACILITY_CONFIG_MAP[code]),
         "inputs": resolved_inputs,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -642,6 +829,7 @@ def run_special_strategy_calculation(
                 "params_json": str(paths["params_json"]),
                 "intermediate_workbook": str(paths["intermediate_workbook"]),
                 "output_report": str(paths["output_report"]),
+                "artifact_dir": str(paths["root"]),
                 "config_path": state["config_path"],
                 "inputs": state["inputs"],
                 "updated_at": state["updated_at"],
@@ -650,6 +838,7 @@ def run_special_strategy_calculation(
         },
     )
     state["db_snapshot_id"] = snapshot_id
+    _write_json(paths["state_json"], state)
     _write_json(latest_paths["state_json"], state)
     _prune_runtime_artifacts(code)
     result_bundle["state"] = state
@@ -715,11 +904,24 @@ def generate_special_strategy_report(
         raise FileNotFoundError(f"Intermediate workbook not found: {workbook_path}")
 
     cfg = load_base_config(code)
+    prepared_report_metadata = _prepare_runtime_report_metadata(
+        code,
+        run_id=run_id,
+        state=state,
+        run_payload=run_payload,
+        metadata=metadata,
+    )
     metadata_payload = dict(default_metadata(code))
     metadata_payload.update(state.get("metadata") or {})
-    metadata_payload.update(_load_report_metadata_json(code, run_id=run_id))
-    if metadata:
-        metadata_payload.update({k: v for k, v in metadata.items() if v not in ("", None)})
+    metadata_payload.update(
+        _load_report_metadata_json(
+            code,
+            run_id=run_id,
+            state=state,
+            run_payload=run_payload,
+        )
+    )
+    metadata_payload.update(prepared_report_metadata)
 
     context = _context_from_workbook(workbook_path, cfg, metadata_payload)
     context["appendix_sections"] = build_appendix_sections(
