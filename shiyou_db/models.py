@@ -119,7 +119,37 @@ class InspectionFinding(Base):
     project: Mapped[InspectionProject] = relationship("InspectionProject", back_populates="findings")
 
 
+class PlatformLoadInformationItem(Base):
+    __tablename__ = "platform_load_information_items"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    facility_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    seq_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    project_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    rebuild_time: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    rebuild_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_weight_mt: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    weight_limit_mt: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    weight_delta_mt: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    center_xyz: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    center_radius_m: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    fx_kn: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    fy_kn: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    fz_kn: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    mx_kn_m: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    my_kn_m: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    mz_kn_m: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    safety_op: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    safety_extreme: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    overall_assessment: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    assessment_org: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 Index("ix_facility_profiles_code", FacilityProfile.facility_code)
 Index("ix_inspection_projects_facility_type", InspectionProject.facility_code, InspectionProject.project_type)
 Index("ix_inspection_projects_sort", InspectionProject.facility_code, InspectionProject.project_type, InspectionProject.sort_order)
 Index("ix_inspection_findings_project_sort", InspectionFinding.project_id, InspectionFinding.sort_order)
+Index("ix_platform_load_information_facility_sort", PlatformLoadInformationItem.facility_code, PlatformLoadInformationItem.sort_order)

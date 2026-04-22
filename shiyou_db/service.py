@@ -18,6 +18,7 @@ from .models import (
     FileType,
     InspectionFinding,
     InspectionProject,
+    PlatformLoadInformationItem,
 )
 
 DEFAULT_FILE_TYPES = [
@@ -420,6 +421,58 @@ class FileMetadataService:
             session.commit()
         return self.list_inspection_findings(int(project_id))
 
+    def list_platform_load_information_items(self, facility_code: str) -> list[dict]:
+        code = (facility_code or "").strip()
+        if not code:
+            return []
+        with self.session_factory() as session:
+            stmt = (
+                select(PlatformLoadInformationItem)
+                .where(PlatformLoadInformationItem.facility_code == code)
+                .order_by(PlatformLoadInformationItem.sort_order.asc(), PlatformLoadInformationItem.id.asc())
+            )
+            rows = session.execute(stmt).scalars().all()
+            return [self._platform_load_information_item_to_dict(row) for row in rows]
+
+    def replace_platform_load_information_items(self, facility_code: str, rows: list[dict]) -> list[dict]:
+        code = (facility_code or "").strip()
+        if not code:
+            raise ValueError("facility_code is required")
+        with self.session_factory() as session:
+            for row in session.execute(
+                select(PlatformLoadInformationItem).where(PlatformLoadInformationItem.facility_code == code)
+            ).scalars().all():
+                session.delete(row)
+
+            for index, item in enumerate(rows, start=1):
+                record = PlatformLoadInformationItem(
+                    facility_code=code,
+                    seq_no=int(item.get("seq_no") or item.get("seq") or item.get("sort_order") or index - 1),
+                    project_name=(item.get("project_name") or "").strip() or None,
+                    rebuild_time=(item.get("rebuild_time") or "").strip() or None,
+                    rebuild_content=(item.get("rebuild_content") or "").strip() or None,
+                    total_weight_mt=(item.get("total_weight_mt") or "").strip() or None,
+                    weight_limit_mt=(item.get("weight_limit_mt") or "").strip() or None,
+                    weight_delta_mt=(item.get("weight_delta_mt") or "").strip() or None,
+                    center_xyz=(item.get("center_xyz") or "").strip() or None,
+                    center_radius_m=(item.get("center_radius_m") or "").strip() or None,
+                    fx_kn=(item.get("fx_kn") or "").strip() or None,
+                    fy_kn=(item.get("fy_kn") or "").strip() or None,
+                    fz_kn=(item.get("fz_kn") or "").strip() or None,
+                    mx_kn_m=(item.get("mx_kn_m") or "").strip() or None,
+                    my_kn_m=(item.get("my_kn_m") or "").strip() or None,
+                    mz_kn_m=(item.get("mz_kn_m") or "").strip() or None,
+                    safety_op=(item.get("safety_op") or "").strip() or None,
+                    safety_extreme=(item.get("safety_extreme") or "").strip() or None,
+                    overall_assessment=(item.get("overall_assessment") or "").strip() or None,
+                    assessment_org=(item.get("assessment_org") or "").strip() or None,
+                    sort_order=int(item.get("sort_order") or index),
+                )
+                session.add(record)
+
+            session.commit()
+        return self.list_platform_load_information_items(code)
+
     def _store_file(
         self,
         source: Path,
@@ -665,4 +718,33 @@ class FileMetadataService:
             "created_at": row.created_at,
             "updated_at": row.updated_at,
             "is_deleted": row.is_deleted,
+        }
+
+    @staticmethod
+    def _platform_load_information_item_to_dict(row: PlatformLoadInformationItem) -> dict:
+        return {
+            "id": row.id,
+            "facility_code": row.facility_code,
+            "seq_no": row.seq_no,
+            "project_name": row.project_name,
+            "rebuild_time": row.rebuild_time,
+            "rebuild_content": row.rebuild_content,
+            "total_weight_mt": row.total_weight_mt,
+            "weight_limit_mt": row.weight_limit_mt,
+            "weight_delta_mt": row.weight_delta_mt,
+            "center_xyz": row.center_xyz,
+            "center_radius_m": row.center_radius_m,
+            "fx_kn": row.fx_kn,
+            "fy_kn": row.fy_kn,
+            "fz_kn": row.fz_kn,
+            "mx_kn_m": row.mx_kn_m,
+            "my_kn_m": row.my_kn_m,
+            "mz_kn_m": row.mz_kn_m,
+            "safety_op": row.safety_op,
+            "safety_extreme": row.safety_extreme,
+            "overall_assessment": row.overall_assessment,
+            "assessment_org": row.assessment_org,
+            "sort_order": row.sort_order,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
         }

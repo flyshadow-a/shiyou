@@ -141,3 +141,20 @@ def replace_inspection_findings(
     config_path: str | None = None,
 ) -> list[dict[str, Any]]:
     return _get_service(config_path).replace_inspection_findings(int(project_id), rows)
+
+
+def load_platform_load_information_items(
+    facility_code: str,
+    *,
+    config_path: str | None = None,
+) -> list[dict[str, Any]]:
+    return _get_service(config_path).list_platform_load_information_items(facility_code)
+
+
+def replace_platform_load_information_items(
+    facility_code: str,
+    rows: list[dict[str, Any]],
+    *,
+    config_path: str | None = None,
+) -> list[dict[str, Any]]:
+    return _get_service(config_path).replace_platform_load_information_items(facility_code, rows)
