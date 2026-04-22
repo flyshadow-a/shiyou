@@ -535,7 +535,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             # 【关键点2】样式中必须有 border-right: none; 这样按钮才能无缝拼接，且中间边框不会变粗
             btn.setStyleSheet("""
                         QPushButton {
-                            background: #dfead2;
+                            background: #efefef;
                             color: #1f2a36;
                             border: 1px solid #3b3b3b;
                             border-right: none;  /* 隐藏右边框 */
@@ -545,21 +545,20 @@ class FeasibilityAssessmentResultsPage(BasePage):
                             font-size: 12pt;
                         }
                         QPushButton:hover {
-                            background: #e8f2dd;
+                            background: #f5f5f5;
                         }
                         QPushButton:pressed {
-                            background: #cfe1b5;
+                            background: #e6e6e6;
                         }
                         QPushButton:checked {
-                            background: #2f80d8;
-                            color: #ffffff;
-                            border: 1px solid #1d4f88;
+                            background: #d6f0d0;
+                            color: #1f2a36;
+                            border: 1px solid #3b3b3b;
                             border-right: none;
-                            border-bottom: 4px solid #ffd24a;
-                            font-weight: normal;
+                            font-weight: bold;
                         }
                         QPushButton:checked:hover {
-                            background: #3a8be2;
+                            background: #d6f0d0;
                         }
                     """)
             self.tab_group.addButton(btn, i)
@@ -576,7 +575,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         # 【关键点3】因为所有按钮都没了右边框，末尾必须加一个固定大小的块来“封口"
         spacer = QWidget()
-        spacer.setStyleSheet("border: 1px solid #3b3b3b; border-left:none; background:#dfead2;")
+        spacer.setStyleSheet("border: 1px solid #3b3b3b; border-left:none; background:#efefef;")
         spacer.setFixedSize(12, 36)  # 宽度32（可调），高度和按钮保持一致
         tab_lay.addWidget(spacer)
 
