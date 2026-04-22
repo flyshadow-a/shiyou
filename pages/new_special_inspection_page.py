@@ -980,7 +980,7 @@ class NewSpecialInspectionPage(BasePage):
         return True
 
     def _on_view_result(self):
-        if not self._risk_updated:
+        if not self._risk_updated or not self._latest_run_id:
             QMessageBox.information(self, "提示", "请先点击“更新风险等级”，再查看结果。")
             return
 
