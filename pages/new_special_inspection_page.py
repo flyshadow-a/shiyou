@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QWidget,
     QFileDialog, QMessageBox, QScrollArea,
-    QAbstractItemView, QSizePolicy, QDialog, QDialogButtonBox, QApplication,
+    QAbstractItemView, QSizePolicy, QDialog, QDialogButtonBox,
     QTreeWidget, QTreeWidgetItem, QSplitter
 )
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -368,8 +368,31 @@ class NewSpecialInspectionPage(BasePage):
 
     def showEvent(self, event):
         super().showEvent(event)
+        QTimer.singleShot(0, self._apply_initial_splitter_sizes)
         QTimer.singleShot(0, self._adjust_files_table_widths)
         # 每次显示页面时重置为空白状态，不自动加载任何文件
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._adjust_files_table_widths)
+
+    def _apply_initial_splitter_sizes(self) -> None:
+        splitter = getattr(self, "_content_splitter", None)
+        if splitter is None:
+            return
+        total_width = splitter.width()
+        if total_width <= 0:
+            return
+        if total_width < 680:
+            left_width = max(1, int(total_width * 0.58))
+            splitter.setSizes([left_width, max(1, total_width - left_width)])
+            return
+        right_min_width = 300
+        left_width = int(total_width * 0.62)
+        left_width = max(360, left_width)
+        left_width = min(left_width, max(240, total_width - right_min_width))
+        right_width = max(right_min_width, total_width - left_width)
+        splitter.setSizes([left_width, right_width])
 
     def _params_json_path(self) -> Path | None:
         base = Path(__file__).resolve().parent / "output_special_strategy"
@@ -589,8 +612,21 @@ class NewSpecialInspectionPage(BasePage):
         left_scroll.setWidget(left)
         right = self._build_right_panel()
 
-        lay.addWidget(left_scroll, 3)
-        lay.addWidget(right, 2)
+        self._content_splitter = QSplitter(Qt.Horizontal, content)
+        self._content_splitter.setChildrenCollapsible(False)
+        self._content_splitter.setHandleWidth(6)
+        self._content_splitter.addWidget(left_scroll)
+        self._content_splitter.addWidget(right)
+        self._content_splitter.setStretchFactor(0, 3)
+        self._content_splitter.setStretchFactor(1, 2)
+        self._content_splitter.setCollapsible(0, False)
+        self._content_splitter.setCollapsible(1, False)
+        self._content_splitter.splitterMoved.connect(lambda *_: self._adjust_files_table_widths())
+
+        self._left_scroll = left_scroll
+        self._right_panel = right
+
+        lay.addWidget(self._content_splitter, 1)
 
         self.main_layout.addWidget(content, 1)
 
@@ -727,7 +763,7 @@ class NewSpecialInspectionPage(BasePage):
         header.setVisible(True)
         header.setHighlightSections(False)
 
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.Interactive)
@@ -735,31 +771,28 @@ class NewSpecialInspectionPage(BasePage):
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(6, QHeaderView.Interactive)
 
-        table.setColumnWidth(0, 60)
+        table.setColumnWidth(0, 52)
     def _adjust_files_table_widths(self) -> None:
-        if not hasattr(self, "files_table") or self.files_table is None:
-            return
+        for table_name in ("model_files_table", "files_table"):
+            table = getattr(self, table_name, None)
+            if table is None or table.viewport().width() <= 0:
+                continue
 
-        table = self.files_table
-        if table.viewport().width() <= 0:
-            return
+            table.setColumnWidth(0, 52)
 
-        # 先只让固定列按内容收缩
-        for c in [0, 1, 2, 4, 5]:
-            table.resizeColumnToContents(c)
+            for c in [1, 2, 4, 5]:
+                table.resizeColumnToContents(c)
 
-        fixed_cols = [0, 1, 2, 4, 5]
-        fixed_width = sum(table.columnWidth(c) for c in fixed_cols)
+            fixed_cols = [0, 1, 2, 4, 5]
+            fixed_width = sum(table.columnWidth(c) for c in fixed_cols)
+            remaining = max(320, table.viewport().width() - fixed_width - 8)
 
-        remaining = max(320, table.viewport().width() - fixed_width - 8)
+            file_name_w = int(remaining * 0.62)
+            remark_w = remaining - file_name_w
 
-        file_name_w = int(remaining * 0.62)
-        remark_w = remaining - file_name_w
-
-        table.setColumnWidth(3, max(220, file_name_w))
-        table.setColumnWidth(6, max(120, remark_w))
-
-        self._fit_table_height(table)
+            table.setColumnWidth(3, max(220, file_name_w))
+            table.setColumnWidth(6, max(120, remark_w))
+            self._fit_table_height(table)
 
     # ---------------- 下半：风险等级参数（新增） ----------------
     def _build_risk_level_settings_block(self) -> QFrame:
@@ -795,11 +828,12 @@ class NewSpecialInspectionPage(BasePage):
             it2.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
             it0.setFlags(it0.flags() & ~Qt.ItemIsEditable)
-            it2.setFlags(it2.flags() & ~Qt.ItemIsEditable)
             if spec.get("editable", False):
                 it1.setBackground(Qt.white)
+                it2.setBackground(Qt.white)
             else:
                 it1.setFlags(it1.flags() & ~Qt.ItemIsEditable)
+                it2.setFlags(it2.flags() & ~Qt.ItemIsEditable)
             table.setItem(r, 0, it0)
             table.setItem(r, 1, it1)
             table.setItem(r, 2, it2)
@@ -818,8 +852,8 @@ class NewSpecialInspectionPage(BasePage):
         table.setSelectionMode(QAbstractItemView.SingleSelection)
         for r in range(table.rowCount()):
             table.setRowHeight(r, 42 if r < 2 else 34)
-        table.setMinimumHeight(360)
-        table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._fit_table_height(table)
+        table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         v.addWidget(table, 1)
         # 两个大按钮（对应截图：更新风险等级 / 查看结果）
         btn_row = QHBoxLayout()
@@ -847,12 +881,8 @@ class NewSpecialInspectionPage(BasePage):
     def _build_right_panel(self) -> QFrame:
         panel = QFrame()
         panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        screen = QApplication.primaryScreen()
-        available_height = screen.availableGeometry().height() if screen else 900
-        preview_height = max(360, min(int(available_height * 0.56), 640))
-        preview_width = max(430, min(int(available_height * 0.46), 560))
-        panel.setMinimumWidth(preview_width)
-        panel.setMaximumWidth(preview_width + 20)
+        panel.setMinimumWidth(300)
+        panel.setMaximumWidth(520)
 
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
@@ -870,7 +900,7 @@ class NewSpecialInspectionPage(BasePage):
 
         placeholder = QFrame()
         placeholder.setStyleSheet("background: #0b0b0b; border: 1px solid #1f2a36;")
-        placeholder.setMinimumHeight(preview_height)
+        placeholder.setMinimumHeight(320)
         placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         placeholder_lay = QVBoxLayout(placeholder)
@@ -2269,7 +2299,6 @@ class NewSpecialInspectionPage(BasePage):
         self._fatigue_result_row_map = {}
         self._fatigue_input_row_map = {}
 
-        # 先放模型文件
         self._append_file_section(
             self.files_table,
             title="设置模型文件",

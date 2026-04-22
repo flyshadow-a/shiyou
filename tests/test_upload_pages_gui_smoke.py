@@ -151,27 +151,27 @@ class NewSpecialInspectionPageSmokeTests(GuiSmokeBase):
                 }
 
                 self.assertEqual(
-                    page.model_files_table.item(1, columns["文件类别"]).text(),
-                    "结构模型文件",
-                )
-                self.assertEqual(
-                    page.model_files_table.item(1, columns["文件名"]).text(),
-                    "sacinp.demo",
-                )
-                self.assertEqual(
                     page.files_table.item(1, columns["工况"]).text(),
-                    "极端工况",
+                    "",
                 )
                 self.assertEqual(
                     page.files_table.item(1, columns["文件名"]).text(),
-                    "clplog",
+                    "sacinp.demo",
                 )
                 self.assertEqual(
                     page.files_table.item(3, columns["工况"]).text(),
+                    "极端工况",
+                )
+                self.assertEqual(
+                    page.files_table.item(3, columns["文件名"]).text(),
+                    "clplog",
+                )
+                self.assertEqual(
+                    page.files_table.item(5, columns["工况"]).text(),
                     "4-1WJT",
                 )
                 self.assertEqual(
-                    page.files_table.item(5, columns["文件名"]).text(),
+                    page.files_table.item(7, columns["文件名"]).text(),
                     "ftginp.demo",
                 )
 

@@ -117,6 +117,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 border: 1px solid #4a4a4a;
                 border-bottom: none;
                 min-width: 150px;
+                max-width: 150px;
                 min-height: 34px;
                 padding: 6px 18px;
                 font-weight: bold;
@@ -346,12 +347,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         table.setItem(r, c, it)
 
     def _set_detail_table_height(self, table: QTableWidget, visible_rows: int) -> None:
-        pass
-        # display_rows = max(1, min(int(visible_rows), 20))
-        # fixed_height = table.frameWidth() * 2 + 2
-        # fixed_height += table.rowHeight(0) + table.rowHeight(1)
-        # fixed_height += display_rows * 24
-        # table.setFixedHeight(fixed_height)
+        display_rows = min(max(int(visible_rows), 15), 20)
+        fixed_height = table.frameWidth() * 2 + 2
+        fixed_height += table.rowHeight(0) + table.rowHeight(1)
+        fixed_height += display_rows * 24
+        if table.horizontalScrollBar().isVisible():
+            fixed_height += table.horizontalScrollBar().height()
+        table.setFixedHeight(fixed_height)
 
     # ---------------- Summary big table (tagged) ----------------
     def _make_summary_table(self, labels: list[str]) -> QTableWidget:
@@ -590,8 +592,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             total_rows = int(table.property("detail_row_count") or max(table.rowCount() - start, 1))
             for r in range(start, table.rowCount()):
                 table.setRowHidden(r, (limit is not None and (r - start) >= limit))
-            # visible_rows = total_rows if limit is None else min(limit, total_rows)
-            # self._set_detail_table_height(table, visible_rows)
+            visible_rows = total_rows if limit is None else min(limit, total_rows)
+            self._set_detail_table_height(table, visible_rows)
 
         apply(self.table_comp)
         apply(self.table_node)
