@@ -12,6 +12,7 @@
 
 import json
 import os
+import re
 import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -62,7 +63,8 @@ from feasibility_analysis_services.oilfield_env_service import (
     load_platform_strength_splash_items,
     load_water_level_items,
 )
-from services.inspection_business_db_adapter import load_facility_profile
+from services.inspection_business_db_adapter import load_facility_profile, list_inspection_projects
+from services.file_db_adapter import DOC_MAN_MODULE_CODE, list_files_by_prefix
 
 
 
@@ -851,9 +853,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 }
             )
 
-        inspection_record_summary_text = (
-            self.inspection_record_summary_text or self.INSPECTION_RECORD_SUMMARY_PLACEHOLDER
-        )
+        inspection_record_summary_text = self._build_latest_inspection_record_summary()
+        if not inspection_record_summary_text:
+            inspection_record_summary_text = (
+                self.inspection_record_summary_text or self.INSPECTION_RECORD_SUMMARY_PLACEHOLDER
+            )
         if inspection_record_summary_text:
             platform_overview_blocks.append(
                 {
@@ -871,6 +875,9 @@ class FeasibilityAssessmentResultsPage(BasePage):
             }
 
         chapter_1_3 = {
+            "cover_meta": {
+                "platform_name": self._build_cover_platform_name(facility_profile),
+            },
             "platform_overview": platform_overview,
             "retrofit_history": {
                 "table_rows": [
@@ -882,8 +889,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
                     for project in history_rebuild_projects
                 ]
             },
-            "platform_evaluation_conclusion": "",
-            "basis_data": "",
+            "platform_evaluation_conclusion": self._build_platform_evaluation_conclusion_section(),
+            "basis_data": self._build_basis_data_section(),
             "environment_conditions": self._build_environment_conditions_section(),
             "analysis_model": "",
         }
@@ -893,6 +900,177 @@ class FeasibilityAssessmentResultsPage(BasePage):
             "output_filename": f"{self.facility_code}_可行性评估报告.docx",
             "chapter_1_3": chapter_1_3,
         }
+
+    def _build_cover_platform_name(self, facility_profile: dict) -> str:
+        facility_name = str(facility_profile.get("facility_name") or "").strip()
+        if facility_name.endswith("平台"):
+            facility_name = facility_name[:-2].strip()
+        return facility_name or self.facility_code
+
+    def _build_platform_evaluation_conclusion_section(self) -> dict:
+        statistics = self._load_platform_evaluation_statistics()
+        return {
+            "well_slot_count": statistics["well_slot_count"],
+            "riser_count": statistics["riser_count"],
+            "topside_weight_sum_t": statistics["topside_weight_sum_t"],
+        }
+
+    def _build_basis_data_section(self) -> dict:
+        construction_files = self._list_basis_data_files(
+            [
+                ["详细设计"],
+                ["完工文件"],
+                ["安装文件"],
+            ]
+        )
+        history_rebuild_files = self._list_basis_data_files([["历史改造信息"]])
+        inspection_files = self._list_basis_data_files([["定期检测"], ["特殊事件检测"]])
+        return {
+            "mode": "replace_region",
+            "blocks": [
+                {
+                    "text": self._format_basis_data_file_paragraph(construction_files),
+                    "anchor_prefix": "1）建设阶段完工文件",
+                    "replace_next_paragraph": True,
+                    "keep_anchor_paragraph": True,
+                    "preserve_anchor_style": True,
+                },
+                {
+                    "text": self._format_basis_data_file_paragraph(history_rebuild_files),
+                    "anchor_prefix": "2）历次改造文件",
+                    "replace_next_paragraph": True,
+                    "keep_anchor_paragraph": True,
+                    "preserve_anchor_style": True,
+                },
+                {
+                    "text": self._format_basis_data_file_paragraph(inspection_files),
+                    "anchor_prefix": "3）检测记录文件",
+                    "replace_next_paragraph": True,
+                    "keep_anchor_paragraph": True,
+                    "preserve_anchor_style": True,
+                },
+            ],
+        }
+
+    def _list_basis_data_files(self, path_prefixes: List[List[str]]) -> List[str]:
+        if not self.facility_code:
+            return []
+        file_names: List[str] = []
+        seen = set()
+        for path_segments in path_prefixes:
+            try:
+                rows = list_files_by_prefix(
+                    module_code=DOC_MAN_MODULE_CODE,
+                    logical_path_prefix="/".join(path_segments),
+                    facility_code=self.facility_code,
+                )
+            except Exception:
+                rows = []
+            for row in rows:
+                name = str(row.get("original_name") or "").strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                file_names.append(name)
+        return file_names
+
+    @staticmethod
+    def _format_basis_data_file_paragraph(file_names: List[str]) -> str:
+        if not file_names:
+            return "暂无文件。"
+        return "；".join(f"（{index}）{name}" for index, name in enumerate(file_names, start=1)) + "。"
+
+    def _load_platform_evaluation_statistics(self) -> dict:
+        if not self.mysql_url or not self.job_name:
+            return {
+                "well_slot_count": 0,
+                "riser_count": 0,
+                "topside_weight_sum_t": 0.0,
+            }
+
+        engine = self._get_engine()
+        statistics_sql = text(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM well_slots WHERE job_name = :job_name) AS well_slot_count,
+                (SELECT COUNT(*) FROM risers WHERE job_name = :job_name) AS riser_count,
+                (SELECT COALESCE(SUM(weight_t), 0) FROM topside_weights WHERE job_name = :job_name) AS topside_weight_sum_t
+            """
+        )
+        try:
+            with engine.connect() as conn:
+                row = conn.execute(statistics_sql, {"job_name": self.job_name}).mappings().first() or {}
+        except Exception:
+            return {
+                "well_slot_count": 0,
+                "riser_count": 0,
+                "topside_weight_sum_t": 0.0,
+            }
+
+        return {
+            "well_slot_count": int(row.get("well_slot_count") or 0),
+            "riser_count": int(row.get("riser_count") or 0),
+            "topside_weight_sum_t": float(row.get("topside_weight_sum_t") or 0.0),
+        }
+
+    def _build_latest_inspection_record_summary(self) -> str:
+        projects = []
+        for project_type in ("periodic", "special_event"):
+            try:
+                rows = list_inspection_projects(self.facility_code, project_type)
+            except Exception:
+                rows = []
+            for row in rows:
+                summary_text = str(row.get("summary_text") or "").strip()
+                year_value = self._extract_inspection_project_year(row)
+                if not summary_text or year_value is None:
+                    continue
+                projects.append(
+                    {
+                        "year": year_value,
+                        "project_name": str(row.get("project_name") or "").strip(),
+                        "summary_text": summary_text.rstrip("；;。"),
+                    }
+                )
+
+        if not projects:
+            return ""
+
+        latest_year = max(project["year"] for project in projects)
+        latest_projects = []
+        for project in projects:
+            if project["year"] != latest_year:
+                continue
+            latest_projects.append(project)
+
+        if not latest_projects:
+            return ""
+
+        named_projects = [project["project_name"] for project in latest_projects if project["project_name"]]
+        conclusion_fragments = []
+        for project in latest_projects:
+            summary_text = project["summary_text"]
+            conclusion_fragments.append(summary_text)
+
+        if named_projects:
+            if len(named_projects) == 1:
+                project_intro = named_projects[0]
+            else:
+                project_intro = "和".join(named_projects)
+        else:
+            project_intro = "检验结果"
+        return f"{latest_year}年{project_intro}显示，" + "；".join(conclusion_fragments) + "。"
+
+    @staticmethod
+    def _extract_inspection_project_year(row: dict) -> int | None:
+        for raw_value in (row.get("project_year"), row.get("event_date")):
+            text = str(raw_value or "").strip()
+            if not text:
+                continue
+            match = re.search(r"(19|20)\d{2}", text)
+            if match:
+                return int(match.group(0))
+        return None
 
     def _build_environment_conditions_section(self) -> dict:
         if not (self.mysql_url and self.env_branch and self.env_op_company and self.env_oilfield):
