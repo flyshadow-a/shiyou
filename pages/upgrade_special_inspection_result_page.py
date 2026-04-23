@@ -6,13 +6,15 @@ from typing import Any
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea,
-    QComboBox, QTabWidget, QSizePolicy, QMessageBox
+    QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 
 from core.base_page import BasePage
 from services.special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService
+from pages.sacs_elevation_risk_view import SacsElevationRiskView
+from services.special_strategy_inspection_overlay_service import load_strategy_inspection_overlay
 
 
 NODE_SUMMARY_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]
@@ -93,12 +95,60 @@ class UpgradeSpecialInspectionResultPage(BasePage):
     ]
     RISK_LABELS = ["一", "二", "三", "四", "五"]
 
+    def _sync_dynamic_row_combo_from_view(self):
+        if not hasattr(self, "row_combo") or not hasattr(self, "elevation_view"):
+            return
+
+        options = self.elevation_view.available_row_names()
+        if not options:
+            return
+
+        current = self.row_combo.currentText().strip()
+        old_options = [self.row_combo.itemText(i) for i in range(self.row_combo.count())]
+
+        self.row_combo.blockSignals(True)
+        try:
+            if old_options != options:
+                self.row_combo.clear()
+                self.row_combo.addItems(options)
+
+            if current in options:
+                self.row_combo.setCurrentText(current)
+            else:
+                self.row_combo.setCurrentText(options[0])
+        finally:
+            self.row_combo.blockSignals(False)
+
+    def _on_row_changed(self, _row_text: str):
+        self._refresh_elevation_view()
+
+    def _on_year_changed(self, year: str):
+        self.current_year = (year or "").strip() or self._year_mapper.default_display_label()
+        try:
+            self._overlay_bundle = load_strategy_inspection_overlay(
+                self.facility_code,
+                run_id=self.run_id,
+                display_year=self.current_year,
+            )
+        except Exception as exc:
+            print("[UpgradeSpecialInspectionResultPage] load overlay failed:", exc)
+            self._overlay_bundle = {}
+
+        self._refresh_elevation_view()
+
     def __init__(self, facility_code: str, parent=None, run_id: int | None = None):
         self.facility_code = facility_code
         self.run_id = run_id
         self._result_service = SpecialStrategyResultService()
         self._year_mapper = NodeYearLabelMapper()
+
+        # 这些状态必须先初始化
+        self.current_year = self._year_mapper.default_display_label()
+        self._overlay_bundle = {}
+        self._result_bundle = {}
+
         super().__init__("", parent)
+
         self._build_ui()
         self._load_result_data()
 
@@ -173,8 +223,9 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         left_scroll.setWidget(left_panel)
 
         right_panel = self._build_right()
-        right_panel.setMinimumWidth(320)
-        right_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        right_panel.setMinimumWidth(660)
+        right_panel.setMaximumWidth(720)
+        right_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
         lay.addWidget(left_scroll, 5)
         lay.addWidget(right_panel, 3)
@@ -234,8 +285,6 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         node_l.addWidget(self.table_node, 3)
         node_l.addWidget(self.summary_node, 2)
 
-        node_l.addWidget(self.table_node)
-        node_l.addWidget(self.summary_node)
 
         self.tabs.addTab(comp_wrap, "构件风险等级")
         self.tabs.addTab(node_wrap, "节点风险等级")
@@ -446,17 +495,165 @@ class UpgradeSpecialInspectionResultPage(BasePage):
     def _build_right(self) -> QWidget:
         panel = QWidget()
         panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(10)
 
         frame = QFrame()
-        frame.setStyleSheet("background:black;border:1px solid #c7d2e3;")
-        frame.setMinimumHeight(420)
+        frame.setStyleSheet("QFrame { background: #ffffff; border: 1px solid #b9c6d6; }")
         frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        fl = QVBoxLayout(frame)
-        fl.setContentsMargins(6, 6, 6, 6)
-        fl.addWidget(PlanDiagram(), 1)
+        frame.setMinimumWidth(660)
+        frame.setMaximumWidth(720)
+
+        outer = QVBoxLayout(frame)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(6)
+
+        title = QLabel("模型立面风险图")
+        title.setStyleSheet("""
+            color: #1d2b3a;
+            font-weight: bold;
+            font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+            font-size: 12pt;
+        """)
+        outer.addWidget(title, 0)
+
+        # ===== 顶部选择区域 =====
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(8)
+
+        lbl_row = QLabel("立面：")
+        lbl_row.setStyleSheet('color:#1d2b3a; font-size:12pt;')
+
+        self.row_combo = QComboBox()
+        self.row_combo.setStyleSheet("""
+            QComboBox {
+                background: #ffffff;
+                border: 1px solid #b9c6d6;
+                min-height: 28px;
+                padding: 2px 8px;
+                font-size: 12pt;
+            }
+        """)
+        self.row_combo.addItems(["XZ 前"])
+        self.row_combo.currentTextChanged.connect(self._on_row_changed)
+
+        lbl_year = QLabel("年份：")
+        lbl_year.setStyleSheet('color:#1d2b3a; font-size:12pt;')
+
+        self.year_combo = QComboBox()
+        self.year_combo.setStyleSheet("""
+            QComboBox {
+                background: #ffffff;
+                border: 1px solid #b9c6d6;
+                min-height: 28px;
+                padding: 2px 8px;
+                font-size: 12pt;
+            }
+        """)
+        self.year_combo.addItems(self._year_mapper.display_labels())
+        self.year_combo.setCurrentText(self.current_year)
+        self.year_combo.currentTextChanged.connect(self._on_year_changed)
+
+        top_row.addWidget(lbl_row, 0)
+        top_row.addWidget(self.row_combo, 0)
+        top_row.addSpacing(12)
+        top_row.addWidget(lbl_year, 0)
+        top_row.addWidget(self.year_combo, 0)
+        top_row.addStretch(1)
+        outer.addLayout(top_row, 0)
+
+        self.elevation_hint_label = QLabel("当前显示：立面轮廓图 + 检验等级；滚轮缩放，双击恢复初始视图。")
+        self.elevation_hint_label.setWordWrap(False)
+        self.elevation_hint_label.setFixedHeight(24)
+        self.elevation_hint_label.setStyleSheet("color:#5d6f85; font-size:12px;")
+        outer.addWidget(self.elevation_hint_label, 0)
+
+        # ===== 图像区域：和特检策略页保持同样的结构 =====
+        VIEW_SIZE = 540
+
+        self.elevation_view = SacsElevationRiskView(frame)
+        self.elevation_view.set_info_label(self.elevation_hint_label)
+        self.elevation_view.setFixedSize(VIEW_SIZE, VIEW_SIZE)
+        self.elevation_view.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        self.slider_v = QSlider(Qt.Vertical)
+        self.slider_v.setRange(-100, 100)
+        self.slider_v.setValue(0)
+        self.slider_v.setSingleStep(2)
+        self.slider_v.setPageStep(10)
+        self.slider_v.setFixedSize(20, VIEW_SIZE)
+        self.slider_v.setStyleSheet("""
+            QSlider::groove:vertical {
+                background: #e7edf5;
+                width: 10px;
+                border: 1px solid #c8d6e8;
+                border-radius: 4px;
+            }
+            QSlider::handle:vertical {
+                background: #2d8cf0;
+                height: 42px;
+                margin: -2px -4px;
+                border-radius: 5px;
+            }
+        """)
+
+        # 用一个固定容器把“图 + 右滑条”包起来，防止竖滑条被挤没
+        view_wrap = QWidget(frame)
+        view_wrap.setFixedSize(VIEW_SIZE + 28, VIEW_SIZE)
+
+        view_wrap_lay = QHBoxLayout(view_wrap)
+        view_wrap_lay.setContentsMargins(0, 0, 0, 0)
+        view_wrap_lay.setSpacing(8)
+        view_wrap_lay.addWidget(self.elevation_view, 0, Qt.AlignVCenter)
+        view_wrap_lay.addWidget(self.slider_v, 0, Qt.AlignVCenter)
+
+        view_row = QHBoxLayout()
+        view_row.setContentsMargins(0, 0, 0, 0)
+        view_row.setSpacing(0)
+        view_row.addStretch(1)
+        view_row.addWidget(view_wrap, 0, Qt.AlignCenter)
+        view_row.addStretch(1)
+        outer.addLayout(view_row, 1)
+
+        self.slider_h = QSlider(Qt.Horizontal)
+        self.slider_h.setRange(-100, 100)
+        self.slider_h.setValue(0)
+        self.slider_h.setFixedWidth(VIEW_SIZE)
+        self.slider_h.setStyleSheet("""
+            QSlider::groove:horizontal {
+                background: #e7edf5;
+                height: 10px;
+                border: 1px solid #c8d6e8;
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #2d8cf0;
+                width: 42px;
+                margin: -4px -2px;
+                border-radius: 5px;
+            }
+        """)
+
+        slider_row = QHBoxLayout()
+        slider_row.setContentsMargins(0, 0, 0, 0)
+        slider_row.setSpacing(0)
+        slider_row.addStretch(1)
+        slider_row.addWidget(self.slider_h, 0)
+        slider_row.addStretch(1)
+        outer.addLayout(slider_row, 0)
+
+        self.elevation_view.bind_sliders(self.slider_h, self.slider_v)
+
+        self.slider_h.valueChanged.connect(
+            lambda v: self.elevation_view.pan_view(v, self.slider_v.value())
+        )
+        self.slider_v.valueChanged.connect(
+            lambda v: self.elevation_view.pan_view(self.slider_h.value(), v)
+        )
+
         v.addWidget(frame, 1)
 
         btn = QPushButton("生成特检策略报告")
@@ -473,22 +670,63 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             return ""
         return str(value)
 
+    def _refresh_elevation_view(self):
+        if not hasattr(self, "elevation_view"):
+            return
+
+        bundle = self._result_bundle or {}
+        context = bundle.get("context") or {}
+        if not context:
+            self.elevation_view._draw_message("当前没有可用的特检结果")
+            return
+
+        try:
+            self.elevation_view.load_for_facility(
+                facility_code=self.facility_code,
+                context=context,
+                year_label=self.current_year,
+                row_name=self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前",
+            )
+
+            # 先同步立面下拉
+            self._sync_dynamic_row_combo_from_view()
+
+            # 再叠加检验等级
+            if hasattr(self.elevation_view, "set_inspection_overlay"):
+                self.elevation_view.set_inspection_overlay(self._overlay_bundle)
+
+        except Exception as exc:
+            print("[UpgradeSpecialInspectionResultPage] refresh elevation failed:", exc)
+            self.elevation_view._draw_message(f"立面图加载失败：{exc}")
+
     def _load_result_data(self):
         bundle = self._result_service.load_result_bundle(self.facility_code, self.run_id)
+        self._result_bundle = bundle or {}
+
         if not bundle:
             self._set_detail_rows(self.table_comp, [], is_node=False)
             self._set_detail_rows(self.table_node, [], is_node=True)
             self._clear_summary_table(self.summary_comp)
             self._clear_summary_table(self.summary_node)
             self._apply_row_limit()
+            if hasattr(self, "elevation_view"):
+                self.elevation_view._draw_message("当前没有可用的特检结果")
             return
 
-        context = bundle["context"]
-        self._set_detail_rows(self.table_comp, bundle["member_risk_rows_full"], is_node=False)
-        self._set_detail_rows(self.table_node, bundle["node_risk_rows_full"], is_node=True)
+        context = bundle.get("context") or {}
+
+        self._set_detail_rows(self.table_comp, bundle.get("member_risk_rows_full", []), is_node=False)
+        self._set_detail_rows(self.table_node, bundle.get("node_risk_rows_full", []), is_node=True)
         self._fill_component_summary(context)
         self._fill_node_summary(context)
         self._apply_row_limit()
+
+        self._overlay_bundle = load_strategy_inspection_overlay(
+            self.facility_code,
+            run_id=self.run_id,
+            display_year=self.current_year,
+        )
+        self._refresh_elevation_view()
 
     def _set_detail_rows(self, table: QTableWidget, rows: list[dict[str, str]], *, is_node: bool):
         start = self.HEADER_ROWS

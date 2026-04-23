@@ -115,6 +115,14 @@ DEFAULT_HISTORY_REBUILD_DATA: dict[str, dict[str, list[dict[str, Any]]]] = {
 }
 
 
+FOLDER_PROJECT_TYPE_MAP = {
+    "历史改造信息": "history_rebuild",
+    "特检延寿": "life_extension",
+    "台风&损伤": "special_event",
+    "特殊事件检测（台风、碰撞等）": "special_event",
+}
+
+
 def _default_mysql_url() -> str:
     return get_mysql_url().strip()
 
@@ -277,8 +285,18 @@ def get_history_rebuild_projects(
     database_name: str | None = None,
 ) -> list[dict[str, Any]]:
     # 预留给页面和报告的统一读取接口：
-    # - 有数据库记录时优先读库
-    # - 暂无记录时回退到当前占位数据
+    # - 优先与页面保持一致，读取业务库 inspection_projects
+    # - 兼容历史旧表 history_rebuild_projects
+    # - 两者都未命中时回退到当前占位数据
+    business_projects = _load_business_projects(
+        facility_code,
+        folder_name=folder_name,
+        mysql_url=mysql_url,
+        database_name=database_name,
+    )
+    if business_projects:
+        return business_projects
+
     engine = create_engine(_build_database_url(database_name, mysql_url), future=True, pool_pre_ping=True)
     projects: list[dict[str, Any]] = []
     try:
@@ -340,6 +358,66 @@ def get_history_rebuild_projects(
         return _fallback_projects(facility_code, folder_name)
 
 
+def _load_business_projects(
+    facility_code: str,
+    *,
+    folder_name: str,
+    mysql_url: str | None = None,
+    database_name: str | None = None,
+) -> list[dict[str, Any]]:
+    project_type = FOLDER_PROJECT_TYPE_MAP.get(folder_name)
+    if not project_type:
+        return []
+
+    engine = create_engine(_build_database_url(database_name, mysql_url), future=True, pool_pre_ping=True)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT
+                        id,
+                        project_name,
+                        project_year,
+                        event_date,
+                        summary_text,
+                        sort_order
+                    FROM inspection_projects
+                    WHERE facility_code = :facility_code
+                      AND project_type = :project_type
+                      AND is_deleted = 0
+                    ORDER BY sort_order ASC, project_year ASC, created_at ASC, id ASC
+                    """
+                ),
+                {
+                    "facility_code": facility_code,
+                    "project_type": project_type,
+                },
+            ).mappings().all()
+    except Exception:
+        return []
+
+    projects: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        year = str(row.get("project_year") or "").strip()
+        if not year:
+            event_date = str(row.get("event_date") or "").strip()
+            year = f"{event_date[:4]}年" if len(event_date) >= 4 else ""
+        projects.append(
+            {
+                "id": row.get("id"),
+                "index": index,
+                "facility_code": facility_code,
+                "facility_name": "",
+                "name": row.get("project_name") or "",
+                "year": year,
+                "conclusion": row.get("summary_text") or "",
+                "files": [],
+            }
+        )
+    return projects
+
+
 def build_history_rebuild_summary(
     facility_code: str,
     *,
@@ -356,7 +434,7 @@ def build_history_rebuild_summary(
     )
     fragments = []
     for project in projects:
-        year = str(project.get("year", "")).strip()
+        year = _normalize_summary_year(project.get("year", ""))
         conclusion = str(project.get("conclusion", "")).strip().rstrip("；;。")
         if not conclusion:
             continue
@@ -377,3 +455,14 @@ def _fallback_projects(facility_code: str, folder_name: str) -> list[dict[str, A
     if matched:
         return matched
     return folder_data.get("projects", [])
+
+
+def _normalize_summary_year(value: Any) -> str:
+    year = str(value or "").strip()
+    if not year:
+        return ""
+    if year.endswith("年"):
+        return year
+    if year.isdigit() and len(year) == 4:
+        return f"{year}年"
+    return year

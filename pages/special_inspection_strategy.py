@@ -1013,7 +1013,6 @@ class SpecialInspectionStrategy(BasePage):
     def _fill_node_from_context(self, context: Dict, year: str):
         self._fill_rows(self.node_table, self._summary_builder.build_node_inspection_rows(context, year))
 
-
     def _refresh_elevation_view(self, context: Optional[Dict] = None):
         if not hasattr(self, "elevation_view"):
             return
@@ -1029,9 +1028,13 @@ class SpecialInspectionStrategy(BasePage):
             context = bundle.get("context") or {}
 
         facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
-        row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 1"
+        row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前"
 
         workpoint_override, level_threshold_override = self._get_shared_section_params(context)
+
+        # 图一主页永远只显示轮廓，不显示检验等级
+        if hasattr(self.elevation_view, "clear_inspection_overlay"):
+            self.elevation_view.clear_inspection_overlay()
 
         self.elevation_view.load_for_facility(
             facility_code=facility_code,

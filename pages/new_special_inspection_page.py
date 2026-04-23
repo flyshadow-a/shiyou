@@ -15,7 +15,6 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QSizePolicy, QDialog, QDialogButtonBox,
     QTreeWidget, QTreeWidgetItem, QSplitter
 )
-from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 
 from core.app_paths import external_path, external_root, first_existing_path
@@ -34,8 +33,6 @@ from services.file_db_adapter import (
 from pages.model_files_page import ModelFilesDocsWidget
 from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
 from services.special_strategy_runtime import load_base_config, load_latest_strategy_params, run_special_strategy_calculation
-
-
 
 class _SystemFilePickerDialog(QDialog):
     def __init__(self, title: str, rows: List[dict[str, Any]], parent=None):
@@ -326,10 +323,12 @@ class _SystemLibraryPickerDialog(QDialog):
         return list(self._selected_rows)
 
 
+
 class _NoWheelFileTable(QTableWidget):
     def wheelEvent(self, event):
         # 不在表格内部滚动，把滚轮交回外层滚动区域
         event.ignore()
+
 
 
 class NewSpecialInspectionPage(BasePage):
@@ -623,9 +622,6 @@ class NewSpecialInspectionPage(BasePage):
         self._content_splitter.setCollapsible(1, False)
         self._content_splitter.splitterMoved.connect(lambda *_: self._adjust_files_table_widths())
 
-        self._left_scroll = left_scroll
-        self._right_panel = right
-
         lay.addWidget(self._content_splitter, 1)
 
         self.main_layout.addWidget(content, 1)
@@ -773,26 +769,31 @@ class NewSpecialInspectionPage(BasePage):
 
         table.setColumnWidth(0, 52)
     def _adjust_files_table_widths(self) -> None:
-        for table_name in ("model_files_table", "files_table"):
-            table = getattr(self, table_name, None)
-            if table is None or table.viewport().width() <= 0:
-                continue
+        if not hasattr(self, "files_table") or self.files_table is None:
+            return
 
-            table.setColumnWidth(0, 52)
+        table = self.files_table
+        if table.viewport().width() <= 0:
+            return
 
-            for c in [1, 2, 4, 5]:
-                table.resizeColumnToContents(c)
+        table.setColumnWidth(0, 52)
 
-            fixed_cols = [0, 1, 2, 4, 5]
-            fixed_width = sum(table.columnWidth(c) for c in fixed_cols)
-            remaining = max(320, table.viewport().width() - fixed_width - 8)
+        # 先只让固定列按内容收缩
+        for c in [1, 2, 4, 5]:
+            table.resizeColumnToContents(c)
 
-            file_name_w = int(remaining * 0.62)
-            remark_w = remaining - file_name_w
+        fixed_cols = [0, 1, 2, 4, 5]
+        fixed_width = sum(table.columnWidth(c) for c in fixed_cols)
 
-            table.setColumnWidth(3, max(220, file_name_w))
-            table.setColumnWidth(6, max(120, remark_w))
-            self._fit_table_height(table)
+        remaining = max(320, table.viewport().width() - fixed_width - 8)
+
+        file_name_w = int(remaining * 0.62)
+        remark_w = remaining - file_name_w
+
+        table.setColumnWidth(3, max(220, file_name_w))
+        table.setColumnWidth(6, max(120, remark_w))
+
+        self._fit_table_height(table)
 
     # ---------------- 下半：风险等级参数（新增） ----------------
     def _build_risk_level_settings_block(self) -> QFrame:
@@ -1010,7 +1011,7 @@ class NewSpecialInspectionPage(BasePage):
         return True
 
     def _on_view_result(self):
-        if not self._risk_updated:
+        if not self._risk_updated or not self._latest_run_id:
             QMessageBox.information(self, "提示", "请先点击“更新风险等级”，再查看结果。")
             return
 
@@ -2093,199 +2094,6 @@ class NewSpecialInspectionPage(BasePage):
             if row_map is not None:
                 row_map[row] = i - 1
 
-    def _refresh_model_files_table_legacy(self):
-        self.model_files_table.clearContents()
-        self.model_files_table.setRowCount(0)
-
-        self.model_files_table.insertRow(0)
-        self.model_files_table.setSpan(0, 0, 1, 2)
-        model_buttons = [
-            ("上传", self._on_add_model_local),
-            # ("系统导入", self._on_add_model_sys),
-            ("删除选中行", self._on_del_model),
-        ]
-        title_widget = self._create_title_row_widget("设置模型文件", model_buttons)
-        self.model_files_table.setCellWidget(0, 0, title_widget)
-        self.model_files_table.setRowHeight(0, 38)
-
-        if self.model_files:
-            for i, path in enumerate(self.model_files):
-                row = i + 1
-                self.model_files_table.insertRow(row)
-
-                idx_item = QTableWidgetItem(str(i + 1))
-                idx_item.setTextAlignment(Qt.AlignCenter)
-                idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-
-                path_item = QTableWidgetItem(self._friendly_display_name(path))
-                path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                path_item.setToolTip(self._friendly_tooltip(path))
-
-                self.model_files_table.setItem(row, 0, idx_item)
-                self.model_files_table.setItem(row, 1, path_item)
-                self.model_files_table.setRowHeight(row, 54)
-        else:
-            row = self.model_files_table.rowCount()
-            self.model_files_table.insertRow(row)
-            self.model_files_table.setSpan(row, 0, 1, 2)
-            empty_widget = QWidget()
-            empty_widget.setStyleSheet("background-color: #ffffff;")
-            empty_layout = QHBoxLayout(empty_widget)
-            empty_layout.setContentsMargins(10, 0, 10, 0)
-            empty_label = QLabel("暂未选择模型文件。")
-            empty_label.setStyleSheet('color: #666; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
-            empty_layout.addWidget(empty_label)
-            empty_layout.addStretch(1)
-            self.model_files_table.setCellWidget(row, 0, empty_widget)
-            self.model_files_table.setRowHeight(row, 36)
-
-        self._fit_table_height(self.model_files_table)
-
-    def _refresh_files_table_legacy_old(self):
-        self.files_table.clearContents()
-        self.files_table.setRowCount(0)
-        self._collapse_row_map: dict[int, int] = {}
-        self._fatigue_result_row_map: dict[int, int] = {}
-        self._fatigue_input_row_map: dict[int, int] = {}
-
-        # --- 倒塌分析部分 ---
-        # --- 倒塌分析部分 ---
-        self.files_table.insertRow(0)
-        self.files_table.setSpan(0, 0, 1, 2)
-
-        col_buttons = [
-            ("上传", self._on_add_collapse_local),
-            # ("系统导入", self._on_add_collapse_sys),
-            ("删除选中行", self._on_del_collapse)
-        ]
-        col_title_widget = self._create_title_row_widget("设置倒塌分析结果文件", col_buttons)
-        self.files_table.setCellWidget(0, 0, col_title_widget)
-        self.files_table.setRowHeight(0, 38)
-
-        if self.collapse_files:
-            for i, path in enumerate(self.collapse_files):
-                row = i + 1
-                self.files_table.insertRow(row)
-
-                idx_item = QTableWidgetItem(str(i + 1))
-                idx_item.setTextAlignment(Qt.AlignCenter)
-                idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-
-                path_item = QTableWidgetItem(self._friendly_display_name(path))
-                path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                path_item.setToolTip(self._friendly_tooltip(path))
-
-                self.files_table.setItem(row, 0, idx_item)
-                self.files_table.setItem(row, 1, path_item)
-                self.files_table.setRowHeight(row, 54)
-                self._collapse_row_map[row] = i
-        else:
-            row = self.files_table.rowCount()
-            self.files_table.insertRow(row)
-            self.files_table.setSpan(row, 0, 1, 2)
-            empty_widget = QWidget()
-            empty_widget.setStyleSheet("background-color: #ffffff;")
-            empty_layout = QHBoxLayout(empty_widget)
-            empty_layout.setContentsMargins(10, 0, 10, 0)
-            empty_label = QLabel("暂未选择倒塌分析结果文件。")
-            empty_label.setStyleSheet('color: #666; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
-            empty_layout.addWidget(empty_label)
-            empty_layout.addStretch(1)
-            self.files_table.setCellWidget(row, 0, empty_widget)
-            self.files_table.setRowHeight(row, 36)
-
-        # --- 疲劳分析结果文件组 ---
-        result_header_row = self.files_table.rowCount()
-        self.files_table.insertRow(result_header_row)
-        self.files_table.setSpan(result_header_row, 0, 1, 2)
-        result_buttons = [
-            ("上传", self._on_add_fatigue_result_local),
-            #("系统导入", self._on_add_fatigue_result_sys),
-            ("删除选中行", self._on_del_fatigue_result),
-        ]
-        result_title_widget = self._create_title_row_widget("设置疲劳分析结果文件组", result_buttons)
-        self.files_table.setCellWidget(result_header_row, 0, result_title_widget)
-        self.files_table.setRowHeight(result_header_row, 38)
-
-        if self.fatigue_result_files:
-            for i, path in enumerate(self.fatigue_result_files):
-                row = self.files_table.rowCount()
-                self.files_table.insertRow(row)
-
-                idx_item = QTableWidgetItem(str(i + 1))
-                idx_item.setTextAlignment(Qt.AlignCenter)
-                idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-
-                path_item = QTableWidgetItem(self._friendly_display_name(path))
-                path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                path_item.setToolTip(self._friendly_tooltip(path))
-
-                self.files_table.setItem(row, 0, idx_item)
-                self.files_table.setItem(row, 1, path_item)
-                self.files_table.setRowHeight(row, 54)
-                self._fatigue_result_row_map[row] = i
-        else:
-            row = self.files_table.rowCount()
-            self.files_table.insertRow(row)
-            self.files_table.setSpan(row, 0, 1, 2)
-            empty_widget = QWidget()
-            empty_widget.setStyleSheet("background-color: #ffffff;")
-            empty_layout = QHBoxLayout(empty_widget)
-            empty_layout.setContentsMargins(10, 0, 10, 0)
-            empty_label = QLabel("暂未选择疲劳分析结果文件。")
-            empty_label.setStyleSheet('color: #666; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
-            empty_layout.addWidget(empty_label)
-            empty_layout.addStretch(1)
-            self.files_table.setCellWidget(row, 0, empty_widget)
-            self.files_table.setRowHeight(row, 36)
-
-        # --- 疲劳分析输入文件组 ---
-        input_header_row = self.files_table.rowCount()
-        self.files_table.insertRow(input_header_row)
-        self.files_table.setSpan(input_header_row, 0, 1, 2)
-        input_buttons = [
-            ("上传", self._on_add_fatigue_input_local),
-            #("系统导入", self._on_add_fatigue_input_sys),
-            ("删除选中行", self._on_del_fatigue_input),
-        ]
-        input_title_widget = self._create_title_row_widget("设置疲劳分析输入文件组", input_buttons)
-        self.files_table.setCellWidget(input_header_row, 0, input_title_widget)
-        self.files_table.setRowHeight(input_header_row, 38)
-
-        if self.fatigue_input_files:
-            for i, path in enumerate(self.fatigue_input_files):
-                row = self.files_table.rowCount()
-                self.files_table.insertRow(row)
-
-                idx_item = QTableWidgetItem(str(i + 1))
-                idx_item.setTextAlignment(Qt.AlignCenter)
-                idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-
-                path_item = QTableWidgetItem(self._friendly_display_name(path))
-                path_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                path_item.setToolTip(self._friendly_tooltip(path))
-
-                self.files_table.setItem(row, 0, idx_item)
-                self.files_table.setItem(row, 1, path_item)
-                self.files_table.setRowHeight(row, 54)
-                self._fatigue_input_row_map[row] = i
-        else:
-            row = self.files_table.rowCount()
-            self.files_table.insertRow(row)
-            self.files_table.setSpan(row, 0, 1, 2)
-            empty_widget = QWidget()
-            empty_widget.setStyleSheet("background-color: #ffffff;")
-            empty_layout = QHBoxLayout(empty_widget)
-            empty_layout.setContentsMargins(10, 0, 10, 0)
-            empty_label = QLabel("暂未选择疲劳分析输入文件。")
-            empty_label.setStyleSheet('color: #666; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
-            empty_layout.addWidget(empty_label)
-            empty_layout.addStretch(1)
-            self.files_table.setCellWidget(row, 0, empty_widget)
-            self.files_table.setRowHeight(row, 36)
-
-        self._fit_table_height(self.files_table)
-
     def _refresh_model_files_table(self):
         self._refresh_files_table()
 
@@ -2299,6 +2107,7 @@ class NewSpecialInspectionPage(BasePage):
         self._fatigue_result_row_map = {}
         self._fatigue_input_row_map = {}
 
+        # 先放模型文件
         self._append_file_section(
             self.files_table,
             title="设置模型文件",
