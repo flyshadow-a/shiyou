@@ -6,15 +6,59 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from sqlalchemy import create_engine, text
+from shiyou_db.config import get_sacs_analysis_engine_exe, get_sacs_default_runx_path
+from pages.sacs_runtime_service import ensure_analysis_bat, ensure_runx_in_workdir
 
+from pages.sacs_storage_service import (
+    get_job_runtime_dir,
+    get_job_new_model_file,
+    get_job_new_sea_file,
+    get_job_runx_file,
+    get_job_psiinp_file,
+    get_job_jcninp_file,
+)
+from pages.sacs_runtime_service import (
+    ensure_analysis_bat,
+    ensure_runx_in_workdir,
+    ensure_support_inputs_in_workdir,
+)
 
 DEFAULT_NEW_MODEL_NAME = "sacinp.M1"
 DEFAULT_NEW_SEA_NAME = "seainp.M1"
 
 GENERATE_BAT = False
-SACS_EXE_DIR = r"D:\Bentley SACS 2023"
-RUNX_PATH = r"D:\hx\WC19-1D\Static\psiFACTOR.runx"
 
+def resolve_sacs_analysis_engine_exe() -> str:
+    exe_path = os.path.normpath(str(get_sacs_analysis_engine_exe() or "").strip())
+    if not exe_path:
+        raise ValueError("未配置 SACS AnalysisEngine.exe 路径，请在 db_config.json 中设置 sacs_analysis_engine_exe")
+    if not os.path.isfile(exe_path):
+        raise FileNotFoundError(f"SACS AnalysisEngine.exe 不存在: {exe_path}")
+    return exe_path
+
+
+def resolve_runx_path(model_info: ModelInfo) -> str:
+    configured = os.path.normpath(str(get_sacs_default_runx_path() or "").strip())
+    if configured:
+        if not os.path.isfile(configured):
+            raise FileNotFoundError(f"db_config.json 中配置的 runx 文件不存在: {configured}")
+        return configured
+
+    # 如果配置里没写，则优先到新模型目录里找
+    model_dir = os.path.dirname(model_info.new_model_file)
+    candidates = [
+        os.path.join(model_dir, "psiFACTOR.runx"),
+        os.path.join(model_dir, "psifactor.runx"),
+        os.path.join(model_dir, "psiSTATIC.runx"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return os.path.normpath(p)
+
+    raise FileNotFoundError(
+        "未找到 runx 文件，请在 db_config.json 中设置 sacs_default_runx_path，"
+        "或把 psiFACTOR.runx 放到新模型输出目录中。"
+    )
 
 @dataclass
 class ModelInfo:
@@ -139,10 +183,10 @@ def fetch_model_info(conn, job_name: str) -> ModelInfo:
         raise ValueError("wizard_model_info.model_file 为空")
 
     if not new_model_file:
-        new_model_file = os.path.join(os.path.dirname(model_file), DEFAULT_NEW_MODEL_NAME)
+        new_model_file = get_job_new_model_file(job_name)
 
     if (not new_sea_file) and sea_file:
-        new_sea_file = os.path.join(os.path.dirname(sea_file), DEFAULT_NEW_SEA_NAME)
+        new_sea_file = get_job_new_sea_file(job_name)
 
     return ModelInfo(
         model_file=model_file,
@@ -525,21 +569,15 @@ def export_sea_file(
     write_text_lines(model_info.new_sea_file, output_lines)
 
 
+
+
 def generate_bat(model_info: ModelInfo) -> Optional[str]:
     if not GENERATE_BAT:
         return None
 
-    bat_path = os.path.join(os.path.dirname(model_info.new_model_file), "AutoRunM1_python.bat")
-    lines = [
-        "@echo off\n",
-        f'cd /d "{SACS_EXE_DIR}"\n',
-        f'"{os.path.join(SACS_EXE_DIR, "AnalysisEngine.exe")}" "{RUNX_PATH}" "{SACS_EXE_DIR}"\n',
-        "echo.\n",
-        "echo ExitCode=%errorlevel%\n",
-        "pause\n",
-    ]
-    write_text_lines(bat_path, lines)
-    return bat_path
+    work_dir = os.path.dirname(model_info.new_model_file)
+    runx_path = ensure_runx_in_workdir(work_dir)
+    return ensure_analysis_bat(work_dir, runx_path)
 
 
 def export_model_bundle(mysql_url: str, job_name: str, generate_bat_flag: bool = True) -> dict:
@@ -578,18 +616,34 @@ def export_model_bundle(mysql_url: str, job_name: str, generate_bat_flag: bool =
                 topside_leg_loads=topside_leg_loads,
             )
 
-        bat_path = generate_bat(model_info) if generate_bat_flag else None
+        runtime_dir = get_job_runtime_dir(job_name)
+
+        runx_file = ensure_runx_in_workdir(runtime_dir, resolve_runx_path(model_info))
+        psiinp_file, jcninp_file = ensure_support_inputs_in_workdir(runtime_dir)
+
+        bat_path = ""
+        if generate_bat_flag:
+            bat_path = ensure_analysis_bat(
+                runtime_dir,
+                runx_path=runx_file,
+                psiinp_path=psiinp_file,
+                jcninp_path=jcninp_file,
+            )
 
         return {
             "job_name": job_name,
+            "model_dir": runtime_dir,
             "new_model_file": model_info.new_model_file,
             "new_sea_file": model_info.new_sea_file,
+            "runx_file": runx_file,
+            "psiinp_file": psiinp_file,
+            "jcninp_file": jcninp_file,
+            "bat_file": bat_path,
             "export_groups": len(new_groups),
             "export_joints": len(new_joints),
             "export_members": len(new_members),
             "wellslot_top_loads": len(wellslot_top_loads),
             "topside_leg_loads": len(topside_leg_loads),
-            "bat_file": bat_path,
         }
     finally:
         GENERATE_BAT = old_flag

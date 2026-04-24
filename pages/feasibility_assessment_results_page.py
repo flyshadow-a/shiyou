@@ -66,7 +66,23 @@ from feasibility_analysis_services.oilfield_env_service import (
 from services.inspection_business_db_adapter import load_facility_profile, list_inspection_projects
 from services.file_db_adapter import DOC_MAN_MODULE_CODE, list_files_by_prefix
 
+from pages.sacs_storage_service import get_job_runtime_dir, get_job_source_dir
 
+def _resolve_result_model_paths(self):
+    runtime_dir = os.path.normpath(get_job_runtime_dir(self.job_name))
+    source_dir = os.path.normpath(get_job_source_dir(self.job_name))
+
+    original_model = os.path.join(source_dir, "sacinp.JKnew")
+    new_model = os.path.join(runtime_dir, "sacinp.M1")
+
+    # 新模型不存在时，临时回退到原模型，避免右侧空白
+    preview_model = new_model if os.path.exists(new_model) else original_model
+
+    return {
+        "original_model": original_model if os.path.exists(original_model) else "",
+        "new_model": new_model if os.path.exists(new_model) else "",
+        "preview_model": preview_model if os.path.exists(preview_model) else "",
+    }
 
 class InpWireframeView(QGraphicsView):
     """

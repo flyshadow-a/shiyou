@@ -9,7 +9,7 @@ from pages.sacs_wellslot_service import generate_wellslot_to_db
 from pages.sacs_riser_service import generate_riser_to_db
 from pages.sacs_topside_service import transform_topside_weights_to_db
 from pages.sacs_export_service import export_model_bundle
-
+from pages.sacs_storage_service import get_job_runtime_dir
 
 def _pick_existing_file(folder: str, names: list[str]) -> str:
     if not folder or (not os.path.isdir(folder)):
@@ -63,15 +63,15 @@ def _pick_latest_result_file(folder: str) -> str:
     return candidates[0][1]
 
 
-def _normalize_export_info(export_info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _normalize_export_info(export_info: Optional[Dict[str, Any]], job_name: str) -> Dict[str, Any]:
     """
     把 export_model_bundle 的返回结果整理成页面后续可直接使用的统一字段。
     """
     export_info = dict(export_info or {})
 
     model_dir = (
-        export_info.get("model_dir")
-        or first_existing_path("upload", "model_files")
+            export_info.get("model_dir")
+            or get_job_runtime_dir(job_name)
     )
     model_dir = os.path.normpath(model_dir)
 
@@ -152,7 +152,7 @@ def create_new_model_files(
         job_name=job_name,
         generate_bat_flag=generate_bat,
     )
-    result_export = _normalize_export_info(result_export)
+    result_export = _normalize_export_info(result_export, job_name)
 
     return {
         "job_name": job_name,

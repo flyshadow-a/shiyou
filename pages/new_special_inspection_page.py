@@ -34,6 +34,9 @@ from pages.model_files_page import ModelFilesDocsWidget
 from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
 from services.special_strategy_runtime import load_base_config, load_latest_strategy_params, run_special_strategy_calculation
 
+from pages.special_inspection_model_preview import SpecialInspectionModelPreviewPanel
+
+
 class _SystemFilePickerDialog(QDialog):
     def __init__(self, title: str, rows: List[dict[str, Any]], parent=None):
         super().__init__(parent)
@@ -885,37 +888,13 @@ class NewSpecialInspectionPage(BasePage):
         panel.setMinimumWidth(300)
         panel.setMaximumWidth(520)
 
-        v = QVBoxLayout(panel)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(4)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        title = QLabel("结构模型预览")
-        title.setObjectName("SectionTitle")
-        v.addWidget(title)
+        self.model_preview_panel = SpecialInspectionModelPreviewPanel(panel)
+        layout.addWidget(self.model_preview_panel, 1)
 
-        hint = QLabel("当前已暂时关闭模型渲染，先保留展示区域，后续可继续接入模型图显示。")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color:#5d6f85; font-size:14px;")
-        hint.setVisible(False)
-        v.addWidget(hint, 0)
-
-        placeholder = QFrame()
-        placeholder.setStyleSheet("background: #0b0b0b; border: 1px solid #1f2a36;")
-        placeholder.setMinimumHeight(320)
-        placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        placeholder_lay = QVBoxLayout(placeholder)
-        placeholder_lay.setContentsMargins(16, 16, 16, 16)
-        placeholder_lay.setSpacing(10)
-
-        info = QLabel("模型图区域已保留\n当前暂不加载渲染组件")
-        info.setAlignment(Qt.AlignCenter)
-        info.setStyleSheet("color:#c7d2e3; font-size:12pt; background: transparent;")
-        placeholder_lay.addStretch(1)
-        placeholder_lay.addWidget(info)
-        placeholder_lay.addStretch(1)
-
-        v.addWidget(placeholder, 1)
         return panel
 
     def _resolve_db_storage_path(self, row: dict[str, Any]) -> str:
@@ -2377,7 +2356,17 @@ class NewSpecialInspectionPage(BasePage):
         self._on_del_fatigue("input")
 
     def _refresh_model_preview(self):
-        return
+        if not hasattr(self, "model_preview_panel"):
+            return
+
+        model_path = ""
+        if self.model_files:
+            model_path = self.model_files[0]
+
+        if model_path and os.path.exists(model_path):
+            self.model_preview_panel.load_model(model_path, target_z=9.1)
+        else:
+            self.model_preview_panel.clear_model("当前未加载模型文件")
 
     def _create_title_row_widget(self, title_text: str, buttons_info: list) -> QWidget:
         """创建一个内嵌于表格标题行的自定义 Widget，包含标题文字和对应按钮"""

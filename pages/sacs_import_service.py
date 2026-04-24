@@ -8,7 +8,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import create_engine, text
 
-
+from pages.sacs_storage_service import (
+    get_job_model_file,
+    get_job_sea_file,
+    get_job_new_model_file,
+    get_job_new_sea_file,
+    get_job_bat_file,
+    get_job_psiinp_file,
+    get_job_jcninp_file,
+    stage_file,
+    stage_optional_from_same_dir,
+)
 # =========================
 # 通用工具
 # =========================
@@ -528,40 +538,50 @@ def import_sacs_model_to_db(
     level_threshold: int = 40,
     overwrite_job: bool = True,
 ) -> Dict[str, Any]:
-    """
-    导入原模型文件到数据库：
-    - wizard_model_info
-    - joints
-    - members
-    - sacs_groups
-    - load_cases
-    - wizard_levels
-    - leg_candidates
-    - wizard_legs
-    """
     if not os.path.exists(model_file):
         raise FileNotFoundError(f"找不到 model_file: {model_file}")
 
     if sea_file and (not os.path.exists(sea_file)):
         raise FileNotFoundError(f"找不到 sea_file: {sea_file}")
 
+    # 1) 先把原始文件复制到共享盘 source 目录
+    staged_model_file = stage_file(model_file, get_job_model_file(job_name))
+    staged_sea_file = ""
+    if sea_file:
+        staged_sea_file = stage_file(sea_file, get_job_sea_file(job_name))
+
+    # 2) 同目录配套文件也尽量复制到共享盘 runtime 目录
+    stage_optional_from_same_dir(
+        model_file,
+        ["psiinp.19-1d", "psiinp"],
+        get_job_psiinp_file(job_name),
+    )
+    stage_optional_from_same_dir(
+        model_file,
+        ["Jcninp.19-1d", "jcninp.19-1d", "jcninp"],
+        get_job_jcninp_file(job_name),
+    )
+
     engine = create_engine(mysql_url, future=True, pool_pre_ping=True)
     ensure_model_tables(engine)
 
-    model_mudline, joints, members, groups, model_load_cases = parse_model_file(model_file, job_name)
+    # 3) 解析时也用共享盘中的 source 文件
+    model_mudline, joints, members, groups, model_load_cases = parse_model_file(staged_model_file, job_name)
 
     sea_mudline = None
     sea_load_cases: List[Dict[str, Any]] = []
-    if sea_file:
-        sea_mudline, sea_load_cases = parse_sea_file(sea_file, job_name)
+    if staged_sea_file:
+        sea_mudline, sea_load_cases = parse_sea_file(staged_sea_file, job_name)
 
     mudline = sea_mudline if sea_mudline is not None else model_mudline
 
     levels = detect_levels(joints, level_threshold)
     leg_candidates, legs = detect_main_legs(joints, members, groups, workpoint)
 
-    new_model_file = os.path.join(os.path.dirname(model_file), "sacinp.M1")
-    new_sea_file = os.path.join(os.path.dirname(sea_file), "seainp.M1") if sea_file else None
+    # 4) 新模型和 bat 统一写到共享盘 runtime 目录
+    new_model_file = get_job_new_model_file(job_name)
+    new_sea_file = get_job_new_sea_file(job_name) if staged_sea_file else None
+    autorun_file = get_job_bat_file(job_name)
 
     with engine.begin() as conn:
         if overwrite_job:
@@ -583,13 +603,13 @@ def import_sacs_model_to_db(
             [
                 {
                     "job_name": job_name,
-                    "model_file": model_file,
-                    "sea_file": sea_file,
+                    "model_file": staged_model_file,
+                    "sea_file": staged_sea_file or None,
                     "new_model_file": new_model_file,
                     "new_sea_file": new_sea_file,
                     "mudline": mudline,
                     "workpoint": workpoint,
-                    "autorun_file": None,
+                    "autorun_file": autorun_file,
                 }
             ],
         )

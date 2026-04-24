@@ -46,7 +46,11 @@ from pages.feasibility_assessment_results_page import FeasibilityAssessmentResul
 from pages.sacs_create_model_service import create_new_model_files
 from core.app_paths import first_existing_path
 
+from pages.sacs_runtime_service import ensure_analysis_bat, find_result_file
+
 from shiyou_db.runtime_db import get_mysql_url
+
+from pages.sacs_storage_service import get_job_runtime_dir, get_job_source_dir
 
 SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
 
@@ -133,8 +137,9 @@ class FeasibilityAssessmentPage(BasePage):
             self.table2_elevations = list(self.LEGACY_ELEVATIONS2)
 
         # SACS 运行相关路径（统一指向 upload/model_files）
-        self.model_files_root = first_existing_path("upload", "model_files")
-        self.current_model_dir = self.model_files_root
+        self.model_files_root = first_existing_path("upload", "model_files")  # 仅保留兜底
+        self.current_model_dir = get_job_runtime_dir(self.job_name)
+        self.current_source_dir = get_job_source_dir(self.job_name)
         self.current_runx_file = ""
         self.current_bat_file = ""
         self.current_result_file = ""
@@ -1283,7 +1288,7 @@ class FeasibilityAssessmentPage(BasePage):
         return "\n".join(lines) + "\n"
 
     def _refresh_runtime_paths_from_disk(self):
-        root = getattr(self, "model_files_root", "") or first_existing_path("upload", "model_files")
+        root = getattr(self, "current_model_dir", "").strip() or get_job_runtime_dir(self.job_name)
         self.current_model_dir = root
 
         if not os.path.isdir(root):
@@ -1302,8 +1307,7 @@ class FeasibilityAssessmentPage(BasePage):
             ["Autorun.bat"]
         )
 
-        self.current_result_file = self._find_result_file(root)
-
+        self.current_result_file = find_result_file(root)
     def _find_first_existing_file(self, root: str, candidate_names: list) -> str:
         for name in candidate_names:
             p = os.path.join(root, name)
@@ -1349,77 +1353,6 @@ class FeasibilityAssessmentPage(BasePage):
         candidates.sort(reverse=True)
         return candidates[0][1]
 
-    def _find_engineanalysis_exe(self) -> str:
-        candidates = []
-
-        env_exe = os.environ.get("SACS_ENGINEANALYSIS", "").strip()
-        if env_exe:
-            candidates.append(env_exe)
-
-        sacs_home = os.environ.get("SACS_HOME", "").strip()
-        if sacs_home:
-            candidates.append(os.path.join(sacs_home, "AnalysisEngine.exe"))
-
-        # 默认安装路径兜底
-        candidates.extend([
-            r"D:\Bentley SACS 2023\AnalysisEngine.exe",
-            r"C:\Bentley SACS 2023\AnalysisEngine.exe",
-            r"C:\Program Files\Bentley\SACS 2023\AnalysisEngine.exe",
-        ])
-
-        for p in candidates:
-            if p and os.path.exists(p):
-                return os.path.normpath(p)
-
-        exe, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择 AnalysisEngine.exe",
-            "",
-            "Executable (*.exe);;All Files (*)"
-        )
-        return exe.strip()
-
-    def _build_bat_text(self, exe_path: str, runx_path: str, work_dir: str) -> str:
-        exe_path = os.path.normpath(exe_path)
-        runx_path = os.path.normpath(runx_path)
-        work_dir = os.path.normpath(work_dir)
-        sacs_home = os.path.dirname(exe_path)
-
-        return rf"""@echo off
-    setlocal
-
-    set "MODEL_DIR={work_dir}"
-    set "SACS_EXE={exe_path}"
-    set "SACS_HOME={sacs_home}"
-    set "RUNX_FILE={runx_path}"
-
-    cd /d "%MODEL_DIR%"
-
-    "%SACS_EXE%" "%RUNX_FILE%" "%SACS_HOME%"
-
-    endlocal
-    exit /b %errorlevel%
-    """
-
-    def _ensure_analysis_bat(self, work_dir: str, runx_path: str) -> str:
-        exe_path = self._find_engineanalysis_exe()
-        if not exe_path:
-            raise ValueError(
-                "未找到 AnalysisEngine.exe。\n"
-                "请设置环境变量 SACS_ENGINEANALYSIS 或 SACS_HOME。"
-            )
-
-        if not runx_path or not os.path.exists(runx_path):
-            raise ValueError("未找到 psiFACTOR.runx，无法生成 bat。")
-
-        bat_path = os.path.join(work_dir, "Autorun.bat")
-        content = self._build_bat_text(exe_path, runx_path, work_dir)
-
-        with open(bat_path, "w", encoding="utf-8", newline="\r\n") as f:
-            f.write(content)
-
-        return bat_path
-
     def _on_run_analysis(self):
         try:
             self._refresh_runtime_paths_from_disk()
@@ -1430,13 +1363,12 @@ class FeasibilityAssessmentPage(BasePage):
                 return
 
             runx_path = getattr(self, "current_runx_file", "").strip()
-            if not runx_path or not os.path.exists(runx_path):
-                QMessageBox.warning(self, "提示", "未找到 psiFACTOR.runx，请先创建新模型。")
-                return
-
-            # 只保留这一个 bat：Autorun.bat
-            bat_path = os.path.join(work_dir, "Autorun.bat")
-            bat_path = self._ensure_analysis_bat(work_dir, runx_path)
+            bat_path = ensure_analysis_bat(
+                work_dir=work_dir,
+                runx_path=runx_path,
+                psiinp_path=os.path.join(work_dir, "psiinp.19-1d"),
+                jcninp_path=os.path.join(work_dir, "Jcninp.19-1d"),
+            )
             self.current_bat_file = bat_path
 
             if self.analysis_process is not None:
@@ -1457,6 +1389,7 @@ class FeasibilityAssessmentPage(BasePage):
                 self.btn_run.setEnabled(True)
                 self.btn_run.setText("计算分析")
                 self.analysis_process = None
+                self.current_result_file = find_result_file(work_dir)
 
                 if exit_code == 0:
                     QMessageBox.information(self, "提示", "计算完成。")

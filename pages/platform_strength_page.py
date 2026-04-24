@@ -51,6 +51,11 @@ from shiyou_db.runtime_db import get_mysql_url
 
 from collections import Counter
 
+from pages.sacs_storage_service import (
+    get_job_runtime_dir,
+    get_job_source_dir,
+)
+
 class PyVistaSacsView(QFrame):
     COLOR_SCHEME = {
         "background": "white",
@@ -188,6 +193,29 @@ class PyVistaSacsView(QFrame):
 
         return nodes, members, groups_od
 
+    def _get_shared_preferred_model_file(self, facility_code: str) -> str:
+        code = (facility_code or "").strip()
+        if not code:
+            return ""
+
+        runtime_dir = os.path.normpath(get_job_runtime_dir(code))
+        source_dir = os.path.normpath(get_job_source_dir(code))
+
+        candidates = [
+            os.path.join(runtime_dir, "sacinp.M1"),  # 优先新增模型
+            os.path.join(source_dir, "sacinp.JKnew"),  # 其次共享盘原模型
+            os.path.join(runtime_dir, "sacinp.JKnew"),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+        return ""
+
+    def _resolve_preview_model_file(self, facility_code: str) -> str:
+        shared = self._get_shared_preferred_model_file(facility_code)
+        if shared:
+            return shared
+        return self._find_best_inp_file(facility_code)
     def apply_pdf_logic_diagnostic(self, nodes, members, groups_od, target_z=8.5):
         graph = {nid: [] for nid in nodes}
         node_to_max_od = {nid: 0.0 for nid in nodes}
@@ -836,6 +864,32 @@ class PlatformStrengthPage(BasePage):
     def _get_mysql_url(self) -> str:
         return get_mysql_url()
 
+    def _get_shared_current_model_file(self, facility_code: str) -> str:
+        code = (facility_code or "").strip()
+        if not code:
+            return ""
+
+        source_dir = os.path.normpath(get_job_source_dir(code))
+        runtime_dir = os.path.normpath(get_job_runtime_dir(code))
+
+        # 平台强度首页 / 图二：优先“当前原模型”
+        candidates = [
+            os.path.join(source_dir, "sacinp.JKnew"),
+            os.path.join(runtime_dir, "sacinp.JKnew"),
+            os.path.join(runtime_dir, "sacinp.M1"),  # 只做最后兜底
+        ]
+
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+        return ""
+
+    def _resolve_current_preview_model_file(self, facility_code: str) -> str:
+        shared = self._get_shared_current_model_file(facility_code)
+        if shared:
+            return shared
+        return self._find_best_inp_file(facility_code)
+
     def _find_matching_sea_file(self, model_path: str) -> Optional[str]:
         if not model_path:
             return None
@@ -1033,7 +1087,7 @@ class PlatformStrengthPage(BasePage):
             elevations = [27, 23, 18, 7, -12, -34, -58]
 
         # 当前模型文件
-        model_path = self._find_best_inp_file(facility_code)
+        model_path = self._resolve_current_preview_model_file(facility_code)
         if not model_path:
             QMessageBox.warning(self, "提示", "未找到当前设施对应的 sacinp 模型文件，无法打开评估页。")
             return
@@ -1070,6 +1124,11 @@ class PlatformStrengthPage(BasePage):
             page.mysql_url = self._get_mysql_url()
 
             page.model_files_root = self.model_files_root
+
+            page.current_model_dir = get_job_runtime_dir(job_name)
+            page.current_source_dir = get_job_source_dir(job_name)
+            page.current_source_model_file = os.path.join(page.current_source_dir, "sacinp.JKnew")
+            page._refresh_runtime_paths_from_disk()
 
             idx = mw.tab_widget.addTab(page, title)
             mw.tab_widget.setCurrentIndex(idx)
@@ -1317,7 +1376,8 @@ class PlatformStrengthPage(BasePage):
             return
 
         facility_code = self._get_top_value("facility_code")
-        path = self._find_best_inp_file(facility_code)
+        path = self._resolve_current_preview_model_file(facility_code)
+
         if not path:
             self.inp_path_label.setText("未找到可解析的 SACS 结构模型文件")
             self.inp_view.clear_view(
@@ -1344,12 +1404,10 @@ class PlatformStrengthPage(BasePage):
 
             self.inp_path_label.setText(f"当前模型文件：{path}")
 
-            # 泥面高程：默认从模型读取，但用户仍可手改
             mud_level = self._parse_mud_level_from_sacinp(path)
             if mud_level and hasattr(self, "edt_mud_level"):
                 self.edt_mud_level.setText(mud_level)
 
-            # 动态生成水平层高程表
             self._refresh_layers_table()
 
         except Exception as e:
