@@ -202,6 +202,8 @@ class HistoryEventsInspectionPage(BasePage):
         self.home_widget.set_facility_code(platform["facility_code"])
         if hasattr(self.page_events, "set_facility_code"):
             self.page_events.set_facility_code(platform["facility_code"])
+        if hasattr(self.page_inspection, "set_facility_code"):
+            self.page_inspection.set_facility_code(platform["facility_code"])
         window = self.window()
         if hasattr(window, "set_current_platform_name"):
             window.set_current_platform_name(platform_name)

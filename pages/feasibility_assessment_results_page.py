@@ -20,7 +20,6 @@ from typing import Dict, List, Tuple
 from urllib import error, request
 
 
-from core.app_paths import first_existing_path
 from PyQt5.QtCore import Qt, QTimer, QRectF
 
 from PyQt5.QtGui import QColor, QPen, QBrush, QFontMetrics
@@ -64,6 +63,7 @@ from feasibility_analysis_services.oilfield_env_service import (
     load_water_level_items,
 )
 from services.inspection_business_db_adapter import load_facility_profile, list_inspection_projects
+from services.inspection_business_db_adapter import load_platform_load_information_items
 from services.file_db_adapter import DOC_MAN_MODULE_CODE, list_files_by_prefix
 
 from pages.sacs_storage_service import get_job_runtime_dir, get_job_source_dir
@@ -830,10 +830,18 @@ class FeasibilityAssessmentResultsPage(BasePage):
             raise ValueError("MYSQL_URL 未配置")
         return create_engine(self.mysql_url, future=True, pool_pre_ping=True)
 
+    def _get_current_job_factor_path(self) -> str:
+        runtime_dir = os.path.normpath(get_job_runtime_dir(self.job_name))
+        factor_path = os.path.join(runtime_dir, "psilst.factor")
+        if not os.path.exists(factor_path):
+            raise FileNotFoundError(
+                "未找到当前任务生成的结果文件："
+                f"{factor_path}\n请先完成当前任务的“计算分析”。"
+            )
+        return factor_path
+
     def _build_report_payload(self) -> dict:
-        factor_path = first_existing_path("upload", "model_files", "psilst.factor")
-        if not factor_path or not os.path.exists(factor_path):
-            raise FileNotFoundError("未找到报告所需结果文件：upload/model_files/psilst.factor")
+        factor_path = self._get_current_job_factor_path()
 
         platform_overview = ""
         platform_overview_blocks = []
@@ -907,6 +915,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             },
             "platform_evaluation_conclusion": self._build_platform_evaluation_conclusion_section(),
             "basis_data": self._build_basis_data_section(),
+            "load_information": self._build_load_information_section(facility_profile),
             "environment_conditions": self._build_environment_conditions_section(),
             "analysis_model": "",
         }
@@ -939,8 +948,17 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 ["安装文件"],
             ]
         )
-        history_rebuild_files = self._list_basis_data_files([["历史改造信息"]])
-        inspection_files = self._list_basis_data_files([["定期检测"], ["特殊事件检测"]])
+        history_rebuild_files = self._list_basis_data_files(
+            [["历史改造信息"], ["历史改造文件"]]
+        )
+        inspection_files = self._list_basis_data_files(
+            [
+                ["定期检测"],
+                ["定期检测1-N"],
+                ["特殊事件检测"],
+                ["特殊事件检测（台风、碰撞等）"],
+            ]
+        )
         return {
             "mode": "replace_region",
             "blocks": [
@@ -968,26 +986,87 @@ class FeasibilityAssessmentResultsPage(BasePage):
             ],
         }
 
+    def _build_load_information_section(self, facility_profile: dict) -> dict:
+        load_information_rows = []
+        try:
+            rows = load_platform_load_information_items(self.facility_code)
+        except Exception:
+            rows = []
+
+        for index, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                continue
+            load_information_rows.append(
+                {
+                    "seq_no": str(row.get("seq_no") or index - 1),
+                    "project_name": str(row.get("project_name") or "").strip(),
+                    "rebuild_time": str(row.get("rebuild_time") or "").strip(),
+                    "rebuild_content": str(row.get("rebuild_content") or "").strip(),
+                    "total_weight_mt": str(row.get("total_weight_mt") or "").strip(),
+                    "weight_limit_mt": str(row.get("weight_limit_mt") or "").strip(),
+                    "weight_delta_mt": str(row.get("weight_delta_mt") or "").strip(),
+                    "center_xyz": str(row.get("center_xyz") or "").strip(),
+                    "center_radius_m": str(row.get("center_radius_m") or "").strip(),
+                    "fx_kn": str(row.get("fx_kn") or "").strip(),
+                    "fy_kn": str(row.get("fy_kn") or "").strip(),
+                    "fz_kn": str(row.get("fz_kn") or "").strip(),
+                    "mx_kn_m": str(row.get("mx_kn_m") or "").strip(),
+                    "my_kn_m": str(row.get("my_kn_m") or "").strip(),
+                    "mz_kn_m": str(row.get("mz_kn_m") or "").strip(),
+                    "safety_op": str(row.get("safety_op") or "").strip(),
+                    "safety_extreme": str(row.get("safety_extreme") or "").strip(),
+                    "overall_assessment": str(row.get("overall_assessment") or "").strip(),
+                    "assessment_org": str(row.get("assessment_org") or "").strip(),
+                }
+            )
+
+        return {
+            "mode": "replace_region",
+            "load_information_meta": {
+                "branch": str(facility_profile.get("branch") or "").strip(),
+                "op_company": str(facility_profile.get("op_company") or "").strip(),
+                "oilfield": str(facility_profile.get("oilfield") or "").strip(),
+                "facility_name": str(facility_profile.get("facility_name") or "").strip(),
+                "start_time": str(facility_profile.get("start_time") or "").strip(),
+                "design_life": str(facility_profile.get("design_life") or "").strip(),
+            },
+            "load_information_rows": load_information_rows,
+        }
+
+    def _iter_basis_data_logical_prefixes(self, path_segments: List[str]):
+        normalized_segments = [str(segment or "").strip().strip("/\\") for segment in path_segments]
+        normalized_segments = [segment for segment in normalized_segments if segment]
+        if not normalized_segments:
+            return
+
+        raw_prefix = "/".join(normalized_segments)
+        yield raw_prefix
+
+        facility_code = str(getattr(self, "facility_code", "") or "").strip().strip("/\\")
+        if facility_code:
+            yield f"{facility_code}/{raw_prefix}"
+
     def _list_basis_data_files(self, path_prefixes: List[List[str]]) -> List[str]:
         if not self.facility_code:
             return []
         file_names: List[str] = []
         seen = set()
         for path_segments in path_prefixes:
-            try:
-                rows = list_files_by_prefix(
-                    module_code=DOC_MAN_MODULE_CODE,
-                    logical_path_prefix="/".join(path_segments),
-                    facility_code=self.facility_code,
-                )
-            except Exception:
-                rows = []
-            for row in rows:
-                name = str(row.get("original_name") or "").strip()
-                if not name or name in seen:
-                    continue
-                seen.add(name)
-                file_names.append(name)
+            for logical_prefix in self._iter_basis_data_logical_prefixes(path_segments):
+                try:
+                    rows = list_files_by_prefix(
+                        module_code=DOC_MAN_MODULE_CODE,
+                        logical_path_prefix=logical_prefix,
+                        facility_code=self.facility_code,
+                    )
+                except Exception:
+                    rows = []
+                for row in rows:
+                    name = str(row.get("original_name") or "").strip()
+                    if not name or name in seen:
+                        continue
+                    seen.add(name)
+                    file_names.append(name)
         return file_names
 
     @staticmethod

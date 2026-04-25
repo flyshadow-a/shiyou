@@ -11,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
+from pages.history_events_inspection_page import HistoryEventsInspectionPage  # noqa: E402
 from pages.history_inspection_summary_page import HistoryInspectionSummaryPage  # noqa: E402
 from pages.doc_man import DocManWidget  # noqa: E402
 from pages.model_files_page import ModelFilesPage  # noqa: E402
@@ -28,6 +29,19 @@ class GuiSmokeBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls._app = _ensure_app()
+
+
+class HistoryEventsInspectionPageSmokeTests(GuiSmokeBase):
+    def test_outer_platform_sync_updates_inspection_subpage_facility_code(self) -> None:
+        page = HistoryEventsInspectionPage()
+        self.addCleanup(page.deleteLater)
+
+        page.dropdown_bar.set_options("facility_code", ["WC19-1D", "WC9-7"], "WC9-7")
+        page.dropdown_bar.set_options("facility_name", ["WC19-1D平台", "WC9-7平台"], "WC9-7平台")
+        page._sync_platform_ui(changed_key="facility_code")
+
+        self.assertEqual("WC9-7", page.home_widget.facility_code)
+        self.assertEqual("WC9-7", page.page_inspection.facility_code)
 
 
 class NewSpecialInspectionPageSmokeTests(GuiSmokeBase):
