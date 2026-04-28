@@ -585,12 +585,18 @@ class OilfieldWaterLevelPage(BasePage):
 
     # ---------- 小工具：设置单元格 ----------
     def _set_item(self, table: QTableWidget, r: int, c: int, text: str,
-                  align=Qt.AlignCenter, bold: bool = False):
+                  align=Qt.AlignCenter, bold: bool = False, editable: bool = False):
         item = QTableWidgetItem(str(text))
         item.setTextAlignment(align)
         font = table.font()
         font.setBold(bold)
         item.setFont(font)
+        flags = item.flags()
+        if editable:
+            flags |= Qt.ItemIsEditable | Qt.ItemIsSelectable
+        else:
+            flags &= ~Qt.ItemIsEditable
+        item.setFlags(flags)
         table.setItem(r, c, item)
 
     def _finalize_table_style(self, table: QTableWidget):
@@ -599,7 +605,12 @@ class OilfieldWaterLevelPage(BasePage):
         table.setCornerButtonEnabled(False)
         table.setFont(self._songti_small_four_font())
 
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
+            | QAbstractItemView.AnyKeyPressed
+        )
         table.setSelectionMode(QAbstractItemView.NoSelection)
         table.setShowGrid(True)
 
@@ -719,7 +730,7 @@ class OilfieldWaterLevelPage(BasePage):
             rr = start + i
             table.setSpan(rr, 0, 1, 2)
             self._set_item(table, rr, 0, elem, align=Qt.AlignCenter)
-            self._set_item(table, rr, 2, val)
+            self._set_item(table, rr, 2, val, editable=True)
             self._set_item(table, rr, 1, "")
 
         # ===== 最高水位（行6~9）=====
@@ -735,7 +746,7 @@ class OilfieldWaterLevelPage(BasePage):
         for i, (elem, val) in enumerate(high_rows):
             rr = 6 + i
             self._set_item(table, rr, 1, elem)
-            self._set_item(table, rr, 2, val)
+            self._set_item(table, rr, 2, val, editable=True)
 
         # ===== 最低水位（行10~13）=====
         table.setSpan(10, 0, 4, 1)
@@ -750,7 +761,7 @@ class OilfieldWaterLevelPage(BasePage):
         for i, (elem, val) in enumerate(low_rows):
             rr = 10 + i
             self._set_item(table, rr, 1, elem)
-            self._set_item(table, rr, 2, val)
+            self._set_item(table, rr, 2, val, editable=True)
 
         # ===== 列宽：按内容收缩 + 适度加宽 =====
         header = table.horizontalHeader()
@@ -852,7 +863,7 @@ class OilfieldWaterLevelPage(BasePage):
                 rr = r0 + k
                 self._set_item(table, rr, 1, dur)
                 for j, v in enumerate(vals):
-                    self._set_item(table, rr, 2 + j, v)
+                    self._set_item(table, rr, 2 + j, v, editable=True)
             r0 += len(rows)
 
         # 列宽策略
@@ -949,7 +960,7 @@ class OilfieldWaterLevelPage(BasePage):
                 rr = r0 + k
                 self._set_item(table, rr, 1, elem, align=Qt.AlignLeft | Qt.AlignVCenter)
                 for j, v in enumerate(vals):
-                    self._set_item(table, rr, 2 + j, v)
+                    self._set_item(table, rr, 2 + j, v, editable=True)
             r0 += len(rows)
 
         header = table.horizontalHeader()
@@ -1039,7 +1050,7 @@ class OilfieldWaterLevelPage(BasePage):
                 rr = r0 + k
                 self._set_item(table, rr, 1, layer, align=Qt.AlignLeft | Qt.AlignVCenter)
                 for j, v in enumerate(vals):
-                    self._set_item(table, rr, 2 + j, v)
+                    self._set_item(table, rr, 2 + j, v, editable=True)
             r0 += len(rows)
 
         # 方案A：固定左两列 + 数值列均分铺满

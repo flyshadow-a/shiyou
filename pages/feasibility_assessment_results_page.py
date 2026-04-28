@@ -66,7 +66,7 @@ from services.inspection_business_db_adapter import load_facility_profile, list_
 from services.inspection_business_db_adapter import load_platform_load_information_items
 from services.file_db_adapter import DOC_MAN_MODULE_CODE, list_files_by_prefix
 
-from pages.sacs_storage_service import get_job_runtime_dir, get_job_source_dir
+from pages.sacs_storage_service import get_job_runtime_dir, get_job_source_dir, get_job_sea_file
 
 def _resolve_result_model_paths(self):
     runtime_dir = os.path.normpath(get_job_runtime_dir(self.job_name))
@@ -1201,6 +1201,9 @@ class FeasibilityAssessmentResultsPage(BasePage):
             mysql_url=self.mysql_url,
         )
         foundation_scour_text = self._extract_foundation_scour_text(pile_rows)
+        chart_water_depth_text = self._extract_chart_water_depth_text_from_seainp(
+            get_job_sea_file(self.facility_code)
+        )
 
         if not (
             water_level_rows
@@ -1210,6 +1213,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             or marine_growth_rows
             or splash_zone_rows
             or foundation_scour_text
+            or chart_water_depth_text
         ):
             return {}
 
@@ -1221,14 +1225,25 @@ class FeasibilityAssessmentResultsPage(BasePage):
             "marine_growth_rows": [self._normalize_environment_row(row) for row in marine_growth_rows],
             "splash_zone_rows": [self._normalize_environment_row(row) for row in splash_zone_rows],
         }
+        blocks = []
+        if chart_water_depth_text:
+            blocks.append(
+                {
+                    "text": f"海图水深为{chart_water_depth_text} m，计算中使用的水位（m）如下所示。",
+                    "anchor_prefix": "海图水深为",
+                    "preserve_anchor_style": True,
+                }
+            )
         if foundation_scour_text:
-            section["blocks"] = [
+            blocks.append(
                 {
                     "text": f"在分析中，考虑{foundation_scour_text}m（来自平台基本信息的桩基信息基础冲刷）冲刷深度。",
                     "anchor_prefix": "在分析中，考虑",
                     "preserve_anchor_style": True,
                 }
-            ]
+            )
+        if blocks:
+            section["blocks"] = blocks
         return section
 
     def _validate_environment_conditions_for_report(self) -> str:
@@ -1293,6 +1308,36 @@ class FeasibilityAssessmentResultsPage(BasePage):
             scour_text = self._format_report_number(row.get("scour_depth_m"))
             if scour_text:
                 return scour_text
+        return ""
+
+    @staticmethod
+    def _read_text_lines_with_fallback(file_path: str) -> List[str]:
+        for encoding in ("utf-8", "gbk", "cp1252", "latin-1"):
+            try:
+                with open(file_path, "r", encoding=encoding, errors="strict") as file:
+                    return file.readlines()
+            except Exception:
+                continue
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
+            return file.readlines()
+
+    @classmethod
+    def _extract_chart_water_depth_text_from_seainp(cls, file_path: str) -> str:
+        if not file_path or not os.path.exists(file_path):
+            return ""
+
+        for raw_line in cls._read_text_lines_with_fallback(file_path):
+            line = raw_line.rstrip("\r\n")
+            if not line.upper().startswith("LDOPT"):
+                continue
+            value_text = line[40:48].strip()
+            if not value_text:
+                return ""
+            try:
+                value = abs(Decimal(value_text))
+            except (InvalidOperation, ValueError):
+                return ""
+            return f"{value:.2f}"
         return ""
 
     def _normalize_environment_row(self, row: dict) -> dict:

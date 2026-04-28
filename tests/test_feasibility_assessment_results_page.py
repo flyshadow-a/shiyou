@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -142,6 +143,49 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
             },
             result["load_information_rows"][0],
         )
+
+    def test_extract_chart_water_depth_text_from_seainp_reads_ldopt_water_depth_column(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sea_file = Path(tmpdir) / "seainp.JKnew FACTOR"
+            sea_file.write_text(
+                "LDOPT SF    NF+Z   1.025   7.850 -122.20  123.40GLOBMN          CMB\n",
+                encoding="utf-8",
+            )
+
+            result = FeasibilityAssessmentResultsPage._extract_chart_water_depth_text_from_seainp(
+                str(sea_file)
+            )
+
+        self.assertEqual("123.40", result)
+
+    def test_build_environment_conditions_reads_seainp_by_facility_code(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page.facility_code = "WC19-1D"
+        page.job_name = "analysis-job-001"
+        page.mysql_url = "mysql://example"
+        page.env_branch = "湛江分公司"
+        page.env_op_company = "文昌油田群作业公司"
+        page.env_oilfield = "WC19-1油田"
+
+        with patch("pages.feasibility_assessment_results_page.get_env_profile_id", return_value=1), patch(
+            "pages.feasibility_assessment_results_page.load_water_level_items",
+            return_value=[{"item_name": "海图基准面 (CD)", "value": "0.00"}],
+        ), patch("pages.feasibility_assessment_results_page.load_metric_items", return_value=[]), patch(
+            "pages.feasibility_assessment_results_page.load_platform_strength_marine_items", return_value=[]
+        ), patch(
+            "pages.feasibility_assessment_results_page.load_platform_strength_pile_items", return_value=[]
+        ), patch(
+            "pages.feasibility_assessment_results_page.load_platform_strength_splash_items", return_value=[]
+        ), patch(
+            "pages.feasibility_assessment_results_page.get_job_sea_file", return_value="platform-sea-file"
+        ) as mocked_get_sea_file, patch.object(
+            page, "_extract_chart_water_depth_text_from_seainp", return_value="123.40"
+        ) as mocked_extract_depth:
+            result = page._build_environment_conditions_section()
+
+        mocked_get_sea_file.assert_called_once_with("WC19-1D")
+        mocked_extract_depth.assert_called_once_with("platform-sea-file")
+        self.assertEqual("海图水深为123.40 m，计算中使用的水位（m）如下所示。", result["blocks"][0]["text"])
 
 
 if __name__ == "__main__":
