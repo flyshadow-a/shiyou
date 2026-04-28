@@ -50,7 +50,7 @@ from pages.sacs_runtime_service import ensure_analysis_bat, find_result_file
 
 from shiyou_db.runtime_db import get_mysql_url
 
-from pages.sacs_storage_service import get_job_runtime_dir, get_job_source_dir
+from pages.sacs_storage_service import get_job_runtime_dir, stage_support_files_for_job
 
 SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
 
@@ -139,7 +139,6 @@ class FeasibilityAssessmentPage(BasePage):
         # SACS 运行相关路径（统一指向 upload/model_files）
         self.model_files_root = first_existing_path("upload", "model_files")  # 仅保留兜底
         self.current_model_dir = get_job_runtime_dir(self.job_name)
-        self.current_source_dir = get_job_source_dir(self.job_name)
         self.current_runx_file = ""
         self.current_bat_file = ""
         self.current_result_file = ""
@@ -1160,7 +1159,33 @@ class FeasibilityAssessmentPage(BasePage):
         return wrap
 
     # ---------------- 保存按钮：导出当前表格数据 ----------------
+    def _confirm_save_locked(self, data_name: str) -> bool:
+        """
+        保存前二次确认：
+        点击“是”才继续保存；
+        点击“否”直接取消保存，用户可以继续修改表格。
+        """
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("确认保存")
+        msg.setText(f"{data_name}保存之后将无法修改，是否保存？")
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.No)
+
+        # 强制按钮显示为中文“是 / 否”
+        yes_btn = msg.button(QMessageBox.Yes)
+        no_btn = msg.button(QMessageBox.No)
+        if yes_btn is not None:
+            yes_btn.setText("是")
+        if no_btn is not None:
+            no_btn.setText("否")
+
+        return msg.exec_() == QMessageBox.Yes
+
     def _on_save_table1(self):
+        if not self._confirm_save_locked("新增井槽信息"):
+            return
+
         try:
             self._save_well_slots_to_db()
             QMessageBox.information(self, "保存成功", "新增井槽信息已写入数据库。")
@@ -1168,6 +1193,9 @@ class FeasibilityAssessmentPage(BasePage):
             QMessageBox.critical(self, "保存失败", f"新增井槽信息保存失败：\n{e}")
 
     def _on_save_table2(self):
+        if not self._confirm_save_locked("新增立管/电缆信息"):
+            return
+
         try:
             self._save_risers_to_db()
             QMessageBox.information(self, "保存成功", "新增立管/电缆信息已写入数据库。")
@@ -1175,6 +1203,9 @@ class FeasibilityAssessmentPage(BasePage):
             QMessageBox.critical(self, "保存失败", f"新增立管/电缆信息保存失败：\n{e}")
 
     def _on_save_table3(self):
+        if not self._confirm_save_locked("新增组块载荷信息"):
+            return
+
         try:
             self._save_topside_weights_to_db()
             QMessageBox.information(self, "保存成功", "新增组块载荷信息已写入数据库。")
@@ -1230,7 +1261,7 @@ class FeasibilityAssessmentPage(BasePage):
                 mysql_url=self.mysql_url,
                 job_name=self.job_name,
                 overwrite_job=True,
-                generate_bat=False,  # 这里只保留“创建模型”，不生成 bat
+                generate_bat=True,  # 创建模型时同步复制 RUNX/PSIINP/JCNINP 并生成 bat
             )
 
             export_info = result.get("export", {})
@@ -1243,8 +1274,9 @@ class FeasibilityAssessmentPage(BasePage):
                     ["psiFACTOR.runx", "psifactor.runx"]
                 )
 
-            # 创建新模型阶段不生成 bat
-            self.current_bat_file = ""
+            self.current_bat_file = export_info.get("bat_file", "").strip()
+            self.current_psiinp_file = export_info.get("psiinp_file", "").strip()
+            self.current_jcninp_file = export_info.get("jcninp_file", "").strip()
 
             new_model_file = export_info.get("new_model_file", "").strip()
             new_sea_file = export_info.get("new_sea_file", "").strip()
@@ -1263,6 +1295,12 @@ class FeasibilityAssessmentPage(BasePage):
 
             if self.current_runx_file:
                 msg_lines.append(f"RUNX文件：{self.current_runx_file}")
+            if getattr(self, "current_psiinp_file", ""):
+                msg_lines.append(f"PSIINP文件：{self.current_psiinp_file}")
+            if getattr(self, "current_jcninp_file", ""):
+                msg_lines.append(f"JCNINP文件：{self.current_jcninp_file}")
+            if self.current_bat_file:
+                msg_lines.append(f"BAT文件：{self.current_bat_file}")
 
             QMessageBox.information(self, "创建完成", "\n".join(msg_lines))
 
@@ -1362,12 +1400,15 @@ class FeasibilityAssessmentPage(BasePage):
                 QMessageBox.warning(self, "提示", "未找到 model_files 目录，请先创建新模型。")
                 return
 
-            runx_path = getattr(self, "current_runx_file", "").strip()
+            # 计算前再次从“当前模型/其他/用户上传/其他”复制必需辅助文件。
+            # 这样用户只要上传一次 RUNX / PSIINP / JCNINP，即可在此处直接计算。
+            support_files = stage_support_files_for_job(self.job_name, require_all=True)
+            runx_path = getattr(self, "current_runx_file", "").strip() or support_files.get("runx", "")
             bat_path = ensure_analysis_bat(
                 work_dir=work_dir,
                 runx_path=runx_path,
-                psiinp_path=os.path.join(work_dir, "psiinp.19-1d"),
-                jcninp_path=os.path.join(work_dir, "Jcninp.19-1d"),
+                psiinp_path=support_files.get("psiinp", "") or os.path.join(work_dir, "psiinp.19-1d"),
+                jcninp_path=support_files.get("jcninp", "") or os.path.join(work_dir, "Jcninp.19-1d"),
             )
             self.current_bat_file = bat_path
 

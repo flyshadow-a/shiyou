@@ -30,28 +30,34 @@ def ensure_runx_in_workdir(work_dir: str, runx_path: str = "") -> str:
     work_dir = os.path.normpath(work_dir)
     ensure_dir(work_dir)
 
+    target = os.path.join(work_dir, "psiFACTOR.runx")
+
     # 1. 优先用传入的 runx
     candidate = os.path.normpath(runx_path) if runx_path else ""
     if candidate and os.path.exists(candidate):
-        if os.path.dirname(candidate) == work_dir:
+        if os.path.normcase(candidate) == os.path.normcase(target):
+            return target
+        if os.path.normcase(os.path.dirname(candidate)) == os.path.normcase(work_dir):
             return candidate
-
-        target = os.path.join(work_dir, "psiFACTOR.runx")
-        if os.path.normcase(candidate) != os.path.normcase(target):
-            shutil.copy2(candidate, target)
+        shutil.copy2(candidate, target)
         return target
 
-    # 2. 用 config 里的默认 runx 模板
-    default_runx = os.path.normpath(get_sacs_default_runx_path())
-    if not default_runx:
-        raise ValueError("db_config.json 中未配置 sacs_default_runx_path")
-    if not os.path.exists(default_runx):
-        raise FileNotFoundError(f"默认 RUNX 文件不存在：{default_runx}")
+    # 2. 如果运行目录里已经有用户上传/前序步骤复制过来的 runx，直接使用。
+    #    这样 db_config.json 里失效的默认模板路径不会覆盖运行目录文件。
+    if os.path.exists(target):
+        return target
 
-    target = os.path.join(work_dir, "psiFACTOR.runx")
-    if not os.path.exists(target):
+    # 3. 最后才用 config 里的默认 runx 模板
+    default_runx = os.path.normpath(get_sacs_default_runx_path())
+    if default_runx and os.path.exists(default_runx):
         shutil.copy2(default_runx, target)
-    return target
+        return target
+
+    if default_runx:
+        raise FileNotFoundError(
+            f"默认 RUNX 文件不存在：{default_runx}。请上传 psiFACTOR.runx 到当前模型/其他，或修正 db_config.json。"
+        )
+    raise ValueError("db_config.json 中未配置 sacs_default_runx_path，且运行目录中没有 psiFACTOR.runx")
 
 
 def build_bat_text(exe_path: str, runx_path: str, work_dir: str) -> str:
@@ -86,6 +92,17 @@ def ensure_analysis_bat(
 ) -> str:
     work_dir = os.path.normpath(work_dir)
     ensure_dir(work_dir)
+
+    # 计算分析可能被用户直接点击；此时再次尝试从“当前模型/其他”复制辅助文件。
+    try:
+        from pages.sacs_storage_service import stage_support_files_for_job
+        job_name = os.path.basename(work_dir)
+        staged = stage_support_files_for_job(job_name, require_all=False)
+        runx_path = runx_path or staged.get("runx", "")
+        psiinp_path = psiinp_path or staged.get("psiinp", "")
+        jcninp_path = jcninp_path or staged.get("jcninp", "")
+    except Exception:
+        pass
 
     exe_path = resolve_analysis_engine_exe()
     local_runx = ensure_runx_in_workdir(work_dir, runx_path)

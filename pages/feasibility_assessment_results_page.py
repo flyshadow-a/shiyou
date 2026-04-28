@@ -49,11 +49,11 @@ from core.base_page import BasePage
 from sqlalchemy import create_engine, text
 from pages.sacs_compare_view import SacsComparePanel
 
-
 from shiyou_db.runtime_db import get_mysql_url
 
 from core.dropdown_bar import DropdownBar
-from feasibility_analysis_services.history_rebuild_service import build_history_rebuild_summary, get_history_rebuild_projects
+from feasibility_analysis_services.history_rebuild_service import build_history_rebuild_summary, \
+    get_history_rebuild_projects
 from feasibility_analysis_services.oilfield_env_service import (
     get_env_profile_id,
     load_metric_items,
@@ -66,23 +66,27 @@ from services.inspection_business_db_adapter import load_facility_profile, list_
 from services.inspection_business_db_adapter import load_platform_load_information_items
 from services.file_db_adapter import DOC_MAN_MODULE_CODE, list_files_by_prefix
 
-from pages.sacs_storage_service import get_job_runtime_dir, get_job_source_dir, get_job_sea_file
+
+from pages.sacs_storage_service import get_job_runtime_dir, get_job_sea_file
+
+
 
 def _resolve_result_model_paths(self):
+    """兼容旧调用。
+
+    结果页正式加载模型时会优先读取 wizard_model_info 中记录的
+    model_file / new_model_file。这里仅作为兜底，不再访问旧 source 目录。
+    """
     runtime_dir = os.path.normpath(get_job_runtime_dir(self.job_name))
-    source_dir = os.path.normpath(get_job_source_dir(self.job_name))
-
-    original_model = os.path.join(source_dir, "sacinp.JKnew")
     new_model = os.path.join(runtime_dir, "sacinp.M1")
-
-    # 新模型不存在时，临时回退到原模型，避免右侧空白
-    preview_model = new_model if os.path.exists(new_model) else original_model
+    preview_model = new_model if os.path.exists(new_model) else ""
 
     return {
-        "original_model": original_model if os.path.exists(original_model) else "",
+        "original_model": "",
         "new_model": new_model if os.path.exists(new_model) else "",
-        "preview_model": preview_model if os.path.exists(preview_model) else "",
+        "preview_model": preview_model,
     }
+
 
 class InpWireframeView(QGraphicsView):
     """
@@ -264,7 +268,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
     )
     DEFAULT_REPORT_API_URL = "http://127.0.0.1:8000/generate-report"
 
-    def __init__(self, main_window, facility_code, job_name="", mysql_url="", platform_overview_text="", inspection_record_summary_text="", env_branch="", env_op_company="", env_oilfield="", parent=None):
+    def __init__(self, main_window, facility_code, job_name="", mysql_url="", platform_overview_text="",
+                 inspection_record_summary_text="", env_branch="", env_op_company="", env_oilfield="", parent=None):
         if parent is None:
             parent = main_window
         super().__init__("", parent)
@@ -287,8 +292,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
     def _build_ui(self):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(8)
-
-
 
         # 中部：左右布局
         center = QWidget()
@@ -321,7 +324,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
         left_layout.addWidget(self._build_detail_section(), 1)
 
         left_layout.addWidget(self._build_report_button(), 0)
-
 
         # 右侧模型视图
         right = self._build_inp_view_panel()
@@ -401,19 +403,20 @@ class FeasibilityAssessmentResultsPage(BasePage):
         table.verticalHeader().setDefaultSectionSize(32)
 
     # 设置单元格内容
-    def _set_cell(self, table: QTableWidget, r: int, c: int, text: str, bg: QColor = None, bold: bool = False, align_center: bool = True, editable: bool = True):
+    def _set_cell(self, table: QTableWidget, r: int, c: int, text: str, bg: QColor = None, bold: bool = False,
+                  align_center: bool = True, editable: bool = True):
         it = QTableWidgetItem(str(text))
         if align_center:
             it.setTextAlignment(Qt.AlignCenter)
         if bg is not None:
             it.setBackground(QBrush(bg))
-            
+
         f = it.font()
         f.setFamily("SimSun")
-        f.setPointSize(12) # 强制给每个创建的 item 单独指定大小
+        f.setPointSize(12)  # 强制给每个创建的 item 单独指定大小
         f.setBold(False)
         it.setFont(f)
-        
+
         if not editable:
             it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         table.setItem(r, c, it)
@@ -497,7 +500,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         #     self.tbl_summary.setRowHeight(r, 26)
         #
         # lay.addWidget(self.tbl_summary, 0)
-            # ========== 替换为新代码 ==========
+        # ========== 替换为新代码 ==========
         self.tbl_summary.setRowHeight(0, 34)
         for r in range(1, rows):
             self.tbl_summary.setRowHeight(r, 32)
@@ -880,7 +883,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         inspection_record_summary_text = self._build_latest_inspection_record_summary()
         if not inspection_record_summary_text:
             inspection_record_summary_text = (
-                self.inspection_record_summary_text or self.INSPECTION_RECORD_SUMMARY_PLACEHOLDER
+                    self.inspection_record_summary_text or self.INSPECTION_RECORD_SUMMARY_PLACEHOLDER
             )
         if inspection_record_summary_text:
             platform_overview_blocks.append(
@@ -1206,14 +1209,14 @@ class FeasibilityAssessmentResultsPage(BasePage):
         )
 
         if not (
-            water_level_rows
-            or wind_rows
-            or wave_rows
-            or current_rows
-            or marine_growth_rows
-            or splash_zone_rows
-            or foundation_scour_text
-            or chart_water_depth_text
+                water_level_rows
+                or wind_rows
+                or wave_rows
+                or current_rows
+                or marine_growth_rows
+                or splash_zone_rows
+                or foundation_scour_text
+                or chart_water_depth_text
         ):
             return {}
 
@@ -1352,7 +1355,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
             "lower_limit_m": "" if row.get("lower_limit_m") is None else str(row.get("lower_limit_m")).strip(),
             "thickness_mm": "" if row.get("thickness_mm") is None else str(row.get("thickness_mm")).strip(),
             "density_t_per_m3": "" if row.get("density_t_per_m3") is None else str(row.get("density_t_per_m3")).strip(),
-            "corrosion_allowance_mm_per_y": "" if row.get("corrosion_allowance_mm_per_y") is None else str(row.get("corrosion_allowance_mm_per_y")).strip(),
+            "corrosion_allowance_mm_per_y": "" if row.get("corrosion_allowance_mm_per_y") is None else str(
+                row.get("corrosion_allowance_mm_per_y")).strip(),
         }
 
     def _post_report_request(self, payload: dict) -> dict:
@@ -1382,7 +1386,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 ) from exc
             raise RuntimeError(f"报告服务返回错误：HTTP {exc.code}\n{detail}") from exc
         except error.URLError as exc:
-            raise RuntimeError(f"无法连接报告服务，请确认 WordTemplate_v2 API 已启动：{self.DEFAULT_REPORT_API_URL}") from exc
+            raise RuntimeError(
+                f"无法连接报告服务，请确认 WordTemplate_v2 API 已启动：{self.DEFAULT_REPORT_API_URL}") from exc
 
     def _get_report_mode(self) -> str:
         mode = str(os.environ.get("REPORT_GENERATION_MODE", "auto")).strip().lower()

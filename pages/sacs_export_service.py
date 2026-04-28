@@ -16,6 +16,7 @@ from pages.sacs_storage_service import (
     get_job_runx_file,
     get_job_psiinp_file,
     get_job_jcninp_file,
+    stage_support_files_for_job,
 )
 from pages.sacs_runtime_service import (
     ensure_analysis_bat,
@@ -38,13 +39,8 @@ def resolve_sacs_analysis_engine_exe() -> str:
 
 
 def resolve_runx_path(model_info: ModelInfo) -> str:
-    configured = os.path.normpath(str(get_sacs_default_runx_path() or "").strip())
-    if configured:
-        if not os.path.isfile(configured):
-            raise FileNotFoundError(f"db_config.json 中配置的 runx 文件不存在: {configured}")
-        return configured
-
-    # 如果配置里没写，则优先到新模型目录里找
+    # 优先使用已经复制到运行目录的 RUNX。
+    # 这样即使 db_config.json 里配置了失效的模板路径，也不会阻塞计算。
     model_dir = os.path.dirname(model_info.new_model_file)
     candidates = [
         os.path.join(model_dir, "psiFACTOR.runx"),
@@ -55,9 +51,14 @@ def resolve_runx_path(model_info: ModelInfo) -> str:
         if os.path.isfile(p):
             return os.path.normpath(p)
 
+    configured = os.path.normpath(str(get_sacs_default_runx_path() or "").strip())
+    if configured and os.path.isfile(configured):
+        return configured
+
+    configured_hint = f"；当前 db_config.json 配置为：{configured}" if configured else ""
     raise FileNotFoundError(
-        "未找到 runx 文件，请在 db_config.json 中设置 sacs_default_runx_path，"
-        "或把 psiFACTOR.runx 放到新模型输出目录中。"
+        "未找到 RUNX 文件。请把 psiFACTOR.runx 上传到【模型文件/当前模型/其他/用户上传/其他】，"
+        "或在 db_config.json 中设置有效的 sacs_default_runx_path" + configured_hint
     )
 
 @dataclass
@@ -618,11 +619,22 @@ def export_model_bundle(mysql_url: str, job_name: str, generate_bat_flag: bool =
 
         runtime_dir = get_job_runtime_dir(job_name)
 
-        runx_file = ensure_runx_in_workdir(runtime_dir, resolve_runx_path(model_info))
-        psiinp_file, jcninp_file = ensure_support_inputs_in_workdir(runtime_dir)
+        # 先从“当前模型/其他/用户上传/其他”复制用户上传的 RUNX/PSIINP/JCNINP。
+        # generate_bat_flag=True 时这些文件是计算必需文件，因此做强校验。
+        support_files = stage_support_files_for_job(job_name, require_all=generate_bat_flag)
+
+        runx_file = support_files.get("runx", "")
+        psiinp_file = support_files.get("psiinp", "")
+        jcninp_file = support_files.get("jcninp", "")
 
         bat_path = ""
         if generate_bat_flag:
+            runx_file = ensure_runx_in_workdir(runtime_dir, runx_file or resolve_runx_path(model_info))
+            psiinp_file, jcninp_file = ensure_support_inputs_in_workdir(
+                runtime_dir,
+                psiinp_path=psiinp_file,
+                jcninp_path=jcninp_file,
+            )
             bat_path = ensure_analysis_bat(
                 runtime_dir,
                 runx_path=runx_file,

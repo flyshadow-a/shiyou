@@ -9,15 +9,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import create_engine, text
 
 from pages.sacs_storage_service import (
-    get_job_model_file,
-    get_job_sea_file,
     get_job_new_model_file,
     get_job_new_sea_file,
     get_job_bat_file,
     get_job_psiinp_file,
     get_job_jcninp_file,
-    stage_file,
+    ensure_job_runtime_dir,
+    remove_legacy_job_source_dir,
     stage_optional_from_same_dir,
+    stage_support_files_for_job,
 )
 # =========================
 # 通用工具
@@ -544,28 +544,38 @@ def import_sacs_model_to_db(
     if sea_file and (not os.path.exists(sea_file)):
         raise FileNotFoundError(f"找不到 sea_file: {sea_file}")
 
-    # 1) 先把原始文件复制到共享盘 source 目录
-    staged_model_file = stage_file(model_file, get_job_model_file(job_name))
-    staged_sea_file = ""
-    if sea_file:
-        staged_sea_file = stage_file(sea_file, get_job_sea_file(job_name))
+    # 新流程：原模型 / 海况文件直接使用文件库中的真实存储路径，
+    # 不再复制到 sacs_jobs/<平台>/source，避免图形页面读取旧 source 文件。
+    staged_model_file = os.path.normpath(model_file)
+    staged_sea_file = os.path.normpath(sea_file) if sea_file else ""
 
-    # 2) 同目录配套文件也尽量复制到共享盘 runtime 目录
+    # 删除旧版本遗留的 source 目录，防止后续页面误读旧文件。
+    remove_legacy_job_source_dir(job_name)
+
+    # 运行输出目录使用 feasibility_assessment_runtime/<平台>。
+    ensure_job_runtime_dir(job_name)
+
+    # 同目录配套文件仍然尽量复制到 runtime 目录，供 SACS 计算使用。
     stage_optional_from_same_dir(
-        model_file,
+        staged_model_file,
         ["psiinp.19-1d", "psiinp"],
         get_job_psiinp_file(job_name),
     )
     stage_optional_from_same_dir(
-        model_file,
+        staged_model_file,
         ["Jcninp.19-1d", "jcninp.19-1d", "jcninp"],
         get_job_jcninp_file(job_name),
     )
 
+    # 新流程：RUNX / PSIINP / JCNINP 通常由用户上传到
+    # “当前模型/其他/用户上传/其他”，这里先尽量复制到运行目录。
+    # 若尚未上传，不阻塞评估页打开；创建模型或计算分析时再做强校验。
+    stage_support_files_for_job(job_name, require_all=False)
+
     engine = create_engine(mysql_url, future=True, pool_pre_ping=True)
     ensure_model_tables(engine)
 
-    # 3) 解析时也用共享盘中的 source 文件
+    # 解析也直接使用文件库真实路径。
     model_mudline, joints, members, groups, model_load_cases = parse_model_file(staged_model_file, job_name)
 
     sea_mudline = None
@@ -578,7 +588,7 @@ def import_sacs_model_to_db(
     levels = detect_levels(joints, level_threshold)
     leg_candidates, legs = detect_main_legs(joints, members, groups, workpoint)
 
-    # 4) 新模型和 bat 统一写到共享盘 runtime 目录
+    # 新模型和 bat 统一写到 feasibility_assessment_runtime 目录
     new_model_file = get_job_new_model_file(job_name)
     new_sea_file = get_job_new_sea_file(job_name) if staged_sea_file else None
     autorun_file = get_job_bat_file(job_name)

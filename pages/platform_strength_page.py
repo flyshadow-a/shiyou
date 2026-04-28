@@ -8,7 +8,7 @@ import numpy as np
 import pyvista as pv
 from pyvistaqt import QtInteractor
 
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 
 from PyQt5.QtCore import Qt, QRectF,QEvent
 from PyQt5.QtGui import QColor, QFont, QPen
@@ -44,6 +44,12 @@ from feasibility_analysis_services.oilfield_env_service import (
 from services.inspection_business_db_adapter import load_facility_profile
 from pages.feasibility_assessment_page import FeasibilityAssessmentPage
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
+from services.file_db_adapter import (
+    FileBackendError,
+    is_file_db_configured,
+    list_files_by_prefix,
+    resolve_storage_path,
+)
 
 from pages.sacs_import_service import import_model_bundle_to_db
 
@@ -53,7 +59,6 @@ from collections import Counter
 
 from pages.sacs_storage_service import (
     get_job_runtime_dir,
-    get_job_source_dir,
 )
 
 class PyVistaSacsView(QFrame):
@@ -198,12 +203,10 @@ class PyVistaSacsView(QFrame):
         if not code:
             return ""
 
+        # 仅作为兜底预览：新流程不再读取 sacs_jobs/<平台>/source。
         runtime_dir = os.path.normpath(get_job_runtime_dir(code))
-        source_dir = os.path.normpath(get_job_source_dir(code))
-
         candidates = [
-            os.path.join(runtime_dir, "sacinp.M1"),  # 优先新增模型
-            os.path.join(source_dir, "sacinp.JKnew"),  # 其次共享盘原模型
+            os.path.join(runtime_dir, "sacinp.M1"),
             os.path.join(runtime_dir, "sacinp.JKnew"),
         ]
         for p in candidates:
@@ -864,19 +867,185 @@ class PlatformStrengthPage(BasePage):
     def _get_mysql_url(self) -> str:
         return get_mysql_url()
 
+    @staticmethod
+    def _db_row_time(row: Dict[str, Any]) -> float:
+        for key in ("source_modified_at", "uploaded_at", "updated_at"):
+            value = row.get(key)
+            if hasattr(value, "timestamp"):
+                try:
+                    return float(value.timestamp())
+                except Exception:
+                    pass
+        return 0.0
+
+    @staticmethod
+    def _row_logical_path(row: Dict[str, Any]) -> str:
+        return str(row.get("logical_path") or "").replace("\\", "/").strip().strip("/")
+
+    def _row_storage_path(self, row: Dict[str, Any]) -> str:
+        try:
+            path = resolve_storage_path(row)
+        except Exception:
+            path = str(row.get("storage_path") or "").strip()
+        path = os.path.normpath(str(path or "").strip())
+        return path if path and os.path.exists(path) else ""
+
+    def _query_model_file_rows(self, facility_code: str, prefixes: List[str]) -> List[Dict[str, Any]]:
+        if not is_file_db_configured():
+            return []
+
+        rows: List[Dict[str, Any]] = []
+        seen_ids = set()
+        code = (facility_code or "").strip() or None
+
+        for prefix in prefixes:
+            try:
+                current_rows = list_files_by_prefix(
+                    module_code="model_files",
+                    logical_path_prefix=prefix,
+                    facility_code=code,
+                )
+            except FileBackendError:
+                current_rows = []
+            except Exception:
+                current_rows = []
+
+            # 如果 facility_code 过滤没有返回，兼容没有写 facility_code 的旧记录
+            if not current_rows:
+                try:
+                    current_rows = list_files_by_prefix(
+                        module_code="model_files",
+                        logical_path_prefix=prefix,
+                        facility_code=None,
+                    )
+                except Exception:
+                    current_rows = []
+
+            for row in current_rows:
+                row_id = row.get("id")
+                sig = row_id if row_id is not None else (
+                    str(row.get("stored_name") or ""),
+                    str(row.get("storage_path") or ""),
+                    self._row_logical_path(row),
+                )
+                if sig in seen_ids:
+                    continue
+                seen_ids.add(sig)
+                rows.append(dict(row))
+
+        return rows
+
+    def _find_current_model_file_from_db(self, facility_code: str) -> str:
+        code = (facility_code or "").strip()
+        if not code:
+            return ""
+
+        prefixes = [
+            f"{code}/当前模型/结构模型",
+            f"{code}/当前模型/结构模型/用户上传",
+        ]
+
+        candidates: List[Tuple[int, float, str]] = []
+        for row in self._query_model_file_rows(code, prefixes):
+            path = self._row_storage_path(row)
+            if not path:
+                continue
+
+            name = os.path.basename(path)
+            name_score = self._sacinp_name_score(name)
+            if name_score <= 0:
+                continue
+
+            # seainp 属于海况文件，不作为结构模型
+            if name.lower().startswith("seainp"):
+                continue
+
+            if not self._file_has_model_signature(path):
+                continue
+
+            logical = self._row_logical_path(row)
+            logical_low = logical.lower()
+            score = name_score
+            if "当前模型" in logical:
+                score += 300
+            if "结构模型" in logical:
+                score += 220
+            if "用户上传" in logical:
+                score += 50
+            if "海况" in logical:
+                score -= 500
+            if code.lower() in path.lower():
+                score += 80
+            if path.lower().endswith("sacinp.jknew"):
+                score += 800
+            if path.lower().endswith("sacinp.m1"):
+                score -= 600
+
+            candidates.append((score, self._db_row_time(row), path))
+
+        if not candidates:
+            return ""
+
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates[0][2]
+
+    def _find_current_sea_file_from_db(self, facility_code: str) -> str:
+        code = (facility_code or "").strip()
+        if not code:
+            return ""
+
+        prefixes = [
+            f"{code}/当前模型/结构模型/海况",
+            f"{code}/当前模型/结构模型",
+        ]
+
+        candidates: List[Tuple[int, float, str]] = []
+        for row in self._query_model_file_rows(code, prefixes):
+            path = self._row_storage_path(row)
+            if not path:
+                continue
+
+            name = os.path.basename(path).lower()
+            if not name.startswith("seainp"):
+                continue
+
+            logical = self._row_logical_path(row)
+            score = 100
+            if "海况" in logical:
+                score += 500
+            if "当前模型" in logical:
+                score += 120
+            if "结构模型" in logical:
+                score += 80
+            if "用户上传" in logical:
+                score += 30
+            if code.lower() in path.lower():
+                score += 50
+
+            candidates.append((score, self._db_row_time(row), path))
+
+        if not candidates:
+            return ""
+
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates[0][2]
+
     def _get_shared_current_model_file(self, facility_code: str) -> str:
         code = (facility_code or "").strip()
         if not code:
             return ""
 
-        source_dir = os.path.normpath(get_job_source_dir(code))
-        runtime_dir = os.path.normpath(get_job_runtime_dir(code))
+        # 优先从文件数据库读取“当前模型/结构模型”中的原模型文件，
+        # 即用户在模型文件页面上传后落在 shiyou_file_storage/model_files/... 的真实路径。
+        db_model = self._find_current_model_file_from_db(code)
+        if db_model:
+            return db_model
 
-        # 平台强度首页 / 图二：优先“当前原模型”
+        # 兜底：只查新流程运行目录，不再查旧 sacs_jobs/<平台>/source。
+        runtime_dir = os.path.normpath(get_job_runtime_dir(code))
         candidates = [
-            os.path.join(source_dir, "sacinp.JKnew"),
             os.path.join(runtime_dir, "sacinp.JKnew"),
-            os.path.join(runtime_dir, "sacinp.M1"),  # 只做最后兜底
+            os.path.join(runtime_dir, "sacinp.M1"),
         ]
 
         for p in candidates:
@@ -890,7 +1059,13 @@ class PlatformStrengthPage(BasePage):
             return shared
         return self._find_best_inp_file(facility_code)
 
-    def _find_matching_sea_file(self, model_path: str) -> Optional[str]:
+    def _find_matching_sea_file(self, model_path: str, facility_code: str = "") -> Optional[str]:
+        # 优先从文件数据库读取“当前模型/结构模型/海况”中的海况文件。
+        db_sea = self._find_current_sea_file_from_db(facility_code)
+        if db_sea:
+            return db_sea
+
+        # 兜底：如果海况文件与结构模型同目录，仍可自动识别。
         if not model_path:
             return None
 
@@ -921,7 +1096,7 @@ class PlatformStrengthPage(BasePage):
 
         workpoint = self._get_workpoint_value()
         level_threshold = self._get_level_threshold()
-        sea_file = self._find_matching_sea_file(model_path)
+        sea_file = self._find_matching_sea_file(model_path, facility_code)
 
         import_model_bundle_to_db(
             mysql_url=mysql_url,
@@ -1126,8 +1301,6 @@ class PlatformStrengthPage(BasePage):
             page.model_files_root = self.model_files_root
 
             page.current_model_dir = get_job_runtime_dir(job_name)
-            page.current_source_dir = get_job_source_dir(job_name)
-            page.current_source_model_file = os.path.join(page.current_source_dir, "sacinp.JKnew")
             page._refresh_runtime_paths_from_disk()
 
             idx = mw.tab_widget.addTab(page, title)
