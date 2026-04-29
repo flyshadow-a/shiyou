@@ -106,7 +106,7 @@ class FeasibilityAssessmentPage(BasePage):
             }
         """
 
-    def __init__(self, main_window, facility_code, elevations=None, platform_overview_text="", inspection_record_summary_text="", env_branch="", env_op_company="", env_oilfield="", parent=None):
+    def __init__(self, main_window, facility_code, elevations=None, platform_overview_text="", inspection_record_summary_text="", env_branch="", env_op_company="", env_oilfield="", overall_model_image_path="", parent=None):
         if parent is None:
             parent = main_window
         super().__init__("", parent)
@@ -125,6 +125,7 @@ class FeasibilityAssessmentPage(BasePage):
         self.env_branch = str(env_branch or "").strip()
         self.env_op_company = str(env_op_company or "").strip()
         self.env_oilfield = str(env_oilfield or "").strip()
+        self.overall_model_image_path = str(overall_model_image_path or "").strip()
 
         self.elevations = list(elevations) if elevations is not None else []
         self._use_dynamic_elevations = bool(elevations)
@@ -1517,6 +1518,7 @@ class FeasibilityAssessmentPage(BasePage):
                 env_branch=self.env_branch,
                 env_op_company=self.env_op_company,
                 env_oilfield=self.env_oilfield,
+                overall_model_image_path=self.overall_model_image_path,
             )
 
             idx = mw.tab_widget.addTab(page, title)

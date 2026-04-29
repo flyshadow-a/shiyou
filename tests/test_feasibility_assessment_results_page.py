@@ -158,6 +158,42 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
 
         self.assertEqual("123.40", result)
 
+    def test_extract_environment_load_directions_from_seainp_reads_fixed_column(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sea_file = Path(tmpdir) / "seainp.JKnew FACTOR"
+            sea_file.write_text(
+                "WAVE1.00STRN  12.5124.88  11.8                    D  -90.0    5.  72MM10 1 1 3\n"
+                "WAVE1.00STRN  12.5124.88  11.8         51.09      D  -90.0    5.  72MM10 1 1 3\n"
+                "WAVE1.00STRN  12.5124.88  11.8         90.00      D  -90.0    5.  72MM10 1 1 3\n"
+                "WAVE0.95STRN  21.9125.16  14.9         51.09      D  -90.0    5.  72MM10 1 1 3\n",
+                encoding="utf-8",
+            )
+
+            result = FeasibilityAssessmentResultsPage._extract_environment_load_directions_from_seainp(
+                str(sea_file)
+            )
+
+        self.assertEqual(["0", "51.09", "90.00"], result)
+
+    def test_build_analysis_model_section_uses_seainp_directions(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page.facility_code = "WC19-1D"
+        page.overall_model_image_path = "Y:/shiyou_file_storage/image/WC19-1D/overall_model.png"
+
+        with patch.object(page, "_resolve_current_sea_file", return_value="sea-file"), patch.object(
+            page,
+            "_extract_environment_load_directions_from_seainp",
+            return_value=["0", "51.09", "90.00"],
+        ):
+            result = page._build_analysis_model_section()
+
+        self.assertEqual("Y:/shiyou_file_storage/image/WC19-1D/overall_model.png", result["overall_model_image_path"])
+        self.assertEqual(
+            "环境荷载计算3个方向，分别为 0°，51.09°，90.00°。波浪理论采用STOKS V。",
+            result["blocks"][0]["text"],
+        )
+        self.assertEqual("环境荷载计算", result["blocks"][0]["anchor_prefix"])
+
     def test_build_environment_conditions_reads_seainp_by_facility_code(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
         page.facility_code = "WC19-1D"
@@ -176,14 +212,14 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
             "pages.feasibility_assessment_results_page.load_platform_strength_pile_items", return_value=[]
         ), patch(
             "pages.feasibility_assessment_results_page.load_platform_strength_splash_items", return_value=[]
-        ), patch(
-            "pages.feasibility_assessment_results_page.get_job_sea_file", return_value="platform-sea-file"
-        ) as mocked_get_sea_file, patch.object(
+        ), patch.object(
+            page, "_resolve_current_sea_file", return_value="platform-sea-file"
+        ) as mocked_resolve_sea_file, patch.object(
             page, "_extract_chart_water_depth_text_from_seainp", return_value="123.40"
         ) as mocked_extract_depth:
             result = page._build_environment_conditions_section()
 
-        mocked_get_sea_file.assert_called_once_with("WC19-1D")
+        mocked_resolve_sea_file.assert_called_once_with("WC19-1D")
         mocked_extract_depth.assert_called_once_with("platform-sea-file")
         self.assertEqual("海图水深为123.40 m，计算中使用的水位（m）如下所示。", result["blocks"][0]["text"])
 

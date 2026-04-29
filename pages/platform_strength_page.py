@@ -54,6 +54,7 @@ from services.file_db_adapter import (
 from pages.sacs_import_service import import_model_bundle_to_db
 
 from shiyou_db.runtime_db import get_mysql_url
+from shiyou_db.config import get_storage_root
 
 from collections import Counter
 
@@ -333,6 +334,15 @@ class PyVistaSacsView(QFrame):
             self._initial_parallel_scale = None
 
         self.plotter.render()
+
+    def export_current_view(self, output_path: str) -> str:
+        output = os.path.normpath(str(output_path or "").strip())
+        if not output:
+            return ""
+        os.makedirs(os.path.dirname(output), exist_ok=True)
+        self.plotter.render()
+        self.plotter.screenshot(output)
+        return output if os.path.exists(output) else ""
 
     def pan_view(self, x_value: int, y_value: int):
         dx_slider = x_value - self._last_pan_x
@@ -1268,6 +1278,8 @@ class PlatformStrengthPage(BasePage):
             return
 
         try:
+            overall_model_image_path = self._export_overall_model_image(facility_code)
+
             # 跳转前先把当前模型导入数据库
             job_name = self._prepare_current_model_job(model_path, facility_code)
         except Exception as e:
@@ -1293,6 +1305,7 @@ class PlatformStrengthPage(BasePage):
             page.env_branch = self._get_top_value("branch")
             page.env_op_company = self._get_top_value("op_company")
             page.env_oilfield = self._get_top_value("oilfield")
+            page.overall_model_image_path = overall_model_image_path
 
             # 保证保存按钮和后续创建新模型都用同一个 job_name / mysql_url
             page.job_name = job_name
@@ -1310,6 +1323,19 @@ class PlatformStrengthPage(BasePage):
                 mw.page_tab_map[key] = page
         else:
             QMessageBox.information(self, "提示", "未检测到主窗口Tab组件，无法打开页面。")
+
+    def _export_overall_model_image(self, facility_code: str) -> str:
+        code = (facility_code or "").strip()
+        if not code or not hasattr(self, "inp_view"):
+            return ""
+        try:
+            storage_root = os.path.normpath(str(get_storage_root() or "").strip())
+            if not storage_root:
+                return ""
+            output_path = os.path.join(storage_root, "image", code, "overall_model.png")
+            return self.inp_view.export_current_view(output_path)
+        except Exception:
+            return ""
 
     def _build_custom_legend(self) -> QWidget:
         w = QWidget(self)

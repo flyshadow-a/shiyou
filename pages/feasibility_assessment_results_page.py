@@ -64,7 +64,7 @@ from feasibility_analysis_services.oilfield_env_service import (
 )
 from services.inspection_business_db_adapter import load_facility_profile, list_inspection_projects
 from services.inspection_business_db_adapter import load_platform_load_information_items
-from services.file_db_adapter import DOC_MAN_MODULE_CODE, list_files_by_prefix
+from services.file_db_adapter import DOC_MAN_MODULE_CODE, list_files_by_prefix, resolve_storage_path
 
 
 from pages.sacs_storage_service import get_job_runtime_dir, get_job_sea_file
@@ -269,7 +269,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
     DEFAULT_REPORT_API_URL = "http://127.0.0.1:8000/generate-report"
 
     def __init__(self, main_window, facility_code, job_name="", mysql_url="", platform_overview_text="",
-                 inspection_record_summary_text="", env_branch="", env_op_company="", env_oilfield="", parent=None):
+                 inspection_record_summary_text="", env_branch="", env_op_company="", env_oilfield="",
+                 overall_model_image_path="", parent=None):
         if parent is None:
             parent = main_window
         super().__init__("", parent)
@@ -283,6 +284,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self.env_branch = str(env_branch or "").strip()
         self.env_op_company = str(env_op_company or "").strip()
         self.env_oilfield = str(env_oilfield or "").strip()
+        self.overall_model_image_path = str(overall_model_image_path or "").strip()
         self.current_tab = "构件"
 
         self._build_ui()
@@ -920,7 +922,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             "basis_data": self._build_basis_data_section(),
             "load_information": self._build_load_information_section(facility_profile),
             "environment_conditions": self._build_environment_conditions_section(),
-            "analysis_model": "",
+            "analysis_model": self._build_analysis_model_section(),
         }
 
         return {
@@ -928,6 +930,24 @@ class FeasibilityAssessmentResultsPage(BasePage):
             "output_filename": f"{self.facility_code}_可行性评估报告.docx",
             "chapter_1_3": chapter_1_3,
         }
+
+    def _build_analysis_model_section(self) -> dict:
+        section = {
+            "overall_model_image_path": self.overall_model_image_path,
+        }
+        directions = self._extract_environment_load_directions_from_seainp(
+            self._resolve_current_sea_file(self.facility_code)
+        )
+        if directions:
+            direction_text = "，".join(f"{direction}°" for direction in directions)
+            section["blocks"] = [
+                {
+                    "text": f"环境荷载计算{len(directions)}个方向，分别为 {direction_text}。波浪理论采用STOKS V。",
+                    "anchor_prefix": "环境荷载计算",
+                    "preserve_anchor_style": True,
+                }
+            ]
+        return section
 
     def _build_cover_platform_name(self, facility_profile: dict) -> str:
         facility_name = str(facility_profile.get("facility_name") or "").strip()
@@ -1035,6 +1055,47 @@ class FeasibilityAssessmentResultsPage(BasePage):
             },
             "load_information_rows": load_information_rows,
         }
+
+    def _resolve_current_sea_file(self, facility_code: str) -> str:
+        code = str(facility_code or "").strip()
+        if code:
+            prefixes = [
+                f"{code}/当前模型/结构模型/海况/用户上传/海况文件",
+                f"{code}/当前模型/结构模型/海况/用户上传",
+                f"{code}/当前模型/结构模型/海况",
+                f"{code}/当前模型/结构模型",
+            ]
+            candidates = []
+            for prefix in prefixes:
+                try:
+                    rows = list_files_by_prefix(
+                        module_code="model_files",
+                        logical_path_prefix=prefix,
+                        facility_code=code,
+                    )
+                except Exception:
+                    rows = []
+                if not rows:
+                    try:
+                        rows = list_files_by_prefix(
+                            module_code="model_files",
+                            logical_path_prefix=prefix,
+                            facility_code=None,
+                        )
+                    except Exception:
+                        rows = []
+                for row in rows:
+                    try:
+                        path = os.path.normpath(resolve_storage_path(row))
+                    except Exception:
+                        path = os.path.normpath(str(row.get("storage_path") or "").strip())
+                    name = os.path.basename(path).lower()
+                    if path and os.path.exists(path) and name.startswith("seainp"):
+                        candidates.append(path)
+            if candidates:
+                candidates.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+                return candidates[0]
+        return get_job_sea_file(code)
 
     def _iter_basis_data_logical_prefixes(self, path_segments: List[str]):
         normalized_segments = [str(segment or "").strip().strip("/\\") for segment in path_segments]
@@ -1205,7 +1266,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         )
         foundation_scour_text = self._extract_foundation_scour_text(pile_rows)
         chart_water_depth_text = self._extract_chart_water_depth_text_from_seainp(
-            get_job_sea_file(self.facility_code)
+            self._resolve_current_sea_file(self.facility_code)
         )
 
         if not (
@@ -1342,6 +1403,25 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 return ""
             return f"{value:.2f}"
         return ""
+
+    @classmethod
+    def _extract_environment_load_directions_from_seainp(cls, file_path: str) -> List[str]:
+        if not file_path or not os.path.exists(file_path):
+            return []
+
+        directions: List[str] = []
+        seen = set()
+        for raw_line in cls._read_text_lines_with_fallback(file_path):
+            line = raw_line.rstrip("\r\n")
+            upper_line = line.upper()
+            if not upper_line.startswith("WAVE") or "STRN" not in upper_line:
+                continue
+            direction = line[36:47].strip() or "0"
+            if direction in seen:
+                continue
+            seen.add(direction)
+            directions.append(direction)
+        return directions
 
     def _normalize_environment_row(self, row: dict) -> dict:
         return {
