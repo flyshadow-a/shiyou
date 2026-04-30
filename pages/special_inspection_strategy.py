@@ -6,14 +6,14 @@ import os
 import csv
 from typing import List, Tuple, Dict, Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QPushButton, QScrollArea, QSizePolicy, QLabel,
 
-    QDialog, QAbstractItemView, QMessageBox
+    QDialog, QAbstractItemView, QMessageBox, QApplication
 )
 from PyQt5.QtWidgets import QSlider
 from core.app_paths import first_existing_path
@@ -32,6 +32,7 @@ from services.special_strategy_services import (
 
 from pages.sacs_elevation_risk_view import SacsElevationRiskView
 from pages.platform_strength_page import PlatformStrengthPage
+from services.special_strategy_image_service import build_strategy_image_path, save_strategy_image_record
 
 NODE_YEAR_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]
 NODE_YEAR_CONTEXT_MAP = {
@@ -272,6 +273,22 @@ class SpecialInspectionStrategy(BasePage):
         self._active_run_id: int | None = None
         self._active_facility_code = ""
         self.current_year = self._year_mapper.default_display_label()
+        self._batch_exported_keys = set()
+
+        # 后台分步导出图片：每次只处理一张，避免一次性批量保存时卡死界面。
+        self._export_timer = QTimer(self)
+        self._export_timer.setInterval(10)
+        self._export_timer.timeout.connect(self._process_next_export_task)
+        self._export_tasks = []
+        self._export_index = 0
+        self._export_total = 0
+        self._export_view = None
+        self._export_context = None
+        self._export_facility_code = ""
+        self._export_run_id = None
+        self._export_key = None
+        self._export_workpoint_override = None
+        self._export_level_threshold_override = None
 
         self._excel_provider = ReadTableXls()
         self._excel_loaded = False
@@ -1005,6 +1022,7 @@ class SpecialInspectionStrategy(BasePage):
         self._fill_node_from_context(context, self.current_year)
 
         self._refresh_elevation_view(context)
+        self._schedule_export_all_elevation_images(context)
 
 
     def _fill_component_from_context(self, context: Dict):
@@ -1047,6 +1065,204 @@ class SpecialInspectionStrategy(BasePage):
 
         self._sync_dynamic_row_combo_from_view()
 
+        # 等待 QGraphicsScene 完成刷新后导出图片并写入数据库。
+        QTimer.singleShot(150, self._save_current_elevation_image)
+
+
+    def _save_current_elevation_image(self):
+        """导出当前右侧模型立面风险图，并把图片路径写入数据库。"""
+        if not hasattr(self, "elevation_view"):
+            return
+
+        facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
+        if not facility_code:
+            return
+
+        row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前"
+        if not row_name:
+            row_name = "XZ 前"
+
+        try:
+            # 特检策略主页是轮廓图，不随年份变化；year_label=None，避免生成“当前/+5年...”目录。
+            image_path = build_strategy_image_path(
+                facility_code=facility_code,
+                run_id=self._active_run_id,
+                page_code="special_inspection_strategy",
+                image_type="elevation_risk",
+                year_label=None,
+                row_name=row_name,
+            )
+            saved_path = self.elevation_view.export_current_scene_to_png(str(image_path))
+            save_strategy_image_record(
+                facility_code=facility_code,
+                run_id=self._active_run_id,
+                page_code="special_inspection_strategy",
+                image_type="elevation_risk",
+                year_label=None,
+                row_name=row_name,
+                image_path=saved_path,
+                remark="特检策略主页轮廓图（不区分年份）",
+            )
+            print("[SpecialInspectionStrategy] outline image saved:", saved_path)
+        except Exception as exc:
+            # 图片导出失败不应影响页面显示。
+            print("[SpecialInspectionStrategy] save elevation image failed:", exc)
+
+    def _batch_export_key(self, facility_code: str, run_id: int | None, context: Optional[Dict]) -> tuple:
+        state = (context or {}).get("state") if isinstance(context, dict) else {}
+        if not isinstance(state, dict):
+            state = {}
+        source_key = (
+            str(state.get("intermediate_workbook") or "")
+            or str((context or {}).get("intermediate_workbook") or "")
+            or str((context or {}).get("source_workbook") or "")
+        )
+        return ("special_inspection_strategy", str(facility_code or ""), int(run_id) if run_id else 0, source_key)
+
+    def _schedule_export_all_elevation_images(self, context: Optional[Dict]):
+        """异步批量导出特检策略主页轮廓图，不阻塞界面。"""
+        if not context:
+            return
+
+        facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
+        if not facility_code:
+            return
+
+        run_id = self._active_run_id
+        key = self._batch_export_key(facility_code, run_id, context)
+        if key in self._batch_exported_keys:
+            return
+
+        # 正在导出时不重复启动，避免多个离屏视图同时写文件。
+        if self._export_timer.isActive():
+            return
+
+        self._batch_exported_keys.add(key)
+
+        try:
+            self._export_context = dict(context)
+            self._export_facility_code = facility_code
+            self._export_run_id = run_id
+            self._export_key = key
+
+            self._export_workpoint_override, self._export_level_threshold_override = self._get_shared_section_params(context)
+
+            # 使用独立的离屏视图导出，不影响用户当前正在看的 self.elevation_view。
+            self._export_view = SacsElevationRiskView()
+            self._export_view.resize(900, 900)
+
+            self._export_view.clear_inspection_overlay()
+            self._export_view.load_for_facility(
+                facility_code=facility_code,
+                context=self._export_context,
+                year_label=self.current_year,
+                row_name="XZ 前",
+                workpoint_override=self._export_workpoint_override,
+                level_threshold_override=self._export_level_threshold_override,
+            )
+            QApplication.processEvents()
+
+            row_names = self._export_view.available_row_names()
+            if not row_names:
+                row_names = ["XZ 前", "XZ 后", "YZ 左", "YZ 右"]
+
+            # 主页轮廓图不区分年份，只按面名导出一套。
+            self._export_tasks = [{"row_name": row_name} for row_name in row_names]
+            self._export_index = 0
+            self._export_total = len(self._export_tasks)
+
+            if self._export_total <= 0:
+                self._finish_async_export()
+                return
+
+            print(f"[SpecialInspectionStrategy] start async outline export, total={self._export_total}")
+            self._export_timer.start()
+
+        except Exception as exc:
+            if key is not None:
+                self._batch_exported_keys.discard(key)
+            print("[SpecialInspectionStrategy] schedule async outline export failed:", exc)
+            self._finish_async_export()
+
+    def _process_next_export_task(self):
+        """每次只导出一张图，处理完立即把控制权还给 Qt 事件循环。"""
+        if self._export_index >= self._export_total:
+            self._finish_async_export()
+            return
+
+        if self._export_view is None or not self._export_context or not self._export_facility_code:
+            self._finish_async_export()
+            return
+
+        task = self._export_tasks[self._export_index]
+        row_name = str(task.get("row_name") or "XZ 前").strip() or "XZ 前"
+
+        try:
+            self._export_view.clear_inspection_overlay()
+            self._export_view.load_for_facility(
+                facility_code=self._export_facility_code,
+                context=self._export_context,
+                year_label=self.current_year,
+                row_name=row_name,
+                workpoint_override=self._export_workpoint_override,
+                level_threshold_override=self._export_level_threshold_override,
+            )
+            QApplication.processEvents()
+
+            image_path = build_strategy_image_path(
+                facility_code=self._export_facility_code,
+                run_id=self._export_run_id,
+                page_code="special_inspection_strategy",
+                image_type="elevation_risk",
+                year_label=None,   # 主页轮廓图不按年份保存
+                row_name=row_name,
+            )
+            saved_path = self._export_view.export_current_scene_to_png(str(image_path))
+
+            save_strategy_image_record(
+                facility_code=self._export_facility_code,
+                run_id=self._export_run_id,
+                page_code="special_inspection_strategy",
+                image_type="elevation_risk",
+                year_label=None,
+                row_name=row_name,
+                image_path=saved_path,
+                remark="特检策略主页异步导出轮廓图（不区分年份）",
+            )
+
+            self._export_index += 1
+            print(f"[SpecialInspectionStrategy] async outline export progress: {self._export_index}/{self._export_total}")
+
+        except Exception as exc:
+            print(f"[SpecialInspectionStrategy] async outline export failed: row={row_name}, err={exc}")
+            self._export_index += 1
+
+    def _finish_async_export(self):
+        """结束异步导出并清理离屏视图。"""
+        try:
+            if self._export_timer.isActive():
+                self._export_timer.stop()
+        except Exception:
+            pass
+
+        if self._export_view is not None:
+            try:
+                self._export_view.deleteLater()
+            except Exception:
+                pass
+
+        self._export_tasks = []
+        self._export_index = 0
+        self._export_total = 0
+        self._export_view = None
+        self._export_context = None
+        self._export_facility_code = ""
+        self._export_run_id = None
+        self._export_key = None
+        self._export_workpoint_override = None
+        self._export_level_threshold_override = None
+
+        print("[SpecialInspectionStrategy] async outline export finished")
 
     def _fill_rows(self, table: QTableWidget, rows: List[Tuple[str, str, str, str]]):
         for r, row in enumerate(rows):

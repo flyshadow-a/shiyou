@@ -5,7 +5,7 @@ import os
 from typing import Dict, List, Tuple, Optional
 
 from PyQt5.QtCore import Qt, QRectF, QTimer, QPointF
-from PyQt5.QtGui import QBrush, QColor, QPainter, QPen, QFont
+from PyQt5.QtGui import QBrush, QColor, QPainter, QPen, QFont, QImage
 from PyQt5.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsLineItem,
@@ -152,21 +152,17 @@ class SacsElevationRiskView(QGraphicsView):
         self._node_items_by_joint = {}
         self._placed_label_rects = []
 
-        # ===== 检验等级标注显示策略（防止图中过密）=====
-        # 构件默认只显示 IV 的文字牌；II/III 只保留颜色线条。
-        self._member_badge_levels = {"IV"}
-
-        # 节点默认显示 III/IV 的文字牌；II 只保留颜色点。
+        # ===== 检验等级标注显示策略（避免图面过密）=====
+        # II：只改变颜色，不显示文字牌；III/IV：显示文字牌。
+        self._member_badge_levels = {"III", "IV"}
         self._node_badge_levels = {"III", "IV"}
 
-        # 不同等级的最小抽稀距离（scene 坐标，值越大越稀疏）。
+        # 文字牌抽稀距离，避免同一区域密集堆叠。
         self._badge_min_gap = {
             "II": 46.0,
             "III": 34.0,
             "IV": 24.0,
         }
-
-        # 已经放置的文字牌中心点，用于做距离抽稀。
         self._placed_badge_centers = []
 
         self._visible_projected_members = []
@@ -226,6 +222,41 @@ class SacsElevationRiskView(QGraphicsView):
         cy = self._initial_scene_rect.center().y() - max_dy * (y_value / 100.0)
 
         self.centerOn(QPointF(cx, cy))
+
+    def export_current_scene_to_png(self, file_path: str, margin: int = 24) -> str:
+        """把当前 QGraphicsScene 导出为 PNG 图片。"""
+        if self.scene() is None:
+            raise ValueError("当前没有可导出的图形场景")
+
+        rect = self.scene().itemsBoundingRect()
+        if (not rect.isValid()) or rect.isNull():
+            rect = self.scene().sceneRect()
+        if (not rect.isValid()) or rect.isNull():
+            raise ValueError("当前没有可导出的立面风险图")
+
+        rect = rect.adjusted(-margin, -margin, margin, margin)
+        width = max(1, int(rect.width()))
+        height = max(1, int(rect.height()))
+
+        image = QImage(width, height, QImage.Format_ARGB32)
+        image.fill(Qt.white)
+
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        self.scene().render(
+            painter,
+            target=QRectF(0, 0, width, height),
+            source=rect,
+        )
+        painter.end()
+
+        folder = os.path.dirname(os.path.normpath(file_path))
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        if not image.save(file_path, "PNG"):
+            raise IOError(f"保存图片失败：{file_path}")
+        return os.path.normpath(file_path)
+
     def _show_hover_info(self, _text: str = ""):
         if self._info_label is None:
             return
@@ -498,13 +529,16 @@ class SacsElevationRiskView(QGraphicsView):
 
     def _inspection_color(self, level: str) -> QColor:
         text = str(level or "").strip().upper()
+        # II 只用颜色表达，为了和黑色结构线、III/IV 区分，使用偏蓝色。
         if text == "II":
-            return QColor("#f2c94c")
+            return QColor("#2D9CDB")
+        # III 使用橙色，IV 使用红色，风险/检验等级越高越醒目。
         if text == "III":
-            return QColor("#f2994a")
+            return QColor("#F2994A")
         if text == "IV":
-            return QColor("#eb5757")
+            return QColor("#EB5757")
         return QColor("#5c6470")
+
 
 
     def _append_projected_member(self, bucket, joint_a: str, joint_b: str, p1, p2):
@@ -534,7 +568,6 @@ class SacsElevationRiskView(QGraphicsView):
             member_type = str(first.get("member_type", "")).strip()
             risk_level = str(first.get("risk_level", "")).strip()
             time_node = str(first.get("time_node", "")).strip()
-
             parts = [f"构件: {joint_a} - {joint_b}"]
             if member_type:
                 parts.append(f"类型: {member_type}")
@@ -544,9 +577,7 @@ class SacsElevationRiskView(QGraphicsView):
             if time_node:
                 parts.append(f"时间: {time_node}")
             return "\n".join(parts)
-
         return f"构件检验等级: {level}"
-
 
     def _badge_tooltip_for_node(self, joint_id: str, level: str) -> str:
         rows = self._node_items_by_joint.get(str(joint_id).strip(), []) or []
@@ -556,7 +587,6 @@ class SacsElevationRiskView(QGraphicsView):
             joint_type = str(first.get("joint_type", "")).strip()
             risk_level = str(first.get("risk_level", "")).strip()
             time_node = str(first.get("time_node", "")).strip()
-
             parts = [f"节点: {joint_id}"]
             if brace:
                 parts.append(f"Brace: {brace}")
@@ -568,27 +598,19 @@ class SacsElevationRiskView(QGraphicsView):
             if time_node:
                 parts.append(f"时间: {time_node}")
             return "\n".join(parts)
-
         return f"节点 {joint_id}\n检验等级: {level}"
 
-
     def _can_place_badge(self, x: float, y: float, level: str) -> bool:
-        """
-        按文字牌中心点做距离抽稀，避免同一区域出现大量 II/III/IV 文字牌。
-        颜色线条/颜色点仍然会保留，只是不重复显示文字。
-        """
+        """按文字牌中心距离抽稀，避免 III/IV 文字牌密集堆叠。"""
         min_gap = float(self._badge_min_gap.get(str(level).upper(), 30.0))
         min_gap2 = min_gap * min_gap
-
         for px, py in self._placed_badge_centers:
             dx = x - px
             dy = y - py
             if dx * dx + dy * dy < min_gap2:
                 return False
-
         self._placed_badge_centers.append((x, y))
         return True
-
 
     def _draw_inspection_overlay(self):
         if not self._inspection_overlay_enabled:
@@ -597,7 +619,7 @@ class SacsElevationRiskView(QGraphicsView):
         self._placed_label_rects = []
         self._placed_badge_centers = []
 
-        # ---------- 先画构件：全量着色，重点打文字牌 ----------
+        # ---------- 构件：II/III/IV 全量着色，只有 III/IV 显示文字牌 ----------
         drawn_member_keys = set()
 
         for seg in self._visible_projected_members:
@@ -619,20 +641,19 @@ class SacsElevationRiskView(QGraphicsView):
             tooltip = self._badge_tooltip_for_member(key, level)
 
             line = RiskMemberItem(p1[0], p1[1], p2[0], p2[1], tooltip=tooltip)
-            pen_width = 1.6 if level == "II" else (2.0 if level == "III" else 2.6)
+            pen_width = 1.4 if level == "II" else (2.0 if level == "III" else 2.6)
             line.setPen(QPen(color, pen_width))
             line.setZValue(40)
             self._scene.addItem(line)
 
-            # 默认只给 IV 构件打文字牌，II/III 用颜色表达，避免画面拥挤。
+            # II 只改变颜色，不画文字牌；III/IV 才画文字牌。
             if level in self._member_badge_levels:
                 mx = (p1[0] + p2[0]) / 2.0
                 my = (p1[1] + p2[1]) / 2.0
-
                 if self._can_place_badge(mx, my, level):
                     self._draw_level_badge_no_overlap(mx, my, level, color)
 
-        # ---------- 再画节点：全量着色，III/IV 重点标注 ----------
+        # ---------- 节点：II/III/IV 全量着色，只有 III/IV 显示文字牌 ----------
         for joint_id, scene_pt in self._visible_projected_nodes.items():
             joint_id = str(joint_id).strip()
             level = str(self._node_inspect_level_map.get(joint_id, "")).strip().upper()
@@ -641,7 +662,7 @@ class SacsElevationRiskView(QGraphicsView):
 
             color = self._inspection_color(level)
             x, y = scene_pt
-            r = 2.8 if level == "II" else (3.2 if level == "III" else 3.8)
+            r = 2.8 if level == "II" else (3.4 if level == "III" else 4.0)
             tooltip = self._badge_tooltip_for_node(joint_id, level)
 
             dot = RiskNodeItem(QRectF(x - r, y - r, 2 * r, 2 * r), tooltip=tooltip)
@@ -650,25 +671,24 @@ class SacsElevationRiskView(QGraphicsView):
             dot.setZValue(60)
             self._scene.addItem(dot)
 
-            # 默认只给节点 III/IV 打文字牌，II 仅显示颜色点。
+            # II 只改变颜色，不画文字牌；III/IV 才画文字牌。
             if level in self._node_badge_levels:
                 if self._can_place_badge(x, y, level):
                     self._draw_level_badge_no_overlap(x, y, level, color)
 
-
     def _draw_level_badge_no_overlap(self, x: float, y: float, level: str, color: QColor):
         text_item = QGraphicsSimpleTextItem(level)
-        text_item.setFont(QFont("Arial", 7, QFont.Bold))
+        text_item.setFont(QFont("Arial", 8, QFont.Bold))
         br = text_item.boundingRect()
 
         # 尝试几个偏移位置
         candidates = [
-            (10, -20),
-            (10, 8),
-            (-28, -20),
-            (-28, 8),
-            (16, -34),
-            (-34, -34),
+            (8, -18),
+            (8, 6),
+            (-24, -18),
+            (-24, 6),
+            (14, -30),
+            (-30, -30),
         ]
 
         for dx, dy in candidates:
@@ -691,7 +711,7 @@ class SacsElevationRiskView(QGraphicsView):
             bg.setZValue(49)
 
             text_item = QGraphicsSimpleTextItem(level)
-            text_item.setFont(QFont("Arial", 7, QFont.Bold))
+            text_item.setFont(QFont("Arial", 8, QFont.Bold))
             text_item.setBrush(QBrush(QColor("#ffffff")))
             text_item.setPos(rect.x() + 4, rect.y() + 2)
             text_item.setZValue(50)

@@ -6,16 +6,16 @@ from typing import Any
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea,
-    QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider
+    QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider, QApplication
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 
 from core.base_page import BasePage
 from services.special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService
 from pages.sacs_elevation_risk_view import SacsElevationRiskView
 from services.special_strategy_inspection_overlay_service import load_strategy_inspection_overlay
-
+from services.special_strategy_image_service import build_strategy_image_path, save_strategy_image_record
 
 NODE_SUMMARY_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]
 NODE_SUMMARY_CONTEXT_MAP = {
@@ -30,6 +30,7 @@ NODE_SUMMARY_CONTEXT_MAP = {
 
 class PlanDiagram(QWidget):
     """右侧黑底平面示意图占位：绿线框架 + 红点/绿点节点（示例）。"""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(320, 640)
@@ -146,8 +147,20 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self.current_year = self._year_mapper.default_display_label()
         self._overlay_bundle = {}
         self._result_bundle = {}
+        self._batch_exported_keys = set()
 
         super().__init__("", parent)
+
+        # 后台分步导出图片：每次只处理一张，避免一次性批量保存时卡死界面。
+        self._export_timer = QTimer(self)
+        self._export_timer.setInterval(10)
+        self._export_timer.timeout.connect(self._process_next_export_task)
+        self._export_tasks = []
+        self._export_index = 0
+        self._export_total = 0
+        self._export_view = None
+        self._export_context = None
+        self._export_key = None
 
         self._build_ui()
         self._load_result_data()
@@ -285,7 +298,6 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         node_l.addWidget(self.table_node, 3)
         node_l.addWidget(self.summary_node, 2)
 
-
         self.tabs.addTab(comp_wrap, "构件风险等级")
         self.tabs.addTab(node_wrap, "节点风险等级")
 
@@ -326,7 +338,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         t.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # 列宽：用 Stretch（和你现有实现一致）
-        #t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        # t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
         # ---- row 0: group headers ----
         hdr_bg = QColor("#f3f6fb")
@@ -436,17 +448,10 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             t.setSpan(r * 4, 0, 1, 6)
             self._set_cell(t, r * 4, 0, text, green, True)
 
-
-
-
-
-
-
         # Year blocks
         green = QColor("#cfe6b8")
         for i, _year in enumerate(labels):
             base_r = 1 + i * 4
-
 
             # row base_r: year label + risk headers
             # self._set_cell(t, base_r, 0, year, green, True)
@@ -471,7 +476,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 self._set_cell(t, base_r + 1, 1 + k, "", None, False)
 
             # row base_r+3: 占比
-            self._set_cell(t, base_r +2 , 0, "占比", QColor("#e3e7ef"), True)
+            self._set_cell(t, base_r + 2, 0, "占比", QColor("#e3e7ef"), True)
             for k in range(5):
                 self._set_cell(t, base_r + 2, 1 + k, "", None, False)
 
@@ -481,7 +486,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             t.setRowHeight(base_r + 2, 24)
 
         t.setRowHeight(0, 26)
-        
+
         # 动态计算表格实际需要的高度并固定死
         total_h = t.frameWidth() * 2 + 2
         for r in range(t.rowCount()):
@@ -695,9 +700,212 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             if hasattr(self.elevation_view, "set_inspection_overlay"):
                 self.elevation_view.set_inspection_overlay(self._overlay_bundle)
 
+            # 等待 QGraphicsScene 完成刷新后导出图片并写入数据库。
+            QTimer.singleShot(180, self._save_current_elevation_image)
+
         except Exception as exc:
             print("[UpgradeSpecialInspectionResultPage] refresh elevation failed:", exc)
             self.elevation_view._draw_message(f"立面图加载失败：{exc}")
+
+    def _save_current_elevation_image(self):
+        """导出当前右侧模型立面风险图，并把图片路径写入数据库。"""
+        if not hasattr(self, "elevation_view"):
+            return
+
+        row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前"
+        if not row_name:
+            row_name = "XZ 前"
+
+        try:
+            image_path = build_strategy_image_path(
+                facility_code=self.facility_code,
+                run_id=self.run_id,
+                page_code="upgrade_special_inspection_result",
+                image_type="elevation_risk",
+                year_label=self.current_year,
+                row_name=row_name,
+            )
+            saved_path = self.elevation_view.export_current_scene_to_png(str(image_path))
+            save_strategy_image_record(
+                facility_code=self.facility_code,
+                run_id=self.run_id,
+                page_code="upgrade_special_inspection_result",
+                image_type="elevation_risk",
+                year_label=self.current_year,
+                row_name=row_name,
+                image_path=saved_path,
+                remark="更新风险结果页模型立面风险图",
+            )
+            print("[UpgradeSpecialInspectionResultPage] elevation image saved:", saved_path)
+        except Exception as exc:
+            # 图片导出失败不应影响页面显示。
+            print("[UpgradeSpecialInspectionResultPage] save elevation image failed:", exc)
+
+    def _batch_export_key(self, context: dict | None) -> tuple:
+        state = (self._result_bundle or {}).get("state") or (
+            (context or {}).get("state") if isinstance(context, dict) else {})
+        if not isinstance(state, dict):
+            state = {}
+        source_key = (
+                str(state.get("intermediate_workbook") or "")
+                or str((context or {}).get("intermediate_workbook") or "")
+                or str((context or {}).get("source_workbook") or "")
+        )
+        return (
+        "upgrade_special_inspection_result", str(self.facility_code or ""), int(self.run_id) if self.run_id else 0,
+        source_key)
+
+    def _schedule_export_all_elevation_images(self, context: dict | None):
+        """结果页异步批量导出所有年份/所有面，不阻塞界面。"""
+        if not context:
+            return
+
+        key = self._batch_export_key(context)
+        if key in self._batch_exported_keys:
+            return
+
+        # 正在导出时不重复启动，避免多个离屏视图同时写文件。
+        if self._export_timer.isActive():
+            return
+
+        self._batch_exported_keys.add(key)
+
+        try:
+            self._export_context = dict(context)
+            self._export_key = key
+
+            # 使用独立的离屏视图导出，不影响用户当前正在看的 self.elevation_view。
+            self._export_view = SacsElevationRiskView()
+            self._export_view.resize(900, 900)
+
+            self._export_view.clear_inspection_overlay()
+            self._export_view.load_for_facility(
+                facility_code=self.facility_code,
+                context=self._export_context,
+                year_label=self.current_year,
+                row_name="XZ 前",
+            )
+            QApplication.processEvents()
+
+            row_names = self._export_view.available_row_names()
+            if not row_names:
+                row_names = ["XZ 前", "XZ 后", "YZ 左", "YZ 右"]
+
+            year_labels = self._year_mapper.display_labels()
+
+            tasks = []
+            for year_label in year_labels:
+                for row_name in row_names:
+                    tasks.append({
+                        "year_label": year_label,
+                        "row_name": row_name,
+                    })
+
+            self._export_tasks = tasks
+            self._export_index = 0
+            self._export_total = len(self._export_tasks)
+
+            if self._export_total <= 0:
+                self._finish_async_export()
+                return
+
+            print(f"[UpgradeSpecialInspectionResultPage] start async risk image export, total={self._export_total}")
+            self._export_timer.start()
+
+        except Exception as exc:
+            if key is not None:
+                self._batch_exported_keys.discard(key)
+            print("[UpgradeSpecialInspectionResultPage] schedule async risk image export failed:", exc)
+            self._finish_async_export()
+
+    def _process_next_export_task(self):
+        """每次只导出一张带标注图，导完一张就让界面继续响应。"""
+        if self._export_index >= self._export_total:
+            self._finish_async_export()
+            return
+
+        if self._export_view is None or not self._export_context:
+            self._finish_async_export()
+            return
+
+        task = self._export_tasks[self._export_index]
+        year_label = str(task.get("year_label") or self.current_year).strip() or self.current_year
+        row_name = str(task.get("row_name") or "XZ 前").strip() or "XZ 前"
+
+        try:
+            try:
+                overlay = load_strategy_inspection_overlay(
+                    self.facility_code,
+                    run_id=self.run_id,
+                    display_year=year_label,
+                )
+            except Exception as exc:
+                print("[UpgradeSpecialInspectionResultPage] load async overlay failed:", year_label, exc)
+                overlay = {}
+
+            self._export_view.clear_inspection_overlay()
+            self._export_view.load_for_facility(
+                facility_code=self.facility_code,
+                context=self._export_context,
+                year_label=year_label,
+                row_name=row_name,
+            )
+            if hasattr(self._export_view, "set_inspection_overlay"):
+                self._export_view.set_inspection_overlay(overlay)
+            QApplication.processEvents()
+
+            image_path = build_strategy_image_path(
+                facility_code=self.facility_code,
+                run_id=self.run_id,
+                page_code="upgrade_special_inspection_result",
+                image_type="elevation_risk",
+                year_label=year_label,
+                row_name=row_name,
+            )
+            saved_path = self._export_view.export_current_scene_to_png(str(image_path))
+
+            save_strategy_image_record(
+                facility_code=self.facility_code,
+                run_id=self.run_id,
+                page_code="upgrade_special_inspection_result",
+                image_type="elevation_risk",
+                year_label=year_label,
+                row_name=row_name,
+                image_path=saved_path,
+                remark="更新风险结果页异步导出模型立面风险图",
+            )
+
+            self._export_index += 1
+            print(
+                f"[UpgradeSpecialInspectionResultPage] async risk image export progress: {self._export_index}/{self._export_total}")
+
+        except Exception as exc:
+            print(
+                f"[UpgradeSpecialInspectionResultPage] async risk image export failed: year={year_label}, row={row_name}, err={exc}")
+            self._export_index += 1
+
+    def _finish_async_export(self):
+        """结束异步导出并清理离屏视图。"""
+        try:
+            if self._export_timer.isActive():
+                self._export_timer.stop()
+        except Exception:
+            pass
+
+        if self._export_view is not None:
+            try:
+                self._export_view.deleteLater()
+            except Exception:
+                pass
+
+        self._export_tasks = []
+        self._export_index = 0
+        self._export_total = 0
+        self._export_view = None
+        self._export_context = None
+        self._export_key = None
+
+        print("[UpgradeSpecialInspectionResultPage] async risk image export finished")
 
     def _load_result_data(self):
         bundle = self._result_service.load_result_bundle(self.facility_code, self.run_id)
@@ -727,6 +935,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             display_year=self.current_year,
         )
         self._refresh_elevation_view()
+        self._schedule_export_all_elevation_images(context)
 
     def _set_detail_rows(self, table: QTableWidget, rows: list[dict[str, str]], *, is_node: bool):
         start = self.HEADER_ROWS
@@ -784,7 +993,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 table.setItem(base_r + 2, 1 + k, QTableWidgetItem(""))
                 table.item(base_r + 2, 1 + k).setTextAlignment(Qt.AlignCenter)
 
-    def _fill_summary_block(self, table: QTableWidget, block_index: int, counts: dict[str, Any], ratios: dict[str, Any]):
+    def _fill_summary_block(self, table: QTableWidget, block_index: int, counts: dict[str, Any],
+                            ratios: dict[str, Any]):
         base_r = 1 + block_index * 4
         for k, risk in enumerate(self.RISK_LABELS):
             count_item = QTableWidgetItem(self._display_cell(counts.get(risk, "")))
