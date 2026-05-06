@@ -869,12 +869,8 @@ class SacsElevationRiskView(QGraphicsView):
         root = self._project_root()
         strategy_root = os.path.join(root, "pages", "output_special_strategy")
         candidates = [
-            os.path.join(strategy_root, "检验策略- wc19-1d-10.30.xlsm"),
-            os.path.join(strategy_root, "wc19_1d_compare_source.xlsm"),
-            os.path.join(strategy_root, "wc19_1d_source.xlsm"),
-            os.path.join(root, "检验策略- wc19-1d-10.30.xlsm"),
-            os.path.join(root, "检验策略-wc19-1d-10.30.xlsm"),
-            os.path.join(root, "检验策略_wc19-1d-10.30.xlsm"),
+            os.path.join(strategy_root, "special_strategy_template.xlsm"),
+            os.path.join(root, "special_strategy_template.xlsm"),
         ]
         for p in candidates:
             if os.path.exists(p):

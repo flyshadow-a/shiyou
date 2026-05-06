@@ -15,6 +15,8 @@ from typing import Any
 
 from jinja2 import Environment, StrictUndefined
 from openpyxl import load_workbook
+import pythoncom
+import win32com.client
 import xml.etree.ElementTree as ET
 
 
@@ -25,6 +27,43 @@ NS = {
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
 STD_NORM = NormalDist()
+WORD_NAMESPACE_PREFIXES = {
+    "wpc": "http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas",
+    "cx": "http://schemas.microsoft.com/office/drawing/2014/chartex",
+    "cx1": "http://schemas.microsoft.com/office/drawing/2015/9/8/chartex",
+    "cx2": "http://schemas.microsoft.com/office/drawing/2015/10/21/chartex",
+    "cx3": "http://schemas.microsoft.com/office/drawing/2016/5/9/chartex",
+    "cx4": "http://schemas.microsoft.com/office/drawing/2016/5/10/chartex",
+    "cx5": "http://schemas.microsoft.com/office/drawing/2016/5/11/chartex",
+    "cx6": "http://schemas.microsoft.com/office/drawing/2016/5/12/chartex",
+    "cx7": "http://schemas.microsoft.com/office/drawing/2016/5/13/chartex",
+    "cx8": "http://schemas.microsoft.com/office/drawing/2016/5/14/chartex",
+    "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
+    "aink": "http://schemas.microsoft.com/office/drawing/2016/ink",
+    "am3d": "http://schemas.microsoft.com/office/drawing/2017/model3d",
+    "o": "urn:schemas-microsoft-com:office:office",
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+    "v": "urn:schemas-microsoft-com:vml",
+    "wp14": "http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing",
+    "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+    "w10": "urn:schemas-microsoft-com:office:word",
+    "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    "w14": "http://schemas.microsoft.com/office/word/2010/wordml",
+    "w15": "http://schemas.microsoft.com/office/word/2012/wordml",
+    "w16cex": "http://schemas.microsoft.com/office/word/2018/wordml/cex",
+    "w16cid": "http://schemas.microsoft.com/office/word/2016/wordml/cid",
+    "w16": "http://schemas.microsoft.com/office/word/2018/wordml",
+    "w16du": "http://schemas.microsoft.com/office/word/2023/wordml/word16du",
+    "w16sdtdh": "http://schemas.microsoft.com/office/word/2020/wordml/sdtdatahash",
+    "w16sdtfl": "http://schemas.microsoft.com/office/word/2024/wordml/sdtformatlock",
+    "w16se": "http://schemas.microsoft.com/office/word/2015/wordml/symex",
+    "wpg": "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup",
+    "wpi": "http://schemas.microsoft.com/office/word/2010/wordprocessingInk",
+    "wne": "http://schemas.microsoft.com/office/word/2006/wordml",
+    "wps": "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
+    "sl": "http://schemas.openxmlformats.org/schemaLibrary/2006/main",
+}
 
 
 @dataclass(frozen=True)
@@ -250,6 +289,12 @@ def to_text(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:.2f}"
     return str(value).strip()
+
+
+def register_word_namespaces() -> None:
+    ET.register_namespace("", REL_NS)
+    for prefix, uri in WORD_NAMESPACE_PREFIXES.items():
+        ET.register_namespace(prefix, uri)
 
 
 def to_scientific_text(value: Any, digits: int = 2) -> str:
@@ -1713,14 +1758,200 @@ def get_table_list(document_root: ET.Element) -> list[ET.Element]:
     return [child for child in body if child.tag.endswith("tbl")]
 
 
+def ensure_update_fields_on_open(settings_root: ET.Element) -> None:
+    node = settings_root.find("w:updateFields", NS)
+    if node is None:
+        node = ET.SubElement(settings_root, f"{{{NS['w']}}}updateFields")
+    node.set(f"{{{NS['w']}}}val", "true")
+
+
+def _paragraph_style_value(paragraph: ET.Element) -> str:
+    style = paragraph.find("./w:pPr/w:pStyle", NS)
+    if style is None:
+        return ""
+    return style.get(f"{{{NS['w']}}}val", "")
+
+
+def _paragraph_has_field(paragraph: ET.Element, keyword: str) -> bool:
+    instr_nodes = paragraph.findall(".//w:instrText", NS)
+    if not instr_nodes:
+        return False
+    return any(keyword in "".join(node.itertext()) for node in instr_nodes)
+
+
+def _is_toc_related_paragraph(paragraph: ET.Element) -> bool:
+    style_value = _paragraph_style_value(paragraph)
+    if style_value.startswith("TOC"):
+        return True
+    if _paragraph_has_field(paragraph, "TOC"):
+        return True
+    if _paragraph_has_field(paragraph, "PAGEREF _Toc"):
+        return True
+    return False
+
+
+def create_toc_field_paragraph() -> ET.Element:
+    paragraph = ET.Element(f"{{{NS['w']}}}p")
+    paragraph_pr = ET.SubElement(paragraph, f"{{{NS['w']}}}pPr")
+    ET.SubElement(paragraph_pr, f"{{{NS['w']}}}spacing", {
+        f"{{{NS['w']}}}after": "0",
+        f"{{{NS['w']}}}line": "300",
+        f"{{{NS['w']}}}lineRule": "auto",
+    })
+
+    run_begin = ET.SubElement(paragraph, f"{{{NS['w']}}}r")
+    ET.SubElement(
+        run_begin,
+        f"{{{NS['w']}}}fldChar",
+        {
+            f"{{{NS['w']}}}fldCharType": "begin",
+            f"{{{NS['w']}}}dirty": "true",
+        },
+    )
+
+    run_instr = ET.SubElement(paragraph, f"{{{NS['w']}}}r")
+    instr = ET.SubElement(run_instr, f"{{{NS['w']}}}instrText")
+    instr.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    instr.text = ' TOC \\o "1-3" \\h \\z \\u '
+
+    run_separate = ET.SubElement(paragraph, f"{{{NS['w']}}}r")
+    ET.SubElement(run_separate, f"{{{NS['w']}}}fldChar", {f"{{{NS['w']}}}fldCharType": "separate"})
+
+    placeholder_run = ET.SubElement(paragraph, f"{{{NS['w']}}}r")
+    placeholder_text = ET.SubElement(placeholder_run, f"{{{NS['w']}}}t")
+    placeholder_text.text = "目录将在打开文档后自动更新"
+
+    run_end = ET.SubElement(paragraph, f"{{{NS['w']}}}r")
+    ET.SubElement(run_end, f"{{{NS['w']}}}fldChar", {f"{{{NS['w']}}}fldCharType": "end"})
+    return paragraph
+
+
+def rebuild_toc_field(document_root: ET.Element) -> None:
+    body = document_root.find("w:body", NS)
+    if body is None:
+        return
+
+    children = list(body)
+    heading_idx = -1
+    for idx, child in enumerate(children):
+        if not child.tag.endswith("p"):
+            continue
+        if normalize_lookup_text(paragraph_text(child)) == "目录":
+            heading_idx = idx
+            break
+    if heading_idx < 0:
+        return
+
+    remove_targets: list[ET.Element] = []
+    for child in children[heading_idx + 1 :]:
+        if not child.tag.endswith("p"):
+            break
+        if not _is_toc_related_paragraph(child):
+            break
+        remove_targets.append(child)
+
+    for paragraph in remove_targets:
+        body.remove(paragraph)
+
+    toc_field = create_toc_field_paragraph()
+    insert_pos = heading_idx + 1
+    body.insert(insert_pos, toc_field)
+
+
+def sanitize_markup_compatibility(document_root: ET.Element) -> None:
+    mc_uri = WORD_NAMESPACE_PREFIXES["mc"]
+    ignorable_key = f"{{{mc_uri}}}Ignorable"
+    ignorable_value = str(document_root.attrib.get(ignorable_key, "") or "").strip()
+    if not ignorable_value:
+        return
+
+    used_uris: set[str] = set()
+    for element in document_root.iter():
+        if element.tag.startswith("{"):
+            used_uris.add(element.tag.split("}", 1)[0][1:])
+        for attr_name in element.attrib:
+            if attr_name.startswith("{"):
+                used_uris.add(attr_name.split("}", 1)[0][1:])
+
+    filtered_prefixes = [
+        prefix
+        for prefix in ignorable_value.split()
+        if WORD_NAMESPACE_PREFIXES.get(prefix) in used_uris
+    ]
+    if filtered_prefixes:
+        document_root.set(ignorable_key, " ".join(filtered_prefixes))
+    else:
+        document_root.attrib.pop(ignorable_key, None)
+
+
+def mark_toc_fields_dirty(document_root: ET.Element) -> None:
+    for paragraph in document_root.findall(".//w:p", NS):
+        instr_texts = paragraph.findall(".//w:instrText", NS)
+        if not instr_texts:
+            continue
+        if not any("TOC" in "".join(node.itertext()) for node in instr_texts):
+            continue
+        for field in paragraph.findall(".//w:fldChar", NS):
+            if field.get(f"{{{NS['w']}}}fldCharType") == "begin":
+                field.set(f"{{{NS['w']}}}dirty", "true")
+
+
+def refresh_word_document_fields(docx_path: Path, timeout_seconds: int = 90) -> bool:
+    target = Path(docx_path).resolve()
+    if not target.exists():
+        return False
+    word = None
+    document = None
+    pythoncom.CoInitialize()
+    try:
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = 0
+        document = word.Documents.Open(
+            FileName=str(target),
+            ConfirmConversions=False,
+            ReadOnly=False,
+            AddToRecentFiles=False,
+        )
+        document.Repaginate()
+        toc_count = int(getattr(document.TablesOfContents, "Count", 0) or 0)
+        for idx in range(1, toc_count + 1):
+            document.TablesOfContents(idx).Update()
+        document.Fields.Update()
+        document.Save()
+        return True
+    except Exception:
+        return False
+    finally:
+        if document is not None:
+            try:
+                document.Close(SaveChanges=False)
+            except Exception:
+                pass
+        if word is not None:
+            try:
+                word.Quit()
+            except Exception:
+                pass
+        pythoncom.CoUninitialize()
+
+
 def normalize_lookup_text(value: Any) -> str:
     return re.sub(r"\s+", "", to_text(value))
+
+
+def _table_header_lookup_text(table: ET.Element) -> str:
+    first_row = table.find("./w:tr", NS)
+    if first_row is None:
+        return ""
+    return normalize_lookup_text("".join(t.text or "" for t in first_row.findall(".//w:t", NS)))
 
 
 def find_table_by_locator(document_root: ET.Element, locator: TableLocator) -> ET.Element | None:
     body = document_root.find("w:body", NS)
     if body is not None:
         last_paragraph = ""
+        title_matches: list[tuple[ET.Element, str]] = []
         for child in body:
             if child.tag.endswith("p"):
                 text = normalize_lookup_text(paragraph_text(child))
@@ -1729,17 +1960,23 @@ def find_table_by_locator(document_root: ET.Element, locator: TableLocator) -> E
                 continue
             if not child.tag.endswith("tbl"):
                 continue
-            header_text = normalize_lookup_text("".join(t.text or "" for t in child.findall(".//w:tr[1]//w:t", NS)))
             title_match = (
                 not locator.title_keywords
                 or all(normalize_lookup_text(key) in last_paragraph for key in locator.title_keywords)
             )
-            header_match = (
-                not locator.header_keywords
-                or all(normalize_lookup_text(key) in header_text for key in locator.header_keywords)
-            )
-            if title_match and header_match:
-                return child
+            if not title_match:
+                continue
+            title_matches.append((child, _table_header_lookup_text(child)))
+
+        if title_matches:
+            if not locator.header_keywords:
+                return title_matches[0][0]
+
+            normalized_headers = tuple(normalize_lookup_text(key) for key in locator.header_keywords)
+            for table, header_text in title_matches:
+                if all(key in header_text for key in normalized_headers):
+                    return table
+            return title_matches[0][0]
 
     tables = get_table_list(document_root)
     if locator.fallback_index is not None and 0 <= locator.fallback_index < len(tables):
@@ -2001,11 +2238,19 @@ def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None
 
 def replace_dynamic_table_rows(table: ET.Element, rows_data: list[dict[str, Any]], header_rows: int, col_templates: list[str], env: Environment) -> None:
     rows = table.findall("w:tr", NS)
-    if len(rows) <= header_rows:
+    if not rows:
         return
-    prototype = rows[header_rows]
-    for row_el in rows[header_rows:]:
-        table.remove(row_el)
+
+    # Older templates kept one sample data row after the headers and we cloned
+    # that row as the body prototype. Once users clear the sample rows, the
+    # table may only have header rows left. In that case, fall back to cloning
+    # the last existing row so dynamic data can still be appended.
+    prototype_idx = header_rows if len(rows) > header_rows else len(rows) - 1
+    prototype = copy.deepcopy(rows[prototype_idx])
+
+    if len(rows) > header_rows:
+        for row_el in rows[header_rows:]:
+            table.remove(row_el)
 
     if not rows_data:
         return
@@ -2185,6 +2430,7 @@ def build_row_cap_notes(context: dict[str, Any]) -> list[str]:
 
 
 def render_report(template_docx: Path, output_docx: Path, context: dict[str, Any]) -> None:
+    register_word_namespaces()
     env = Environment(undefined=StrictUndefined, autoescape=False, trim_blocks=True, lstrip_blocks=True)
     output_docx.parent.mkdir(parents=True, exist_ok=True)
     temp_output_docx = output_docx.with_name(f"{output_docx.stem}.{uuid.uuid4().hex}.tmp{output_docx.suffix}")
@@ -2194,6 +2440,11 @@ def render_report(template_docx: Path, output_docx: Path, context: dict[str, Any
         root = ET.fromstring(doc_xml)
         rels_xml = zin.read("word/_rels/document.xml.rels")
         rels_root = ET.fromstring(rels_xml)
+        try:
+            settings_xml = zin.read("word/settings.xml")
+            settings_root = ET.fromstring(settings_xml)
+        except KeyError:
+            settings_root = ET.Element(f"{{{NS['w']}}}settings")
 
         fill_cover_paragraphs(root, context, env)
         for spec in DYNAMIC_TABLE_SPECS:
@@ -2221,18 +2472,30 @@ def render_report(template_docx: Path, output_docx: Path, context: dict[str, Any
         if not context.get("appendix_pdf_plan"):
             fill_appendix_sections(root, rels_root, context)
         render_text_placeholders(root, context, env)
+        rebuild_toc_field(root)
+        mark_toc_fields_dirty(root)
+        sanitize_markup_compatibility(root)
+        sanitize_markup_compatibility(settings_root)
+        ensure_update_fields_on_open(settings_root)
 
         out_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
         out_rels_xml = ET.tostring(rels_root, encoding="utf-8", xml_declaration=True)
+        out_settings_xml = ET.tostring(settings_root, encoding="utf-8", xml_declaration=True)
 
         with zipfile.ZipFile(temp_output_docx, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            wrote_settings = False
             for item in zin.infolist():
                 if item.filename == "word/document.xml":
                     zout.writestr(item, out_xml)
                 elif item.filename == "word/_rels/document.xml.rels":
                     zout.writestr(item, out_rels_xml)
+                elif item.filename == "word/settings.xml":
+                    zout.writestr(item, out_settings_xml)
+                    wrote_settings = True
                 else:
                     zout.writestr(item, zin.read(item.filename))
+            if not wrote_settings:
+                zout.writestr("word/settings.xml", out_settings_xml)
 
     temp_output_docx.replace(output_docx)
 
@@ -2345,6 +2608,8 @@ def main() -> int:
     render_report(template, output, context)
     if context.get("appendix_pdf_plan"):
         insert_appendix_pdf_images(output, context)
+    if not refresh_word_document_fields(output):
+        raise RuntimeError(f"Word COM 自动更新目录并保存失败：{output}")
     print(f"Report generated: {output}")
     return 0
 

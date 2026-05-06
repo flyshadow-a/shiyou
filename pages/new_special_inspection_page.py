@@ -398,11 +398,7 @@ class NewSpecialInspectionPage(BasePage):
 
     def _params_json_path(self) -> Path | None:
         base = Path(__file__).resolve().parent / "output_special_strategy"
-        mapping = {
-            "WC19-1D": base / "wc19_1d_calc_params.json",
-            "WC9-7": base / "wc9_7_calc_params.json",
-        }
-        return mapping.get((self.facility_code or "").strip().upper())
+        return base / "special_strategy_params.json"
 
     def _load_default_params(self) -> dict:
         try:
@@ -424,19 +420,43 @@ class NewSpecialInspectionPage(BasePage):
             return str(int(value))
         return str(value)
 
+    def _default_leg_count(self) -> int:
+        raw_value = (self._default_params or {}).get("no_legs", 4)
+        try:
+            count = int(float(raw_value))
+        except (TypeError, ValueError):
+            count = 4
+        return max(count, 1)
+
     def _default_model_param_rows(self) -> list[tuple[str, str]]:
         raw = self._default_params or {}
         return [
             ("构件直线夹角容许误差(度)", self._fmt_default_value(raw.get("x_angle_deviation", 15))),
             ("腿柱节点直径最小值(mm)", self._fmt_default_value(raw.get("min_leg_od", 509))),
             ("Work Point Z(m)", self._fmt_default_value(raw.get("wp_z", 10))),
-            ("腿柱数量", self._fmt_default_value(raw.get("no_legs", 4))),
+            ("腿柱数量", self._fmt_default_value(self._default_leg_count())),
         ]
 
+    @staticmethod
+    def _fallback_work_point_pairs(count: int) -> list[tuple[Any, Any]]:
+        presets: dict[int, list[tuple[Any, Any]]] = {
+            4: [(-10, -8), (-10, 8), (10, -8), (10, 8)],
+            8: [
+                (-24, -8), (-8, -8), (8, -8), (24, -8),
+                (-24, 8), (-8, 8), (8, 8), (24, 8),
+            ],
+        }
+        if count in presets:
+            return list(presets[count])
+        return [("", "") for _ in range(max(count, 1))]
+
     def _default_work_points(self) -> list[tuple[int, str, str]]:
+        leg_count = self._default_leg_count()
         points = list(self._default_params.get("work_points") or [])
         if not points:
-            points = [(-10, -8), (-10, 8), (10, -8), (10, 8)]
+            points = self._fallback_work_point_pairs(leg_count)
+        elif len(points) < leg_count:
+            points.extend([("", "")] * (leg_count - len(points)))
         rows: list[tuple[int, str, str]] = []
         for idx, pair in enumerate(points, start=1):
             x, y = pair if isinstance(pair, (list, tuple)) and len(pair) >= 2 else ("", "")

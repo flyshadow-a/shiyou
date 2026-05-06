@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -18,6 +20,14 @@ from services.file_db_adapter import shared_storage_dir
 FACILITY_CODE_HINTS = {
     "wc19_1d": "WC19-1D",
     "wc9_7": "WC9-7",
+}
+APPENDIX_PDF_INPUTS_ENABLED = False
+SHARED_SPECIAL_STRATEGY_INPUT_KEYS = {
+    "template_xlsm",
+    "config_xlsm",
+    "params_json",
+    "report_template",
+    "manual_fill_workbook",
 }
 
 
@@ -44,7 +54,26 @@ def _resolve_path(config_path: Path, value: object) -> str:
     return str((config_path.parent / candidate).resolve())
 
 
-def _detect_facility_code(config_path: Path) -> str | None:
+def _resolve_shared_input_path(config_path: Path, value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    candidate = Path(text)
+    if candidate.is_absolute():
+        return str(candidate)
+    shared_inputs_root = shared_storage_dir("special_strategy_inputs")
+    if shared_inputs_root:
+        server_candidate = (Path(shared_inputs_root) / candidate).resolve()
+        if server_candidate.exists():
+            return str(server_candidate)
+    return str((config_path.parent / candidate).resolve())
+
+
+def _detect_facility_code(config_path: Path, payload: dict | None = None) -> str | None:
+    if isinstance(payload, dict):
+        config_facility_code = str(payload.get("facility_code") or "").strip().upper()
+        if config_facility_code:
+            return config_facility_code
     stem = config_path.stem.lower()
     for hint, facility_code in FACILITY_CODE_HINTS.items():
         if hint in stem:
@@ -52,8 +81,8 @@ def _detect_facility_code(config_path: Path) -> str | None:
     return None
 
 
-def _runtime_output_root(config_path: Path) -> Path | None:
-    facility_code = _detect_facility_code(config_path)
+def _runtime_artifact_root(config_path: Path, payload: dict | None = None) -> Path | None:
+    facility_code = _detect_facility_code(config_path, payload)
     if not facility_code:
         return None
     shared_root = shared_storage_dir("special_strategy_runtime")
@@ -69,14 +98,45 @@ def _runtime_output_root(config_path: Path) -> Path | None:
     return candidate.resolve()
 
 
-def _resolve_output_path(config_path: Path, value: object) -> str:
+def _local_output_root() -> Path:
+    candidate = Path(external_path())
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate.resolve()
+
+
+def _safe_filename_component(value: object, fallback: str) -> str:
+    text = str(value or "").strip() or fallback
+    text = re.sub(r'[<>:"/\\|?*]+', "_", text)
+    text = text.strip().strip(".")
+    return text or fallback
+
+
+def _report_filename_date_text(value: object) -> str:
+    text = str(value or "").strip()
+    digits = re.findall(r"\d+", text)
+    if len(digits) >= 3:
+        return f"{digits[0].zfill(4)}{digits[1].zfill(2)}{digits[2].zfill(2)}"
+    if digits:
+        return "".join(digits)
+    return datetime.now().strftime("%Y%m%d")
+
+
+def _report_filename(config_path: Path, payload: dict | None = None) -> str:
+    facility_code = _detect_facility_code(config_path, payload) or "UNKNOWN"
+    platform_name = _safe_filename_component((payload or {}).get("platform_name"), facility_code)
+    report_date = _report_filename_date_text((payload or {}).get("report_date"))
+    return f"{platform_name}_{report_date}_特检策略报告.docx"
+
+
+def _resolve_output_path(config_path: Path, payload: dict | None, key: str, value: object) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    runtime_root = _runtime_output_root(config_path)
+    runtime_root = _local_output_root() if key == "output_report" else _runtime_artifact_root(config_path, payload)
     if runtime_root is None:
         return _resolve_path(config_path, text)
-    return str((runtime_root / Path(text).name).resolve())
+    filename = _report_filename(config_path, payload) if key == "output_report" else Path(text).name
+    return str((runtime_root / filename).resolve())
 
 
 def _normalize_config_paths(config_path: Path, payload: dict) -> dict:
@@ -94,14 +154,19 @@ def _normalize_config_paths(config_path: Path, payload: dict) -> dict:
     multi_keys = ("appendix_c_dirs", "clplog", "ftglst", "ftginp")
     for key in single_keys:
         if key in cfg:
-            cfg[key] = _resolve_path(config_path, cfg.get(key))
+            resolver = _resolve_shared_input_path if key in SHARED_SPECIAL_STRATEGY_INPUT_KEYS else _resolve_path
+            cfg[key] = resolver(config_path, cfg.get(key))
     for key in ("output_report", "intermediate_workbook"):
         if key in cfg:
-            cfg[key] = _resolve_output_path(config_path, cfg.get(key))
+            cfg[key] = _resolve_output_path(config_path, cfg, key, cfg.get(key))
     for key in multi_keys:
         values = cfg.get(key)
         if isinstance(values, list):
             cfg[key] = [_resolve_path(config_path, value) for value in values if str(value or "").strip()]
+    if not APPENDIX_PDF_INPUTS_ENABLED:
+        cfg["appendix_a_file"] = ""
+        cfg["appendix_b_file"] = ""
+        cfg["appendix_c_dirs"] = []
     return cfg
 
 

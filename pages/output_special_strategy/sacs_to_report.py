@@ -14,8 +14,11 @@ from report_jinja2_generator import (
     build_missing_requirements,
     insert_appendix_pdf_images,
     load_context_from_workbook,
+    refresh_word_document_fields,
     render_report,
 )
+
+APPENDIX_PDF_INPUTS_ENABLED = False
 
 
 def parse_args() -> argparse.Namespace:
@@ -164,10 +167,14 @@ def main() -> int:
     for p in must_exist:
         if not p.exists():
             raise FileNotFoundError(f"File not found: {p}")
-    for optional_file in [args.appendix_a_file, args.appendix_b_file]:
+    appendix_a_file = args.appendix_a_file if APPENDIX_PDF_INPUTS_ENABLED else ""
+    appendix_b_file = args.appendix_b_file if APPENDIX_PDF_INPUTS_ENABLED else ""
+    appendix_c_dirs = list(args.appendix_c_dir) if APPENDIX_PDF_INPUTS_ENABLED else []
+
+    for optional_file in [appendix_a_file, appendix_b_file]:
         if optional_file and (not Path(optional_file).resolve().exists()):
             raise FileNotFoundError(f"Appendix file not found: {Path(optional_file).resolve()}")
-    for appendix_dir in args.appendix_c_dir:
+    for appendix_dir in appendix_c_dirs:
         if appendix_dir and (not Path(appendix_dir).resolve().is_dir()):
             raise FileNotFoundError(f"Appendix directory not found: {Path(appendix_dir).resolve()}")
 
@@ -219,14 +226,14 @@ def main() -> int:
         apply_vba_joint_delete_rules_future=apply_joint_delete_future,
     )
     context["appendix_sections"] = build_appendix_sections(
-        appendix_a_file=args.appendix_a_file,
-        appendix_b_file=args.appendix_b_file,
-        appendix_c_dirs=list(args.appendix_c_dir),
+        appendix_a_file=appendix_a_file,
+        appendix_b_file=appendix_b_file,
+        appendix_c_dirs=appendix_c_dirs,
     )
     context["appendix_pdf_plan"] = build_appendix_pdf_plan(
-        appendix_a_file=args.appendix_a_file,
-        appendix_b_file=args.appendix_b_file,
-        appendix_c_dirs=list(args.appendix_c_dir),
+        appendix_a_file=appendix_a_file,
+        appendix_b_file=appendix_b_file,
+        appendix_c_dirs=appendix_c_dirs,
     )
     context["include_word_plan_detail_tables"] = bool(args.include_word_plan_detail_tables)
     missing = build_missing_requirements(context)
@@ -245,6 +252,8 @@ def main() -> int:
     render_report(report_template, output_report, context)
     if context.get("appendix_pdf_plan"):
         insert_appendix_pdf_images(output_report, context)
+    if not refresh_word_document_fields(output_report):
+        raise RuntimeError(f"Word COM 自动更新目录并保存失败：{output_report}")
     print(f"Report generated: {output_report}")
     return 0
 

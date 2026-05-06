@@ -31,9 +31,9 @@ from services.special_strategy_state_db import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OUTPUT_SPECIAL_STRATEGY_DIR = REPO_ROOT / "pages" / "output_special_strategy"
-if str(OUTPUT_SPECIAL_STRATEGY_DIR) not in sys.path:
-    sys.path.insert(0, str(OUTPUT_SPECIAL_STRATEGY_DIR))
+OUTPUT_SPECIAL_STRATEGY_CODE_DIR = REPO_ROOT / "pages" / "output_special_strategy"
+if str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR))
 
 from inspection_tool import run as run_inspection_pipeline  # type: ignore  # noqa: E402
 from report_jinja2_generator import (  # type: ignore  # noqa: E402
@@ -41,19 +41,17 @@ from report_jinja2_generator import (  # type: ignore  # noqa: E402
     build_appendix_sections,
     insert_appendix_pdf_images,
     load_context_from_workbook,
+    refresh_word_document_fields,
     render_report,
 )
 
 
-FACILITY_CONFIG_MAP = {
-    "WC19-1D": OUTPUT_SPECIAL_STRATEGY_DIR / "wc19_1d_run_config.json",
-    "WC9-7": OUTPUT_SPECIAL_STRATEGY_DIR / "wc9_7_run_config.json",
-}
+COMMON_RUN_CONFIG_NAME = "special_strategy_run_config.json"
 
-REPORT_METADATA_TEMPLATE_PATH = OUTPUT_SPECIAL_STRATEGY_DIR / "report_metadata.template.json"
 TIME_CURRENT = "当前"
 MAX_RUNTIME_ARTIFACT_SETS = 3
 REPORT_METADATA_PLACEHOLDER = "待填写"
+APPENDIX_PDF_INPUTS_ENABLED = False
 CONFIG_PATH_KEYS = {
     "template_xlsm",
     "config_xlsm",
@@ -74,6 +72,38 @@ CONFIG_MULTI_PATH_KEYS = {
     "ftglst",
     "ftginp",
 }
+SHARED_SPECIAL_STRATEGY_INPUT_KEYS = {
+    "template_xlsm",
+    "config_xlsm",
+    "params_json",
+    "report_template",
+    "manual_fill_workbook",
+}
+
+
+def special_strategy_inputs_dir() -> Path:
+    shared_root = shared_storage_dir("special_strategy_inputs")
+    if shared_root:
+        candidate = Path(shared_root)
+    else:
+        candidate = Path(external_path("special_strategy_inputs"))
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate.resolve()
+
+
+def _common_config_path() -> Path:
+    return (OUTPUT_SPECIAL_STRATEGY_CODE_DIR / COMMON_RUN_CONFIG_NAME).resolve()
+
+
+def _report_metadata_template_path() -> Path:
+    candidates = [
+        special_strategy_inputs_dir() / "report_metadata.template.json",
+        OUTPUT_SPECIAL_STRATEGY_CODE_DIR / "report_metadata.template.json",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path.resolve()
+    return candidates[0].resolve()
 
 
 def _normalize_metadata_value(value: Any) -> str:
@@ -101,9 +131,18 @@ def _extract_year_text(value: Any) -> str:
 
 def normalize_facility_code(facility_code: str) -> str:
     code = (facility_code or "").strip().upper()
-    if code in FACILITY_CONFIG_MAP:
-        return code
-    return "WC19-1D"
+    return code or "UNKNOWN"
+
+
+def _platform_profile(facility_code: str) -> dict[str, str]:
+    code = normalize_facility_code(facility_code)
+    platform = find_platform(facility_code=code)
+    if normalize_facility_code(str(platform.get("facility_code") or "")) == code:
+        return platform
+    fallback = dict(platform)
+    fallback["facility_code"] = code
+    fallback["facility_name"] = code
+    return fallback
 
 
 def runtime_dir(facility_code: str) -> Path:
@@ -119,6 +158,41 @@ def runtime_dir(facility_code: str) -> Path:
     return Path(external_path("special_strategy_runtime", code)).resolve()
 
 
+def local_report_output_dir() -> Path:
+    return Path(external_path()).resolve()
+
+
+def _safe_filename_component(value: Any, fallback: str) -> str:
+    text = _normalize_metadata_value(value)
+    if not text:
+        text = fallback
+    text = re.sub(r'[<>:"/\\|?*]+', "_", text)
+    text = text.strip().strip(".")
+    return text or fallback
+
+
+def _report_filename_date_text(value: Any) -> str:
+    text = _normalize_metadata_value(value)
+    digits = re.findall(r"\d+", text)
+    if len(digits) >= 3:
+        year = digits[0].zfill(4)
+        month = digits[1].zfill(2)
+        day = digits[2].zfill(2)
+        return f"{year}{month}{day}"
+    if digits:
+        return "".join(digits)
+    return datetime.now().strftime("%Y%m%d")
+
+
+def build_report_output_path(facility_code: str, metadata: dict[str, Any] | None = None) -> Path:
+    code = normalize_facility_code(facility_code)
+    metadata = metadata or {}
+    platform_name = _safe_filename_component(metadata.get("platform_name"), code)
+    report_date = _report_filename_date_text(metadata.get("report_date"))
+    filename = f"{platform_name}_{report_date}_特检策略报告.docx"
+    return (local_report_output_dir() / filename).resolve()
+
+
 def state_path(facility_code: str) -> Path:
     return runtime_dir(facility_code) / "runtime_state.json"
 
@@ -126,11 +200,13 @@ def state_path(facility_code: str) -> Path:
 def runtime_paths(facility_code: str) -> dict[str, Path]:
     root = runtime_dir(facility_code)
     root.mkdir(parents=True, exist_ok=True)
+    report_root = local_report_output_dir()
+    report_root.mkdir(parents=True, exist_ok=True)
     return {
         "root": root,
         "params_json": root / "runtime_params.json",
         "intermediate_workbook": root / "special_strategy.pipeline.xlsx",
-        "output_report": root / "special_strategy.docx",
+        "output_report": report_root / "special_strategy.docx",
         "report_metadata_json": root / "report_metadata.json",
         "state_json": root / "runtime_state.json",
     }
@@ -141,11 +217,13 @@ def run_artifact_paths(facility_code: str, stamp: str) -> dict[str, Path]:
     facility_root.mkdir(parents=True, exist_ok=True)
     root = facility_root / f"special_strategy_run_{stamp}"
     root.mkdir(parents=True, exist_ok=True)
+    report_root = local_report_output_dir()
+    report_root.mkdir(parents=True, exist_ok=True)
     return {
         "root": root,
         "params_json": root / "runtime_params.json",
         "intermediate_workbook": root / "special_strategy.pipeline.xlsx",
-        "output_report": root / "special_strategy.docx",
+        "output_report": report_root / "special_strategy.docx",
         "report_metadata_json": root / "report_metadata.json",
         "state_json": root / "runtime_state.json",
     }
@@ -165,21 +243,36 @@ def _resolve_config_path(path: Path, value: object) -> str:
     return str((path.parent / candidate).resolve())
 
 
-def _resolve_runtime_output_path(facility_code: str, value: object) -> str:
+def _resolve_shared_input_path(path: Path, value: object) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    return str((runtime_dir(facility_code) / Path(text).name).resolve())
+    candidate = Path(text)
+    if candidate.is_absolute():
+        return str(candidate)
+    server_candidate = (special_strategy_inputs_dir() / candidate).resolve()
+    if server_candidate.exists():
+        return str(server_candidate)
+    return str((path.parent / candidate).resolve())
+
+
+def _resolve_runtime_output_path(facility_code: str, key: str, value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    base_dir = local_report_output_dir() if key == "output_report" else runtime_dir(facility_code)
+    return str((base_dir / Path(text).name).resolve())
 
 
 def _normalize_config_paths(facility_code: str, config_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     cfg = dict(payload)
     for key in CONFIG_PATH_KEYS:
         if key in cfg:
-            cfg[key] = _resolve_config_path(config_path, cfg.get(key))
+            resolver = _resolve_shared_input_path if key in SHARED_SPECIAL_STRATEGY_INPUT_KEYS else _resolve_config_path
+            cfg[key] = resolver(config_path, cfg.get(key))
     for key in CONFIG_RUNTIME_OUTPUT_KEYS:
         if key in cfg:
-            cfg[key] = _resolve_runtime_output_path(facility_code, cfg.get(key))
+            cfg[key] = _resolve_runtime_output_path(facility_code, key, cfg.get(key))
     for key in CONFIG_MULTI_PATH_KEYS:
         values = cfg.get(key)
         if not isinstance(values, list):
@@ -222,7 +315,7 @@ def _prune_runtime_artifacts(facility_code: str, keep_latest: int = MAX_RUNTIME_
 
 def load_base_config(facility_code: str) -> dict[str, Any]:
     code = normalize_facility_code(facility_code)
-    path = FACILITY_CONFIG_MAP[code]
+    path = _common_config_path()
     payload = _read_json_file(path)
     if not isinstance(payload, dict):
         raise ValueError(f"Invalid special strategy config: {path}")
@@ -249,7 +342,7 @@ def load_latest_strategy_params(facility_code: str) -> dict[str, Any]:
 
 
 def default_metadata(facility_code: str) -> dict[str, str]:
-    platform = find_platform(facility_code=normalize_facility_code(facility_code))
+    platform = _platform_profile(facility_code)
     return {
         "platform_name": platform["facility_name"],
         "report_date": datetime.now().strftime("%Y年%m月%d日"),
@@ -262,9 +355,10 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _load_report_metadata_template() -> dict[str, Any]:
-    if not REPORT_METADATA_TEMPLATE_PATH.exists():
+    path = _report_metadata_template_path()
+    if not path.exists():
         return {}
-    payload = _read_json_file(REPORT_METADATA_TEMPLATE_PATH)
+    payload = _read_json_file(path)
     return payload if isinstance(payload, dict) else {}
 
 
@@ -321,7 +415,7 @@ def _build_report_metadata_payload(
     template_payload = _load_report_metadata_template()
     payload: dict[str, str] = {str(key): "" for key in template_payload}
 
-    platform = find_platform(facility_code=code)
+    platform = _platform_profile(code)
     params: dict[str, Any] = {}
     if run_payload and isinstance(run_payload.get("params_json"), dict):
         params.update(run_payload["params_json"])
@@ -746,6 +840,15 @@ def _build_result_bundle_from_workbook(
     }
 
 
+def _appendix_sources_from_config(cfg: dict[str, Any]) -> tuple[str, str, list[str]]:
+    if not APPENDIX_PDF_INPUTS_ENABLED:
+        return "", "", []
+    appendix_a_file = str(cfg.get("appendix_a_file", "")).strip()
+    appendix_b_file = str(cfg.get("appendix_b_file", "")).strip()
+    appendix_c_dirs = [str(x) for x in cfg.get("appendix_c_dirs", []) if str(x).strip()]
+    return appendix_a_file, appendix_b_file, appendix_c_dirs
+
+
 def run_special_strategy_calculation(
     facility_code: str,
     *,
@@ -781,11 +884,12 @@ def run_special_strategy_calculation(
         seed=int(cfg.get("seed", 42)),
         params_json=paths["params_json"],
         ftginp_files=[Path(str(x)).resolve() for x in resolved_inputs["ftginp"]],
-        manual_fill_workbook=None,
-        interactive_manual_fill=True,
+        manual_fill_workbook=(str(cfg.get("manual_fill_workbook") or "").strip() or None),
+        interactive_manual_fill=bool(cfg.get("interactive_manual_fill", False)),
         enable_topology_inference=bool(cfg.get("enable_topology_inference", False)),
     )
 
+    config_path = _common_config_path()
     state = {
         "facility_code": code,
         "metadata": metadata_payload,
@@ -793,7 +897,7 @@ def run_special_strategy_calculation(
         "intermediate_workbook": str(paths["intermediate_workbook"]),
         "output_report": str(paths["output_report"]),
         "artifact_dir": str(paths["root"]),
-        "config_path": str(FACILITY_CONFIG_MAP[code]),
+        "config_path": str(config_path),
         "inputs": resolved_inputs,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
         "artifact_stamp": run_stamp,
@@ -805,7 +909,7 @@ def run_special_strategy_calculation(
         inputs=resolved_inputs,
         intermediate_workbook=str(paths["intermediate_workbook"]),
         output_report=str(paths["output_report"]),
-        config_path=str(FACILITY_CONFIG_MAP[code]),
+        config_path=str(config_path),
         status="completed",
     )
     state["db_run_id"] = run_id
@@ -924,25 +1028,27 @@ def generate_special_strategy_report(
     metadata_payload.update(prepared_report_metadata)
 
     context = _context_from_workbook(workbook_path, cfg, metadata_payload)
+    appendix_a_file, appendix_b_file, appendix_c_dirs = _appendix_sources_from_config(cfg)
     context["appendix_sections"] = build_appendix_sections(
-        appendix_a_file=str(cfg.get("appendix_a_file", "")).strip(),
-        appendix_b_file=str(cfg.get("appendix_b_file", "")).strip(),
-        appendix_c_dirs=[str(x) for x in cfg.get("appendix_c_dirs", [])],
+        appendix_a_file=appendix_a_file,
+        appendix_b_file=appendix_b_file,
+        appendix_c_dirs=appendix_c_dirs,
     )
     context["appendix_pdf_plan"] = build_appendix_pdf_plan(
-        appendix_a_file=str(cfg.get("appendix_a_file", "")).strip(),
-        appendix_b_file=str(cfg.get("appendix_b_file", "")).strip(),
-        appendix_c_dirs=[str(x) for x in cfg.get("appendix_c_dirs", [])],
+        appendix_a_file=appendix_a_file,
+        appendix_b_file=appendix_b_file,
+        appendix_c_dirs=appendix_c_dirs,
     )
     context["include_word_plan_detail_tables"] = bool(cfg.get("include_word_plan_detail_tables", False))
 
     paths = runtime_paths(code)
-    report_output_path = Path(str(state.get("output_report") or "")).resolve()
-    if not str(report_output_path).strip() or report_output_path == Path(".").resolve():
-        report_output_path = paths["output_report"]
+    report_output_path = build_report_output_path(code, metadata_payload)
     report_template = Path(str(cfg["report_template"])).resolve()
     render_report(report_template, report_output_path, context)
-    insert_appendix_pdf_images(report_output_path, context)
+    if context.get("appendix_pdf_plan"):
+        insert_appendix_pdf_images(report_output_path, context)
+    if not refresh_word_document_fields(report_output_path):
+        raise RuntimeError(f"Word COM 自动更新目录并保存失败：{report_output_path}")
 
     state["metadata"] = metadata_payload
     state["output_report"] = str(report_output_path)

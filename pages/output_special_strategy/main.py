@@ -8,7 +8,7 @@ from pathlib import Path
 def main() -> int:
     base = Path(__file__).resolve().parent
     runner = base / "run_sacs_report_from_config.py"
-    default_config = base / "wc19_1d_run_config.json"
+    default_config = base / "special_strategy_run_config.json"
 
     if len(sys.argv) > 1:
         config_path = Path(sys.argv[1]).resolve()
