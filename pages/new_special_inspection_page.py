@@ -32,7 +32,12 @@ from services.file_db_adapter import (
 
 from pages.model_files_page import ModelFilesDocsWidget
 from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
-from services.special_strategy_runtime import load_base_config, load_latest_strategy_params, run_special_strategy_calculation
+from services.special_strategy_runtime import (
+    load_base_config,
+    load_latest_strategy_params,
+    run_special_strategy_calculation,
+    special_strategy_inputs_dir,
+)
 
 from pages.special_inspection_model_preview import SpecialInspectionModelPreviewPanel
 
@@ -397,8 +402,14 @@ class NewSpecialInspectionPage(BasePage):
         splitter.setSizes([left_width, right_width])
 
     def _params_json_path(self) -> Path | None:
-        base = Path(__file__).resolve().parent / "output_special_strategy"
-        return base / "special_strategy_params.json"
+        candidates = [
+            special_strategy_inputs_dir() / "special_strategy_params.json",
+            Path(__file__).resolve().parent / "output_special_strategy" / "special_strategy_params.json",
+        ]
+        for path in candidates:
+            if path.exists():
+                return path
+        return candidates[0]
 
     def _load_default_params(self) -> dict:
         try:

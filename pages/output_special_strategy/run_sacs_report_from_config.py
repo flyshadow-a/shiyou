@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_SPECIAL_STRATEGY_INPUTS_DIR = REPO_ROOT / "special_strategy_inputs"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -61,9 +62,12 @@ def _resolve_shared_input_path(config_path: Path, value: object) -> str:
     candidate = Path(text)
     if candidate.is_absolute():
         return str(candidate)
+    search_roots = [REPO_SPECIAL_STRATEGY_INPUTS_DIR]
     shared_inputs_root = shared_storage_dir("special_strategy_inputs")
     if shared_inputs_root:
-        server_candidate = (Path(shared_inputs_root) / candidate).resolve()
+        search_roots.append(Path(shared_inputs_root))
+    for root in search_roots:
+        server_candidate = (root / candidate).resolve()
         if server_candidate.exists():
             return str(server_candidate)
     return str((config_path.parent / candidate).resolve())

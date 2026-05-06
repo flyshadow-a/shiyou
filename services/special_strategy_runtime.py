@@ -31,6 +31,7 @@ from services.special_strategy_state_db import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_SPECIAL_STRATEGY_INPUTS_DIR = REPO_ROOT / "special_strategy_inputs"
 OUTPUT_SPECIAL_STRATEGY_CODE_DIR = REPO_ROOT / "pages" / "output_special_strategy"
 if str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR))
@@ -82,11 +83,18 @@ SHARED_SPECIAL_STRATEGY_INPUT_KEYS = {
 
 
 def special_strategy_inputs_dir() -> Path:
+    candidates = [
+        REPO_SPECIAL_STRATEGY_INPUTS_DIR,
+    ]
     shared_root = shared_storage_dir("special_strategy_inputs")
     if shared_root:
-        candidate = Path(shared_root)
-    else:
-        candidate = Path(external_path("special_strategy_inputs"))
+        candidates.append(Path(shared_root))
+    candidates.append(Path(external_path("special_strategy_inputs")))
+    for candidate in candidates:
+        if candidate.exists():
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate.resolve()
+    candidate = candidates[0]
     candidate.mkdir(parents=True, exist_ok=True)
     return candidate.resolve()
 

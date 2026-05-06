@@ -448,7 +448,7 @@ class SacsElevationRiskView(QGraphicsView):
             external_path("upload", "model_files"),
             first_existing_path("upload", "model_files"),
             r"Y:\upload\model_files",
-            r"Y:\special_strategy_inputs",
+            self._special_strategy_inputs_dir(),
         ]
 
         for upload_root in upload_roots:
@@ -865,10 +865,14 @@ class SacsElevationRiskView(QGraphicsView):
     def _project_root(self) -> str:
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+    def _special_strategy_inputs_dir(self) -> str:
+        return os.path.join(self._project_root(), "special_strategy_inputs")
+
     def _resolve_risk_workbook_path(self) -> str:
         root = self._project_root()
         strategy_root = os.path.join(root, "pages", "output_special_strategy")
         candidates = [
+            os.path.join(self._special_strategy_inputs_dir(), "special_strategy_template.xlsm"),
             os.path.join(strategy_root, "special_strategy_template.xlsm"),
             os.path.join(root, "special_strategy_template.xlsm"),
         ]
@@ -932,9 +936,9 @@ class SacsElevationRiskView(QGraphicsView):
             external_path(""),
             first_existing_path("upload"),
             first_existing_path("upload", "model_files"),
+            self._special_strategy_inputs_dir(),
             r"Y:\shiyou_file_storage",
             r"Y:\upload",
-            r"Y:\special_strategy_inputs",
         ]
         for root in roots:
             if not root:
