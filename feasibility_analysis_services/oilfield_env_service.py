@@ -135,6 +135,76 @@ def ensure_oilfield_env_schema(mysql_url: str | None = None) -> None:
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS platform_strength_splash_zone_item (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    profile_id BIGINT NOT NULL,
+                    facility_code VARCHAR(100) NOT NULL,
+                    upper_limit_m DECIMAL(10, 3) DEFAULT NULL,
+                    lower_limit_m DECIMAL(10, 3) DEFAULT NULL,
+                    corrosion_allowance_mm_per_y DECIMAL(10, 3) DEFAULT NULL,
+                    sort_order INT NOT NULL DEFAULT 0,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    KEY idx_ps_splash_profile (profile_id),
+                    KEY idx_ps_splash_facility (profile_id, facility_code),
+                    CONSTRAINT fk_ps_splash_profile
+                        FOREIGN KEY (profile_id) REFERENCES oilfield_env_profile(id)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS platform_strength_pile_info_item (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    profile_id BIGINT NOT NULL,
+                    facility_code VARCHAR(100) NOT NULL,
+                    scour_depth_m DECIMAL(10, 3) DEFAULT NULL,
+                    compressive_capacity_t DECIMAL(10, 3) DEFAULT NULL,
+                    uplift_capacity_t DECIMAL(10, 3) DEFAULT NULL,
+                    submerged_weight_t DECIMAL(10, 3) DEFAULT NULL,
+                    sort_order INT NOT NULL DEFAULT 0,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    KEY idx_ps_pile_profile (profile_id),
+                    KEY idx_ps_pile_facility (profile_id, facility_code),
+                    CONSTRAINT fk_ps_pile_profile
+                        FOREIGN KEY (profile_id) REFERENCES oilfield_env_profile(id)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS platform_strength_marine_growth_item (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    profile_id BIGINT NOT NULL,
+                    facility_code VARCHAR(100) NOT NULL,
+                    layer_no INT NOT NULL DEFAULT 0,
+                    upper_limit_m DECIMAL(10, 3) DEFAULT NULL,
+                    lower_limit_m DECIMAL(10, 3) DEFAULT NULL,
+                    thickness_mm DECIMAL(10, 3) DEFAULT NULL,
+                    density_t_per_m3 DECIMAL(10, 3) DEFAULT NULL,
+                    sort_order INT NOT NULL DEFAULT 0,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    KEY idx_ps_marine_profile (profile_id),
+                    KEY idx_ps_marine_facility (profile_id, facility_code),
+                    KEY idx_ps_marine_layer (profile_id, facility_code, layer_no),
+                    CONSTRAINT fk_ps_marine_profile
+                        FOREIGN KEY (profile_id) REFERENCES oilfield_env_profile(id)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+        )
 
 
 def _normalize_text(value: Any) -> str:
