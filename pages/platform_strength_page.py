@@ -1326,15 +1326,34 @@ class PlatformStrengthPage(BasePage):
 
     def _export_overall_model_image(self, facility_code: str) -> str:
         code = (facility_code or "").strip()
-        if not code or not hasattr(self, "inp_view"):
+        if not code:
+            QMessageBox.warning(self, "整体模型截图失败", "当前平台编号为空，无法保存整体模型截图。")
+            return ""
+        if not hasattr(self, "inp_view"):
+            QMessageBox.warning(self, "整体模型截图失败", "当前页面未初始化模型视图，无法保存整体模型截图。")
             return ""
         try:
             storage_root = os.path.normpath(str(get_storage_root() or "").strip())
             if not storage_root:
+                QMessageBox.warning(self, "整体模型截图失败", "文件存储根目录为空，无法保存整体模型截图。")
                 return ""
             output_path = os.path.join(storage_root, "image", code, "overall_model.png")
-            return self.inp_view.export_current_view(output_path)
-        except Exception:
+            saved_path = self.inp_view.export_current_view(output_path)
+            if not saved_path or not os.path.exists(saved_path):
+                QMessageBox.warning(
+                    self,
+                    "整体模型截图失败",
+                    f"已尝试保存整体模型截图，但目标文件未生成：\n{output_path}",
+                )
+                return ""
+            return saved_path
+        except Exception as exc:
+            target = output_path if "output_path" in locals() else "未能计算目标路径"
+            QMessageBox.warning(
+                self,
+                "整体模型截图失败",
+                f"保存整体模型截图失败：\n{exc}\n\n目标路径：\n{target}",
+            )
             return ""
 
     def _build_custom_legend(self) -> QWidget:

@@ -20,7 +20,8 @@ def main() -> int:
     Base.metadata.create_all(engine)
     service = FileMetadataService(settings)
     service.seed_file_types()
-    print("Database tables created and file types seeded.")
+    service.seed_auth_roles()
+    print("Database tables created and dictionaries seeded.")
     print(f"Storage root: {settings.storage_root}")
     return 0
 

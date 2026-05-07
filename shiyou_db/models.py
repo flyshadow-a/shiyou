@@ -148,8 +148,67 @@ class PlatformLoadInformationItem(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class AuthRole(Base):
+    __tablename__ = "auth_roles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    users: Mapped[list["AuthUser"]] = relationship("AuthUser", back_populates="role")
+
+
+class AuthUser(Base):
+    __tablename__ = "auth_users"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    employee_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    branch_company: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    operation_company: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    role_code: Mapped[str] = mapped_column(ForeignKey("auth_roles.code"), nullable=False, default="engineer")
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    password_algo: Mapped[str] = mapped_column(String(50), nullable=False, default="pbkdf2_sha256")
+    password_updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    role: Mapped[AuthRole] = relationship("AuthRole", back_populates="users")
+    login_logs: Mapped[list["AuthLoginLog"]] = relationship("AuthLoginLog", back_populates="user")
+
+
+class AuthLoginLog(Base):
+    __tablename__ = "auth_login_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("auth_users.id"), nullable=True)
+    username: Mapped[str] = mapped_column(String(100), nullable=False)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    failure_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    client_info: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    logged_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    user: Mapped[AuthUser | None] = relationship("AuthUser", back_populates="login_logs")
+
+
 Index("ix_facility_profiles_code", FacilityProfile.facility_code)
 Index("ix_inspection_projects_facility_type", InspectionProject.facility_code, InspectionProject.project_type)
 Index("ix_inspection_projects_sort", InspectionProject.facility_code, InspectionProject.project_type, InspectionProject.sort_order)
 Index("ix_inspection_findings_project_sort", InspectionFinding.project_id, InspectionFinding.sort_order)
 Index("ix_platform_load_information_facility_sort", PlatformLoadInformationItem.facility_code, PlatformLoadInformationItem.sort_order)
+Index("ix_auth_users_role", AuthUser.role_code)
+Index("ix_auth_users_active", AuthUser.is_active, AuthUser.is_deleted)
+Index("ix_auth_login_logs_user", AuthLoginLog.user_id)
+Index("ix_auth_login_logs_username", AuthLoginLog.username)
+Index("ix_auth_login_logs_logged_at", AuthLoginLog.logged_at)

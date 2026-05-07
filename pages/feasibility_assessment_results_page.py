@@ -836,7 +836,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return create_engine(self.mysql_url, future=True, pool_pre_ping=True)
 
     def _get_current_job_factor_path(self) -> str:
-        runtime_dir = os.path.normpath(get_job_runtime_dir(self.job_name))
+        runtime_dir = os.path.normpath(get_job_runtime_dir(self.facility_code))
         factor_path = os.path.join(runtime_dir, "psilst.factor")
         if not os.path.exists(factor_path):
             raise FileNotFoundError(
@@ -934,6 +934,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
     def _build_analysis_model_section(self) -> dict:
         section = {
             "overall_model_image_path": self.overall_model_image_path,
+            "coordinate_system_image_path": self._build_coordinate_system_image(),
         }
         directions = self._extract_environment_load_directions_from_seainp(
             self._resolve_current_sea_file(self.facility_code)
@@ -948,6 +949,58 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 }
             ]
         return section
+
+    def _build_coordinate_system_image(self) -> str:
+        base_dir = (
+            Path(r"Y:\special_strategy_images")
+            / self.facility_code
+            / "latest"
+            / "special_inspection_strategy"
+            / "elevation_risk"
+        )
+        xy_path = base_dir / "XY_-14.png"
+        yz_path = base_dir / "YZ_左.png"
+        if not xy_path.exists() or not yz_path.exists():
+            return ""
+
+        output_dir = Path(r"Y:\shiyou_file_storage") / "image" / self.facility_code
+        output_path = output_dir / "coordinate_system.png"
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+
+            output_dir.mkdir(parents=True, exist_ok=True)
+            images = [Image.open(str(xy_path)).convert("RGB"), Image.open(str(yz_path)).convert("RGB")]
+            title_height = 30
+            gap = 24
+            max_height = max(image.height for image in images)
+            total_width = images[0].width + images[1].width + gap
+            canvas = Image.new("RGB", (total_width, max_height + title_height), "white")
+            draw = ImageDraw.Draw(canvas)
+            font = self._load_coordinate_system_label_font()
+            labels = ["XY -14", "YZ 左"]
+            x = 0
+            for image, label in zip(images, labels):
+                draw.text((x + 6, 6), label, fill="black", font=font)
+                canvas.paste(image, (x, title_height))
+                x += image.width + gap
+            canvas.save(str(output_path), "PNG")
+            return str(output_path)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _load_coordinate_system_label_font():
+        from PIL import ImageFont
+
+        candidates = [
+            r"C:\Windows\Fonts\msyh.ttc",
+            r"C:\Windows\Fonts\simhei.ttf",
+            r"C:\Windows\Fonts\simsun.ttc",
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return ImageFont.truetype(candidate, 14)
+        return ImageFont.load_default()
 
     def _build_cover_platform_name(self, facility_profile: dict) -> str:
         facility_name = str(facility_profile.get("facility_name") or "").strip()
@@ -1503,11 +1556,9 @@ class FeasibilityAssessmentResultsPage(BasePage):
         if mode == "local":
             return self._generate_report_locally(payload)
         try:
+            return self._generate_report_locally(payload)
+        except Exception:
             return self._post_report_request(payload)
-        except RuntimeError as exc:
-            if "无法连接报告服务" not in str(exc):
-                raise
-        return self._generate_report_locally(payload)
 
     def _fetch_model_paths(self):
         sql = text("""

@@ -16,9 +16,10 @@ from PyQt5.QtGui import QPixmap, QIcon, QFont, QFontDatabase, QColor, QBrush
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QTabWidget, QStackedWidget, QLabel, QLineEdit,
-    QPushButton, QSplitter, QFrame
+    QPushButton, QSplitter, QFrame, QMessageBox
 )
 
+from core.auth import AuthService, UserSession
 from pages.nav_config import NAV_CONFIG
 
 # 业务页面 / 对话框
@@ -82,8 +83,10 @@ def get_external_path(relative_path):
 # ==========================================
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, auth_service: AuthService, session: UserSession | None = None):
         super().__init__()
+        self.auth_service = auth_service
+        self.session: UserSession | None = session
         self.setWindowTitle("海上平台结构载荷管理系统")
         self.resize(1280, 720)
 
@@ -106,13 +109,22 @@ class MainWindow(QMainWindow):
         self.page_tab_map: dict[str, QWidget] = {}
 
         # 登录状态
-        self.logged_in: bool = False
-        self.current_user: str = ""
+        self.logged_in: bool = session is not None
+        self.current_user: str = (session.display_name or session.username) if session is not None else ""
         self.user_label: QLabel | None = None
         self.btn_login: QPushButton | None = None
         self.current_platform_label: QLabel | None = None
         self.current_platform_font_ratio: float = 0.0125
         self.init_ui()
+
+    def require_login(self) -> bool:
+        if self.logged_in and self.session is not None:
+            return True
+        dlg = LoginDialog(auth_service=self.auth_service)
+        if dlg.exec_() == dlg.Accepted and dlg.session is not None:
+            self._apply_login_session(dlg.session)
+            return True
+        return False
 
     # ================== 整体 UI ================== #
     def init_ui(self):
@@ -366,8 +378,8 @@ class MainWindow(QMainWindow):
         self.current_platform_label.hide()
 
         # 用户 + 登录按钮
-        self.user_label = QLabel("未登录")
-        self.btn_login = QPushButton("登录/注销")
+        self.user_label = QLabel(self.session.display_label if self.session is not None else "未登录")
+        self.btn_login = QPushButton("注销" if self.logged_in else "登录/注销")
         self.btn_login.clicked.connect(self.on_login_logout)
 
         btn_settings = QPushButton("设置")
@@ -465,6 +477,13 @@ class MainWindow(QMainWindow):
 
     # ================== 打开/激活页面 ================== #
     def open_page_for_item(self, item: QTreeWidgetItem):
+        if not self.logged_in or self.session is None:
+            dlg = LoginDialog(self, auth_service=self.auth_service)
+            if dlg.exec_() == dlg.Accepted and dlg.session is not None:
+                self._apply_login_session(dlg.session)
+            else:
+                return
+
         page_cls = item.data(0, Qt.UserRole)
         if page_cls is None:
             return
@@ -645,27 +664,47 @@ class MainWindow(QMainWindow):
     # ================== 登录 / 注销 ================== #
     def on_login_logout(self):
         if not self.logged_in:
-            # ---- 登录 ----
-            dlg = LoginDialog(self)
-            result = dlg.exec_()
-            if result == dlg.Accepted:
-                # LoginDialog 内部已做用户名/密码校验
-                username = getattr(dlg, "username", "工程师1")
-                self.logged_in = True
-                self.current_user = username
-                self.user_label.setText(username)
-                self.btn_login.setText("注销")
+            dlg = LoginDialog(self, auth_service=self.auth_service)
+            if dlg.exec_() == dlg.Accepted and dlg.session is not None:
+                self._apply_login_session(dlg.session)
                 self.open_personal_center_page()
+            return
 
-                # ✅ 登录只弹框 + 更新状态，不强制跳转页面
+        if QMessageBox.question(self, "确认注销", "确定要注销当前账号吗？") != QMessageBox.Yes:
+            return
+        self._clear_open_tabs()
+        self.logged_in = False
+        self.current_user = ""
+        self.session = None
+        self.user_label.setText("未登录")
+        self.btn_login.setText("登录/注销")
+        self.open_home_tab()
+        self.hide()
+
+        dlg = LoginDialog(auth_service=self.auth_service)
+        if dlg.exec_() == dlg.Accepted and dlg.session is not None:
+            self._apply_login_session(dlg.session)
+            self.show()
+            self.open_personal_center_page()
         else:
-            # ---- 注销 ----
-            self.logged_in = False
-            self.current_user = ""
-            self.user_label.setText("未登录")
-            self.btn_login.setText("登录/注销")
-            # 注销后回到首页背景
-            self.open_home_tab()
+            self.close()
+
+    def _apply_login_session(self, session: UserSession):
+        self.session = session
+        self.logged_in = True
+        self.current_user = session.display_name or session.username
+        self.user_label.setText(session.display_label)
+        self.btn_login.setText("注销")
+
+    def _clear_open_tabs(self):
+        if self.tab_widget is None:
+            return
+        while self.tab_widget.count() > 0:
+            widget = self.tab_widget.widget(0)
+            self.tab_widget.removeTab(0)
+            if widget is not None:
+                widget.deleteLater()
+        self.page_tab_map.clear()
 
     def open_personal_center_page(self):
         """
@@ -758,7 +797,17 @@ def main():
     os.environ.setdefault("QT_OPENGL", "software")
 
     app = QApplication(sys.argv)
-    window = MainWindow()
+    try:
+        auth_service = AuthService()
+    except Exception as exc:
+        QMessageBox.critical(None, "数据库连接失败", f"初始化用户认证服务失败：\n{exc}")
+        sys.exit(1)
+
+    login_dialog = LoginDialog(auth_service=auth_service)
+    if login_dialog.exec_() != login_dialog.Accepted or login_dialog.session is None:
+        sys.exit(0)
+
+    window = MainWindow(auth_service, login_dialog.session)
     window.show()
     sys.exit(app.exec_())
 

@@ -13,6 +13,7 @@ from sqlalchemy.orm import joinedload, sessionmaker
 from .config import AppSettings, load_settings
 from .database import Base, build_engine
 from .models import (
+    AuthRole,
     FacilityProfile,
     FileRecord,
     FileType,
@@ -31,6 +32,11 @@ DEFAULT_FILE_TYPES = [
     {"code": "history", "name": "历史资料", "description": "历史检查与重建资料"},
     {"code": "summary", "name": "汇总资料", "description": "汇总与统计资料"},
     {"code": "other", "name": "其他", "description": "其他文件"},
+]
+
+DEFAULT_AUTH_ROLES = [
+    {"code": "engineer", "name": "工程师", "description": "普通工程师用户，可使用业务功能"},
+    {"code": "admin", "name": "管理员", "description": "系统管理员角色，暂时预留"},
 ]
 
 _UNSET = object()
@@ -98,6 +104,33 @@ class FileMetadataService:
                         row.name = item["name"]
                         row.description = item.get("description")
                         row.sort_order = index
+                        changed = True
+            if changed:
+                session.commit()
+
+    def seed_auth_roles(self) -> None:
+        with self.session_factory() as session:
+            existing = {item.code: item for item in session.execute(select(AuthRole)).scalars().all()}
+            changed = False
+            for index, item in enumerate(DEFAULT_AUTH_ROLES, start=1):
+                row = existing.get(item["code"])
+                if row is None:
+                    session.add(
+                        AuthRole(
+                            code=item["code"],
+                            name=item["name"],
+                            description=item.get("description"),
+                            sort_order=index * 10,
+                            is_active=True,
+                        )
+                    )
+                    changed = True
+                else:
+                    sort_order = index * 10
+                    if row.name != item["name"] or row.description != item.get("description") or row.sort_order != sort_order:
+                        row.name = item["name"]
+                        row.description = item.get("description")
+                        row.sort_order = sort_order
                         changed = True
             if changed:
                 session.commit()

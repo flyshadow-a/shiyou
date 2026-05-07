@@ -83,3 +83,64 @@ CREATE INDEX ix_facility_profiles_code ON facility_profiles(facility_code);
 CREATE INDEX ix_inspection_projects_facility_type ON inspection_projects(facility_code, project_type);
 CREATE INDEX ix_inspection_projects_sort ON inspection_projects(facility_code, project_type, sort_order);
 CREATE INDEX ix_inspection_findings_project_sort ON inspection_findings(project_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS auth_roles (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    code VARCHAR(50) NOT NULL UNIQUE,
+    name VARCHAR(100) NOT NULL,
+    description VARCHAR(255) NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS auth_users (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(100) NOT NULL,
+    display_name VARCHAR(100) NULL,
+    employee_no VARCHAR(100) NULL,
+    branch_company VARCHAR(255) NULL,
+    operation_company VARCHAR(255) NULL,
+    phone VARCHAR(50) NULL,
+    email VARCHAR(255) NULL,
+    role_code VARCHAR(50) NOT NULL DEFAULT 'engineer',
+    password_hash VARCHAR(255) NOT NULL,
+    password_algo VARCHAR(50) NOT NULL DEFAULT 'pbkdf2_sha256',
+    password_updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    is_deleted TINYINT(1) NOT NULL DEFAULT 0,
+    last_login_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT uk_auth_users_username UNIQUE (username),
+    CONSTRAINT fk_auth_users_role FOREIGN KEY (role_code) REFERENCES auth_roles(code)
+);
+
+CREATE INDEX ix_auth_users_role ON auth_users(role_code);
+CREATE INDEX ix_auth_users_active ON auth_users(is_active, is_deleted);
+
+CREATE TABLE IF NOT EXISTS auth_login_logs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NULL,
+    username VARCHAR(100) NOT NULL,
+    success TINYINT(1) NOT NULL DEFAULT 0,
+    failure_reason VARCHAR(255) NULL,
+    client_info VARCHAR(255) NULL,
+    logged_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_auth_login_logs_user FOREIGN KEY (user_id) REFERENCES auth_users(id)
+);
+
+CREATE INDEX ix_auth_login_logs_user ON auth_login_logs(user_id);
+CREATE INDEX ix_auth_login_logs_username ON auth_login_logs(username);
+CREATE INDEX ix_auth_login_logs_logged_at ON auth_login_logs(logged_at);
+
+INSERT INTO auth_roles (code, name, description, sort_order)
+VALUES
+    ('engineer', '工程师', '普通工程师用户，可使用业务功能', 10),
+    ('admin', '管理员', '系统管理员角色，暂时预留', 20)
+ON DUPLICATE KEY UPDATE
+    name = VALUES(name),
+    description = VALUES(description),
+    sort_order = VALUES(sort_order),
+    updated_at = CURRENT_TIMESTAMP;

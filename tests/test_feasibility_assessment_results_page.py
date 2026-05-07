@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+from PIL import Image
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -180,7 +181,11 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         page.facility_code = "WC19-1D"
         page.overall_model_image_path = "Y:/shiyou_file_storage/image/WC19-1D/overall_model.png"
 
-        with patch.object(page, "_resolve_current_sea_file", return_value="sea-file"), patch.object(
+        with patch.object(page, "_build_coordinate_system_image", return_value="Y:/shiyou_file_storage/image/WC19-1D/coordinate_system.png"), patch.object(
+            page,
+            "_resolve_current_sea_file",
+            return_value="sea-file",
+        ), patch.object(
             page,
             "_extract_environment_load_directions_from_seainp",
             return_value=["0", "51.09", "90.00"],
@@ -188,11 +193,65 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
             result = page._build_analysis_model_section()
 
         self.assertEqual("Y:/shiyou_file_storage/image/WC19-1D/overall_model.png", result["overall_model_image_path"])
+        self.assertEqual("Y:/shiyou_file_storage/image/WC19-1D/coordinate_system.png", result["coordinate_system_image_path"])
         self.assertEqual(
             "环境荷载计算3个方向，分别为 0°，51.09°，90.00°。波浪理论采用STOKS V。",
             result["blocks"][0]["text"],
         )
         self.assertEqual("环境荷载计算", result["blocks"][0]["anchor_prefix"])
+
+    def test_build_coordinate_system_image_combines_xy_and_yz_left(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page.facility_code = "WC19-1D"
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source_dir = root / "special_strategy_images" / "WC19-1D" / "latest" / "special_inspection_strategy" / "elevation_risk"
+            source_dir.mkdir(parents=True)
+            Image.new("RGB", (20, 10), "white").save(source_dir / "XY_-14.png")
+            Image.new("RGB", (30, 12), "white").save(source_dir / "YZ_左.png")
+
+            def fake_path(value: str) -> Path:
+                value = value.replace("Y:/", "").replace("Y:\\", "")
+                return root / value.replace("\\", "/")
+
+            with patch("pages.feasibility_assessment_results_page.Path", side_effect=fake_path):
+                result = page._build_coordinate_system_image()
+
+            self.assertTrue(result.endswith("coordinate_system.png"))
+            self.assertTrue(Path(result).exists())
+
+    def test_generate_report_auto_prefers_local(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+
+        with patch.object(page, "_get_report_mode", return_value="auto"), patch.object(
+            page,
+            "_generate_report_locally",
+            return_value={"message": "report generated (local)", "output_path": "local.docx"},
+        ) as local_generate, patch.object(page, "_post_report_request") as http_generate:
+            result = page._generate_report({"chapter_1_3": {}})
+
+        self.assertEqual("local.docx", result["output_path"])
+        local_generate.assert_called_once()
+        http_generate.assert_not_called()
+
+    def test_generate_report_auto_falls_back_to_http_when_local_fails(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+
+        with patch.object(page, "_get_report_mode", return_value="auto"), patch.object(
+            page,
+            "_generate_report_locally",
+            side_effect=RuntimeError("local failed"),
+        ) as local_generate, patch.object(
+            page,
+            "_post_report_request",
+            return_value={"message": "report generated", "output_path": "http.docx"},
+        ) as http_generate:
+            result = page._generate_report({"chapter_1_3": {}})
+
+        self.assertEqual("http.docx", result["output_path"])
+        local_generate.assert_called_once()
+        http_generate.assert_called_once()
 
     def test_build_environment_conditions_reads_seainp_by_facility_code(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
