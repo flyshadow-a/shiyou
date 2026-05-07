@@ -750,8 +750,12 @@ def main():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     # 开启高 DPI 图片自适应
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # 新机器上 PyVista/VTK 的 OpenGL 上下文不稳定时，优先走软件渲染，
+    # 避免打开含 3D 预览的页面时直接导致整个进程退出。
+    QApplication.setAttribute(Qt.AA_UseSoftwareOpenGL, True)
     # 针对某些 Qt 版本的额外环境变量配置
     os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+    os.environ.setdefault("QT_OPENGL", "software")
 
     app = QApplication(sys.argv)
     window = MainWindow()
