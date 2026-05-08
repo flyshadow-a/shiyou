@@ -39,3 +39,4 @@ pages/output_special_strategy/*.tmp
 pages/output_special_strategy/*.temp
 pages/output_special_strategy/*.bak
 模型/
+data/preview_cache/

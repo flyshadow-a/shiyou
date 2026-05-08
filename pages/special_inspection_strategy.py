@@ -1022,7 +1022,7 @@ class SpecialInspectionStrategy(BasePage):
         self._fill_node_from_context(context, self.current_year)
 
         self._refresh_elevation_view(context)
-        self._schedule_export_all_elevation_images(context)
+        # 浏览页面时不导出/保存图片；报告图片在点击“生成特检策略报告”时统一导出。
 
 
     def _fill_component_from_context(self, context: Dict):
@@ -1065,48 +1065,12 @@ class SpecialInspectionStrategy(BasePage):
 
         self._sync_dynamic_row_combo_from_view()
 
-        # 等待 QGraphicsScene 完成刷新后导出图片并写入数据库。
-        QTimer.singleShot(150, self._save_current_elevation_image)
+        # 浏览页面时只绘制真实图，不在这里导出/保存图片。
 
 
     def _save_current_elevation_image(self):
-        """导出当前右侧模型立面风险图，并把图片路径写入数据库。"""
-        if not hasattr(self, "elevation_view"):
-            return
-
-        facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
-        if not facility_code:
-            return
-
-        row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前"
-        if not row_name:
-            row_name = "XZ 前"
-
-        try:
-            # 特检策略主页是轮廓图，不随年份变化；year_label=None，避免生成“当前/+5年...”目录。
-            image_path = build_strategy_image_path(
-                facility_code=facility_code,
-                run_id=self._active_run_id,
-                page_code="special_inspection_strategy",
-                image_type="elevation_risk",
-                year_label=None,
-                row_name=row_name,
-            )
-            saved_path = self.elevation_view.export_current_scene_to_png(str(image_path))
-            save_strategy_image_record(
-                facility_code=facility_code,
-                run_id=self._active_run_id,
-                page_code="special_inspection_strategy",
-                image_type="elevation_risk",
-                year_label=None,
-                row_name=row_name,
-                image_path=saved_path,
-                remark="特检策略主页轮廓图（不区分年份）",
-            )
-            print("[SpecialInspectionStrategy] outline image saved:", saved_path)
-        except Exception as exc:
-            # 图片导出失败不应影响页面显示。
-            print("[SpecialInspectionStrategy] save elevation image failed:", exc)
+        """页面浏览阶段不保存图片；点击生成报告时由子进程统一导出。"""
+        return
 
     def _batch_export_key(self, facility_code: str, run_id: int | None, context: Optional[Dict]) -> tuple:
         state = (context or {}).get("state") if isinstance(context, dict) else {}
