@@ -28,6 +28,7 @@ from src.parsers.pile_head_force_parser import parse_pile_head_forces
 from src.parsers.pile_group_summary_builder import build_pile_group_summary
 from src.parsers.pile_group_summary_parser import parse_pile_group_summary
 from src.parsers.psilst_reader import read_lines
+from src.path_config_loader import get_report_defaults
 from src.parsers.summary_builder import build_analysis_summary
 from src.renderers.doc_renderer import render_report_doc
 
@@ -256,9 +257,10 @@ def generate_report_with_project_defaults(
     output_path: str | None = None,
 ) -> str:
     root = Path(project_root)
+    defaults = get_report_defaults()
     return generate_report(
-        factor_path=str(factor_path or (root / "data" / "psilst.factor")),
-        template_path=str(template_path or (root / "xxx平台改建可行性评估报告纯净版.docx")),
-        output_path=str(output_path or (root / "output" / "report_autofill.docx")),
+        factor_path=str(factor_path or defaults["factor_path"]),
+        template_path=str(template_path or defaults["template_path"]),
+        output_path=str(output_path or defaults["output_path"]),
         chapter_1_3_sources=chapter_1_3_sources,
     )

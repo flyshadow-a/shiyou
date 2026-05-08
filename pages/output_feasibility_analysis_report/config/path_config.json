@@ -1,0 +1,23 @@
+{
+  "special_strategy_images_root": "Y:\\special_strategy_images",
+  "report_image_output_root": "Y:\\shiyou_file_storage\\image",
+  "report_defaults": {
+    "factor_path": "data\\psilst.factor",
+    "template_file": "xxx平台改建可行性评估报告纯净版.docx",
+    "output_file": "output\\report_autofill.docx",
+    "appendix_a_reference_file": "xxx平台改建可行性评估报告.docx"
+  },
+  "analysis_model": {
+    "overall_model": {
+      "directory": "{special_strategy_images_root}\\{facility_code}\\latest\\platform_strength_page\\overall_model\\当前",
+      "preferred_file": "3d.png",
+      "fallback_extensions": [".png", ".jpg", ".jpeg"]
+    },
+    "coordinate_system": {
+      "directory": "{special_strategy_images_root}\\{facility_code}\\latest\\special_inspection_strategy\\elevation_risk",
+      "xy_file": "XY_-14.png",
+      "yz_file": "YZ_左.png",
+      "output_file": "coordinate_system.png"
+    }
+  }
+}

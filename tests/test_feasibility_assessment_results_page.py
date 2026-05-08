@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from pages.feasibility_assessment_results_page import FeasibilityAssessmentResultsPage
+from src.path_config_loader import get_coordinate_system_config, get_overall_model_config, get_report_defaults, load_path_config
 
 
 class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
@@ -180,9 +181,12 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
     def test_build_analysis_model_section_uses_seainp_directions(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
         page.facility_code = "WC19-1D"
-        page.overall_model_image_path = "Y:/shiyou_file_storage/image/WC19-1D/overall_model.png"
 
-        with patch.object(page, "_build_coordinate_system_image", return_value="Y:/shiyou_file_storage/image/WC19-1D/coordinate_system.png"), patch.object(
+        with patch.object(page, "_resolve_overall_model_image", return_value="Y:/special_strategy_images/WC19-1D/latest/platform_strength_page/overall_model/当前/3d.png"), patch.object(
+            page,
+            "_build_coordinate_system_image",
+            return_value="Y:/shiyou_file_storage/image/WC19-1D/coordinate_system.png",
+        ), patch.object(
             page,
             "_resolve_current_sea_file",
             return_value="sea-file",
@@ -193,13 +197,51 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         ):
             result = page._build_analysis_model_section()
 
-        self.assertEqual("Y:/shiyou_file_storage/image/WC19-1D/overall_model.png", result["overall_model_image_path"])
+        self.assertEqual("Y:/special_strategy_images/WC19-1D/latest/platform_strength_page/overall_model/当前/3d.png", result["overall_model_image_path"])
         self.assertEqual("Y:/shiyou_file_storage/image/WC19-1D/coordinate_system.png", result["coordinate_system_image_path"])
         self.assertEqual(
             "环境荷载计算3个方向，分别为 0°，51.09°，90.00°。波浪理论采用STOKS V。",
             result["blocks"][0]["text"],
         )
         self.assertEqual("环境荷载计算", result["blocks"][0]["anchor_prefix"])
+
+    def test_resolve_overall_model_image_reads_fixed_platform_strength_directory(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page.facility_code = "WC19-1D"
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source_dir = root / "special_strategy_images" / "WC19-1D" / "latest" / "platform_strength_page" / "overall_model" / "当前"
+            source_dir.mkdir(parents=True)
+            expected = source_dir / "3d.png"
+            Image.new("RGB", (20, 10), "white").save(expected)
+
+            with patch(
+                "pages.feasibility_assessment_results_page.get_overall_model_config",
+                return_value={
+                    "directory": source_dir,
+                    "preferred_file": "3d.png",
+                    "fallback_extensions": (".png", ".jpg", ".jpeg"),
+                },
+            ):
+                result = page._resolve_overall_model_image()
+
+        self.assertEqual(str(expected), result)
+
+    def test_path_config_loader_resolves_analysis_model_paths(self) -> None:
+        load_path_config.cache_clear()
+        overall_config = get_overall_model_config("WC19-1D")
+        coordinate_config = get_coordinate_system_config("WC19-1D")
+        report_defaults = get_report_defaults()
+
+        self.assertEqual(Path(r"Y:\special_strategy_images\WC19-1D\latest\platform_strength_page\overall_model\当前"), overall_config["directory"])
+        self.assertEqual("3d.png", overall_config["preferred_file"])
+        self.assertEqual(Path(r"Y:\special_strategy_images\WC19-1D\latest\special_inspection_strategy\elevation_risk"), coordinate_config["directory"])
+        self.assertEqual("XY_-14.png", coordinate_config["xy_file"])
+        self.assertEqual("YZ_左.png", coordinate_config["yz_file"])
+        self.assertEqual(Path(r"Y:\shiyou_file_storage\image\WC19-1D\coordinate_system.png"), coordinate_config["output_path"])
+        self.assertEqual(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report" / "xxx平台改建可行性评估报告纯净版.docx", report_defaults["template_path"])
+        self.assertEqual(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report" / "xxx平台改建可行性评估报告.docx", report_defaults["appendix_a_reference_path"])
 
     def test_build_coordinate_system_image_combines_xy_and_yz_left(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
@@ -212,47 +254,45 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
             Image.new("RGB", (20, 10), "white").save(source_dir / "XY_-14.png")
             Image.new("RGB", (30, 12), "white").save(source_dir / "YZ_左.png")
 
-            def fake_path(value: str) -> Path:
-                value = value.replace("Y:/", "").replace("Y:\\", "")
-                return root / value.replace("\\", "/")
-
-            with patch("pages.feasibility_assessment_results_page.Path", side_effect=fake_path):
+            with patch(
+                "pages.feasibility_assessment_results_page.get_coordinate_system_config",
+                return_value={
+                    "directory": source_dir,
+                    "xy_file": "XY_-14.png",
+                    "yz_file": "YZ_左.png",
+                    "output_path": root / "shiyou_file_storage" / "image" / "WC19-1D" / "coordinate_system.png",
+                },
+            ):
                 result = page._build_coordinate_system_image()
 
             self.assertTrue(result.endswith("coordinate_system.png"))
             self.assertTrue(Path(result).exists())
 
-    def test_generate_report_auto_prefers_local(self) -> None:
+    def test_generate_report_uses_local_report_module(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
 
-        with patch.object(page, "_get_report_mode", return_value="auto"), patch.object(
+        with patch.object(
             page,
             "_generate_report_locally",
             return_value={"message": "report generated (local)", "output_path": "local.docx"},
-        ) as local_generate, patch.object(page, "_post_report_request") as http_generate:
+        ) as local_generate:
             result = page._generate_report({"chapter_1_3": {}})
 
         self.assertEqual("local.docx", result["output_path"])
         local_generate.assert_called_once()
-        http_generate.assert_not_called()
 
-    def test_generate_report_auto_does_not_fall_back_to_http_when_local_fails(self) -> None:
+    def test_generate_report_raises_local_errors_without_http_fallback(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
 
-        with patch.object(page, "_get_report_mode", return_value="auto"), patch.object(
+        with patch.object(
             page,
             "_generate_report_locally",
             side_effect=RuntimeError("local failed"),
-        ) as local_generate, patch.object(
-            page,
-            "_post_report_request",
-            return_value={"message": "report generated", "output_path": "http.docx"},
-        ) as http_generate:
+        ) as local_generate:
             with self.assertRaisesRegex(RuntimeError, "local failed"):
                 page._generate_report({"chapter_1_3": {}})
 
         local_generate.assert_called_once()
-        http_generate.assert_not_called()
 
     def test_get_wordtemplate_project_root_points_to_embedded_report_module(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)

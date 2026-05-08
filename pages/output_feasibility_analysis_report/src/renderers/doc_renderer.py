@@ -19,6 +19,7 @@ from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 
 from src.config_loader import load_doc_renderer_config
+from src.path_config_loader import get_report_defaults
 from .table_writer import (
     find_table_by_header_row,
     find_tables_by_header_rows,
@@ -1443,7 +1444,7 @@ def append_appendix_c_from_factor(
 
 
 def _resolve_default_appendix_a_reference(template_path: str) -> str:
-    return str(Path(template_path).with_name("xxx平台改建可行性评估报告.docx"))
+    return str(get_report_defaults()["appendix_a_reference_path"])
 
 
 def _render_cover_fields(

@@ -17,7 +17,6 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Dict, List, Tuple
-from urllib import error, request
 
 
 from PyQt5.QtCore import Qt, QTimer, QRectF
@@ -70,6 +69,12 @@ from services.file_db_adapter import DOC_MAN_MODULE_CODE, list_files_by_prefix, 
 
 from pages.sacs_storage_service import get_job_runtime_dir, get_job_sea_file
 
+
+REPORT_MODULE_ROOT = Path(__file__).resolve().parent / "output_feasibility_analysis_report"
+if str(REPORT_MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPORT_MODULE_ROOT))
+
+from src.path_config_loader import get_coordinate_system_config, get_overall_model_config
 
 
 def _resolve_result_model_paths(self):
@@ -267,8 +272,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
         "来自检验记录最近一次检验（包括定期检验1-N和特殊事件检测）的信息和结论"
         "（可在事件名称后增加“描述”一栏））"
     )
-    DEFAULT_REPORT_API_URL = "http://127.0.0.1:8000/generate-report"
-
     def __init__(self, main_window, facility_code, job_name="", mysql_url="", platform_overview_text="",
                  inspection_record_summary_text="", env_branch="", env_op_company="", env_oilfield="",
                  overall_model_image_path="", parent=None):
@@ -952,7 +955,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _build_analysis_model_section(self) -> dict:
         section = {
-            "overall_model_image_path": self.overall_model_image_path,
+            "overall_model_image_path": self._resolve_overall_model_image(),
             "coordinate_system_image_path": self._build_coordinate_system_image(),
         }
         directions = self._extract_environment_load_directions_from_seainp(
@@ -969,25 +972,39 @@ class FeasibilityAssessmentResultsPage(BasePage):
             ]
         return section
 
+    def _resolve_overall_model_image(self) -> str:
+        config = get_overall_model_config(self.facility_code)
+        base_dir = config["directory"]
+        preferred = base_dir / config["preferred_file"]
+        if preferred.exists():
+            return str(preferred)
+        if not base_dir.exists():
+            return ""
+
+        candidates = [
+            path
+            for extension in config["fallback_extensions"]
+            for pattern in (f"*{extension}",)
+            for path in base_dir.glob(pattern)
+            if path.is_file()
+        ]
+        if not candidates:
+            return ""
+        return str(max(candidates, key=lambda path: path.stat().st_mtime))
+
     def _build_coordinate_system_image(self) -> str:
-        base_dir = (
-            Path(r"Y:\special_strategy_images")
-            / self.facility_code
-            / "latest"
-            / "special_inspection_strategy"
-            / "elevation_risk"
-        )
-        xy_path = base_dir / "XY_-14.png"
-        yz_path = base_dir / "YZ_左.png"
+        config = get_coordinate_system_config(self.facility_code)
+        base_dir = config["directory"]
+        xy_path = base_dir / config["xy_file"]
+        yz_path = base_dir / config["yz_file"]
         if not xy_path.exists() or not yz_path.exists():
             return ""
 
-        output_dir = Path(r"Y:\shiyou_file_storage") / "image" / self.facility_code
-        output_path = output_dir / "coordinate_system.png"
+        output_path = config["output_path"]
         try:
             from PIL import Image, ImageDraw, ImageFont
 
-            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             images = [Image.open(str(xy_path)).convert("RGB"), Image.open(str(yz_path)).convert("RGB")]
             title_height = 30
             gap = 24
@@ -1511,40 +1528,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 row.get("corrosion_allowance_mm_per_y")).strip(),
         }
 
-    def _post_report_request(self, payload: dict) -> dict:
-        api_url = self.DEFAULT_REPORT_API_URL
-        body = json.dumps(payload).encode("utf-8")
-        req = request.Request(
-            api_url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with request.urlopen(req, timeout=120) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")
-            if "Permission denied" in detail and ".docx" in detail:
-                try:
-                    detail_payload = json.loads(detail)
-                    raw_detail = str(detail_payload.get("detail", "")).strip()
-                except Exception:
-                    raw_detail = detail.strip()
-                locked_file = raw_detail.split(":", 1)[-1].strip().strip("'\"")
-                raise RuntimeError(
-                    "报告生成失败：目标 Word 文件正被占用，请先关闭已打开的报告后重试。\n"
-                    f"被占用文件：{locked_file}"
-                ) from exc
-            raise RuntimeError(f"报告服务返回错误：HTTP {exc.code}\n{detail}") from exc
-        except error.URLError as exc:
-            raise RuntimeError(
-                f"无法连接可行性评估报告服务：{self.DEFAULT_REPORT_API_URL}") from exc
-
-    def _get_report_mode(self) -> str:
-        mode = str(os.environ.get("REPORT_GENERATION_MODE", "auto")).strip().lower()
-        return mode if mode in {"auto", "http", "local"} else "auto"
-
     def _get_wordtemplate_project_root(self) -> Path:
         return Path(__file__).resolve().parent / "output_feasibility_analysis_report"
 
@@ -1571,11 +1554,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return {"message": "report generated (local)", "output_path": result}
 
     def _generate_report(self, payload: dict) -> dict:
-        mode = self._get_report_mode()
-        if mode == "http":
-            return self._post_report_request(payload)
-        if mode == "local":
-            return self._generate_report_locally(payload)
         return self._generate_report_locally(payload)
 
     def _fetch_model_paths(self):
