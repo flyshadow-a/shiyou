@@ -256,11 +256,14 @@ def generate_report_with_project_defaults(
     template_path: str | None = None,
     output_path: str | None = None,
 ) -> str:
-    root = Path(project_root)
     defaults = get_report_defaults()
+    if not factor_path:
+        raise ValueError("必须传入 factor_path；迁移后的报告模块不再提供 data/psilst.factor 兜底路径。")
+    if not output_path:
+        raise ValueError("必须传入 output_path；请由用户选择报告保存目录后再生成。")
     return generate_report(
-        factor_path=str(factor_path or defaults["factor_path"]),
+        factor_path=str(factor_path),
         template_path=str(template_path or defaults["template_path"]),
-        output_path=str(output_path or defaults["output_path"]),
+        output_path=str(output_path),
         chapter_1_3_sources=chapter_1_3_sources,
     )

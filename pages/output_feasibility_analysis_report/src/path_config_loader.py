@@ -55,8 +55,6 @@ def get_report_defaults() -> dict[str, Path]:
     config = load_path_config()
     section = config.get("report_defaults", {})
     return {
-        "factor_path": PROJECT_ROOT / str(section.get("factor_path", "data/psilst.factor")),
         "template_path": PROJECT_ROOT / str(section.get("template_file", "xxx平台改建可行性评估报告纯净版.docx")),
-        "output_path": PROJECT_ROOT / str(section.get("output_file", "output/report_autofill.docx")),
         "appendix_a_reference_path": PROJECT_ROOT / str(section.get("appendix_a_reference_file", "xxx平台改建可行性评估报告.docx")),
     }

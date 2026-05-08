@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 def _build_output_path(filename: str | None = None, output_path: str | None = None) -> str:
     if output_path:
         return output_path
-    if filename:
-        return str(PROJECT_ROOT / "output" / filename)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return str(PROJECT_ROOT / "output" / f"report_autofill_api_{timestamp}.docx")
+    raise ValueError("必须传入 output_path；迁移后的报告模块不再提供 output/ 兜底路径。")
 
 
 def create_app() -> Any:

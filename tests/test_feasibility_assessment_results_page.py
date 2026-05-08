@@ -242,6 +242,8 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         self.assertEqual(Path(r"Y:\shiyou_file_storage\image\WC19-1D\coordinate_system.png"), coordinate_config["output_path"])
         self.assertEqual(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report" / "xxx平台改建可行性评估报告纯净版.docx", report_defaults["template_path"])
         self.assertEqual(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report" / "xxx平台改建可行性评估报告.docx", report_defaults["appendix_a_reference_path"])
+        self.assertNotIn("factor_path", report_defaults)
+        self.assertNotIn("output_path", report_defaults)
 
     def test_build_coordinate_system_image_combines_xy_and_yz_left(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)

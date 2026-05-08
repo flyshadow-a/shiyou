@@ -1541,9 +1541,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
         from src.report_service import generate_report_with_project_defaults
 
         output_path = str(payload.get("output_path", "")).strip() or None
-        if output_path is None:
-            output_filename = str(payload.get("output_filename", "")).strip()
-            output_path = str(project_root / "output" / output_filename) if output_filename else None
         result = generate_report_with_project_defaults(
             project_root=project_root,
             chapter_1_3_sources=payload.get("chapter_1_3", {}),

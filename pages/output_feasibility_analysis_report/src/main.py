@@ -1,12 +1,8 @@
-from pathlib import Path
-
-from report_service import generate_report_with_project_defaults
-
 def main() -> None:
-    project_root = Path(__file__).resolve().parent.parent
-    rendered_docx = generate_report_with_project_defaults(project_root=project_root)
-    print("=" * 60)
-    print("已生成文档:", rendered_docx)
+    raise SystemExit(
+        "迁移后的报告模块不再提供 data/psilst.factor 和 output/report_autofill.docx 兜底路径；"
+        "请从 shiyou_v3 结果页选择输出目录后生成报告。"
+    )
 
 
 if __name__ == "__main__":
