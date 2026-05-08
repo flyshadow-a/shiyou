@@ -1,0 +1,306 @@
+<?xml version="1.0" encoding="utf-8"?>
+<doc_renderer>
+  <table_headers>
+    <analysis_summary>
+      <item>校核内容</item>
+      <item>位置</item>
+      <item>最大UC值/ 最小安全系数</item>
+      <item>对应工况</item>
+      <item>是否满足</item>
+    </analysis_summary>
+    <pile_capacity>
+      <row>
+        <item>桩头ID</item>
+        <item>桩基承载能力(kN)</item>
+        <item>桩基承载能力(kN)</item>
+        <item>桩自重 （kN）</item>
+        <item>设计载荷</item>
+        <item>设计载荷</item>
+        <item>设计载荷</item>
+        <item>设计载荷</item>
+        <item>安全系数</item>
+        <item>安全系数</item>
+      </row>
+      <row>
+        <item>桩头ID</item>
+        <item>抗压</item>
+        <item>抗拔</item>
+        <item>桩自重 （kN）</item>
+        <item>工况</item>
+        <item>压力(kN)</item>
+        <item>工况</item>
+        <item>拉力(kN)</item>
+        <item>抗压</item>
+        <item>抗拔</item>
+      </row>
+    </pile_capacity>
+    <basic_case_desc>
+      <item>序号</item>
+      <item>名称</item>
+      <item>描述</item>
+    </basic_case_desc>
+    <basic_case_loads>
+      <item>工况 名称</item>
+      <item>FX （kN）</item>
+      <item>FY （kN）</item>
+      <item>FZ （kN）</item>
+      <item>MX （kN.m）</item>
+      <item>MY （kN.m）</item>
+      <item>MZ （kN.m）</item>
+      <item>固定载荷 （kN）</item>
+      <item>海生物方法浮力 （kN）</item>
+    </basic_case_loads>
+    <combo_case_desc>
+      <item>序号</item>
+      <item>名称</item>
+      <item>类别</item>
+      <item>描述</item>
+    </combo_case_desc>
+    <combo_case_loads>
+      <item>序号</item>
+      <item>工况 名称</item>
+      <item>FX （kN）</item>
+      <item>FY （kN）</item>
+      <item>FZ （kN）</item>
+      <item>MX （kN.m）</item>
+      <item>MY （kN.m）</item>
+      <item>MZ （kN.m）</item>
+    </combo_case_loads>
+    <retrofit_history_list>
+      <item>序号</item>
+      <item>改造项目</item>
+      <item>年份</item>
+    </retrofit_history_list>
+    <environment_water_level>
+      <item>元素</item>
+      <item>元素</item>
+      <item>相对海图基准面</item>
+    </environment_water_level>
+    <environment_wave>
+      <row>
+        <item>元素</item>
+        <item>元素</item>
+        <item>回归周期 (年)</item>
+        <item>回归周期 (年)</item>
+        <item>回归周期 (年)</item>
+        <item>回归周期 (年)</item>
+        <item>回归周期 (年)</item>
+      </row>
+      <row>
+        <item>元素</item>
+        <item>元素</item>
+        <item>1</item>
+        <item>10</item>
+        <item>25</item>
+        <item>50</item>
+        <item>100</item>
+      </row>
+    </environment_wave>
+    <environment_current>
+      <row>
+        <item>海流速度（cm/s）</item>
+        <item>海流速度（cm/s）</item>
+        <item>海流速度（cm/s）</item>
+        <item>海流速度（cm/s）</item>
+        <item>海流速度（cm/s）</item>
+        <item>海流速度（cm/s）</item>
+        <item>海流速度（cm/s）</item>
+      </row>
+      <row>
+        <item>元素</item>
+        <item>元素</item>
+        <item>回归周期 (年)</item>
+        <item>回归周期 (年)</item>
+        <item>回归周期 (年)</item>
+        <item>回归周期 (年)</item>
+        <item>回归周期 (年)</item>
+      </row>
+      <row>
+        <item>元素</item>
+        <item>元素</item>
+        <item>1</item>
+        <item>10</item>
+        <item>25</item>
+        <item>50</item>
+        <item>100</item>
+      </row>
+    </environment_current>
+    <environment_wind>
+      <row>
+        <item>风速 @10m (m/s)</item>
+        <item>风速 @10m (m/s)</item>
+        <item>风速 @10m (m/s)</item>
+        <item>风速 @10m (m/s)</item>
+        <item>风速 @10m (m/s)</item>
+        <item>风速 @10m (m/s)</item>
+        <item>风速 @10m (m/s)</item>
+      </row>
+      <row>
+        <item>元素</item>
+        <item>元素</item>
+        <item>回归周期 (年)</item>
+        <item>回归周期 (年)</item>
+        <item>回归周期 (年)</item>
+        <item>回归周期 (年)</item>
+        <item>回归周期 (年)</item>
+      </row>
+      <row>
+        <item>元素</item>
+        <item>元素</item>
+        <item>1</item>
+        <item>10</item>
+        <item>25</item>
+        <item>50</item>
+        <item>100</item>
+      </row>
+    </environment_wind>
+    <environment_marine_growth>
+      <row>
+        <item>层数</item>
+        <item>层数</item>
+        <item>1</item>
+        <item>2</item>
+        <item>3</item>
+        <item>4</item>
+        <item>5</item>
+        <item>6</item>
+        <item>7</item>
+        <item>8</item>
+        <item>9</item>
+      </row>
+      <row>
+        <item>高度区域</item>
+        <item>上限(m)</item>
+        <item>0</item>
+        <item>-15</item>
+        <item>-30</item>
+        <item>-50</item>
+        <item>-60</item>
+        <item>-70</item>
+        <item>-80</item>
+        <item>-95</item>
+        <item>-110</item>
+      </row>
+      <row>
+        <item>高度区域</item>
+        <item>下限(m)</item>
+        <item>-15</item>
+        <item>-30</item>
+        <item>-50</item>
+        <item>-60</item>
+        <item>-70</item>
+        <item>-80</item>
+        <item>-95</item>
+        <item>-110</item>
+        <item>-122</item>
+      </row>
+      <row>
+        <item>海生物</item>
+        <item>厚度（cm)</item>
+        <item>10</item>
+        <item>10</item>
+        <item>10</item>
+        <item>4.5</item>
+        <item>4.5</item>
+        <item>4.5</item>
+        <item>4</item>
+        <item>4</item>
+        <item>4</item>
+      </row>
+      <row>
+        <item>海生物密度(t/m3)</item>
+        <item>海生物密度(t/m3)</item>
+        <item>1.4</item>
+        <item>1.4</item>
+        <item>1.4</item>
+        <item>1.4</item>
+        <item>1.4</item>
+        <item>1.4</item>
+        <item>1.4</item>
+        <item>1.4</item>
+        <item>1.4</item>
+      </row>
+    </environment_marine_growth>
+    <environment_splash_zone>
+      <item>飞溅区上限(m)</item>
+      <item>飞溅区下限(m)</item>
+      <item>腐蚀余量(mm/y)</item>
+    </environment_splash_zone>
+  </table_headers>
+  <paragraph_anchors>
+    <member_summary_title>构件名义应力校核</member_summary_title>
+    <joint_summary_title>节点冲剪应力校核</joint_summary_title>
+    <pile_summary_title>桩基承载力及桩应力校核</pile_summary_title>
+    <raw_block_placeholder>（以下内容来自结果文件读取）</raw_block_placeholder>
+    <pile_extreme_label>极端风暴工况：</pile_extreme_label>
+    <pile_operation_label>操作工况：</pile_operation_label>
+    <pile_capacity_conclusion_prefix>从以上结果可知：</pile_capacity_conclusion_prefix>
+    <pile_stress_prefix>桩应力UC</pile_stress_prefix>
+    <pile_raw_block_prefix>* * P I L E</pile_raw_block_prefix>
+  </paragraph_anchors>
+  <chapter_paragraphs>
+    <platform_overview>
+      <title>平台概况</title>
+      <body_mode>replace_region</body_mode>
+      <end_title>改造历史</end_title>
+      <replace_anchor_prefix>例子：</replace_anchor_prefix>
+    </platform_overview>
+    <retrofit_history>
+      <title>改造历史</title>
+      <body_mode>replace_region</body_mode>
+      <end_title>平台的评估结论</end_title>
+      <replace_anchor_prefix>例子：</replace_anchor_prefix>
+    </retrofit_history>
+    <platform_evaluation_conclusion>
+      <title>平台的评估结论</title>
+      <body_mode>replace_region</body_mode>
+      <end_title>基础数据</end_title>
+      <replace_anchor_prefix>例子：</replace_anchor_prefix>
+    </platform_evaluation_conclusion>
+    <basis_data>
+      <title>基础数据</title>
+      <body_mode>replace_region</body_mode>
+      <end_title>载荷变化</end_title>
+    </basis_data>
+    <load_information>
+      <title>载荷变化</title>
+      <body_mode>replace_region</body_mode>
+      <end_title>环境条件</end_title>
+    </load_information>
+    <environment_conditions>
+      <title>环境条件</title>
+      <body_mode>replace_region</body_mode>
+      <end_title>分析模型</end_title>
+    </environment_conditions>
+    <analysis_model>
+      <title>分析模型</title>
+      <body_mode>replace_region</body_mode>
+      <end_title>构件名义应力校核</end_title>
+    </analysis_model>
+  </chapter_paragraphs>
+  <styles>
+    <raw_block_font_size_pt>7</raw_block_font_size_pt>
+  </styles>
+  <render_plans>
+    <analysis_summary_doc>
+      <section>analysis_summary_table</section>
+    </analysis_summary_doc>
+    <section_45_3_doc>
+      <section>analysis_summary_table</section>
+      <section>pile_capacity_tables</section>
+      <section>summary_paragraphs_45</section>
+    </section_45_3_doc>
+    <report_doc>
+      <section>chapters_1_3</section>
+      <section>retrofit_history_list_table</section>
+      <section>load_information_table</section>
+      <section>environment_conditions_tables</section>
+      <section>tables_43</section>
+      <section>tables_44</section>
+      <section>analysis_summary_table</section>
+      <section>pile_capacity_tables</section>
+      <section>summary_paragraphs_45</section>
+      <section>raw_blocks_45</section>
+    </report_doc>
+  </render_plans>
+</doc_renderer>
