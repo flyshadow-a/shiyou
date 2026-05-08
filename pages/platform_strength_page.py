@@ -3,9 +3,6 @@
 
 import os
 import re
-import sys
-import tempfile
-from pathlib import Path
 
 import numpy as np
 import pyvista as pv
@@ -13,7 +10,7 @@ from pyvistaqt import QtInteractor
 
 from typing import Any, Dict, List, Tuple, Optional
 
-from PyQt5.QtCore import Qt, QRectF, QEvent, QTimer, QProcess
+from PyQt5.QtCore import Qt, QRectF, QEvent, QTimer
 from PyQt5.QtGui import QColor, QFont, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -58,81 +55,16 @@ from pages.sacs_import_service import import_model_bundle_to_db
 
 from shiyou_db.runtime_db import get_mysql_url
 from shiyou_db.config import get_storage_root
+from services.special_strategy_image_service import (
+    build_strategy_image_path,
+    save_strategy_image_record,
+)
 
 from collections import Counter
 
 from pages.sacs_storage_service import (
     get_job_runtime_dir,
 )
-
-
-def _read_sacs_lines_for_preview(file_path: str) -> List[str]:
-    encodings = ["utf-8", "utf-8-sig", "gb18030", "gbk", "latin-1"]
-    for enc in encodings:
-        try:
-            with open(file_path, "r", encoding=enc) as f:
-                return f.readlines()
-        except UnicodeDecodeError:
-            continue
-        except Exception:
-            break
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-        return f.readlines()
-
-
-def _parse_sacs_model_data_for_preview(file_path: str):
-    nodes = {}
-    members = []
-    groups_od = {}
-    if not file_path or not os.path.exists(file_path):
-        return nodes, members, groups_od
-
-    for line in _read_sacs_lines_for_preview(file_path):
-        if line.startswith("GRUP"):
-            gid = line[5:8].strip()
-            try:
-                od_str = line[14:24].strip()
-                od = float(od_str) if od_str else 0.0
-                groups_od[gid] = od
-            except Exception:
-                groups_od[gid] = 0.0
-        elif line.startswith("JOINT"):
-            try:
-                nid = line[6:10].strip()
-                x = float(line[11:18].strip())
-                y = float(line[18:25].strip())
-                z = float(line[25:32].strip())
-                nodes[nid] = [x, y, z]
-            except Exception:
-                continue
-        elif line.startswith("MEMBER"):
-            try:
-                body = line[6:].strip()
-                if body.startswith("OFFSETS"):
-                    continue
-                na = line[7:11].strip()
-                nb = line[11:15].strip()
-                gid = line[15:18].strip()
-                if na and nb:
-                    members.append((na, nb, gid))
-            except Exception:
-                continue
-    return nodes, members, groups_od
-
-
-def _parse_mud_level_from_sacinp_static(file_path: str) -> Optional[str]:
-    try:
-        for line in _read_sacs_lines_for_preview(file_path):
-            if line.upper().startswith("LDOPT") and len(line) >= 40:
-                val_str = line[32:40].strip()
-                try:
-                    return f"{float(val_str):.3f}"
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    return None
-
 
 class PyVistaSacsView(QFrame):
     COLOR_SCHEME = {
@@ -407,13 +339,58 @@ class PyVistaSacsView(QFrame):
 
         self.plotter.render()
 
-    def export_current_view(self, output_path: str) -> str:
+    def export_current_view(self, output_path: str, width: int = 2400, height: int = 2400) -> str:
+        """
+        导出当前三维视图。
+
+        原来直接按右侧控件当前尺寸截图，控件只有几百像素时，
+        保存到服务器的图会很模糊。这里导出时使用更高的截图分辨率，
+        页面显示尺寸不变。
+        """
         output = os.path.normpath(str(output_path or "").strip())
         if not output:
             return ""
         os.makedirs(os.path.dirname(output), exist_ok=True)
-        self.plotter.render()
-        self.plotter.screenshot(output)
+
+        width = max(int(width or 2400), 1200)
+        height = max(int(height or 2400), 1200)
+
+        try:
+            self.plotter.render()
+        except Exception:
+            pass
+
+        try:
+            self.plotter.screenshot(output, scale=3)
+        except TypeError:
+            try:
+                self.plotter.screenshot(output, window_size=(width, height))
+            except TypeError:
+                old_size = None
+                try:
+                    old_size = tuple(getattr(self.plotter, "window_size", ()) or ())
+                except Exception:
+                    old_size = None
+                try:
+                    try:
+                        self.plotter.window_size = [width, height]
+                    except Exception:
+                        pass
+                    self.plotter.render()
+                    self.plotter.screenshot(output)
+                finally:
+                    if old_size and len(old_size) == 2:
+                        try:
+                            self.plotter.window_size = list(old_size)
+                            self.plotter.render()
+                        except Exception:
+                            pass
+        except Exception:
+            try:
+                self.plotter.screenshot(output)
+            except Exception:
+                return ""
+
         return output if os.path.exists(output) else ""
 
     def pan_view(self, x_value: int, y_value: int):
@@ -533,10 +510,20 @@ class PlatformStrengthPage(BasePage):
         self._default_pile_items: List[Dict] = []
         self._default_marine_items: List[Dict] = []
 
+        self._overall_export_seq = 0
+        self._last_saved_overall_image_key = ""
+        self._did_first_show_autoload = False
+
         self._build_ui()
         self._capture_default_strength_env_tables()
         self._load_strength_env_tables()
-        self._autoload_inp_to_view()
+        QTimer.singleShot(0, self._autoload_inp_to_view)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._did_first_show_autoload:
+            self._did_first_show_autoload = True
+            QTimer.singleShot(200, self._autoload_inp_to_view)
 
     # ---------------- 顶部下拉 ----------------
     def _normalize_top_value(self, value: object) -> str:
@@ -1396,36 +1383,70 @@ class PlatformStrengthPage(BasePage):
         else:
             QMessageBox.information(self, "提示", "未检测到主窗口Tab组件，无法打开页面。")
 
-    def _export_overall_model_image(self, facility_code: str) -> str:
+    def _schedule_export_overall_model_image(self, delay_ms: int = 1200):
+        facility_code = self._get_top_value("facility_code")
+        if not facility_code:
+            return
+
+        self._overall_export_seq += 1
+        seq = self._overall_export_seq
+        QTimer.singleShot(
+            delay_ms,
+            lambda s=seq, code=facility_code: self._do_delayed_export_overall_model_image(s, code),
+        )
+
+    def _do_delayed_export_overall_model_image(self, seq: int, facility_code: str):
+        if seq != self._overall_export_seq:
+            return
+        self._export_overall_model_image(facility_code)
+
+    def _export_overall_model_image(self, facility_code: str, force: bool = False) -> str:
         code = (facility_code or "").strip()
-        if not code:
-            QMessageBox.warning(self, "整体模型截图失败", "当前平台编号为空，无法保存整体模型截图。")
-            return ""
-        if not hasattr(self, "inp_view"):
-            QMessageBox.warning(self, "整体模型截图失败", "当前页面未初始化模型视图，无法保存整体模型截图。")
+        if not code or not hasattr(self, "inp_view"):
             return ""
         try:
-            storage_root = os.path.normpath(str(get_storage_root() or "").strip())
-            if not storage_root:
-                QMessageBox.warning(self, "整体模型截图失败", "文件存储根目录为空，无法保存整体模型截图。")
-                return ""
-            output_path = os.path.join(storage_root, "image", code, "overall_model.png")
-            saved_path = self.inp_view.export_current_view(output_path)
+            target_path = build_strategy_image_path(
+                facility_code=code,
+                run_id=None,
+                page_code="platform_strength_page",
+                image_type="overall_model",
+                year_label="当前",
+                row_name="3d",
+                create_dirs=True,
+            )
+            target_path_str = os.path.normpath(str(target_path))
+
+            model_path = self._resolve_current_preview_model_file(code)
+            workpoint = self._get_workpoint_value()
+            export_key = f"{code}|{model_path}|{workpoint}"
+
+            if (not force) and export_key == self._last_saved_overall_image_key and os.path.exists(target_path_str):
+                return target_path_str
+
+            saved_path = self.inp_view.export_current_view(target_path_str)
+            saved_path = os.path.normpath(str(saved_path or ""))
             if not saved_path or not os.path.exists(saved_path):
-                QMessageBox.warning(
-                    self,
-                    "整体模型截图失败",
-                    f"已尝试保存整体模型截图，但目标文件未生成：\n{output_path}",
-                )
                 return ""
+
+            try:
+                save_strategy_image_record(
+                    facility_code=code,
+                    run_id=None,
+                    page_code="platform_strength_page",
+                    image_type="overall_model",
+                    year_label="当前",
+                    row_name="3d",
+                    image_path=saved_path,
+                    remark="结构强度/改造可行性评估页面三维总图",
+                )
+            except Exception as db_exc:
+                print("[PlatformStrengthPage] save strategy image record failed:", db_exc)
+
+            self._last_saved_overall_image_key = export_key
+            print(f"[PlatformStrengthPage] overall model image saved: {saved_path}")
             return saved_path
         except Exception as exc:
-            target = output_path if "output_path" in locals() else "未能计算目标路径"
-            QMessageBox.warning(
-                self,
-                "整体模型截图失败",
-                f"保存整体模型截图失败：\n{exc}\n\n目标路径：\n{target}",
-            )
+            print("[PlatformStrengthPage] export overall model image failed:", exc)
             return ""
 
     def _build_custom_legend(self) -> QWidget:
@@ -1662,154 +1683,53 @@ class PlatformStrengthPage(BasePage):
         return None
 
     def _autoload_inp_to_view(self):
-        """恢复为稳定的页面内直接绘图：进入页面后只绘制三维图，不做图片导出/上传。"""
+        if not hasattr(self, "inp_view"):
+            return
+
         facility_code = self._get_top_value("facility_code")
         path = self._resolve_current_preview_model_file(facility_code)
 
         if not path:
             self.inp_path_label.setText("未找到可解析的 SACS 结构模型文件")
-            try:
-                self.inp_view.clear_view("未找到可解析的 SACS 结构模型文件")
-            except Exception:
-                pass
+            self.inp_view.clear_view(
+                "未找到可解析的 SACS 结构模型文件\n"
+                "请先上传文件名以 sacinp 开头（或扩展名为 .sacinp）的模型文件"
+            )
             self._refresh_layers_table()
             return
 
-        self.inp_path_label.setText(f"当前模型文件：{path}")
-        mud_level = self._parse_mud_level_from_sacinp(path)
-        if mud_level and hasattr(self, "edt_mud_level"):
-            self.edt_mud_level.setText(str(mud_level))
-
-        target_z = self._get_workpoint_value()
-
-        def _render():
-            try:
-                self.inp_view.load_inp(path, target_z=target_z)
-            except Exception as exc:
-                print("[PlatformStrengthPage] load_inp failed:", exc)
-                try:
-                    self.inp_view.clear_view("三维结构图加载失败，请查看控制台日志")
-                except Exception:
-                    pass
-            self._refresh_layers_table()
-
-        QTimer.singleShot(0, _render)
-
-    def _on_inp_preview_data_ready(self, payload: dict):
-        seq = int(payload.get("seq") or 0)
-        if seq != self._inp_preview_seq:
-            return
-
-        path = str(payload.get("path") or "").strip()
-        if not path:
-            self.inp_path_label.setText("未找到可解析的 SACS 结构模型文件")
-            if hasattr(self, "inp_preview_host"):
-                self.inp_preview_host.show_cached("", "未找到可解析的 SACS 结构模型文件")
-            self._refresh_layers_table()
-            return
-
-        # 只把解析出来的纯数据塞回控件，用于水平层表格统计；不触发 PyVista 绘制。
-        self.inp_view._loaded_path = path
-        self.inp_view._nodes = dict(payload.get("nodes") or {})
-        self.inp_view._members = list(payload.get("members") or [])
-        self.inp_view._groups_od = dict(payload.get("groups_od") or {})
-
-        self.inp_path_label.setText(f"当前模型文件：{path}")
-        mud_level = payload.get("mud_level")
-        if mud_level and hasattr(self, "edt_mud_level"):
-            self.edt_mud_level.setText(str(mud_level))
-        self._refresh_layers_table()
-
-        self._start_platform_preview_process(
-            model_path=path,
-            target_z=float(payload.get("target_z") or 9.1),
-            seq=seq,
-        )
-
-    def _on_inp_preview_failed(self, seq: int, err: str):
-        if seq != self._inp_preview_seq:
-            return
-        print("[PlatformStrengthPage] async preview data failed:", err)
-        if hasattr(self, "inp_preview_host"):
-            self.inp_preview_host.show_cached("", "三维结构图加载失败，请查看控制台日志")
-        self._refresh_layers_table()
-
-    def _preview_script_path(self) -> str:
-        return str(Path(__file__).resolve().parents[1] / "services" / "page_preview_render_process.py")
-
-    def _make_inp_preview_temp_path(self, facility_code: str, seq: int) -> str:
-        fd, path = tempfile.mkstemp(prefix=f"shiyou_platform_overall_{facility_code}_{seq}_", suffix=".png")
-        os.close(fd)
-        self._inp_preview_temp_files.append(path)
-        while len(self._inp_preview_temp_files) > 8:
-            old = self._inp_preview_temp_files.pop(0)
-            if old != self._current_overall_preview_path:
-                try:
-                    os.remove(old)
-                except Exception:
-                    pass
-        return path
-
-    def _start_platform_preview_process(self, *, model_path: str, target_z: float, seq: int):
-        old_proc = self._inp_preview_process
-        if old_proc is not None and old_proc.state() != QProcess.NotRunning:
-            try:
-                old_proc.kill()
-            except Exception:
-                pass
-            try:
-                old_proc.deleteLater()
-            except Exception:
-                pass
-
-        facility_code = self._get_top_value("facility_code")
-        output_path = self._make_inp_preview_temp_path(facility_code, seq)
-        script = self._preview_script_path()
-        if not os.path.exists(script):
-            print("[PlatformStrengthPage] preview script not found:", script)
-            return
-
-        args = [
-            script,
-            "--kind", "platform_overall",
-            "--model-path", model_path,
-            "--target-z", str(target_z),
-            "--output", output_path,
-        ]
-
-        proc = QProcess(self)
-        proc.setProgram(sys.executable)
-        proc.setArguments(args)
-        proc.setProcessChannelMode(QProcess.MergedChannels)
-        proc.readyReadStandardOutput.connect(
-            lambda p=proc: print(bytes(p.readAllStandardOutput()).decode("utf-8", errors="ignore").rstrip())
-        )
-        proc.finished.connect(
-            lambda exit_code, _status, s=seq, out=output_path, p=proc: self._on_platform_preview_finished(s, out, exit_code, p)
-        )
-        self._inp_preview_process = proc
-        proc.start()
-
-    def _on_platform_preview_finished(self, seq: int, output_path: str, exit_code: int, proc: QProcess):
         try:
-            if proc is self._inp_preview_process:
-                self._inp_preview_process = None
-            proc.deleteLater()
-        except Exception:
-            pass
+            target_z = self._get_workpoint_value()
+            self.inp_view.load_inp(path, target_z=target_z)
+            self.inp_view.reset_pan_state()
 
-        if seq != self._inp_preview_seq:
-            return
+            if hasattr(self, "slider_h"):
+                self.slider_h.blockSignals(True)
+                self.slider_h.setValue(0)
+                self.slider_h.blockSignals(False)
 
-        if exit_code == 0 and output_path and os.path.exists(output_path):
-            self._current_overall_preview_path = output_path
-            if hasattr(self, "inp_preview_host"):
-                # 刚生成的真实三维预览图，只显示本地临时图，不写服务器。
-                self.inp_preview_host.show_cached(output_path, "正在加载三维结构图，请稍候...")
-        else:
-            print(f"[PlatformStrengthPage] platform preview failed, exit_code={exit_code}, output={output_path}")
-            if hasattr(self, "inp_preview_host"):
-                self.inp_preview_host.show_cached("", "三维结构图加载失败，请查看控制台日志")
+            if hasattr(self, "slider_v"):
+                self.slider_v.blockSignals(True)
+                self.slider_v.setValue(0)
+                self.slider_v.blockSignals(False)
+
+            self.inp_path_label.setText(f"当前模型文件：{path}")
+
+            mud_level = self._parse_mud_level_from_sacinp(path)
+            if mud_level and hasattr(self, "edt_mud_level"):
+                self.edt_mud_level.setText(mud_level)
+
+            self._refresh_layers_table()
+
+            try:
+                self._schedule_export_overall_model_image(delay_ms=1200)
+            except Exception as export_exc:
+                print("[PlatformStrengthPage] schedule overall export failed:", export_exc)
+
+        except Exception as e:
+            self.inp_path_label.setText("模型加载失败")
+            self.inp_view.clear_view(f"INP 加载失败：\n{e}")
+            self._refresh_layers_table()
 
     # ---------------- 左侧表格 ----------------
     def _build_structure_model_kv_table(self) -> QTableWidget:
