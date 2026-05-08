@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 from PIL import Image
+from PyQt5.QtWidgets import QMessageBox
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -235,7 +236,7 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         local_generate.assert_called_once()
         http_generate.assert_not_called()
 
-    def test_generate_report_auto_falls_back_to_http_when_local_fails(self) -> None:
+    def test_generate_report_auto_does_not_fall_back_to_http_when_local_fails(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
 
         with patch.object(page, "_get_report_mode", return_value="auto"), patch.object(
@@ -247,11 +248,64 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
             "_post_report_request",
             return_value={"message": "report generated", "output_path": "http.docx"},
         ) as http_generate:
-            result = page._generate_report({"chapter_1_3": {}})
+            with self.assertRaisesRegex(RuntimeError, "local failed"):
+                page._generate_report({"chapter_1_3": {}})
 
-        self.assertEqual("http.docx", result["output_path"])
         local_generate.assert_called_once()
-        http_generate.assert_called_once()
+        http_generate.assert_not_called()
+
+    def test_get_wordtemplate_project_root_points_to_embedded_report_module(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+
+        result = page._get_wordtemplate_project_root()
+
+        self.assertEqual(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report", result)
+
+    def test_select_report_output_path_returns_selected_directory_file(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch(
+            "pages.feasibility_assessment_results_page.QFileDialog.getExistingDirectory",
+            return_value=tmp_dir,
+        ), patch("pages.feasibility_assessment_results_page.QMessageBox.question") as question:
+            result = page._select_report_output_path("WC19-1D_可行性评估报告.docx")
+
+        self.assertEqual(str(Path(tmp_dir) / "WC19-1D_可行性评估报告.docx"), result)
+        question.assert_not_called()
+
+    def test_select_report_output_path_returns_empty_when_existing_file_not_replaced(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_path = Path(tmp_dir) / "WC19-1D_可行性评估报告.docx"
+            output_path.write_text("existing", encoding="utf-8")
+            with patch(
+                "pages.feasibility_assessment_results_page.QFileDialog.getExistingDirectory",
+                return_value=tmp_dir,
+            ), patch(
+                "pages.feasibility_assessment_results_page.QMessageBox.question",
+                return_value=0,
+            ):
+                result = page._select_report_output_path(output_path.name)
+
+        self.assertEqual("", result)
+
+    def test_select_report_output_path_returns_existing_file_when_replaced(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_path = Path(tmp_dir) / "WC19-1D_可行性评估报告.docx"
+            output_path.write_text("existing", encoding="utf-8")
+            with patch(
+                "pages.feasibility_assessment_results_page.QFileDialog.getExistingDirectory",
+                return_value=tmp_dir,
+            ), patch(
+                "pages.feasibility_assessment_results_page.QMessageBox.question",
+                return_value=QMessageBox.Yes,
+            ):
+                result = page._select_report_output_path(output_path.name)
+
+        self.assertEqual(str(output_path), result)
 
     def test_build_environment_conditions_reads_seainp_by_facility_code(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)

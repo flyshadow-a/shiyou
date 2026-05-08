@@ -136,6 +136,9 @@ class AuthService:
             raise AuthError("密码长度至少 6 位。")
         if password != confirm_password:
             raise AuthError("两次输入的密码不一致。")
+        phone = phone.strip()
+        if phone and (not phone.isdigit() or len(phone) != 11):
+            raise AuthError("手机号必须为 11 位数字。")
 
         with self.session_factory() as session:
             exists = session.execute(select(AuthUser).where(AuthUser.username == username)).scalar_one_or_none()
@@ -148,7 +151,7 @@ class AuthService:
                 employee_no=employee_no.strip() or None,
                 branch_company=branch_company.strip() or None,
                 operation_company=operation_company.strip() or None,
-                phone=phone.strip() or None,
+                phone=phone or None,
                 email=email.strip() or None,
                 role_code="engineer",
                 password_hash=hash_password(password),

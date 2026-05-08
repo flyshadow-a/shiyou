@@ -42,6 +42,7 @@ from PyQt5.QtWidgets import (
     QWidget, QHeaderView,
     QStackedWidget,
     QComboBox,
+    QFileDialog,
 )
 
 from core.base_page import BasePage
@@ -931,6 +932,24 @@ class FeasibilityAssessmentResultsPage(BasePage):
             "chapter_1_3": chapter_1_3,
         }
 
+    def _select_report_output_path(self, output_filename: str) -> str:
+        save_dir = QFileDialog.getExistingDirectory(self, "选择报告保存目录", "")
+        if not save_dir:
+            return ""
+
+        output_path = Path(save_dir) / output_filename
+        if output_path.exists():
+            reply = QMessageBox.question(
+                self,
+                "文件已存在",
+                f"目标目录已存在同名文件：\n{output_path}\n\n是否替换？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return ""
+        return str(output_path)
+
     def _build_analysis_model_section(self) -> dict:
         section = {
             "overall_model_image_path": self.overall_model_image_path,
@@ -1520,14 +1539,14 @@ class FeasibilityAssessmentResultsPage(BasePage):
             raise RuntimeError(f"报告服务返回错误：HTTP {exc.code}\n{detail}") from exc
         except error.URLError as exc:
             raise RuntimeError(
-                f"无法连接报告服务，请确认 WordTemplate_v2 API 已启动：{self.DEFAULT_REPORT_API_URL}") from exc
+                f"无法连接可行性评估报告服务：{self.DEFAULT_REPORT_API_URL}") from exc
 
     def _get_report_mode(self) -> str:
         mode = str(os.environ.get("REPORT_GENERATION_MODE", "auto")).strip().lower()
         return mode if mode in {"auto", "http", "local"} else "auto"
 
     def _get_wordtemplate_project_root(self) -> Path:
-        return Path(__file__).resolve().parents[2] / "WordTemplate_v2"
+        return Path(__file__).resolve().parent / "output_feasibility_analysis_report"
 
     def _generate_report_locally(self, payload: dict) -> dict:
         project_root = self._get_wordtemplate_project_root()
@@ -1538,8 +1557,10 @@ class FeasibilityAssessmentResultsPage(BasePage):
             sys.path.insert(0, project_root_text)
         from src.report_service import generate_report_with_project_defaults
 
-        output_filename = str(payload.get("output_filename", "")).strip()
-        output_path = str(project_root / "output" / output_filename) if output_filename else None
+        output_path = str(payload.get("output_path", "")).strip() or None
+        if output_path is None:
+            output_filename = str(payload.get("output_filename", "")).strip()
+            output_path = str(project_root / "output" / output_filename) if output_filename else None
         result = generate_report_with_project_defaults(
             project_root=project_root,
             chapter_1_3_sources=payload.get("chapter_1_3", {}),
@@ -1555,10 +1576,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             return self._post_report_request(payload)
         if mode == "local":
             return self._generate_report_locally(payload)
-        try:
-            return self._generate_report_locally(payload)
-        except Exception:
-            return self._post_report_request(payload)
+        return self._generate_report_locally(payload)
 
     def _fetch_model_paths(self):
         sql = text("""
@@ -1599,6 +1617,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 return
 
             payload = self._build_report_payload()
+            output_filename = str(payload.get("output_filename", "")).strip()
+            output_path = self._select_report_output_path(output_filename)
+            if not output_path:
+                return
+            payload["output_path"] = output_path
             result = self._generate_report(payload)
             output_path = str(result.get("output_path", "")).strip()
             if not output_path:

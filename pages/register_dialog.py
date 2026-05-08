@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import os
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtCore import QRegExp, Qt
+from PyQt5.QtGui import QPixmap, QRegExpValidator
 from PyQt5.QtWidgets import (
     QDialog,
     QFrame,
@@ -74,6 +74,9 @@ class RegisterDialog(QDialog):
         self.branch_company_edit = QLineEdit(self)
         self.operation_company_edit = QLineEdit(self)
         self.phone_edit = QLineEdit(self)
+        self.phone_edit.setMaxLength(11)
+        self.phone_edit.setValidator(QRegExpValidator(QRegExp(r"\d{0,11}"), self.phone_edit))
+        self.phone_edit.setPlaceholderText("请输入 11 位数字手机号")
         self.email_edit = QLineEdit(self)
 
         form.addRow("用户名：", self.username_edit)
