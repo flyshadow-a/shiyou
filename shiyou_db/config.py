@@ -32,6 +32,7 @@ class AppSettings:
     database: DatabaseSettings
     storage_root: str
     echo_sql: bool = False
+    enable_3d_preview: bool = True
 
     # SACS 配置
     sacs_analysis_engine_exe: str = ""
@@ -68,6 +69,7 @@ def load_settings(config_path: str | None = None) -> AppSettings:
         ),
         storage_root=os.path.normpath(storage_root_raw),
         echo_sql=bool(raw.get("echo_sql", False)),
+        enable_3d_preview=bool(raw.get("enable_3d_preview", True)),
         sacs_analysis_engine_exe=str(raw.get("sacs_analysis_engine_exe", "") or "").strip(),
         sacs_default_runx_path=str(raw.get("sacs_default_runx_path", "") or "").strip(),
         sacs_default_psiinp_path=str(raw.get("sacs_default_psiinp_path", "") or "").strip(),
@@ -88,6 +90,11 @@ def get_sacs_default_runx_path(config_path: str | None = None) -> str:
 def get_storage_root(config_path: str | None = None) -> str:
     settings = load_settings(config_path)
     return str(settings.storage_root or "").strip()
+
+
+def get_enable_3d_preview(config_path: str | None = None) -> bool:
+    settings = load_settings(config_path)
+    return bool(settings.enable_3d_preview)
 
 
 def get_sacs_default_psiinp_path(config_path: str | None = None) -> str:
