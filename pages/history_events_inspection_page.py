@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 # pages/history_events_inspection_page.py
 
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
+    QFrame,
+    QScrollArea,
     QStackedWidget,
     QSizePolicy,
 )
@@ -155,7 +157,12 @@ class HistoryEventsInspectionPage(BasePage):
         self.stack.addWidget(self.page_inspection)
         self.stack.setCurrentWidget(self.home_widget)
 
-        self.main_layout.addWidget(self.stack, 1)
+        self.content_scroll = QScrollArea(self)
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QFrame.NoFrame)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.content_scroll.setWidget(self.stack)
+        self.main_layout.addWidget(self.content_scroll, 1)
 
         self.home_widget.folderSelected.connect(self._open_folder)
         self.page_events.goHomeRequested.connect(self._go_home)

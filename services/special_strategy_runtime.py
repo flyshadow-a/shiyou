@@ -38,6 +38,7 @@ if str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR) not in sys.path:
 
 from inspection_tool import run as run_inspection_pipeline  # type: ignore  # noqa: E402
 from report_jinja2_generator import (  # type: ignore  # noqa: E402
+    build_generated_appendix_plan,
     build_appendix_pdf_plan,
     build_appendix_sections,
     insert_appendix_pdf_images,
@@ -127,7 +128,7 @@ def _overlay_non_empty_metadata(target: dict[str, str], source: dict[str, Any] |
         return
     for key, value in source.items():
         text = _normalize_metadata_value(value)
-        if text:
+        if text and text != REPORT_METADATA_PLACEHOLDER:
             target[str(key)] = text
 
 
@@ -135,6 +136,105 @@ def _extract_year_text(value: Any) -> str:
     text = _normalize_metadata_value(value)
     match = re.search(r"(19|20)\d{2}", text)
     return match.group(0) if match else ""
+
+
+def _read_text_lines_with_fallback(file_path: str) -> list[str]:
+    for encoding in ("utf-8", "gbk", "cp1252", "latin-1"):
+        try:
+            with open(file_path, "r", encoding=encoding, errors="strict") as file:
+                return file.readlines()
+        except Exception:
+            continue
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
+        return file.readlines()
+
+
+def _read_seainp_water_depth(file_path: str) -> str:
+    path = Path(str(file_path or "").strip())
+    if not path.exists() or not path.is_file():
+        return ""
+
+    for raw_line in _read_text_lines_with_fallback(str(path)):
+        line = raw_line.rstrip("\r\n")
+        if not line.upper().startswith("LDOPT"):
+            continue
+        value_text = line[32:41].strip()
+        if not value_text:
+            return ""
+        try:
+            value = abs(float(value_text))
+        except Exception:
+            return ""
+        text = f"{value:.2f}"
+        return text.rstrip("0").rstrip(".")
+    return ""
+
+
+def _find_report_sea_file(
+    facility_code: str,
+    *,
+    state: dict[str, Any] | None = None,
+    run_payload: dict[str, Any] | None = None,
+) -> str:
+    preferred_inputs: list[dict[str, Any]] = []
+    if isinstance(state, dict) and isinstance(state.get("inputs"), dict):
+        preferred_inputs.append(state["inputs"])
+    if isinstance(run_payload, dict) and isinstance(run_payload.get("inputs_json"), dict):
+        preferred_inputs.append(run_payload["inputs_json"])
+
+    for inputs in preferred_inputs:
+        sea_file = Path(str(inputs.get("sea_file") or "").strip())
+        if sea_file.exists() and sea_file.is_file():
+            return str(sea_file.resolve())
+
+    code = normalize_facility_code(facility_code)
+    if not is_file_db_configured():
+        return ""
+
+    prefixes = [
+        f"{code}/当前模型/结构模型/海况",
+    ]
+
+    candidates: list[tuple[int, str, str]] = []
+    for prefix in prefixes:
+        try:
+            rows = list_files_by_prefix(
+                module_code="model_files",
+                logical_path_prefix=prefix,
+                facility_code=code,
+            )
+        except Exception:
+            rows = []
+        for row in rows:
+            storage_path = resolve_storage_path(row)
+            if not storage_path:
+                continue
+            candidate = Path(storage_path)
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            if not candidate.name.lower().startswith("seainp"):
+                continue
+            logical_path = str(row.get("logical_path") or "")
+            if "海况" not in logical_path:
+                continue
+            score = 100
+            if "海况" in logical_path:
+                score += 500
+            if "当前模型" in logical_path:
+                score += 120
+            if "结构模型" in logical_path:
+                score += 80
+            if "用户上传" in logical_path:
+                score += 30
+            if candidate.name.lower().endswith("seainp.m1"):
+                score -= 300
+            candidates.append((score, str(row.get("uploaded_at") or ""), str(candidate.resolve())))
+
+    if not candidates:
+        return ""
+
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates[0][2]
 
 
 def normalize_facility_code(facility_code: str) -> str:
@@ -195,7 +295,8 @@ def _report_filename_date_text(value: Any) -> str:
 def build_report_output_path(facility_code: str, metadata: dict[str, Any] | None = None) -> Path:
     code = normalize_facility_code(facility_code)
     metadata = metadata or {}
-    platform_name = _safe_filename_component(metadata.get("platform_name"), code)
+    profile_name = _platform_profile(code).get("facility_name", "")
+    platform_name = _safe_filename_component(profile_name or metadata.get("platform_name"), code)
     report_date = _report_filename_date_text(metadata.get("report_date"))
     filename = f"{platform_name}_{report_date}_特检策略报告.docx"
     return (local_report_output_dir() / filename).resolve()
@@ -448,12 +549,19 @@ def _build_report_metadata_payload(
         state=state,
         run_payload=run_payload,
     )
+    water_depth_text = _read_seainp_water_depth(
+        _find_report_sea_file(
+            code,
+            state=state,
+            run_payload=run_payload,
+        )
+    )
 
     derived_payload = {
         "platform_name": platform.get("facility_name") or base_metadata.get("platform_name", ""),
         "report_date": runtime_metadata.get("report_date") or base_metadata.get("report_date", ""),
         "oilfield_name": platform.get("oilfield", ""),
-        "water_depth_m": "",
+        "water_depth_m": water_depth_text,
         "leg_count": params.get("no_legs", ""),
         "platform_type": platform.get("category") or platform.get("facility_type") or "",
         "start_year": _extract_year_text(platform.get("start_time")),
@@ -469,6 +577,9 @@ def _build_report_metadata_payload(
     _overlay_non_empty_metadata(payload, metadata)
 
     for key in template_payload:
+        if key == "water_depth_m":
+            payload[str(key)] = _normalize_metadata_value(payload.get(key, ""))
+            continue
         if not _normalize_metadata_value(payload.get(key, "")):
             payload[str(key)] = REPORT_METADATA_PLACEHOLDER
     return payload
@@ -1049,19 +1160,43 @@ def generate_special_strategy_report(
     )
     context["include_word_plan_detail_tables"] = bool(cfg.get("include_word_plan_detail_tables", False))
 
+    state_run_id = None
+    try:
+        state_run_id = int(state.get("db_run_id")) if state.get("db_run_id") not in (None, "") else None
+    except Exception:
+        state_run_id = None
+
+    artifact_dir = Path(str(state.get("artifact_dir") or workbook_path.parent)).resolve()
+    appendix_generated_plan, appendix_temp_files = build_generated_appendix_plan(
+        workbook_path,
+        facility_code=code,
+        run_id=state_run_id or run_id,
+        scratch_dir=artifact_dir / "generated_appendices",
+    )
+    context["appendix_generated_plan"] = appendix_generated_plan
+
     paths = runtime_paths(code)
     report_output_path = build_report_output_path(code, metadata_payload)
+    pdf_output_path = report_output_path.with_suffix(".pdf")
     report_template = Path(str(cfg["report_template"])).resolve()
-    render_report(report_template, report_output_path, context)
-    if context.get("appendix_pdf_plan"):
-        insert_appendix_pdf_images(report_output_path, context)
-    if not refresh_word_document_fields(report_output_path):
-        raise RuntimeError(f"Word COM 自动更新目录并保存失败：{report_output_path}")
+    try:
+        render_report(report_template, report_output_path, context)
+        if context.get("appendix_pdf_plan") or context.get("appendix_generated_plan"):
+            insert_appendix_pdf_images(report_output_path, context)
+        if not refresh_word_document_fields(report_output_path, pdf_output_path=pdf_output_path):
+            raise RuntimeError(f"Word COM 自动更新目录并导出 PDF 失败：{report_output_path}")
+
+    finally:
+        for temp_path in appendix_temp_files:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
     state["metadata"] = metadata_payload
     state["output_report"] = str(report_output_path)
+    state["output_report_pdf"] = str(pdf_output_path)
     state["report_generated_at"] = datetime.now().isoformat(timespec="seconds")
-    state_run_id = state.get("db_run_id")
     if state_run_id:
         update_strategy_report(int(state_run_id), output_report=str(report_output_path))
     if not run_id:

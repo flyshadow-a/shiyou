@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 # pages/construction_docs_page.py
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QWidget,
     QLabel,
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QHBoxLayout,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTextEdit,
     QVBoxLayout,
 )
@@ -23,9 +26,51 @@ from services.inspection_business_db_adapter import load_facility_profile, save_
 class PlatformDescriptionDialog(QDialog):
     def __init__(self, description_text: str, parent=None):
         super().__init__(parent)
+        self.setObjectName("PlatformDescriptionDialog")
         self.setWindowTitle("编辑平台描述")
         self.resize(640, 360)
         self.setModal(True)
+        self.setStyleSheet(
+            """
+            QDialog#PlatformDescriptionDialog {
+                background-color: #ffffff;
+            }
+            QDialog#PlatformDescriptionDialog QTextEdit {
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                padding: 10px 12px;
+                font-size: 12pt;
+                color: #1f2937;
+                background-color: #ffffff;
+            }
+            QDialog#PlatformDescriptionDialog QTextEdit:focus {
+                border: 1px solid #1677c5;
+            }
+            QDialog#PlatformDescriptionDialog QPushButton {
+                min-height: 34px;
+                padding: 0 18px;
+                border-radius: 6px;
+                font-size: 12pt;
+                font-weight: 600;
+            }
+            QDialog#PlatformDescriptionDialog QPushButton#DialogPrimaryButton {
+                border: none;
+                background-color: #1677c5;
+                color: #ffffff;
+            }
+            QDialog#PlatformDescriptionDialog QPushButton#DialogPrimaryButton:hover {
+                background-color: #2186d4;
+            }
+            QDialog#PlatformDescriptionDialog QPushButton#DialogSecondaryButton {
+                border: 1px solid #1677c5;
+                background-color: #ffffff;
+                color: #1677c5;
+            }
+            QDialog#PlatformDescriptionDialog QPushButton#DialogSecondaryButton:hover {
+                background-color: #eaf4ff;
+            }
+            """
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -34,11 +79,16 @@ class PlatformDescriptionDialog(QDialog):
         self.editor = QTextEdit(self)
         self.editor.setPlaceholderText("请输入平台描述")
         self.editor.setPlainText(description_text or "")
+        self.editor.setMinimumHeight(220)
         layout.addWidget(self.editor, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
-        buttons.button(QDialogButtonBox.Ok).setText("保存")
-        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        ok_button = buttons.button(QDialogButtonBox.Ok)
+        cancel_button = buttons.button(QDialogButtonBox.Cancel)
+        ok_button.setText("保存")
+        cancel_button.setText("取消")
+        ok_button.setObjectName("DialogPrimaryButton")
+        cancel_button.setObjectName("DialogSecondaryButton")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -134,21 +184,48 @@ class ConstructionDocsPage(BasePage):
         self.dropdown_bar = DropdownBar(fields, self)
         self.main_layout.addWidget(self.dropdown_bar, 0)
 
+        self.content_scroll = QScrollArea(self)
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QFrame.NoFrame)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.main_layout.addWidget(self.content_scroll, 1)
+
+        content_widget = QWidget(self.content_scroll)
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(8)
+        self.content_scroll.setWidget(content_widget)
+
         action_row = QHBoxLayout()
-        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setContentsMargins(0, 0, 20, 0)
         action_row.addStretch()
         self.btn_edit_description = QPushButton("编辑平台描述", self)
+        self.btn_edit_description.setCursor(Qt.PointingHandCursor)
+        self.btn_edit_description.setStyleSheet(
+            """
+            QPushButton {
+                min-height: 32px;
+                padding: 0 16px;
+                border: 1px solid #0f5ea5;
+                border-radius: 6px;
+                background-color: #ffffff;
+                color: #0f5ea5;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #eaf4ff;
+            }
+            """
+        )
         self.btn_edit_description.clicked.connect(self._edit_platform_description)
         action_row.addWidget(self.btn_edit_description)
-        self.btn_reset_description = QPushButton("恢复默认描述", self)
-        self.btn_reset_description.clicked.connect(self._reset_platform_description)
-        action_row.addWidget(self.btn_reset_description)
-        self.main_layout.addLayout(action_row)
+        content_layout.addLayout(action_row)
 
         # ✅ 2) 关键：不要再额外包一层 HomeCard/HomeHeaderBar
         #    直接使用 ConstructionDocsWidget 自己那套“首页 + 文件夹UI”
-        self.docs_widget = ConstructionDocsWidget(self, show_platform_description=True)
-        self.main_layout.addWidget(self.docs_widget, 1)
+        self.docs_widget = ConstructionDocsWidget(content_widget, show_platform_description=True)
+        content_layout.addWidget(self.docs_widget)
 
         # 3) 监听筛选条件变化（保留）
         self.dropdown_bar.valueChanged.connect(self.on_filter_changed)
@@ -205,6 +282,7 @@ class ConstructionDocsPage(BasePage):
         self.docs_widget.set_facility_code(profile["facility_code"])
         self.docs_widget.set_platform_name(platform_name)
         self.docs_widget.set_platform_description(description_text)
+        self._refresh_edit_description_button_visibility()
         window = self.window()
         if hasattr(window, "set_current_platform_name"):
             window.set_current_platform_name(platform_name)
@@ -255,3 +333,13 @@ class ConstructionDocsPage(BasePage):
     def _set_dropdown_visible(self, visible: bool):
         self.dropdown_bar.setVisible(visible)
         self.dropdown_bar.setFixedHeight(self.dropdown_bar.sizeHint().height() if visible else 0)
+        self._refresh_edit_description_button_visibility(show_top_level=visible)
+
+    def _refresh_edit_description_button_visibility(self, show_top_level: bool | None = None):
+        if not hasattr(self, "btn_edit_description"):
+            return
+
+        if show_top_level is None:
+            show_top_level = not getattr(self.docs_widget, "current_path", [])
+        has_description = bool(getattr(self.docs_widget, "platform_description", "").strip())
+        self.btn_edit_description.setVisible(bool(show_top_level and has_description))

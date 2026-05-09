@@ -243,6 +243,24 @@ class MainWindow(QMainWindow):
                 font-size: 12pt;
                 font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
                 font-weight: 600;
+                color: #1f2937;
+                background: #f4f4f4;
+                border: 1px solid #d1d5db;
+                border-bottom: none;
+                margin-right: 1px;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #eef6ff;
+            }
+            QTabBar::tab:selected {
+                color: #004a80;
+                background: #dcefff;
+                border-color: #9ec8ef;
+            }
+            QTabBar::tab:selected:!active {
+                color: #004a80;
+                background: #dcefff;
+                border-color: #9ec8ef;
             }
         """)
         tab_font = QFont(self.tab_widget.tabBar().font())

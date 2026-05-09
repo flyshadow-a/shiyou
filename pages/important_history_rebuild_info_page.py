@@ -418,15 +418,18 @@ class ImportantHistoryDetailWidget(QWidget):
         action_row.setContentsMargins(0, 0, 0, 0)
         action_row.addStretch()
         self.btn_add_project = QPushButton("新增项目", content)
-        self.btn_add_project.setObjectName("OverviewActionButton")
+        self.btn_add_project.setProperty("class", "DocManBlueButton")
+        self.btn_add_project.setCursor(Qt.PointingHandCursor)
         self.btn_add_project.clicked.connect(self._add_project)
         action_row.addWidget(self.btn_add_project, 0, Qt.AlignRight)
         self.btn_edit_project = QPushButton("编辑项目", content)
-        self.btn_edit_project.setObjectName("OverviewActionButton")
+        self.btn_edit_project.setProperty("class", "DocManBlueButton")
+        self.btn_edit_project.setCursor(Qt.PointingHandCursor)
         self.btn_edit_project.clicked.connect(self._edit_project)
         action_row.addWidget(self.btn_edit_project, 0, Qt.AlignRight)
         self.btn_delete_project = QPushButton("删除项目", content)
-        self.btn_delete_project.setObjectName("OverviewActionButton")
+        self.btn_delete_project.setProperty("class", "DocManBlueButton")
+        self.btn_delete_project.setCursor(Qt.PointingHandCursor)
         self.btn_delete_project.clicked.connect(self._delete_project)
         action_row.addWidget(self.btn_delete_project, 0, Qt.AlignRight)
         content_layout.addLayout(action_row)
@@ -511,6 +514,19 @@ class ImportantHistoryDetailWidget(QWidget):
                 font-size: 13px;
                 font-weight: bold;
                 color: #1f2937;
+            }
+            QPushButton[class="DocManBlueButton"] {
+                min-height: 32px;
+                padding: 0 18px;
+                border: none;
+                border-radius: 6px;
+                background-color: #1677c5;
+                color: #ffffff;
+                font-size: 12pt;
+                font-weight: 600;
+            }
+            QPushButton[class="DocManBlueButton"]:hover {
+                background-color: #2186d4;
             }
             """
         )

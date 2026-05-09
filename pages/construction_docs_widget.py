@@ -449,6 +449,7 @@ class ConstructionDocsWidget(QWidget):
     def _on_breadcrumb_clicked(self, path_prefix: List[str]):
         self.current_path = list(path_prefix)
         self._update_path_label()
+        self._refresh_platform_description_visibility()
 
         if self._is_upload_only_path(self.current_path):
             self._show_files_for_current_path()
@@ -477,9 +478,7 @@ class ConstructionDocsWidget(QWidget):
 
     def _refresh_folder_view(self):
         self._clear_grid_layout(self.folder_grid)
-
-        if hasattr(self, "platform_desc_card"):
-            self.platform_desc_card.setVisible(len(self.current_path) == 0)
+        self._refresh_platform_description_visibility()
 
         node = self._get_node_by_path(self.current_path)
         children = node.get("children", {}) if node else {}
@@ -515,6 +514,7 @@ class ConstructionDocsWidget(QWidget):
 
         self.current_path.append(folder_name)
         self._update_path_label()
+        self._refresh_platform_description_visibility()
 
         if self._is_upload_only_path(self.current_path):
             self._show_files_for_current_path()
@@ -808,6 +808,10 @@ class ConstructionDocsWidget(QWidget):
             text = "\u8bf7\u5148\u5728\u4e0a\u65b9\u4e0b\u62c9\u6846\u4e2d\u9009\u62e9\u5e73\u53f0\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u5f53\u524d\u9009\u4e2d\u5e73\u53f0\u7684\u63cf\u8ff0\u4fe1\u606f\u3002"
 
         self.platform_desc_label.setText(text)
+
+    def _refresh_platform_description_visibility(self):
+        if hasattr(self, "platform_desc_card"):
+            self.platform_desc_card.setVisible(len(self.current_path) == 0)
 
     def _emit_navigation_state(self):
         self.navigationStateChanged.emit(len(self.current_path) == 0)

@@ -11,7 +11,7 @@ from PyQt5.QtGui import QDesktopServices, QFontMetrics, QPixmap
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QSizePolicy, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QStackedWidget, QMessageBox, QFileDialog, QWidget
+    QScrollArea, QStackedWidget, QMessageBox, QFileDialog, QWidget
 )
 
 from core.base_page import BasePage
@@ -1316,7 +1316,12 @@ class ModelFilesPage(BasePage):
         self.docs_widget = ModelFilesDocsWidget(card)
         card_layout.addWidget(self.docs_widget)
 
-        self.main_layout.addWidget(card, 1)
+        self.content_scroll = QScrollArea(self)
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QFrame.NoFrame)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.content_scroll.setWidget(card)
+        self.main_layout.addWidget(self.content_scroll, 1)
 
         # 可选：背景风格（不影响 ConstructionDocsWidget 内部布局）
         self.setStyleSheet("""

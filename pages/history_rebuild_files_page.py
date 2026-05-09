@@ -4,12 +4,12 @@
 import os
 from typing import Dict, List
 
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QFrame,
     QLabel,
+    QScrollArea,
     QSizePolicy,
-    QStackedWidget,
     QVBoxLayout,
 )
 
@@ -104,17 +104,17 @@ class HistoryRebuildFilesPage(BasePage):
         card_layout.setContentsMargins(0, 0, 0, 0)
         card_layout.setSpacing(0)
 
-        self.stack = QStackedWidget(card)
-        self.docs_widget = HistoryRebuildDocsWidget(card)
         self.detail_widget = ImportantHistoryDetailWidget(card)
-        self.detail_widget.lbl_home.clicked.connect(self._go_home_from_detail)
+        self.detail_widget.lbl_home.hide()
+        self.detail_widget.lbl_sep.hide()
+        card_layout.addWidget(self.detail_widget)
 
-        self.stack.addWidget(self.docs_widget)
-        self.stack.addWidget(self.detail_widget)
-        self.stack.setCurrentWidget(self.docs_widget)
-        card_layout.addWidget(self.stack)
-
-        self.main_layout.addWidget(card, 1)
+        self.content_scroll = QScrollArea(self)
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QFrame.NoFrame)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.content_scroll.setWidget(card)
+        self.main_layout.addWidget(self.content_scroll, 1)
 
         self.setStyleSheet(
             """
@@ -125,28 +125,7 @@ class HistoryRebuildFilesPage(BasePage):
             """
         )
         self.dropdown_bar.valueChanged.connect(self.on_filter_changed)
-        self.docs_widget.navigationStateChanged.connect(self._set_dropdown_visible)
-        self.docs_widget.historyInfoRequested.connect(self._open_history_info)
         self._sync_platform_ui()
-
-    def _open_history_info(self, folder_name: str):
-        self._set_dropdown_visible(False)
-        self.detail_widget.set_facility_code(self.dropdown_bar.get_value("facility_code"))
-        self.detail_widget.load_history_event(folder_name)
-        self.stack.setCurrentWidget(self.detail_widget)
-
-    def _go_home_from_detail(self):
-        self._set_dropdown_visible(True)
-        self.stack.setCurrentWidget(self.docs_widget)
-
-    def on_filter_changed(self, key: str, value: str):
-        self._sync_platform_ui()
-
-    def _sync_platform_ui(self):
-        platform_name = self.dropdown_bar.get_value("facility_name")
-        window = self.window()
-        if hasattr(window, "set_current_platform_name"):
-            window.set_current_platform_name(platform_name)
 
     def on_filter_changed(self, key: str, value: str):
         self._sync_platform_ui(changed_key=key)
@@ -154,7 +133,6 @@ class HistoryRebuildFilesPage(BasePage):
     def _sync_platform_ui(self, changed_key: str | None = None):
         platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
         platform_name = platform["facility_name"]
-        self.docs_widget.set_facility_code(platform["facility_code"])
         self.detail_widget.set_facility_code(platform["facility_code"])
         window = self.window()
         if hasattr(window, "set_current_platform_name"):

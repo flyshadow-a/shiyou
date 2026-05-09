@@ -281,6 +281,19 @@ APPENDIX_IMAGE_WIDTH_INCHES = 6.2
 # density/compression is reduced.
 APPENDIX_RENDER_DPI = 90
 APPENDIX_JPEG_QUALITY = 60
+GENERATED_APPENDIX_SHEETS = [
+    (APPENDIX_A_HEADING, "节点失效风险等级", "appendix_a_node_risk.pdf"),
+    (APPENDIX_B_HEADING, "构件失效风险等级", "appendix_b_member_risk.pdf"),
+]
+APPENDIX_C_YEAR_SECTION_MAP = [
+    ("+5年", APPENDIX_C_SUBHEADINGS[0]),
+    ("+10年", APPENDIX_C_SUBHEADINGS[1]),
+    ("+15年", APPENDIX_C_SUBHEADINGS[2]),
+    ("+20年", APPENDIX_C_SUBHEADINGS[3]),
+    ("+25年", APPENDIX_C_SUBHEADINGS[4]),
+]
+APPENDIX_C_ROW_NAMES = ["XZ 前", "XZ 后", "YZ 左", "YZ 右"]
+APPENDIX_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
 
 def to_text(value: Any) -> str:
@@ -1751,6 +1764,198 @@ def build_appendix_pdf_plan(
     return sections
 
 
+def export_workbook_sheets_to_pdf(
+    workbook_path: Path,
+    sheet_exports: list[tuple[str, str, Path]],
+) -> list[Path]:
+    target = Path(workbook_path).resolve()
+    if not target.exists():
+        raise FileNotFoundError(f"Workbook not found: {target}")
+    if not sheet_exports:
+        return []
+
+    excel = None
+    workbook = None
+    exported: list[Path] = []
+    pythoncom.CoInitialize()
+    try:
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = 0
+        workbook = excel.Workbooks.Open(
+            str(target),
+            False,
+            True,
+        )
+        for _, sheet_name, output_pdf in sheet_exports:
+            try:
+                worksheet = workbook.Worksheets(sheet_name)
+            except Exception as exc:
+                raise KeyError(f"Appendix worksheet not found: {sheet_name}") from exc
+
+            output_pdf = Path(output_pdf).resolve()
+            output_pdf.parent.mkdir(parents=True, exist_ok=True)
+            if output_pdf.exists():
+                output_pdf.unlink(missing_ok=True)
+
+            page_setup = worksheet.PageSetup
+            page_setup.Orientation = 2  # xlLandscape
+            page_setup.Zoom = False
+            page_setup.FitToPagesWide = 1
+            page_setup.FitToPagesTall = False
+            worksheet.ExportAsFixedFormat(0, str(output_pdf))  # xlTypePDF
+            exported.append(output_pdf)
+        return exported
+    finally:
+        if workbook is not None:
+            try:
+                workbook.Close(SaveChanges=False)
+            except Exception:
+                pass
+        if excel is not None:
+            try:
+                excel.Quit()
+            except Exception:
+                pass
+        pythoncom.CoUninitialize()
+
+
+def build_generated_appendix_plan(
+    workbook_path: Path,
+    *,
+    facility_code: str = "",
+    run_id: int | None = None,
+    scratch_dir: Path | None = None,
+) -> tuple[list[dict[str, Any]], list[Path]]:
+    workbook = Path(workbook_path).resolve()
+    scratch_root = Path(scratch_dir or workbook.parent).resolve()
+    scratch_root.mkdir(parents=True, exist_ok=True)
+
+    plan: list[dict[str, Any]] = []
+    temp_files: list[Path] = []
+
+    sheet_exports = [
+        (heading, sheet_name, (scratch_root / filename).resolve())
+        for heading, sheet_name, filename in GENERATED_APPENDIX_SHEETS
+    ]
+    temp_files.extend(export_workbook_sheets_to_pdf(workbook, sheet_exports))
+    for heading, _, output_pdf in sheet_exports:
+        plan.append({"heading": heading, "files": [output_pdf] if output_pdf.exists() else []})
+
+    plan.append({"heading": APPENDIX_C_MAIN_HEADING, "files": []})
+
+    if facility_code.strip():
+        from services.special_strategy_image_service import build_strategy_image_path
+        try:
+            from services.special_strategy_state_db import list_strategy_risk_images
+        except Exception:
+            list_strategy_risk_images = None
+
+        def normalize_year_key(value: object) -> str:
+            text = str(value or "").strip()
+            match = re.search(r"(\d+)", text)
+            if match:
+                return match.group(1)
+            return text.replace(" ", "").replace("+", "")
+
+        def sort_key_from_name(name: str) -> tuple[int, str]:
+            stem = str(name or "").replace("_", " ").strip()
+            compact = stem.replace(" ", "")
+            for idx, row_name in enumerate(APPENDIX_C_ROW_NAMES):
+                row_compact = row_name.replace(" ", "")
+                if row_compact in compact:
+                    return idx, stem.lower()
+            return len(APPENDIX_C_ROW_NAMES), stem.lower()
+
+        def sort_key(image_path: Path) -> tuple[int, str]:
+            return sort_key_from_name(image_path.stem)
+
+        def caption_from_path(image_path: Path) -> str:
+            stem = image_path.stem.replace("_", " ").strip()
+            compact = stem.replace(" ", "")
+            for row_name in APPENDIX_C_ROW_NAMES:
+                if row_name.replace(" ", "") in compact:
+                    return row_name
+            return stem
+
+        def list_year_images_from_records(target_run_id: int | None, year_label: str) -> list[dict[str, Any]]:
+            if list_strategy_risk_images is None:
+                return []
+            try:
+                kwargs: dict[str, Any] = {
+                    "page_code": "upgrade_special_inspection_result",
+                    "limit": 5000,
+                }
+                if target_run_id is not None:
+                    kwargs["run_id"] = target_run_id
+                records = list_strategy_risk_images(facility_code, **kwargs)
+            except Exception:
+                return []
+
+            expected_year = normalize_year_key(year_label)
+            collected: list[dict[str, Any]] = []
+            seen_paths: set[str] = set()
+            for record in records:
+                if normalize_year_key(record.get("year_label")) != expected_year:
+                    continue
+                image_path = Path(str(record.get("image_path") or "")).expanduser()
+                if not image_path.exists() or not image_path.is_file():
+                    continue
+                key = str(image_path).lower()
+                if key in seen_paths:
+                    continue
+                seen_paths.add(key)
+                caption = str(record.get("row_name") or "").strip() or caption_from_path(image_path)
+                collected.append(
+                    {
+                        "path": image_path,
+                        "caption": caption,
+                        "_sort_name": caption,
+                    }
+                )
+
+            collected.sort(key=lambda item: sort_key_from_name(str(item.get("_sort_name") or "")))
+            for item in collected:
+                item.pop("_sort_name", None)
+            return collected
+
+        def list_year_images(target_run_id: int | None, year_label: str) -> list[Path]:
+            year_dir = build_strategy_image_path(
+                facility_code=facility_code,
+                run_id=target_run_id,
+                page_code="upgrade_special_inspection_result",
+                image_type="elevation_risk",
+                year_label=year_label,
+                row_name="__probe__",
+                create_dirs=False,
+            ).parent
+            if not year_dir.exists() or not year_dir.is_dir():
+                return []
+            return sorted(
+                [p for p in year_dir.iterdir() if p.is_file() and p.suffix.lower() in APPENDIX_IMAGE_SUFFIXES],
+                key=sort_key,
+            )
+
+        for year_label, heading in APPENDIX_C_YEAR_SECTION_MAP:
+            section_files = list_year_images_from_records(run_id, year_label)
+            if not section_files and run_id is not None:
+                section_files = list_year_images_from_records(None, year_label)
+            if not section_files:
+                image_paths = list_year_images(run_id, year_label)
+                if not image_paths and run_id is not None:
+                    image_paths = list_year_images(None, year_label)
+                section_files = [
+                    {"path": image_path, "caption": caption_from_path(image_path)}
+                    for image_path in image_paths
+                ]
+            plan.append({"heading": heading, "files": section_files})
+    else:
+        for _, heading in APPENDIX_C_YEAR_SECTION_MAP:
+            plan.append({"heading": heading, "files": []})
+
+    return plan, temp_files
+
+
 def get_table_list(document_root: ET.Element) -> list[ET.Element]:
     body = document_root.find("w:body", NS)
     if body is None:
@@ -1896,10 +2101,17 @@ def mark_toc_fields_dirty(document_root: ET.Element) -> None:
                 field.set(f"{{{NS['w']}}}dirty", "true")
 
 
-def refresh_word_document_fields(docx_path: Path, timeout_seconds: int = 90) -> bool:
+def refresh_word_document_fields(
+    docx_path: Path,
+    timeout_seconds: int = 90,
+    pdf_output_path: Path | None = None,
+) -> bool:
     target = Path(docx_path).resolve()
     if not target.exists():
         return False
+    pdf_target = Path(pdf_output_path).resolve() if pdf_output_path else None
+    if pdf_target is not None:
+        pdf_target.parent.mkdir(parents=True, exist_ok=True)
     word = None
     document = None
     pythoncom.CoInitialize()
@@ -1919,6 +2131,11 @@ def refresh_word_document_fields(docx_path: Path, timeout_seconds: int = 90) -> 
             document.TablesOfContents(idx).Update()
         document.Fields.Update()
         document.Save()
+        if pdf_target is not None:
+            document.ExportAsFixedFormat(
+                OutputFileName=str(pdf_target),
+                ExportFormat=17,  # wdExportFormatPDF
+            )
         return True
     except Exception:
         return False
@@ -2120,7 +2337,10 @@ def fill_appendix_sections(document_root: ET.Element, rels_root: ET.Element, con
 
 
 def render_pdf_to_jpeg_pages(pdf_path: Path, output_dir: Path, dpi: int = APPENDIX_RENDER_DPI) -> list[Path]:
-    import fitz
+    try:
+        import fitz
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError("No module named 'fitz'。请安装 PyMuPDF 后再生成附件A/B。") from exc
     from PIL import Image
 
     out_paths: list[Path] = []
@@ -2139,11 +2359,25 @@ def render_pdf_to_jpeg_pages(pdf_path: Path, output_dir: Path, dpi: int = APPEND
     return out_paths
 
 
+def _normalize_appendix_file_entry(entry: Any) -> tuple[Path | None, str]:
+    if isinstance(entry, dict):
+        path_text = str(entry.get("path", "")).strip()
+        caption = str(entry.get("caption", "")).strip()
+        return (Path(path_text) if path_text else None), caption
+    if isinstance(entry, (str, Path)):
+        path_text = str(entry).strip()
+        return (Path(path_text) if path_text else None), ""
+    return None, ""
+
+
 def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None:
     from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Inches
 
-    sections = context.get("appendix_pdf_plan", []) or []
+    sections = []
+    sections.extend(context.get("appendix_pdf_plan", []) or [])
+    sections.extend(context.get("appendix_generated_plan", []) or [])
     if not sections:
         return
 
@@ -2177,6 +2411,18 @@ def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None
         paragraph._p.addnext(new_para._p)
         return new_para
 
+    def insert_image_after(paragraph: Any, image_path: Path, caption: str = "") -> Any:
+        current = paragraph
+        if caption:
+            caption_para = insert_paragraph_after(current, caption)
+            caption_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            current = caption_para
+        img_para = document.add_paragraph()
+        img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        img_para.add_run().add_picture(str(image_path), width=width)
+        current._p.addnext(img_para._p)
+        return img_para
+
     def clear_placeholder_paragraphs_after(anchor: Any) -> None:
         # The template leaves several blank paragraphs and page-break placeholders
         # after each appendix heading. Remove those placeholders first so the
@@ -2204,16 +2450,26 @@ def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None
     try:
         for section in sections:
             heading = str(section.get("heading", "")).strip()
-            files = [Path(p) for p in section.get("files", [])]
+            files = [_normalize_appendix_file_entry(item) for item in section.get("files", [])]
             anchor = find_heading_paragraph(document, heading)
             if anchor is None or not files:
                 continue
 
             clear_placeholder_paragraphs_after(anchor)
             current = anchor
-            for file_path in files:
-                if file_path.suffix.lower() != ".pdf":
+            for file_path, caption in files:
+                if file_path is None:
                     continue
+                file_path = file_path.resolve()
+                suffix = file_path.suffix.lower()
+                if suffix in APPENDIX_IMAGE_SUFFIXES:
+                    if file_path.exists():
+                        current = insert_image_after(current, file_path, caption)
+                    continue
+                if suffix != ".pdf":
+                    continue
+                if caption:
+                    current = insert_paragraph_after(current, caption)
 
                 try:
                     image_paths = render_pdf_to_jpeg_pages(file_path, docx_path.parent)
@@ -2223,10 +2479,7 @@ def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None
                     continue
 
                 for image_path in image_paths:
-                    img_para = document.add_paragraph()
-                    img_para.add_run().add_picture(str(image_path), width=width)
-                    current._p.addnext(img_para._p)
-                    current = img_para
+                    current = insert_image_after(current, image_path)
         document.save(docx_path)
     finally:
         for image_path in temp_images:
@@ -2469,7 +2722,7 @@ def render_report(template_docx: Path, output_docx: Path, context: dict[str, Any
                 env=env,
             )
         fill_summary_tables(root, context)
-        if not context.get("appendix_pdf_plan"):
+        if not context.get("appendix_pdf_plan") and not context.get("appendix_generated_plan"):
             fill_appendix_sections(root, rels_root, context)
         render_text_placeholders(root, context, env)
         rebuild_toc_field(root)
@@ -2606,10 +2859,10 @@ def main() -> int:
             print(f"- {note}")
 
     render_report(template, output, context)
-    if context.get("appendix_pdf_plan"):
+    if context.get("appendix_pdf_plan") or context.get("appendix_generated_plan"):
         insert_appendix_pdf_images(output, context)
-    if not refresh_word_document_fields(output):
-        raise RuntimeError(f"Word COM 自动更新目录并保存失败：{output}")
+    if not refresh_word_document_fields(output, pdf_output_path=output.with_suffix(".pdf")):
+        raise RuntimeError(f"Word COM 自动更新目录并导出 PDF 失败：{output}")
     print(f"Report generated: {output}")
     return 0
 

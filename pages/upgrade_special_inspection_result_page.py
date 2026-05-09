@@ -2,6 +2,7 @@
 # pages/upgrade_special_inspection_result_page.py
 
 from typing import Any
+import re
 import sys
 from pathlib import Path
 
@@ -10,8 +11,8 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea,
     QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider, QApplication, QProgressDialog
 )
-from PyQt5.QtCore import Qt, QTimer, QProcess
-from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
+from PyQt5.QtCore import Qt, QTimer, QProcess, QProcessEnvironment, QUrl
+from PyQt5.QtGui import QPainter, QPen, QColor, QBrush, QDesktopServices
 
 from core.base_page import BasePage
 from services.special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService
@@ -1068,6 +1069,75 @@ class UpgradeSpecialInspectionResultPage(BasePage):
     def _report_export_script_module(self) -> str:
         return "services.report_image_batch_export_process"
 
+    def _extract_report_output_path_from_log(self, log_text: str) -> Path | None:
+        for raw_line in reversed((log_text or "").splitlines()):
+            line = raw_line.strip()
+            if not line:
+                continue
+            match = re.search(r"report generated:\s*(.+)$", line, flags=re.IGNORECASE)
+            if not match:
+                continue
+            try:
+                candidate = Path(match.group(1).strip()).resolve()
+            except Exception:
+                continue
+            return candidate
+        return None
+
+    @staticmethod
+    def _decode_report_process_output(data: bytes) -> str:
+        if not data:
+            return ""
+
+        for encoding in ("utf-8", "gb18030", "cp936"):
+            try:
+                return data.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return data.decode("utf-8", errors="replace")
+
+    def _open_report_output_location(self, file_path: Path | None) -> bool:
+        if file_path is None:
+            return False
+
+        target = Path(file_path)
+        try:
+            if target.exists() and QProcess.startDetached("explorer", ["/select,", str(target)]):
+                return True
+        except Exception:
+            pass
+
+        folder = target.parent if target.suffix else target
+        try:
+            return QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder.resolve())))
+        except Exception:
+            return False
+
+    def _show_report_generated_dialog(self, report_path: Path | None) -> None:
+        pdf_path = report_path.with_suffix(".pdf") if report_path is not None else None
+        message_lines = ["特检策略报告已生成。"]
+
+        if report_path is not None:
+            message_lines.append(f"Word：\n{report_path}")
+        if pdf_path is not None and pdf_path.exists():
+            message_lines.append(f"PDF：\n{pdf_path}")
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Information)
+        msg.setWindowTitle("生成报告")
+        msg.setText("\n\n".join(message_lines))
+
+        open_target = report_path if report_path is not None else (pdf_path if pdf_path is not None and pdf_path.exists() else None)
+        open_btn = None
+        if open_target is not None:
+            open_btn = msg.addButton("查看文件", QMessageBox.ActionRole)
+        msg.addButton(QMessageBox.Ok)
+        msg.exec_()
+
+        if open_btn is not None and msg.clickedButton() is open_btn:
+            if not self._open_report_output_location(open_target):
+                QMessageBox.warning(self, "打开失败", "未能打开生成文件所在位置。")
+
     def _on_report(self):
         """点击生成报告：在独立子进程中先导出图片，再生成报告。"""
         if getattr(self, "_report_running", False):
@@ -1097,6 +1167,10 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         proc.setWorkingDirectory(str(project_root))
         proc.setProgram(sys.executable)
         proc.setArguments(args)
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONIOENCODING", "utf-8")
+        env.insert("PYTHONUTF8", "1")
+        proc.setProcessEnvironment(env)
         proc.setProcessChannelMode(QProcess.MergedChannels)
         proc.readyReadStandardOutput.connect(self._on_report_process_output)
         proc.finished.connect(self._on_report_process_finished)
@@ -1115,7 +1189,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         if proc is None:
             return
         try:
-            data = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="ignore")
+            data = self._decode_report_process_output(bytes(proc.readAllStandardOutput()))
         except Exception:
             data = ""
         if not data:
@@ -1152,9 +1226,5 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             )
             return
 
-        last_line = log_text.splitlines()[-1] if log_text.splitlines() else ""
-        QMessageBox.information(
-            self,
-            "生成报告",
-            "特检策略报告已生成。" + ("\n\n" + last_line if last_line else ""),
-        )
+        report_path = self._extract_report_output_path_from_log(log_text)
+        self._show_report_generated_dialog(report_path)
