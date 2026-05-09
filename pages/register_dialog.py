@@ -4,11 +4,13 @@ from __future__ import annotations
 import os
 
 from PyQt5.QtCore import QRegExp, Qt
-from PyQt5.QtGui import QPixmap, QRegExpValidator
+from PyQt5.QtGui import QColor, QPixmap, QRegExpValidator
 from PyQt5.QtWidgets import (
     QDialog,
     QFrame,
     QFormLayout,
+    QGraphicsBlurEffect,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -21,17 +23,24 @@ from core.auth import AuthError, AuthService
 
 
 class RegisterDialog(QDialog):
+    CONTROL_WIDTH = 328
+
     def __init__(self, auth_service: AuthService, parent=None):
         super().__init__(parent)
         self.auth_service = auth_service
         self.registered_username = ""
         self.setWindowTitle("注册")
         self.setWindowModality(Qt.WindowModal)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setWindowFlags(
+            (self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+            | Qt.WindowMinimizeButtonHint
+            | Qt.WindowMaximizeButtonHint
+        )
         self._build_ui()
 
     def _build_ui(self) -> None:
-        self.resize(680, 620)
+        self.resize(780, 620)
+        self.setMinimumSize(780, 620)
         self.setObjectName("RegisterDialog")
         self.setStyleSheet(self._dialog_style())
 
@@ -39,31 +48,39 @@ class RegisterDialog(QDialog):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        self.bg_label = QLabel(self)
-        self.bg_label.setAlignment(Qt.AlignCenter)
-        main_layout.addWidget(self.bg_label)
+        self.stage = QFrame(self)
+        self.stage.setObjectName("RegisterStage")
+        main_layout.addWidget(self.stage)
 
-        card = QFrame(self.bg_label)
+        self.bg_label = QLabel(self.stage)
+        self.bg_label.setObjectName("RegisterBg")
+        self.bg_label.setAlignment(Qt.AlignCenter)
+        blur = QGraphicsBlurEffect(self.bg_label)
+        blur.setBlurRadius(2.2)
+        self.bg_label.setGraphicsEffect(blur)
+
+        self.mask_label = QLabel(self.stage)
+        self.mask_label.setObjectName("RegisterMask")
+
+        card = QFrame(self.stage)
         card.setObjectName("AuthCard")
-        card.setFixedWidth(500)
+        card.setFixedWidth(720)
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(34, 28, 34, 28)
-        card_layout.setSpacing(14)
+        card_layout.setContentsMargins(36, 30, 36, 30)
+        card_layout.setSpacing(12)
         self.card = card
 
         title = QLabel("注册工程师账号", self)
         title.setObjectName("AuthTitle")
         title.setAlignment(Qt.AlignCenter)
+        title.setMinimumHeight(40)
         card_layout.addWidget(title)
 
-        hint = QLabel("当前开放注册角色：工程师", self)
-        hint.setObjectName("AuthSubtitle")
-        hint.setAlignment(Qt.AlignCenter)
-        card_layout.addWidget(hint)
-
         form = QFormLayout()
-        form.setSpacing(11)
+        form.setSpacing(10)
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.setFormAlignment(Qt.AlignCenter)
+        form.setHorizontalSpacing(12)
         self.username_edit = QLineEdit(self)
         self.password_edit = QLineEdit(self)
         self.password_edit.setEchoMode(QLineEdit.Password)
@@ -79,9 +96,23 @@ class RegisterDialog(QDialog):
         self.phone_edit.setPlaceholderText("请输入 11 位数字手机号")
         self.email_edit = QLineEdit(self)
 
+        for edit in (
+            self.username_edit,
+            self.password_edit,
+            self.confirm_password_edit,
+            self.display_name_edit,
+            self.employee_no_edit,
+            self.branch_company_edit,
+            self.operation_company_edit,
+            self.phone_edit,
+            self.email_edit,
+        ):
+            edit.setObjectName("GlassInput")
+            edit.setFixedWidth(self.CONTROL_WIDTH)
+
         form.addRow("用户名：", self.username_edit)
-        form.addRow("密码：", self._password_row(self.password_edit, "toggle_pwd_btn"))
-        form.addRow("确认密码：", self._password_row(self.confirm_password_edit, "toggle_confirm_pwd_btn"))
+        form.addRow("密码：", self.password_edit)
+        form.addRow("确认密码：", self.confirm_password_edit)
         form.addRow("姓名：", self.display_name_edit)
         form.addRow("工号：", self.employee_no_edit)
         form.addRow("分公司：", self.branch_company_edit)
@@ -90,37 +121,25 @@ class RegisterDialog(QDialog):
         form.addRow("邮箱：", self.email_edit)
         card_layout.addLayout(form)
 
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(10)
         self.submit_btn = QPushButton("注册", self)
         self.submit_btn.setObjectName("PrimaryButton")
+        self.submit_btn.setFixedWidth(self.CONTROL_WIDTH)
+        self.submit_btn.setGraphicsEffect(self._button_shadow())
         self.cancel_btn = QPushButton("取消", self)
-        self.cancel_btn.setObjectName("GhostButton")
+        self.cancel_btn.setObjectName("TextLinkButton")
         self.submit_btn.clicked.connect(self._on_register_clicked)
         self.cancel_btn.clicked.connect(self.reject)
-        btn_layout.addStretch(1)
-        btn_layout.addWidget(self.submit_btn)
-        btn_layout.addWidget(self.cancel_btn)
-        btn_layout.addStretch(1)
-        card_layout.addLayout(btn_layout)
+        card_layout.addWidget(self.submit_btn, 0, Qt.AlignCenter)
+
+        link_layout = QHBoxLayout()
+        link_layout.setContentsMargins(0, 0, 0, 0)
+        link_layout.addStretch(1)
+        link_layout.addWidget(self.cancel_btn, 0, Qt.AlignCenter)
+        link_layout.addStretch(1)
+        card_layout.addLayout(link_layout)
 
         self.card.adjustSize()
         self._refresh_background()
-
-    def _password_row(self, edit: QLineEdit, attr_name: str) -> QFrame:
-        row = QFrame(self)
-        row.setObjectName("PasswordRow")
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        button = QPushButton("显示", self)
-        button.setObjectName("GhostButton")
-        button.setFixedWidth(58)
-        button.clicked.connect(lambda: self._toggle_password(edit, button))
-        setattr(self, attr_name, button)
-        layout.addWidget(edit)
-        layout.addWidget(button)
-        return row
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -129,60 +148,87 @@ class RegisterDialog(QDialog):
     def _refresh_background(self) -> None:
         if not hasattr(self, "bg_label"):
             return
-        self.bg_label.setFixedSize(self.size())
+        stage_width = self.stage.width() if hasattr(self, "stage") else self.width()
+        stage_height = self.stage.height() if hasattr(self, "stage") else self.height()
+        self.bg_label.setGeometry(-12, -12, stage_width + 24, stage_height + 24)
+        if hasattr(self, "mask_label"):
+            self.mask_label.setGeometry(0, 0, stage_width, stage_height)
         bg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pict", "home_bg.png")
         if os.path.exists(bg_path):
             pixmap = QPixmap(bg_path)
             if not pixmap.isNull():
-                scaled = pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                x = max(0, (scaled.width() - self.width()) // 2)
-                y = max(0, (scaled.height() - self.height()) // 2)
-                self.bg_label.setPixmap(scaled.copy(x, y, self.width(), self.height()))
+                scaled = pixmap.scaled(self.bg_label.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                x = max(0, (scaled.width() - self.bg_label.width()) // 2)
+                y = max(0, (scaled.height() - self.bg_label.height()) // 2)
+                self.bg_label.setPixmap(scaled.copy(x, y, self.bg_label.width(), self.bg_label.height()))
         if hasattr(self, "card"):
-            self.card.move((self.width() - self.card.width()) // 2, (self.height() - self.card.height()) // 2)
+            self.card.move((stage_width - self.card.width()) // 2, (stage_height - self.card.height()) // 2)
 
     @staticmethod
-    def _toggle_password(edit: QLineEdit, button: QPushButton) -> None:
-        if edit.echoMode() == QLineEdit.Password:
-            edit.setEchoMode(QLineEdit.Normal)
-            button.setText("隐藏")
-        else:
-            edit.setEchoMode(QLineEdit.Password)
-            button.setText("显示")
+    def _button_shadow() -> QGraphicsDropShadowEffect:
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(14)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(14, 54, 150, 110))
+        return shadow
 
     @staticmethod
     def _dialog_style() -> str:
         return """
             QDialog#RegisterDialog { background-color: #004a80; }
+            QFrame#RegisterStage { background-color: #004a80; }
+            QLabel#RegisterMask { background-color: rgba(30, 58, 104, 28); }
             QFrame#AuthCard {
-                background-color: rgba(255, 255, 255, 205);
-                border: 1px solid rgba(255, 255, 255, 150);
-                border-radius: 24px;
+                background-color: rgba(255, 255, 255, 0);
+                border: none;
             }
-            QLabel#AuthTitle { color: #17324d; font-size: 23px; font-weight: 800; }
-            QLabel#AuthSubtitle { color: #526579; font-size: 13px; padding-bottom: 4px; }
-            QLabel { color: #263d55; font-size: 14px; }
-            QLineEdit {
+            QLabel#AuthTitle {
+                color: #17324D;
+                font-size: 26px;
+                font-weight: 700;
+                letter-spacing: 1px;
+                padding: 4px 0;
+            }
+            QLabel { color: #0F2A44; font-size: 16px; font-weight: 700; }
+            QLineEdit#GlassInput {
+                min-width: 328px;
+                max-width: 328px;
                 min-height: 36px;
-                border: 1px solid #c9d7e6;
-                border-radius: 12px;
-                padding: 0 13px;
-                background-color: #f8fbff;
-                color: #172536;
-                font-size: 14px;
-            }
-            QLineEdit:focus { border: 1px solid #1f78c8; background-color: #ffffff; }
-            QFrame#PasswordRow { border: none; background: transparent; }
-            QPushButton {
-                min-height: 34px;
-                border-radius: 12px;
+                border: 1px solid rgba(255, 255, 255, 76);
+                border-radius: 18px;
                 padding: 0 16px;
-                font-size: 14px;
+                background-color: rgba(255, 255, 255, 105);
+                color: #12304A;
+                font-size: 16px;
             }
-            QPushButton#PrimaryButton { background-color: #006bb3; color: white; border: none; font-weight: 700; }
-            QPushButton#PrimaryButton:hover { background-color: #0782d4; }
-            QPushButton#GhostButton { background-color: rgba(255,255,255,0.72); color: #42566b; border: 1px solid #d4dfeb; }
-            QPushButton#GhostButton:hover { background-color: #ffffff; }
+            QLineEdit#GlassInput:focus {
+                border: 1px solid rgba(255, 255, 255, 150);
+                background-color: rgba(255, 255, 255, 130);
+            }
+            QPushButton {
+                min-height: 36px;
+                border-radius: 18px;
+                padding: 0 16px;
+                font-size: 16px;
+            }
+            QPushButton#PrimaryButton {
+                min-width: 328px;
+                max-width: 328px;
+                background-color: #1f5ad7;
+                color: white;
+                border: none;
+                font-weight: 700;
+            }
+            QPushButton#PrimaryButton:hover { background-color: #356ef0; }
+            QPushButton#TextLinkButton {
+                min-height: 24px;
+                background-color: transparent;
+                color: rgba(255,255,255,230);
+                border: none;
+                padding: 0 4px;
+                font-size: 15px;
+            }
+            QPushButton#TextLinkButton:hover { color: #ffffff; text-decoration: underline; }
         """
 
     def _on_register_clicked(self) -> None:
