@@ -11,7 +11,6 @@ from PyQt5.QtWidgets import (
     QCompleter,
     QDialog,
     QFrame,
-    QGraphicsBlurEffect,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLineEdit,
@@ -28,7 +27,8 @@ from pages.register_dialog import RegisterDialog
 class LoginDialog(QDialog):
     SETTINGS_ORG = "Shiyou"
     SETTINGS_APP = "PlatformLoadManager"
-    CONTROL_WIDTH = 328
+    CONTROL_WIDTH = 280
+    LOGIN_BUTTON_WIDTH = 280
     _session_remember_password = False
     _session_username = ""
     _session_password = ""
@@ -49,56 +49,51 @@ class LoginDialog(QDialog):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        self.resize(620, 430)
-        self.setMinimumSize(620, 430)
+        self.resize(760, 560)
+        self.setMinimumSize(760, 560)
         self.setObjectName("LoginDialog")
         self.setStyleSheet(self._dialog_style())
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setContentsMargins(60, 40, 60, 40)
         main_layout.setSpacing(0)
 
         self.stage = QFrame(self)
         self.stage.setObjectName("LoginStage")
         main_layout.addWidget(self.stage)
 
-        self.bg_label = QLabel(self.stage)
+        self.bg_label = QLabel(self)
         self.bg_label.setObjectName("LoginBg")
         self.bg_label.setAlignment(Qt.AlignCenter)
-        blur = QGraphicsBlurEffect(self.bg_label)
-        blur.setBlurRadius(2.2)
-        self.bg_label.setGraphicsEffect(blur)
-
-        self.mask_label = QLabel(self.stage)
-        self.mask_label.setObjectName("LoginMask")
+        self.bg_label.lower()
 
         card = QFrame(self.stage)
         card.setObjectName("AuthCard")
-        card.setFixedWidth(520)
+        card.setFixedWidth(400)
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(36, 30, 36, 30)
-        card_layout.setSpacing(14)
+        card_layout.setContentsMargins(28, 24, 28, 24)
+        card_layout.setSpacing(12)
 
         self.card = card
 
         title = QLabel("海上平台结构载荷管理系统", self)
         title.setObjectName("AuthTitle")
         title.setAlignment(Qt.AlignCenter)
-        title.setMinimumHeight(42)
+        title.setMinimumHeight(36)
         card_layout.addWidget(title)
-        card_layout.addSpacing(12)
+        card_layout.addSpacing(8)
 
         form_layout = QVBoxLayout()
-        form_layout.setSpacing(12)
+        form_layout.setSpacing(10)
 
         self.user_edit = QLineEdit(self)
-        self.user_edit.setPlaceholderText("用户名")
+        self.user_edit.setPlaceholderText("请输入用户名/工号")
         self._setup_glass_input(self.user_edit, "user")
         self._setup_username_history()
         form_layout.addWidget(self.user_edit, 0, Qt.AlignCenter)
 
         self.pwd_edit = QLineEdit(self)
-        self.pwd_edit.setPlaceholderText("密码")
+        self.pwd_edit.setPlaceholderText("请输入密码")
         self.pwd_edit.setEchoMode(QLineEdit.Password)
         self.pwd_edit.returnPressed.connect(self._on_login_clicked)
         self._setup_glass_input(self.pwd_edit, "lock")
@@ -107,7 +102,7 @@ class LoginDialog(QDialog):
         self.remember_chk = QCheckBox("记住密码", self)
         self.remember_chk.setObjectName("RememberCheck")
         remember_layout = QHBoxLayout()
-        remember_layout.setContentsMargins(60, 0, 60, 0)
+        remember_layout.setContentsMargins(10, 0, 10, 0)
         remember_layout.addWidget(self.remember_chk, 0, Qt.AlignLeft)
         remember_layout.addStretch(1)
         form_layout.addLayout(remember_layout)
@@ -115,11 +110,11 @@ class LoginDialog(QDialog):
 
         self.login_btn = QPushButton("登录", self)
         self.login_btn.setObjectName("PrimaryButton")
-        self.login_btn.setFixedWidth(self.CONTROL_WIDTH)
+        self.login_btn.setFixedWidth(self.LOGIN_BUTTON_WIDTH)
         self.login_btn.setGraphicsEffect(self._button_shadow())
-        self.register_btn = QPushButton("注册", self)
+        self.register_btn = QPushButton("注册账号", self)
         self.register_btn.setObjectName("TextLinkButton")
-        self.cancel_btn = QPushButton("取消", self)
+        self.cancel_btn = QPushButton("退出", self)
         self.cancel_btn.setObjectName("TextLinkButton")
         self.login_btn.clicked.connect(self._on_login_clicked)
         self.register_btn.clicked.connect(self._on_register_clicked)
@@ -127,21 +122,26 @@ class LoginDialog(QDialog):
         card_layout.addWidget(self.login_btn, 0, Qt.AlignCenter)
 
         link_layout = QHBoxLayout()
-        link_layout.setContentsMargins(96, 0, 96, 0)
-        link_layout.addWidget(self.register_btn, 0, Qt.AlignLeft)
+        link_layout.setContentsMargins(0, 0, 0, 0)
+        link_layout.setSpacing(18)
         link_layout.addStretch(1)
-        link_layout.addWidget(self.cancel_btn, 0, Qt.AlignRight)
+        link_layout.addWidget(self.register_btn)
+        link_layout.addWidget(self.cancel_btn)
+        link_layout.addStretch(1)
         card_layout.addLayout(link_layout)
 
         self._load_remembered_credentials()
+        self._bind_return_focus_chain([self.user_edit, self.pwd_edit])
         self.card.adjustSize()
         self._refresh_background()
+        self.bg_label.lower()
 
     def _setup_glass_input(self, edit: QLineEdit, icon_kind: str) -> None:
         edit.setObjectName("GlassInput")
         edit.setFixedWidth(self.CONTROL_WIDTH)
+        edit.setFixedHeight(32)
         edit.addAction(self._line_icon(icon_kind), QLineEdit.LeadingPosition)
-        edit.setTextMargins(8, 0, 0, 0)
+        edit.setTextMargins(10, 0, 0, 0)
 
     def _setup_username_history(self) -> None:
         usernames = self._load_username_history()
@@ -180,7 +180,7 @@ class LoginDialog(QDialog):
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.TextAntialiasing, True)
-        pen = QPen(QColor(255, 255, 255, 230), 1.8)
+        pen = QPen(QColor(58, 72, 92, 255), 1.8)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
@@ -205,17 +205,15 @@ class LoginDialog(QDialog):
             return
         stage_width = self.stage.width() if hasattr(self, "stage") else self.width()
         stage_height = self.stage.height() if hasattr(self, "stage") else self.height()
-        self.bg_label.setGeometry(-12, -12, stage_width + 24, stage_height + 24)
-        if hasattr(self, "mask_label"):
-            self.mask_label.setGeometry(0, 0, stage_width, stage_height)
+        self.bg_label.setGeometry(0, 0, self.width(), self.height())
         bg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pict", "home_bg.png")
         if os.path.exists(bg_path):
             pixmap = QPixmap(bg_path)
             if not pixmap.isNull():
-                scaled = pixmap.scaled(self.bg_label.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                x = max(0, (scaled.width() - self.bg_label.width()) // 2)
-                y = max(0, (scaled.height() - self.bg_label.height()) // 2)
-                self.bg_label.setPixmap(scaled.copy(x, y, self.bg_label.width(), self.bg_label.height()))
+                scaled = pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                x = max(0, (scaled.width() - self.width()) // 2)
+                y = max(0, (scaled.height() - self.height()) // 2)
+                self.bg_label.setPixmap(scaled.copy(x, y, self.width(), self.height()))
         if hasattr(self, "card"):
             self.card.move((stage_width - self.card.width()) // 2, (stage_height - self.card.height()) // 2)
 
@@ -236,6 +234,10 @@ class LoginDialog(QDialog):
             LoginDialog._session_username = ""
             LoginDialog._session_password = ""
 
+    def _bind_return_focus_chain(self, edits: list[QLineEdit]) -> None:
+        for current, nxt in zip(edits, edits[1:]):
+            current.returnPressed.connect(nxt.setFocus)
+
     @staticmethod
     def _toggle_password(edit: QLineEdit, button: QPushButton) -> None:
         if edit.echoMode() == QLineEdit.Password:
@@ -249,37 +251,37 @@ class LoginDialog(QDialog):
     def _dialog_style() -> str:
         return """
             QDialog#LoginDialog { background-color: #004a80; }
-            QFrame#LoginStage { background-color: #004a80; }
-            QLabel#LoginMask { background-color: rgba(30, 58, 104, 28); }
+            QFrame#LoginStage { background-color: transparent; }
             QFrame#AuthCard {
-                background-color: rgba(255, 255, 255, 0);
+                background-color: rgba(255, 255, 255, 230);
                 border: none;
+                border-radius: 15px;
             }
             QLabel#AuthTitle {
                 color: #17324D;
-                font-size: 28px;
+                font-size: 20px;
                 font-weight: 700;
-                letter-spacing: 1px;
-                padding: 4px 0;
+                padding: 4px 0 6px 0;
             }
             QLineEdit#GlassInput {
-                min-width: 328px;
-                max-width: 328px;
-                min-height: 40px;
-                border: 1px solid rgba(255, 255, 255, 76);
-                border-radius: 20px;
-                padding: 0 18px 0 8px;
-                background-color: rgba(255, 255, 255, 105);
+                min-width: 280px;
+                max-width: 280px;
+                min-height: 32px;
+                max-height: 32px;
+                border: 1px solid #DCDFE6;
+                border-radius: 8px;
+                padding: 0 16px 0 10px;
+                background-color: #ffffff;
                 color: #12304A;
                 font-size: 16px;
             }
             QLineEdit#GlassInput:focus {
-                border: 1px solid rgba(255, 255, 255, 150);
-                background-color: rgba(255, 255, 255, 130);
+                border: 2px solid #409EFF;
+                background-color: #ffffff;
             }
             QCheckBox#RememberCheck {
-                color: rgba(255, 255, 255, 225);
-                font-size: 15px;
+                color: #606266;
+                font-size: 14px;
                 spacing: 8px;
                 padding-left: 4px;
             }
@@ -287,39 +289,37 @@ class LoginDialog(QDialog):
                 width: 13px;
                 height: 13px;
                 border-radius: 7px;
-                background-color: rgba(255, 255, 255, 220);
-                border: 1px solid rgba(255, 255, 255, 160);
+                background-color: #ffffff;
+                border: 1px solid #DCDFE6;
             }
             QCheckBox#RememberCheck::indicator:checked {
-                background-color: #1f5ad7;
-                border: 1px solid #88a9ff;
+                background-color: #2D5CF6;
+                border: 1px solid #2D5CF6;
             }
             QPushButton {
                 min-height: 36px;
-                border-radius: 18px;
+                border-radius: 6px;
                 padding: 0 16px;
                 font-size: 16px;
             }
             QPushButton#PrimaryButton {
-                min-width: 328px;
-                max-width: 328px;
-                background-color: #1f5ad7;
+                min-width: 280px;
+                max-width: 280px;
+                background-color: #2D5CF6;
                 color: white;
                 border: none;
                 font-weight: 700;
             }
-            QPushButton#PrimaryButton:hover { background-color: #356ef0; }
+            QPushButton#PrimaryButton:hover { background-color: #4A74F7; }
             QPushButton#TextLinkButton {
                 min-height: 24px;
                 background-color: transparent;
-                color: rgba(255,255,255,230);
+                color: #606266;
                 border: none;
                 padding: 0 4px;
-                font-size: 15px;
+                font-size: 14px;
             }
-            QPushButton#TextLinkButton:hover { color: #ffffff; text-decoration: underline; }
-            QPushButton#GhostButton { background-color: rgba(255,255,255,0.58); color: #42566b; border: 1px solid rgba(255,255,255,0.36); }
-            QPushButton#GhostButton:hover { background-color: rgba(255,255,255,0.78); }
+            QPushButton#TextLinkButton:hover { color: #2D5CF6; text-decoration: underline; }
         """
 
     def _on_login_clicked(self) -> None:
