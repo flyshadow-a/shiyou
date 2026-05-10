@@ -29,6 +29,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core.base_page import BasePage
+from services.inspection_business_db_adapter import save_facility_profile
 
 try:
     import pandas as pd
@@ -229,6 +230,8 @@ class PlatformSummaryPage(BasePage):
             self._apply_dataframe_to_table(bootstrap_df)
         else:
             self._load_fallback_rows()
+
+        self._sync_profiles_to_database(silent=True)
 
     def _build_ui(self):
         root = QFrame()
@@ -514,6 +517,23 @@ class PlatformSummaryPage(BasePage):
         text = str(value).strip()
         return "" if text == "nan" else text
 
+    def _column_index(self, names: List[str]) -> int | None:
+        normalized = {str(name).strip(): index for index, name in enumerate(self.columns)}
+        for name in names:
+            index = normalized.get(name)
+            if index is not None:
+                return index
+        return None
+
+    def _row_value(self, row: int, names: List[str]) -> str:
+        if self.table is None:
+            return ""
+        index = self._column_index(names)
+        if index is None:
+            return ""
+        item = self.table.item(row, index)
+        return item.text().strip() if item is not None else ""
+
     def _set_table_columns(self, columns: List[str]):
         self.columns = list(columns)
         if self.table is None:
@@ -538,6 +558,38 @@ class PlatformSummaryPage(BasePage):
                 self.table.setItem(row, col, QTableWidgetItem(value))
 
         self._update_table_columns()
+
+    def _sync_profiles_to_database(self, silent: bool = False) -> tuple[int, int, List[str]]:
+        if self.table is None:
+            return 0, 0, []
+
+        saved = 0
+        skipped = 0
+        errors: List[str] = []
+        for row in range(self.table.rowCount()):
+            facility_code = self._row_value(row, ["设施编码", "平台编码", "编码"])
+            if not facility_code:
+                skipped += 1
+                continue
+            payload = {
+                "facility_name": self._row_value(row, ["设施名称", "平台名称"]),
+                "branch": self._row_value(row, ["分公司", "所属分公司"]),
+                "op_company": self._row_value(row, ["作业公司", "所属作业单元", "作业单元"]),
+                "oilfield": self._row_value(row, ["油气田", "所属油（气）田", "所属油气田"]),
+                "facility_type": self._row_value(row, ["设施类型", "平台类型"]),
+                "category": self._row_value(row, ["分类", "平台分类"]),
+                "start_time": self._row_value(row, ["投产时间", "投产日期"]),
+                "design_life": self._row_value(row, ["设计年限"]),
+            }
+            try:
+                save_facility_profile(facility_code, payload)
+                saved += 1
+            except Exception as exc:
+                errors.append(f"第 {row + 1} 行 {facility_code}：{exc}")
+
+        if errors and not silent:
+            QMessageBox.warning(self, "保存失败", "部分平台档案同步失败：\n" + "\n".join(errors[:5]))
+        return saved, skipped, errors
 
     def _update_table_columns(self):
         if self.table is None:
@@ -784,9 +836,25 @@ class PlatformSummaryPage(BasePage):
         QMessageBox.information(self, "导出完成", f"模板已导出到：\n{file_path}")
 
     def on_save_clicked(self):
-        rows = self.table.rowCount() if self.table is not None else 0
-        QMessageBox.information(
-            self,
-            "保存",
-            f"当前共有 {rows} 条平台记录。\n\n后续可以在 on_save_clicked 中接入后端接口或数据库。",
-        )
+        if self.table is None:
+            return
+
+        saved, skipped, errors = self._sync_profiles_to_database()
+        self._notify_summary_pages_refresh()
+        msg = f"已保存 {saved} 条平台档案到数据库。"
+        if skipped:
+            msg += f"\n跳过 {skipped} 条缺少设施编码的记录。"
+        if errors:
+            msg += "\n\n失败记录：\n" + "\n".join(errors[:5])
+        QMessageBox.information(self, "保存", msg)
+
+    def _notify_summary_pages_refresh(self):
+        mw = self.window()
+        tab_widget = getattr(mw, "tab_widget", None)
+        if tab_widget is None:
+            return
+        for index in range(tab_widget.count()):
+            page = tab_widget.widget(index)
+            refresh = getattr(page, "refresh_from_database", None)
+            if callable(refresh):
+                refresh()

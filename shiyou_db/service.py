@@ -299,6 +299,15 @@ class FileMetadataService:
             ).scalar_one_or_none()
             return self._facility_profile_to_dict(row) if row else None
 
+    def list_facility_profiles(self) -> list[dict]:
+        with self.session_factory() as session:
+            rows = session.execute(
+                select(FacilityProfile).order_by(
+                    FacilityProfile.id.asc(),
+                )
+            ).scalars().all()
+            return [self._facility_profile_to_dict(row) for row in rows]
+
     def upsert_facility_profile(self, facility_code: str, **values) -> dict:
         code = (facility_code or "").strip()
         if not code:

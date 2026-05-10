@@ -17,6 +17,10 @@ from PyQt5.QtGui import QColor, QFont, QFontMetrics
 from core.app_paths import external_path, first_existing_path
 from pages.hover_tip_table import HoverTipTable
 from core.base_page import BasePage
+from services.inspection_business_db_adapter import (
+    list_facility_profiles,
+    load_platform_load_information_items,
+)
 
 
 
@@ -49,7 +53,7 @@ class SummaryInformationTablePage(BasePage):
         self.data_dir = first_existing_path("data")
         self.output_data_dir = external_path("data")
         self._build_ui()
-        self.load_from_excel(self._default_excel_path())
+        self.refresh_from_database(show_warning=False)
 
     def _build_ui(self):
         # 更贴近示例图：浅蓝灰底、细边框、表头同色
@@ -265,6 +269,71 @@ class SummaryInformationTablePage(BasePage):
         if os.path.exists(p2):
             return p2
         return os.path.join(self.output_data_dir, self.EXCEL_NAME)  # 默认返回外部 data 路径（用于报错提示）
+
+    def refresh_from_database(self, show_warning: bool = True):
+        try:
+            profiles = list_facility_profiles()
+        except Exception as exc:
+            if show_warning:
+                QMessageBox.warning(self, "读取失败", f"读取平台档案数据库失败：\n{exc}")
+            self._apply_data([])
+            return
+
+        rows = [self._build_summary_row(profile, index) for index, profile in enumerate(profiles, start=1)]
+        self._apply_data(rows)
+
+    def _build_summary_row(self, profile: Dict[str, Any], index: int) -> List[str]:
+        facility_code = str(profile.get("facility_code") or "").strip()
+        load_rows = load_platform_load_information_items(facility_code) if facility_code else []
+        latest = self._pick_latest_load_row(load_rows)
+        latest_weight = self._to_float((latest or {}).get("total_weight_mt"))
+        delta_weight = self._to_float((latest or {}).get("weight_delta_mt"))
+
+        change_rate = ""
+        if latest_weight not in (None, 0) and delta_weight is not None:
+            change_rate = self._fmt_number(delta_weight / latest_weight * 100)
+
+        overall_count = sum(
+            1 for row in load_rows
+            if str(row.get("overall_assessment") or "").strip() not in ("", "\\", "/", "否", "0")
+        )
+
+        return [
+            str(index),
+            str(profile.get("branch") or ""),
+            str(profile.get("op_company") or ""),
+            str(profile.get("facility_name") or profile.get("facility_code") or ""),
+            str(profile.get("start_time") or ""),
+            str(profile.get("design_life") or ""),
+            self._fmt_number(latest_weight),
+            self._fmt_number(delta_weight),
+            change_rate,
+            str((latest or {}).get("weight_limit_mt") or ""),
+            str((latest or {}).get("center_xyz") or ""),
+            str((latest or {}).get("center_radius_m") or ""),
+            str((latest or {}).get("safety_op") or ""),
+            str((latest or {}).get("safety_extreme") or ""),
+            str(overall_count),
+        ]
+
+    def _pick_latest_load_row(self, rows: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+        if not rows:
+            return None
+        return sorted(rows, key=lambda row: int(row.get("sort_order") or row.get("seq_no") or 0))[-1]
+
+    def _to_float(self, value: Any) -> float | None:
+        text = str(value or "").strip().replace(",", "")
+        if not text or text in ("\\", "/"):
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    def _fmt_number(self, value: float | None) -> str:
+        if value is None:
+            return ""
+        return f"{value:.3f}".rstrip("0").rstrip(".")
 
     def load_from_excel(self, excel_path: str):
         """

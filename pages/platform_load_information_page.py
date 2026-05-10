@@ -134,6 +134,13 @@ class SimpleLineChart(FigureCanvas):
             self._line.set_data(x, y)
         self.ax.relim()
         self.ax.autoscale_view()
+        ticks = [int(v) for v in x]
+        self.ax.set_xticks(ticks)
+        if ticks:
+            right = max(ticks) if max(ticks) > 0 else 1
+            self.ax.set_xlim(0, right)
+        else:
+            self.ax.set_xlim(0, 1)
         self.figure.tight_layout()
         self.draw_idle()
 
@@ -950,6 +957,21 @@ class PlatformLoadInformationPage(BasePage):
             ])
         return table_rows
 
+    def _format_weight_delta_text(self, value: object) -> str:
+        text = "" if value is None else str(value).strip()
+        if not text or text in ("\\", "/"):
+            return text
+        if text.startswith("+") or text.startswith("-"):
+            return text
+        normalized = text.replace(",", "")
+        try:
+            number = float(normalized)
+        except ValueError:
+            return text
+        if number > 0:
+            return f"+{text}"
+        return text
+
     def _collect_table_rows_for_db(self) -> List[Dict[str, str]]:
         rows: List[Dict[str, str]] = []
         for sort_order, row in enumerate(range(4, self._find_data_end_row()), start=1):
@@ -1056,6 +1078,13 @@ class PlatformLoadInformationPage(BasePage):
                 item.setBackground(QColor("white"))
                 self.table.blockSignals(False)
 
+        if (base_rows <= row < data_end) and col == 6:
+            formatted = self._format_weight_delta_text(item.text())
+            if formatted != item.text():
+                self.table.blockSignals(True)
+                item.setText(formatted)
+                self.table.blockSignals(False)
+
         if base_rows <= row < data_end:
             self._refresh_curve_view()
 
@@ -1144,6 +1173,8 @@ class PlatformLoadInformationPage(BasePage):
             for i, row in enumerate(rows):
                 rr = base_rows + i
                 for c, val in enumerate(row):
+                    if c == 6:
+                        val = self._format_weight_delta_text(val)
                     editable = (c not in (0, 7))
                     it = self._mk_item(val, editable=editable)
                     if c == 7:
@@ -1889,9 +1920,21 @@ class PlatformLoadInformationPage(BasePage):
 
         try:
             replace_platform_load_information_items(facility_code, self._collect_table_rows_for_db())
+            self._notify_summary_pages_refresh()
             QMessageBox.information(self, "保存成功", "平台载荷信息已保存到数据库。")
         except Exception as exc:
             QMessageBox.critical(self, "保存失败", f"平台载荷信息保存失败：\n{exc}")
+
+    def _notify_summary_pages_refresh(self):
+        mw = self.window()
+        tab_widget = getattr(mw, "tab_widget", None)
+        if tab_widget is None:
+            return
+        for index in range(tab_widget.count()):
+            page = tab_widget.widget(index)
+            refresh = getattr(page, "refresh_from_database", None)
+            if callable(refresh):
+                refresh()
 
     def _on_export(self):
         os.makedirs(self.output_data_dir, exist_ok=True)

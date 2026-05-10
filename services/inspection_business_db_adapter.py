@@ -66,6 +66,13 @@ def save_facility_profile(
     return _get_service(config_path).upsert_facility_profile(facility_code, **payload)
 
 
+def list_facility_profiles(
+    *,
+    config_path: str | None = None,
+) -> list[dict[str, Any]]:
+    return _get_service(config_path).list_facility_profiles()
+
+
 def list_inspection_projects(
     facility_code: str,
     project_type: str,
