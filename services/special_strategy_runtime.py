@@ -113,7 +113,15 @@ def special_strategy_inputs_dir() -> Path:
 
 
 def _common_config_path() -> Path:
-    return (OUTPUT_SPECIAL_STRATEGY_CODE_DIR / COMMON_RUN_CONFIG_NAME).resolve()
+    candidates = [
+        special_strategy_inputs_dir() / COMMON_RUN_CONFIG_NAME,
+        Path(external_path("output_special_strategy", COMMON_RUN_CONFIG_NAME)),
+        OUTPUT_SPECIAL_STRATEGY_CODE_DIR / COMMON_RUN_CONFIG_NAME,
+    ]
+    for path in candidates:
+        if path.exists():
+            return path.resolve()
+    return candidates[0].resolve()
 
 
 def _report_metadata_template_path() -> Path:

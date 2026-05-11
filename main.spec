@@ -33,6 +33,7 @@ STATIC_DATAS = [
 ]
 EXTERNAL_RESOURCE_DATAS = [
     ('special_strategy_inputs/*', 'special_strategy_inputs'),
+    ('pages/output_special_strategy/special_strategy_run_config.json', 'special_strategy_inputs'),
     ('shiyou_db/db_config.json', 'shiyou_db'),
     ('pages/output_feasibility_analysis_report/*.docx', 'output_feasibility_analysis_report'),
     ('pages/output_feasibility_analysis_report/config/*.json', 'output_feasibility_analysis_report/config'),
