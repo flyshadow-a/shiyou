@@ -34,7 +34,6 @@ STATIC_DATAS = [
 EXTERNAL_RESOURCE_DATAS = [
     ('special_strategy_inputs/*', 'special_strategy_inputs'),
     ('shiyou_db/db_config.json', 'shiyou_db'),
-    ('shiyou_db/db_config.example.json', 'shiyou_db'),
     ('pages/output_feasibility_analysis_report/*.docx', 'output_feasibility_analysis_report'),
     ('pages/output_feasibility_analysis_report/config/*.json', 'output_feasibility_analysis_report/config'),
     ('pages/output_feasibility_analysis_report/config/*.xml', 'output_feasibility_analysis_report/config'),
