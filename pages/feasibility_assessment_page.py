@@ -41,6 +41,7 @@ from PyQt5.QtGui import QDesktopServices
 from sqlalchemy import create_engine, text
 
 from core.base_page import BasePage
+from core.message_boxes import ask_yes_no
 
 from pages.feasibility_assessment_results_page import FeasibilityAssessmentResultsPage
 from pages.sacs_create_model_service import create_new_model_files
@@ -588,14 +589,11 @@ class FeasibilityAssessmentPage(BasePage):
         if not (header_rows <= row < table.rowCount()):
             return
 
-        reply = QMessageBox.question(
+        if not ask_yes_no(
             self,
             "确认删除",
             f"确定删除第 {row - header_rows + 1} 行吗？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
+        ):
             return
 
         table.removeRow(row)

@@ -5,14 +5,21 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "path_config.json"
+from src.resource_paths import first_existing_asset_path
 
 
-@lru_cache(maxsize=1)
+def _default_config_path() -> Path:
+    return first_existing_asset_path("config", "path_config.json")
+
+
+def _config_root(config_path: str | Path | None = None) -> Path:
+    path = Path(config_path) if config_path else _default_config_path()
+    return path.resolve().parent.parent
+
+
+@lru_cache(maxsize=4)
 def load_path_config(config_path: str | Path | None = None) -> dict[str, Any]:
-    path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+    path = Path(config_path) if config_path else _default_config_path()
     with path.open("r", encoding="utf-8") as file:
         return json.load(file)
 
@@ -46,14 +53,18 @@ def get_coordinate_system_config(facility_code: str) -> dict[str, Any]:
     return {
         "directory": directory,
         "xy_file": str(section.get("xy_file", "XY_-14.png")),
-        "yz_file": str(section.get("yz_file", "YZ_左.png")),
+        "yz_file": str(section.get("yz_file", "YZ_宸?png")),
         "output_path": output_root / facility_code / str(section.get("output_file", "coordinate_system.png")),
     }
 
 
 def get_report_defaults() -> dict[str, Path]:
     config = load_path_config()
+    config_root = _config_root()
     section = config.get("report_defaults", {})
     return {
-        "template_path": PROJECT_ROOT / str(section.get("template_file", "xxx平台改建可行性评估报告纯净版.docx")),
+        "template_path": config_root / str(section.get("template_file", "xxx平台改建可行性评估报告纯净版.docx")),
+        "appendix_a_reference_path": config_root / str(
+            section.get("appendix_a_reference_file", "xxx平台改建可行性评估报告.docx")
+        ),
     }

@@ -35,6 +35,7 @@ from PyQt5.QtGui import QColor, QFont, QFontMetrics
 from core.app_paths import existing_dirs, external_path, first_existing_path
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar  # 复用平台基本信息页的顶部下拉条样式
+from core.message_boxes import ask_yes_no
 from pages.hover_tip_table import HoverTipTable
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
 from services.inspection_business_db_adapter import load_facility_profile
@@ -1439,14 +1440,11 @@ class PlatformLoadInformationPage(BasePage):
             QMessageBox.information(self, "提示", "表格至少保留一条数据行。")
             return
 
-        ret = QMessageBox.question(
+        if not ask_yes_no(
             self,
             "确认删除",
             f"确定删除选中的 {len(target_rows)} 行信息吗？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if ret != QMessageBox.Yes:
+        ):
             return
 
         for row in reversed(target_rows):

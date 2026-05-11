@@ -141,15 +141,12 @@ class DocManWidget(QFrame):
             QFrame#DocManWidget {
                 background-color: #ffffff;
             }
-            QCheckBox::indicator {
-                width: 14px;
-                height: 14px;
-                border: 1px solid #93a4b7;
-                background: #ffffff;
+            QCheckBox {
+                spacing: 0px;
             }
-            QCheckBox::indicator:checked {
-                background: #1677c5;
-                border: 1px solid #1677c5;
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
             }
             """
             + DOC_MAN_TABLE_QSS

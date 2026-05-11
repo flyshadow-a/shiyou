@@ -46,6 +46,7 @@ from PyQt5.QtWidgets import (
 
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar
+from core.message_boxes import ask_yes_no
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
 from pages.doc_man import DocManWidget, apply_docman_table_style
 from services.inspection_business_db_adapter import (
@@ -1665,14 +1666,11 @@ class HistoryInspectionSummaryPage(BasePage):
         if not project or not project.get("id"):
             QMessageBox.information(self, "提示", "请先选择一条定期检测项目。")
             return
-        reply = QMessageBox.question(
+        if not ask_yes_no(
             self,
             "删除检测",
             f"确认删除定期检测项目“{project.get('title', '')}”吗？相关文件会一并隐藏。",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
+        ):
             return
         soft_delete_files_by_prefix(
             module_code=DOC_MAN_MODULE_CODE,
@@ -1710,14 +1708,11 @@ class HistoryInspectionSummaryPage(BasePage):
         if not project or not project.get("id"):
             QMessageBox.information(self, "提示", "请先选择一条特殊事件检测项目。")
             return
-        reply = QMessageBox.question(
+        if not ask_yes_no(
             self,
             "删除检测",
             f"确认删除特殊事件检测项目“{project.get('title', '')}”吗？相关文件会一并隐藏。",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
+        ):
             return
         soft_delete_files_by_prefix(
             module_code=DOC_MAN_MODULE_CODE,

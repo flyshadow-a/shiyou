@@ -33,19 +33,31 @@ from services.special_strategy_state_db import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPO_SPECIAL_STRATEGY_INPUTS_DIR = REPO_ROOT / "special_strategy_inputs"
 OUTPUT_SPECIAL_STRATEGY_CODE_DIR = REPO_ROOT / "pages" / "output_special_strategy"
-if str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR) not in sys.path:
-    sys.path.insert(0, str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR))
+try:
+    from pages.output_special_strategy.inspection_tool import run as run_inspection_pipeline  # noqa: E402
+    from pages.output_special_strategy.report_jinja2_generator import (  # noqa: E402
+        build_generated_appendix_plan,
+        build_appendix_pdf_plan,
+        build_appendix_sections,
+        insert_appendix_pdf_images,
+        load_context_from_workbook,
+        refresh_word_document_fields,
+        render_report,
+    )
+except ImportError:
+    if str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR) not in sys.path:
+        sys.path.insert(0, str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR))
 
-from inspection_tool import run as run_inspection_pipeline  # type: ignore  # noqa: E402
-from report_jinja2_generator import (  # type: ignore  # noqa: E402
-    build_generated_appendix_plan,
-    build_appendix_pdf_plan,
-    build_appendix_sections,
-    insert_appendix_pdf_images,
-    load_context_from_workbook,
-    refresh_word_document_fields,
-    render_report,
-)
+    from inspection_tool import run as run_inspection_pipeline  # type: ignore  # noqa: E402
+    from report_jinja2_generator import (  # type: ignore  # noqa: E402
+        build_generated_appendix_plan,
+        build_appendix_pdf_plan,
+        build_appendix_sections,
+        insert_appendix_pdf_images,
+        load_context_from_workbook,
+        refresh_word_document_fields,
+        render_report,
+    )
 
 
 COMMON_RUN_CONFIG_NAME = "special_strategy_run_config.json"

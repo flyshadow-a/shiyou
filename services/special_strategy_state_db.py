@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
+from shiyou_db.config import resolve_config_path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_PARENT = PROJECT_ROOT.parent
 REPO_DB_DIR = PROJECT_ROOT / "shiyou_db"
 LEGACY_DB_DIR = PROJECT_PARENT / "shiyou_db"
-DEFAULT_DB_CONFIG = (REPO_DB_DIR if REPO_DB_DIR.exists() else LEGACY_DB_DIR) / "db_config.json"
+DEFAULT_DB_CONFIG = resolve_config_path()
 
 
 class SpecialStrategyStateError(RuntimeError):

@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 import xml.etree.ElementTree as ET
 
+from src.resource_paths import first_existing_asset_path
+
 
 DEFAULT_DOC_RENDERER_CONFIG: dict[str, Any] = {
     "table_headers": {
@@ -168,12 +170,8 @@ DEFAULT_DOC_RENDERER_CONFIG: dict[str, Any] = {
 }
 
 
-def _project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
-
-
 def _config_path() -> Path:
-    return _project_root() / "config" / "doc_renderer.xml"
+    return first_existing_asset_path("config", "doc_renderer.xml")
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

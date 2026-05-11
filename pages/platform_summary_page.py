@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # pages/platform_summary_page.py
 
 import datetime
@@ -29,6 +29,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core.base_page import BasePage
+from core.message_boxes import ask_yes_no
 from services.inspection_business_db_adapter import save_facility_profile
 
 try:
@@ -725,14 +726,11 @@ class PlatformSummaryPage(BasePage):
 
         rows = sorted((idx.row() for idx in selected), reverse=True)
         count = len(rows)
-        reply = QMessageBox.question(
+        if not ask_yes_no(
             self,
             "删除选中平台",
             f"确认删除选中的 {count} 个平台吗？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
+        ):
             return
 
         for row in rows:
@@ -858,3 +856,4 @@ class PlatformSummaryPage(BasePage):
             refresh = getattr(page, "refresh_from_database", None)
             if callable(refresh):
                 refresh()
+

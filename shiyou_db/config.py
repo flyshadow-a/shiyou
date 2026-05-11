@@ -1,12 +1,23 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name("db_config.json")
-DEFAULT_STORAGE_ROOT = Path(__file__).resolve().parent / "shiyou_file_storage"
+
+PACKAGE_DIR = Path(__file__).resolve().parent
+DEFAULT_CONFIG_PATH = PACKAGE_DIR / "db_config.json"
+
+
+def _external_db_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "shiyou_db"
+    return PACKAGE_DIR
+
+
+DEFAULT_STORAGE_ROOT = _external_db_dir() / "shiyou_file_storage"
 
 
 @dataclass(frozen=True)
@@ -45,7 +56,15 @@ def resolve_config_path(config_path: str | None = None) -> Path:
     explicit = config_path or os.environ.get("SHIYOU_DB_CONFIG")
     if explicit:
         return Path(explicit).expanduser().resolve()
-    return DEFAULT_CONFIG_PATH.resolve()
+
+    candidates = [
+        (_external_db_dir() / "db_config.json").resolve(),
+        DEFAULT_CONFIG_PATH.resolve(),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def load_settings(config_path: str | None = None) -> AppSettings:

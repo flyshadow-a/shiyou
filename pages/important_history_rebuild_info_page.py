@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
 
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar
+from core.message_boxes import ask_yes_no
 from services.inspection_business_db_adapter import (
     create_inspection_project,
     list_inspection_projects,
@@ -668,14 +669,11 @@ class ImportantHistoryDetailWidget(QWidget):
         if not project or not project.get("id"):
             QMessageBox.information(self, "提示", "请先选择要删除的项目。")
             return
-        reply = QMessageBox.question(
+        if not ask_yes_no(
             self,
             "确认删除",
             f"确定删除项目“{project.get('name', '')}”吗？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
+        ):
             return
         soft_delete_files_by_prefix(
             module_code=DOC_MAN_MODULE_CODE,

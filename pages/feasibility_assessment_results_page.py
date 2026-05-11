@@ -1778,12 +1778,18 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _generate_report_locally(self, payload: dict) -> dict:
         project_root = self._get_wordtemplate_project_root()
-        if not (project_root / "src").exists():
-            raise FileNotFoundError(f"未找到本地报告项目源码目录：{project_root / 'src'}")
-        project_root_text = str(project_root)
-        if project_root_text not in sys.path:
-            sys.path.insert(0, project_root_text)
-        from src.report_service import generate_report_with_project_defaults
+        try:
+            from src.report_service import generate_report_with_project_defaults
+        except ImportError:
+            project_root_text = str(project_root)
+            if project_root_text not in sys.path:
+                sys.path.insert(0, project_root_text)
+            try:
+                from src.report_service import generate_report_with_project_defaults
+            except ImportError as exc:
+                raise ImportError(
+                    "未找到可行性评估报告模块，请检查打包结果是否包含 output_feasibility_analysis_report/src"
+                ) from exc
 
         output_path = str(payload.get("output_path", "")).strip() or None
         result = generate_report_with_project_defaults(

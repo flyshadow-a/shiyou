@@ -5,13 +5,15 @@ import json
 import os
 from pathlib import Path
 
+from .config import resolve_config_path
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
 def get_db_config_path() -> Path:
-    return _project_root() / "shiyou_db" / "db_config.json"
+    return resolve_config_path()
 
 
 def load_db_config() -> dict:
