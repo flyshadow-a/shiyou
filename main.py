@@ -301,21 +301,6 @@ class MainWindow(QMainWindow):
         QStatusBar::item { border: none; }
         """)
 
-        lbl = QLabel("状态栏")
-        lbl.setStyleSheet("""
-        QLabel {
-            color: white;
-            background: rgba(255,255,255,0.10);
-            border: 1px solid rgba(255,255,255,0.45);
-            border-radius: 10px;
-            padding: 10px 22px;
-            margin-left: 14px;
-            font-size: 16px;
-            font-weight: bold;
-        }
-        """)
-
-        status.addWidget(lbl)  # 左侧
         self.setStatusBar(status)
 
         splitter.setSizes([300, 1000])
@@ -397,12 +382,8 @@ class MainWindow(QMainWindow):
 
         # 用户 + 登录按钮
         self.user_label = QLabel(self.session.display_label if self.session is not None else "未登录")
-        self.btn_login = QPushButton("注销" if self.logged_in else "登录/注销")
+        self.btn_login = QPushButton("退出" if self.logged_in else "登录/退出")
         self.btn_login.clicked.connect(self.on_login_logout)
-
-        btn_settings = QPushButton("设置")
-        btn_notice = QPushButton("通知")
-        btn_lang = QPushButton("语言")
 
         layout.addWidget(logo_label)
         layout.addWidget(title)
@@ -411,9 +392,6 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         layout.addWidget(self.user_label)
         layout.addWidget(self.btn_login)
-        layout.addWidget(btn_settings)
-        layout.addWidget(btn_notice)
-        layout.addWidget(btn_lang)
 
         return header
 
@@ -688,14 +666,14 @@ class MainWindow(QMainWindow):
                 self.open_personal_center_page()
             return
 
-        if QMessageBox.question(self, "确认注销", "确定要注销当前账号吗？") != QMessageBox.Yes:
+        if QMessageBox.question(self, "确认退出", "确定要退出当前账号吗？") != QMessageBox.Yes:
             return
         self._clear_open_tabs()
         self.logged_in = False
         self.current_user = ""
         self.session = None
         self.user_label.setText("未登录")
-        self.btn_login.setText("登录/注销")
+        self.btn_login.setText("登录/退出")
         self.open_home_tab()
         self.hide()
 
@@ -712,7 +690,7 @@ class MainWindow(QMainWindow):
         self.logged_in = True
         self.current_user = session.display_name or session.username
         self.user_label.setText(session.display_label)
-        self.btn_login.setText("注销")
+        self.btn_login.setText("退出")
 
     def _clear_open_tabs(self):
         if self.tab_widget is None:
