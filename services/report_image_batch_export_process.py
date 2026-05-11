@@ -117,8 +117,8 @@ def export_report_images(
 
     mode:
         outline：只导出轮廓图，对应“生成评估报告”按钮。
-        risk   ：只导出检验等级图，对应“生成特检策略报告”按钮。
-        all    ：轮廓图 + 检验等级图，兼容旧调用。
+        risk   ：只导出风险等级图，对应“生成特检策略报告”按钮。
+        all    ：轮廓图 + 风险等级图，兼容旧调用。
 
     include_outline:
         兼容旧参数。旧代码传 include_outline=False 时，等价于 mode="risk"。
@@ -140,9 +140,9 @@ def export_report_images(
     bundle = result_service.load_result_bundle(facility_code, run_id) or {}
     context = bundle.get("context") or {}
 
-    # 轮廓图不需要特检结果，允许 context 为空；检验等级图必须有结果上下文。
+    # 轮廓图不需要风险计算结果，允许 context 为空；风险等级图必须有结果上下文。
     if mode in {"risk", "all"} and not context:
-        raise RuntimeError(f"当前没有可用的特检结果，无法导出检验等级图：{facility_code}, run_id={run_id}")
+        raise RuntimeError(f"当前没有可用的特检结果，无法导出风险等级图：{facility_code}, run_id={run_id}")
 
     mapper = NodeYearLabelMapper()
     year_labels = mapper.display_labels()
@@ -179,7 +179,7 @@ def export_report_images(
             done += 1
             print(f"[ReportImageExporter] progress {done}/{total}: outline {row_name}", flush=True)
 
-    # 图二：检验等级图，仅在“生成特检策略报告”按钮里触发。
+    # 图二：风险等级图，仅在“生成特检策略报告”按钮里触发。
     if mode in {"all", "risk"}:
         for year_label in year_labels:
             try:
@@ -204,7 +204,7 @@ def export_report_images(
                     year_label=year_label,
                     row_name=row_name,
                     overlay=overlay,
-                    remark="生成特检策略报告前导出：更新风险结果页模型立面检验等级图",
+                    remark="生成特检策略报告前导出：更新风险结果页模型立面风险图",
                 )
                 done += 1
                 print(f"[ReportImageExporter] progress {done}/{total}: risk {year_label} {row_name}", flush=True)
@@ -228,7 +228,7 @@ def main() -> int:
         "--mode",
         choices=["all", "outline", "risk"],
         default="all",
-        help="导出模式：all=轮廓图+检验等级图；outline=只导出轮廓图；risk=只导出检验等级图",
+        help="导出模式：all=轮廓图+风险图；outline=只导出轮廓图；risk=只导出风险等级图",
     )
     parser.add_argument("--no-outline", action="store_true", help="兼容旧参数：等价于 --mode risk")
     parser.add_argument("--generate-report", action="store_true", help="导出图片后继续生成特检策略报告")

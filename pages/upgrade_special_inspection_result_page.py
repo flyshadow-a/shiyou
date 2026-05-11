@@ -1,26 +1,15 @@
 # -*- coding: utf-8 -*-
 # pages/upgrade_special_inspection_result_page.py
 
-
-import re
-
-from pathlib import Path
-
 from typing import Any
-
 
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea,
     QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider, QApplication
 )
-
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
-
-
-
-
 
 from core.base_page import BasePage
 from services.special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService
@@ -1103,7 +1092,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
     def _on_report(self):
         """
-        图二按钮：先特检策略报告。上传检验等级图，再生成
+        图二按钮：先上传检验等级图，再生成特检策略报告。
         轮廓图不在这里上传。
         """
         context = (self._result_bundle or {}).get("context") or {}

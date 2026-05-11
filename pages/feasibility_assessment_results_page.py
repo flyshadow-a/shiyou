@@ -19,7 +19,11 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 
+
 from PyQt5.QtCore import QObject, QProcess, Qt, QThread, QTimer, QRectF, pyqtSignal
+
+from PyQt5.QtCore import Qt, QTimer, QRectF, QProcess
+
 
 from PyQt5.QtGui import QColor, QPen, QBrush, QFontMetrics
 from PyQt5.QtWidgets import (
@@ -337,6 +341,14 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._analysis_worker = None
         self._analysis_results = {}
         self._detail_table_rows = {}
+
+        # “生成评估报告”按钮专用：先导出/上传模型立面轮廓图，再生成评估报告。
+        # 注意：三维图仍由结构强度/改造可行性评估页进入时自动保存，
+        # 这里不重复导出三维图；检验等级图仍由更新风险结果页单独导出。
+        self._outline_export_process = None
+        self._outline_export_log: List[str] = []
+        self._pending_generate_report_after_outline = False
+        self.btn_generate_report = None
 
         self._build_ui()
         self.start_analysis_results_loading()
@@ -1060,6 +1072,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         """)
         self._report_button = btn
         btn.clicked.connect(self._on_generate_report)
+        self.btn_generate_report = btn
 
         lay.addWidget(btn, 0, Qt.AlignLeft)
         lay.addStretch(1)
@@ -1185,23 +1198,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return str(output_path)
 
     def _build_analysis_model_section(self) -> dict:
-        """构建报告中的分析模型章节。
-
-        优先使用外部传入的整体模型图片；如果外部未传入，则自动从配置目录查找。
-        坐标系图片继续由本页面按配置生成，保证旧报告模板需要的字段仍然可用。
-        """
-        overall_model_image_path = str(self.overall_model_image_path or "").strip()
-        if not overall_model_image_path:
-            overall_model_image_path = self._resolve_overall_model_image()
-
         section = {
-            "overall_model_image_path": overall_model_image_path,
+            # 优先使用平台强度页自动保存的三维总图；如果还没有保存成功，再回退到页面传入的图片路径。
+            "overall_model_image_path": self._resolve_overall_model_image() or self.overall_model_image_path,
+            "coordinate_system_image_path": self._build_coordinate_system_image(),
         }
-
-        coordinate_system_image_path = self._build_coordinate_system_image()
-        if coordinate_system_image_path:
-            section["coordinate_system_image_path"] = coordinate_system_image_path
-
         directions = self._extract_environment_load_directions_from_seainp(
             self._resolve_current_sea_file(self.facility_code)
         )
@@ -1795,11 +1796,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return {"message": "report generated (local)", "output_path": result}
 
     def _generate_report(self, payload: dict) -> dict:
-        """生成可行性评估报告。
-
-        当前页面不再调用未定义的 HTTP 报告服务方法，统一使用本地报告生成逻辑，
-        避免 _get_report_mode / _post_report_request 缺失导致运行时报错。
-        """
+        # 当前工程使用本地报告生成逻辑。不要保留冲突分支中的 HTTP 调用，
+        # 因为 _get_report_mode / _post_report_request 在本文件中没有定义。
         return self._generate_report_locally(payload)
 
     def _open_report_output_directory(self, output_path: str) -> bool:
@@ -1902,10 +1900,10 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         优先使用“当前仍存在的历史改造项目”中的 M1 文件：
         - 最新历史改造项目的 sacinp.M1 作为 new_file；
-        - 上一个历史改造项目的 sacinp.M1 作为 old_file；
-        - 如果只有一个历史改造项目，则 old_file 使用原始上传模型。
+        - 上一次历史改造项目的 sacinp.M1 作为 old_file；
+        - 如果只有一次历史改造，则 old_file 使用原始上传模型。
 
-        这样即使 wizard_model_info 被后续流程重导入，也不会导致查看结果一直停留在第一次改造。
+        这样第二次、第三次改造后，图中只显示“本次改造相对上一次改造”的新增/变化。
         """
         try:
             bundle = get_latest_rebuild_compare_model_paths(
@@ -1967,10 +1965,136 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 self.model_panel.path_label.setText("模型加载失败")
                 self.model_panel.compare_view.clear_view(f"右侧模型加载失败：\n{e}")
 
+
     def _on_generate_report(self):
         if self._report_thread is not None and self._report_thread.isRunning():
             QMessageBox.information(self, "生成报告", "报告正在生成中，请稍候。")
             return
+
+
+    def _report_image_export_script_path(self) -> str:
+        return os.path.normpath(
+            os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "services",
+                "report_image_batch_export_process.py",
+            )
+        )
+
+    def _set_report_button_busy(self, busy: bool, text: str = "生成评估报告") -> None:
+        btn = getattr(self, "btn_generate_report", None)
+        if btn is None:
+            return
+        btn.setEnabled(not busy)
+        btn.setText(text if busy else "生成评估报告")
+
+    def _start_export_outline_images_for_report(self) -> bool:
+        """生成评估报告前导出/上传模型立面轮廓图。
+
+        这里导出的是二维立面轮廓图，不是三维图。三维图由结构强度页面进入时自动保存；
+        检验等级图由“生成特检策略报告”按钮导出。
+        """
+        if self._outline_export_process is not None:
+            QMessageBox.information(self, "提示", "轮廓图正在导出，请稍候。")
+            return False
+
+        script = self._report_image_export_script_path()
+        if not os.path.exists(script):
+            QMessageBox.warning(self, "导出失败", f"未找到图片导出脚本：\n{script}")
+            return False
+
+        self._outline_export_log = []
+        self._pending_generate_report_after_outline = True
+        self._set_report_button_busy(True, "正在导出轮廓图...")
+
+        proc = QProcess(self)
+        self._outline_export_process = proc
+
+        args = [
+            script,
+            "--facility-code", str(self.facility_code or ""),
+            "--mode", "outline",
+        ]
+
+        run_id = getattr(self, "run_id", None)
+        if run_id:
+            try:
+                args.extend(["--run-id", str(int(run_id))])
+            except Exception:
+                pass
+
+        proc.setProgram(sys.executable)
+        proc.setArguments(args)
+        proc.setProcessChannelMode(QProcess.MergedChannels)
+
+        def read_output():
+            try:
+                data = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="ignore")
+            except Exception:
+                data = ""
+            if data:
+                self._outline_export_log.append(data)
+                print(data, end="")
+
+        proc.readyReadStandardOutput.connect(read_output)
+        proc.finished.connect(self._on_outline_export_finished)
+        proc.errorOccurred.connect(self._on_outline_export_error)
+        proc.start()
+        return True
+
+    def _on_outline_export_error(self, error):
+        log = "".join(self._outline_export_log[-20:])
+        proc = self._outline_export_process
+        self._outline_export_process = None
+        self._pending_generate_report_after_outline = False
+        self._set_report_button_busy(False)
+        try:
+            if proc is not None:
+                proc.deleteLater()
+        except Exception:
+            pass
+        QMessageBox.warning(
+            self,
+            "轮廓图导出失败",
+            f"启动轮廓图导出进程失败：\n{error}\n\n{log}",
+        )
+
+    def _on_outline_export_finished(self, exit_code: int, _status):
+        proc = self._outline_export_process
+        self._outline_export_process = None
+
+        try:
+            if proc is not None:
+                try:
+                    remain = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="ignore")
+                    if remain:
+                        self._outline_export_log.append(remain)
+                        print(remain, end="")
+                except Exception:
+                    pass
+                proc.deleteLater()
+        except Exception:
+            pass
+
+        log = "".join(self._outline_export_log[-30:])
+        if exit_code != 0:
+            self._pending_generate_report_after_outline = False
+            self._set_report_button_busy(False)
+            QMessageBox.warning(
+                self,
+                "轮廓图导出失败",
+                f"轮廓图导出失败，退出码：{exit_code}\n\n{log}",
+            )
+            return
+
+        if self._pending_generate_report_after_outline:
+            self._pending_generate_report_after_outline = False
+            self._set_report_button_busy(True, "正在生成报告...")
+            QTimer.singleShot(0, self._do_generate_report_after_outline_export)
+        else:
+            self._set_report_button_busy(False)
+
+    def _do_generate_report_after_outline_export(self):
 
         try:
             environment_error = self._validate_environment_conditions_for_report()
@@ -1987,3 +2111,9 @@ class FeasibilityAssessmentResultsPage(BasePage):
             self._start_report_generation_worker(payload)
         except Exception as e:
             QMessageBox.critical(self, "生成报告失败", str(e))
+        finally:
+            self._set_report_button_busy(False)
+
+    def _on_generate_report(self):
+        """先导出/上传模型立面轮廓图，再生成评估报告。"""
+        self._start_export_outline_images_for_report()

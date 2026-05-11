@@ -266,35 +266,71 @@ def get_latest_rebuild_compare_model_paths(
     """
     给“查看结果”使用的模型路径。
 
-    - 有历史改造项目时：new_model_file = 最新历史改造项目中的 sacinp.M1；
-      old_model_file = 上一个历史改造项目的 sacinp.M1；若没有上一个，则用原始上传模型。
-    - 没有历史改造项目时：回退 wizard_model_info 或原始上传模型。
+    当前规则按用户最新要求改为“上一版 M1 vs 最新 M1”：
 
-    这样不会受 wizard_model_info 被重新导入为最新 M1 的影响，查看结果始终显示当前最新改造版本。
+    - 如果至少有 2 个仍存在的历史改造项目：
+      old_model_file = 上一次历史改造项目的 sacinp.M1；
+      new_model_file = 最新历史改造项目的 sacinp.M1。
+
+    - 如果只有 1 个历史改造项目：
+      old_model_file = 原始上传模型；
+      new_model_file = 历史改造项目1的 sacinp.M1。
+
+    - 如果没有任何历史改造项目，或历史项目的 M1 被删除：
+      回退到原始上传模型。
+
+    这样第二次改造后，图中只高亮“第二次相对第一次新增/变化”的构件；
+    第一次改造已存在的构件会作为旧模型已有结构参与对比，不再被标为本次新增。
     """
     code = (job_name or "").strip()
     if not code:
         return {}
 
-    history_bundles = find_active_history_model_bundles(code)
+    original = find_original_uploaded_model_bundle(code)
+    history_bundles = find_active_history_model_bundles(code)  # 新 -> 旧
+
     if history_bundles:
         latest = history_bundles[0]
-        previous = history_bundles[1] if len(history_bundles) >= 2 else find_original_uploaded_model_bundle(code)
+
+        if len(history_bundles) >= 2:
+            baseline = history_bundles[1]
+            baseline_source = "history_previous"
+            baseline_project_id = baseline.get("project_id")
+            baseline_project_name = baseline.get("project_name")
+        else:
+            baseline = original
+            baseline_source = "original"
+            baseline_project_id = None
+            baseline_project_name = "原始模型"
+
+        old_model = _norm(baseline.get("model_file") or "")
+        old_sea = _norm(baseline.get("sea_file") or "")
+        new_model = _norm(latest.get("model_file") or "")
+        new_sea = _norm(latest.get("sea_file") or "")
+
+        # 如果上一版 M1 或原始模型被删除，退化为最新模型自身，避免页面崩溃。
+        # 正常项目删除逻辑下，find_active_history_model_bundles 已经会跳过失效项目。
+        if not _file_exists(old_model):
+            old_model = new_model
+            old_sea = new_sea
+            baseline_source = "latest_self_fallback"
+            baseline_project_id = latest.get("project_id")
+            baseline_project_name = latest.get("project_name")
+
         return {
-            "source": "history",
-            "old_model_file": _norm(previous.get("model_file") or ""),
-            "new_model_file": _norm(latest.get("model_file") or ""),
-            "old_sea_file": _norm(previous.get("sea_file") or ""),
-            "new_sea_file": _norm(latest.get("sea_file") or ""),
+            "source": "history_previous_vs_latest",
+            "baseline_source": baseline_source,
+            "old_model_file": old_model,
+            "new_model_file": new_model,
+            "old_sea_file": old_sea,
+            "new_sea_file": new_sea,
             "latest_project_id": latest.get("project_id"),
             "latest_project_name": latest.get("project_name"),
-            "previous_project_id": previous.get("project_id"),
-            "previous_project_name": previous.get("project_name"),
+            "baseline_project_id": baseline_project_id,
+            "baseline_project_name": baseline_project_name,
         }
 
-    # 没有历史改造项目时，不允许继续使用已经被删除历史项目留下的 runtime M1 作为“最新改造”。
-    # 这里优先返回原始上传模型；如果调用方需要旧逻辑，可继续走 wizard_model_info 兜底。
-    original = find_original_uploaded_model_bundle(code)
+    # 没有历史改造项目时，回退到用户原始上传模型，相当于初始化状态。
     if original.get("model_file"):
         return {
             "source": "original",
@@ -304,7 +340,6 @@ def get_latest_rebuild_compare_model_paths(
             "new_sea_file": _norm(original.get("sea_file") or ""),
         }
     return {}
-
 
 def prepare_latest_rebuild_runtime_for_analysis(
     *,
