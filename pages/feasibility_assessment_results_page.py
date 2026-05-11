@@ -68,6 +68,7 @@ from services.file_db_adapter import DOC_MAN_MODULE_CODE, list_files_by_prefix, 
 
 
 from pages.sacs_storage_service import get_job_runtime_dir, get_job_sea_file
+from services.history_rebuild_auto_service import get_latest_rebuild_compare_model_paths
 
 
 REPORT_MODULE_ROOT = Path(__file__).resolve().parent / "output_feasibility_analysis_report"
@@ -840,7 +841,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return create_engine(self.mysql_url, future=True, pool_pre_ping=True)
 
     def _get_current_job_factor_path(self) -> str:
-        runtime_dir = os.path.normpath(get_job_runtime_dir(self.facility_code))
+        runtime_dir = os.path.normpath(get_job_runtime_dir(self.job_name))
         factor_path = os.path.join(runtime_dir, "psilst.factor")
         if not os.path.exists(factor_path):
             raise FileNotFoundError(
@@ -954,10 +955,23 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return str(output_path)
 
     def _build_analysis_model_section(self) -> dict:
+        """构建报告中的分析模型章节。
+
+        优先使用外部传入的整体模型图片；如果外部未传入，则自动从配置目录查找。
+        坐标系图片继续由本页面按配置生成，保证旧报告模板需要的字段仍然可用。
+        """
+        overall_model_image_path = str(self.overall_model_image_path or "").strip()
+        if not overall_model_image_path:
+            overall_model_image_path = self._resolve_overall_model_image()
+
         section = {
-            "overall_model_image_path": self._resolve_overall_model_image(),
-            "coordinate_system_image_path": self._build_coordinate_system_image(),
+            "overall_model_image_path": overall_model_image_path,
         }
+
+        coordinate_system_image_path = self._build_coordinate_system_image()
+        if coordinate_system_image_path:
+            section["coordinate_system_image_path"] = coordinate_system_image_path
+
         directions = self._extract_environment_load_directions_from_seainp(
             self._resolve_current_sea_file(self.facility_code)
         )
@@ -1551,9 +1565,54 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return {"message": "report generated (local)", "output_path": result}
 
     def _generate_report(self, payload: dict) -> dict:
+        """生成可行性评估报告。
+
+        当前页面不再调用未定义的 HTTP 报告服务方法，统一使用本地报告生成逻辑，
+        避免 _get_report_mode / _post_report_request 缺失导致运行时报错。
+        """
         return self._generate_report_locally(payload)
 
     def _fetch_model_paths(self):
+        """
+        获取结果页右侧三维对比图的模型路径。
+
+        优先使用“当前仍存在的历史改造项目”中的 M1 文件：
+        - 最新历史改造项目的 sacinp.M1 作为 new_file；
+        - 上一个历史改造项目的 sacinp.M1 作为 old_file；
+        - 如果只有一个历史改造项目，则 old_file 使用原始上传模型。
+
+        这样即使 wizard_model_info 被后续流程重导入，也不会导致查看结果一直停留在第一次改造。
+        """
+        try:
+            bundle = get_latest_rebuild_compare_model_paths(
+                mysql_url=self.mysql_url,
+                job_name=self.job_name,
+            )
+            old_file = str(bundle.get("old_model_file") or "").strip()
+            new_file = str(bundle.get("new_model_file") or "").strip()
+            if old_file and new_file and os.path.exists(old_file) and os.path.exists(new_file):
+                # workpoint 仍从 wizard_model_info 取；取不到就用默认值。
+                workpoint = 9.1
+                try:
+                    sql_wp = text("""
+                        SELECT workpoint
+                        FROM wizard_model_info
+                        WHERE job_name = :job_name
+                        ORDER BY id DESC
+                        LIMIT 1
+                    """)
+                    engine = self._get_engine()
+                    with engine.begin() as conn:
+                        row_wp = conn.execute(sql_wp, {"job_name": self.job_name}).mappings().first()
+                    if row_wp and row_wp.get("workpoint") is not None:
+                        workpoint = float(row_wp.get("workpoint"))
+                except Exception:
+                    pass
+                return old_file, new_file, workpoint
+        except Exception:
+            pass
+
+        # 兜底：保留原 wizard_model_info 读取逻辑。
         sql = text("""
             SELECT model_file, new_model_file, workpoint
             FROM wizard_model_info

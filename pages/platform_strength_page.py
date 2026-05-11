@@ -55,10 +55,7 @@ from pages.sacs_import_service import import_model_bundle_to_db
 
 from shiyou_db.runtime_db import get_mysql_url
 from shiyou_db.config import get_storage_root
-from services.special_strategy_image_service import (
-    build_strategy_image_path,
-    save_strategy_image_record,
-)
+from services.special_strategy_image_service import build_strategy_image_path, save_strategy_image_record
 
 from collections import Counter
 
@@ -339,21 +336,18 @@ class PyVistaSacsView(QFrame):
 
         self.plotter.render()
 
-    def export_current_view(self, output_path: str, width: int = 2400, height: int = 2400) -> str:
-        """
-        导出当前三维视图。
-
-        原来直接按右侧控件当前尺寸截图，控件只有几百像素时，
-        保存到服务器的图会很模糊。这里导出时使用更高的截图分辨率，
-        页面显示尺寸不变。
-        """
+    def export_current_view(self, output_path: str, width: int = 3200, height: int = 3200, scale: int = 4) -> str:
+        """导出当前三维视图为高清 PNG，页面显示尺寸不变。"""
         output = os.path.normpath(str(output_path or "").strip())
         if not output:
             return ""
-        os.makedirs(os.path.dirname(output), exist_ok=True)
+        folder = os.path.dirname(output)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
 
-        width = max(int(width or 2400), 1200)
-        height = max(int(height or 2400), 1200)
+        width = max(int(width or 3200), 1200)
+        height = max(int(height or 3200), 1200)
+        scale = max(int(scale or 1), 1)
 
         try:
             self.plotter.render()
@@ -361,7 +355,7 @@ class PyVistaSacsView(QFrame):
             pass
 
         try:
-            self.plotter.screenshot(output, scale=3)
+            self.plotter.screenshot(output, scale=scale)
         except TypeError:
             try:
                 self.plotter.screenshot(output, window_size=(width, height))
@@ -376,7 +370,10 @@ class PyVistaSacsView(QFrame):
                         self.plotter.window_size = [width, height]
                     except Exception:
                         pass
-                    self.plotter.render()
+                    try:
+                        self.plotter.render()
+                    except Exception:
+                        pass
                     self.plotter.screenshot(output)
                 finally:
                     if old_size and len(old_size) == 2:
@@ -510,20 +507,14 @@ class PlatformStrengthPage(BasePage):
         self._default_pile_items: List[Dict] = []
         self._default_marine_items: List[Dict] = []
 
+        # 三维总图：打开结构强度页后自动保存；避免重复/过期导出。
         self._overall_export_seq = 0
         self._last_saved_overall_image_key = ""
-        self._did_first_show_autoload = False
 
         self._build_ui()
         self._capture_default_strength_env_tables()
         self._load_strength_env_tables()
-        QTimer.singleShot(0, self._autoload_inp_to_view)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        if not self._did_first_show_autoload:
-            self._did_first_show_autoload = True
-            QTimer.singleShot(200, self._autoload_inp_to_view)
+        self._autoload_inp_to_view()
 
     # ---------------- 顶部下拉 ----------------
     def _normalize_top_value(self, value: object) -> str:
@@ -1384,6 +1375,7 @@ class PlatformStrengthPage(BasePage):
             QMessageBox.information(self, "提示", "未检测到主窗口Tab组件，无法打开页面。")
 
     def _schedule_export_overall_model_image(self, delay_ms: int = 1200):
+        """三维图打开并渲染完成后延迟保存，避免刚加载完就截图为空。"""
         facility_code = self._get_top_value("facility_code")
         if not facility_code:
             return
@@ -1391,7 +1383,7 @@ class PlatformStrengthPage(BasePage):
         self._overall_export_seq += 1
         seq = self._overall_export_seq
         QTimer.singleShot(
-            delay_ms,
+            int(delay_ms),
             lambda s=seq, code=facility_code: self._do_delayed_export_overall_model_image(s, code),
         )
 
@@ -1401,29 +1393,29 @@ class PlatformStrengthPage(BasePage):
         self._export_overall_model_image(facility_code)
 
     def _export_overall_model_image(self, facility_code: str, force: bool = False) -> str:
+        """保存当前三维总图到统一特检图片目录。"""
         code = (facility_code or "").strip()
         if not code or not hasattr(self, "inp_view"):
             return ""
+
         try:
-            target_path = build_strategy_image_path(
+            image_path = build_strategy_image_path(
                 facility_code=code,
                 run_id=None,
                 page_code="platform_strength_page",
                 image_type="overall_model",
                 year_label="当前",
                 row_name="3d",
-                create_dirs=True,
             )
-            target_path_str = os.path.normpath(str(target_path))
+            target_path = os.path.normpath(str(image_path))
 
             model_path = self._resolve_current_preview_model_file(code)
             workpoint = self._get_workpoint_value()
             export_key = f"{code}|{model_path}|{workpoint}"
+            if (not force) and export_key == self._last_saved_overall_image_key and os.path.exists(target_path):
+                return target_path
 
-            if (not force) and export_key == self._last_saved_overall_image_key and os.path.exists(target_path_str):
-                return target_path_str
-
-            saved_path = self.inp_view.export_current_view(target_path_str)
+            saved_path = self.inp_view.export_current_view(target_path)
             saved_path = os.path.normpath(str(saved_path or ""))
             if not saved_path or not os.path.exists(saved_path):
                 return ""
@@ -1440,10 +1432,10 @@ class PlatformStrengthPage(BasePage):
                     remark="结构强度/改造可行性评估页面三维总图",
                 )
             except Exception as db_exc:
-                print("[PlatformStrengthPage] save strategy image record failed:", db_exc)
+                print("[PlatformStrengthPage] save overall model image record failed:", db_exc)
 
             self._last_saved_overall_image_key = export_key
-            print(f"[PlatformStrengthPage] overall model image saved: {saved_path}")
+            print("[PlatformStrengthPage] overall model image saved:", saved_path)
             return saved_path
         except Exception as exc:
             print("[PlatformStrengthPage] export overall model image failed:", exc)
@@ -1721,10 +1713,11 @@ class PlatformStrengthPage(BasePage):
 
             self._refresh_layers_table()
 
+            # 三维图按需求：打开页面绘制完成后自动保存到服务器。
             try:
                 self._schedule_export_overall_model_image(delay_ms=1200)
             except Exception as export_exc:
-                print("[PlatformStrengthPage] schedule overall export failed:", export_exc)
+                print("[PlatformStrengthPage] schedule overall model export failed:", export_exc)
 
         except Exception as e:
             self.inp_path_label.setText("模型加载失败")
