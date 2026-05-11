@@ -126,6 +126,7 @@ class HistoryRebuildFilesPage(BasePage):
         )
         self.dropdown_bar.valueChanged.connect(self.on_filter_changed)
         self._sync_platform_ui()
+        self._set_dropdown_visible(False)
 
     def on_filter_changed(self, key: str, value: str):
         self._sync_platform_ui(changed_key=key)

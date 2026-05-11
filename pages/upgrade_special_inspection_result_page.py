@@ -1,18 +1,26 @@
 # -*- coding: utf-8 -*-
 # pages/upgrade_special_inspection_result_page.py
 
-from typing import Any
+
 import re
-import sys
+
 from pathlib import Path
+
+from typing import Any
+
 
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea,
-    QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider, QApplication, QProgressDialog
+    QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider, QApplication
 )
-from PyQt5.QtCore import Qt, QTimer, QProcess, QProcessEnvironment, QUrl
-from PyQt5.QtGui import QPainter, QPen, QColor, QBrush, QDesktopServices
+
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
+
+
+
+
 
 from core.base_page import BasePage
 from services.special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService
@@ -164,12 +172,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._export_view = None
         self._export_context = None
         self._export_key = None
-
-        # 生成报告时使用独立子进程：子进程负责“导出图片 + 生成报告”，主界面不直接执行重任务，避免闪退影响主程序。
-        self._report_running = False
-        self._report_export_process = None
-        self._report_export_log: list[str] = []
-        self._report_progress = None
+        self._pending_report_after_risk_export = False
+        self.btn_report = None
 
         self._build_ui()
         self._load_result_data()
@@ -524,7 +528,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(6)
 
-        title = QLabel("模型立面风险图")
+        title = QLabel("模型立面检验等级图")
         title.setStyleSheet("""
             color: #1d2b3a;
             font-weight: bold;
@@ -673,6 +677,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         btn = QPushButton("生成特检策略报告")
         btn.setObjectName("ReportBtn")
         btn.clicked.connect(self._on_report)
+        self.btn_report = btn
         v.addWidget(btn, 0)
 
         return panel
@@ -709,15 +714,45 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             if hasattr(self.elevation_view, "set_inspection_overlay"):
                 self.elevation_view.set_inspection_overlay(self._overlay_bundle)
 
-            # 浏览页面时只绘制真实图，不在这里导出/保存图片。
+            # 页面浏览阶段不再导出/上传检验等级图；报告图片统一在“生成特检策略报告”时处理。
 
         except Exception as exc:
             print("[UpgradeSpecialInspectionResultPage] refresh elevation failed:", exc)
             self.elevation_view._draw_message(f"立面图加载失败：{exc}")
 
     def _save_current_elevation_image(self):
-        """页面浏览阶段不保存图片；点击生成报告时由子进程统一导出。"""
-        return
+        """导出当前右侧模型立面检验等级图，并把图片路径写入数据库。"""
+        if not hasattr(self, "elevation_view"):
+            return
+
+        row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前"
+        if not row_name:
+            row_name = "XZ 前"
+
+        try:
+            image_path = build_strategy_image_path(
+                facility_code=self.facility_code,
+                run_id=self.run_id,
+                page_code="upgrade_special_inspection_result",
+                image_type="elevation_risk",
+                year_label=self.current_year,
+                row_name=row_name,
+            )
+            saved_path = self.elevation_view.export_current_scene_to_png(str(image_path))
+            save_strategy_image_record(
+                facility_code=self.facility_code,
+                run_id=self.run_id,
+                page_code="upgrade_special_inspection_result",
+                image_type="elevation_risk",
+                year_label=self.current_year,
+                row_name=row_name,
+                image_path=saved_path,
+                remark="更新风险结果页模型立面检验等级图",
+            )
+            print("[UpgradeSpecialInspectionResultPage] elevation image saved:", saved_path)
+        except Exception as exc:
+            # 图片导出失败不应影响页面显示。
+            print("[UpgradeSpecialInspectionResultPage] save elevation image failed:", exc)
 
     def _batch_export_key(self, context: dict | None) -> tuple:
         state = (self._result_bundle or {}).get("state") or (
@@ -733,13 +768,20 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         "upgrade_special_inspection_result", str(self.facility_code or ""), int(self.run_id) if self.run_id else 0,
         source_key)
 
-    def _schedule_export_all_elevation_images(self, context: dict | None):
-        """结果页异步批量导出所有年份/所有面，不阻塞界面。"""
+    def _schedule_export_all_elevation_images(self, context: dict | None, *, force: bool = False):
+        """结果页异步批量导出所有年份/所有面，不阻塞界面。
+
+        force=True 用于“生成特检策略报告”按钮，确保点击按钮时重新导出检验等级图。
+        """
         if not context:
             return
 
         key = self._batch_export_key(context)
+        if force and key in self._batch_exported_keys:
+            self._batch_exported_keys.discard(key)
         if key in self._batch_exported_keys:
+            if self._pending_report_after_risk_export:
+                QTimer.singleShot(0, self._do_generate_report_after_risk_export)
             return
 
         # 正在导出时不重复启动，避免多个离屏视图同时写文件。
@@ -850,17 +892,26 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 year_label=year_label,
                 row_name=row_name,
                 image_path=saved_path,
-                remark="更新风险结果页异步导出模型立面风险图",
+                remark="更新风险结果页异步导出模型立面检验等级图",
             )
 
             self._export_index += 1
             print(
                 f"[UpgradeSpecialInspectionResultPage] async risk image export progress: {self._export_index}/{self._export_total}")
 
+            if self._export_index >= self._export_total:
+                self._finish_async_export()
+            else:
+                self._export_timer.start(600)
+
         except Exception as exc:
             print(
                 f"[UpgradeSpecialInspectionResultPage] async risk image export failed: year={year_label}, row={row_name}, err={exc}")
             self._export_index += 1
+            if self._export_index >= self._export_total:
+                self._finish_async_export()
+            else:
+                self._export_timer.start(600)
 
     def _finish_async_export(self):
         """结束异步导出并清理离屏视图。"""
@@ -884,6 +935,9 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._export_key = None
 
         print("[UpgradeSpecialInspectionResultPage] async risk image export finished")
+
+        if self._pending_report_after_risk_export:
+            QTimer.singleShot(0, self._do_generate_report_after_risk_export)
 
     def _load_result_data(self):
         bundle = self._result_service.load_result_bundle(self.facility_code, self.run_id)
@@ -913,7 +967,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             display_year=self.current_year,
         )
         self._refresh_elevation_view()
-        # 浏览页面时不导出/保存图片；报告图片在点击“生成特检策略报告”时统一导出。
+        # 页面浏览阶段不再批量导出检验等级图；报告图片统一在“生成特检策略报告”按钮中处理。
 
     def _set_detail_rows(self, table: QTableWidget, rows: list[dict[str, str]], *, is_node: bool):
         start = self.HEADER_ROWS
@@ -1040,191 +1094,39 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         # tab_bar_height = self.tabs.tabBar().sizeHint().height()
         # self.tabs.setFixedHeight(tab_bar_height + page_height + 8)
 
-    def _set_report_running(self, running: bool, text: str = ""):
-        self._report_running = bool(running)
-        if hasattr(self, "btn_generate_report"):
-            self.btn_generate_report.setEnabled(not running)
-
-        if running:
-            if self._report_progress is None:
-                dlg = QProgressDialog("正在导出报告图片并生成特检策略报告，请稍候...", None, 0, 0, self)
-                dlg.setWindowTitle("生成报告")
-                dlg.setWindowModality(Qt.NonModal)
-                dlg.setCancelButton(None)
-                dlg.setMinimumDuration(0)
-                dlg.setAutoClose(False)
-                dlg.setAutoReset(False)
-                self._report_progress = dlg
-            self._report_progress.setLabelText(
-                text or "正在导出报告图片并生成特检策略报告，请稍候..."
-            )
-            self._report_progress.show()
-        else:
-            # 不在 QProcess.finished 回调中立即 deleteLater 进度框。
-            # 部分 Windows/PyQt 环境下，进度框刚关闭又立刻弹 QMessageBox，容易触发底层 Qt 崩溃。
-            # 这里仅隐藏，下一次生成报告时复用该对话框。
-            if self._report_progress is not None:
-                self._report_progress.hide()
-
-    def _report_export_script_module(self) -> str:
-        return "services.report_image_batch_export_process"
-
-    def _extract_report_output_path_from_log(self, log_text: str) -> Path | None:
-        for raw_line in reversed((log_text or "").splitlines()):
-            line = raw_line.strip()
-            if not line:
-                continue
-            match = re.search(r"report generated:\s*(.+)$", line, flags=re.IGNORECASE)
-            if not match:
-                continue
-            try:
-                candidate = Path(match.group(1).strip()).resolve()
-            except Exception:
-                continue
-            return candidate
-        return None
-
-    @staticmethod
-    def _decode_report_process_output(data: bytes) -> str:
-        if not data:
-            return ""
-
-        for encoding in ("utf-8", "gb18030", "cp936"):
-            try:
-                return data.decode(encoding)
-            except UnicodeDecodeError:
-                continue
-        return data.decode("utf-8", errors="replace")
-
-    def _open_report_output_location(self, file_path: Path | None) -> bool:
-        if file_path is None:
-            return False
-
-        target = Path(file_path)
-        try:
-            if target.exists() and QProcess.startDetached("explorer", ["/select,", str(target)]):
-                return True
-        except Exception:
-            pass
-
-        folder = target.parent if target.suffix else target
-        try:
-            return QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder.resolve())))
-        except Exception:
-            return False
-
-    def _show_report_generated_dialog(self, report_path: Path | None) -> None:
-        pdf_path = report_path.with_suffix(".pdf") if report_path is not None else None
-        message_lines = ["特检策略报告已生成。"]
-
-        if report_path is not None:
-            message_lines.append(f"Word：\n{report_path}")
-        if pdf_path is not None and pdf_path.exists():
-            message_lines.append(f"PDF：\n{pdf_path}")
-
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Information)
-        msg.setWindowTitle("生成报告")
-        msg.setText("\n\n".join(message_lines))
-
-        open_target = report_path if report_path is not None else (pdf_path if pdf_path is not None and pdf_path.exists() else None)
-        open_btn = None
-        if open_target is not None:
-            open_btn = msg.addButton("查看文件", QMessageBox.ActionRole)
-        msg.addButton(QMessageBox.Ok)
-        msg.exec_()
-
-        if open_btn is not None and msg.clickedButton() is open_btn:
-            if not self._open_report_output_location(open_target):
-                QMessageBox.warning(self, "打开失败", "未能打开生成文件所在位置。")
+    def _set_report_button_busy(self, busy: bool, text: str = "生成特检策略报告") -> None:
+        btn = getattr(self, "btn_report", None)
+        if btn is None:
+            return
+        btn.setEnabled(not busy)
+        btn.setText(text if busy else "生成特检策略报告")
 
     def _on_report(self):
-        """点击生成报告：在独立子进程中先导出图片，再生成报告。"""
-        if getattr(self, "_report_running", False):
-            QMessageBox.information(self, "生成报告", "报告正在生成中，请稍候。")
+        """
+        图二按钮：先特检策略报告。上传检验等级图，再生成
+        轮廓图不在这里上传。
+        """
+        context = (self._result_bundle or {}).get("context") or {}
+        if not context:
+            QMessageBox.warning(self, "生成报告失败", "当前没有可用的特检策略结果，无法导出检验等级图。")
             return
 
-        if not str(self.facility_code or "").strip():
-            QMessageBox.warning(self, "生成报告失败", "当前设施编码为空，无法生成报告。")
+        if self._export_timer.isActive():
+            QMessageBox.information(self, "提示", "检验等级图正在导出，请稍候。")
             return
 
-        if self._report_export_process is not None:
-            QMessageBox.information(self, "生成报告", "报告进程正在运行，请稍候。")
-            return
+        self._pending_report_after_risk_export = True
+        self._set_report_button_busy(True, "正在导出检验等级图...")
+        self._schedule_export_all_elevation_images(context, force=True)
 
-        project_root = Path(__file__).resolve().parents[1]
-        args = [
-            "-m",
-            self._report_export_script_module(),
-            "--facility-code",
-            str(self.facility_code or ""),
-            "--generate-report",
-        ]
-        if self.run_id is not None:
-            args.extend(["--run-id", str(int(self.run_id))])
-
-        proc = QProcess(self)
-        proc.setWorkingDirectory(str(project_root))
-        proc.setProgram(sys.executable)
-        proc.setArguments(args)
-        env = QProcessEnvironment.systemEnvironment()
-        env.insert("PYTHONIOENCODING", "utf-8")
-        env.insert("PYTHONUTF8", "1")
-        proc.setProcessEnvironment(env)
-        proc.setProcessChannelMode(QProcess.MergedChannels)
-        proc.readyReadStandardOutput.connect(self._on_report_process_output)
-        proc.finished.connect(self._on_report_process_finished)
-        proc.errorOccurred.connect(self._on_report_process_error)
-
-        self._report_export_log = []
-        self._report_export_process = proc
-        self._set_report_running(
-            True,
-            "正在导出报告图片并生成特检策略报告，请稍候...",
-        )
-        proc.start()
-
-    def _on_report_process_output(self):
-        proc = self._report_export_process
-        if proc is None:
-            return
+    def _do_generate_report_after_risk_export(self):
+        self._pending_report_after_risk_export = False
+        self._set_report_button_busy(True, "正在生成报告...")
         try:
-            data = self._decode_report_process_output(bytes(proc.readAllStandardOutput()))
-        except Exception:
-            data = ""
-        if not data:
+            report_path = self._result_service.generate_report(self.facility_code, run_id=self.run_id)
+        except Exception as exc:
+            QMessageBox.warning(self, "生成报告失败", f"特检策略报告生成失败：\n{exc}")
+            self._set_report_button_busy(False)
             return
-        self._report_export_log.append(data)
-        print(data, end="")
-
-        # 进度框只保持固定提示，不再把子进程日志实时追加到界面上。
-        # 日志仍然保留在 self._report_export_log 中，失败时用于错误提示。
-        if self._report_progress is not None:
-            self._report_progress.setLabelText("正在导出报告图片并生成特检策略报告，请稍候...")
-
-    def _on_report_process_error(self, error):
-        print("[UpgradeSpecialInspectionResultPage] report process error:", error)
-
-    def _on_report_process_finished(self, exit_code: int, exit_status):
-        proc = self._report_export_process
-        self._report_export_process = None
-        if proc is not None:
-            try:
-                # 不在 finished 信号栈内立即析构 QProcess，延后释放，避免 Windows 下偶发 C++ 层崩溃。
-                QTimer.singleShot(1500, proc.deleteLater)
-            except Exception:
-                pass
-
-        log_text = "".join(getattr(self, "_report_export_log", []))[-6000:]
-        self._set_report_running(False)
-
-        if exit_code != 0 or exit_status != QProcess.NormalExit:
-            QMessageBox.warning(
-                self,
-                "生成报告失败",
-                f"报告图片导出或报告生成失败，退出码：{exit_code}。\n\n最近日志：\n{log_text}",
-            )
-            return
-
-        report_path = self._extract_report_output_path_from_log(log_text)
-        self._show_report_generated_dialog(report_path)
+        self._set_report_button_busy(False)
+        QMessageBox.information(self, "生成报告", f"特检策略报告已生成：\n{report_path}")

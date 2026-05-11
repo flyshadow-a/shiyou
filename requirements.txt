@@ -75,3 +75,4 @@ urllib3==2.6.3
 version-query==1.7.0
 vtk==9.6.1
 xlrd==2.0.2
+cryptography

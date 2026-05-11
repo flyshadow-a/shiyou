@@ -35,6 +35,74 @@ from services.file_db_adapter import (
 )
 
 
+DOC_MAN_TABLE_QSS = """
+QTableWidget {
+    gridline-color: #d1d5db;
+    background-color: #f9fafb;
+    border: 1px solid #d9e2ec;
+    border-radius: 8px;
+}
+QHeaderView::section {
+    background-color: #eaf1f8;
+    color: #12344d;
+    padding: 6px 8px;
+    border: none;
+    border-right: 1px solid #d1d5db;
+    border-bottom: 1px solid #d1d5db;
+    font-weight: 600;
+    font-size: 12pt;
+}
+QTableWidget::item {
+    padding: 4px 6px;
+    color: #1f2937;
+}
+QTableWidget::item:selected {
+    background-color: #cfe7ff;
+    color: #12344d;
+}
+"""
+
+DOC_MAN_BLUE_BUTTON_QSS = """
+QPushButton[class="DocManBlueButton"] {
+    min-height: 32px;
+    padding: 0 18px;
+    border: none;
+    border-radius: 6px;
+    background-color: #1677c5;
+    color: #ffffff;
+    font-size: 12pt;
+    font-weight: 600;
+}
+QPushButton[class="DocManBlueButton"]:hover {
+    background-color: #2186d4;
+}
+"""
+
+DOC_MAN_CELL_BUTTON_QSS = """
+QPushButton[class="DocManCellButton"] {
+    min-height: 26px;
+    padding: 0 10px;
+    border: none;
+    border-radius: 5px;
+    background-color: #1677c5;
+    color: #ffffff;
+    font-size: 12pt;
+    font-weight: 600;
+}
+QPushButton[class="DocManCellButton"]:hover {
+    background-color: #2186d4;
+}
+"""
+
+
+def apply_docman_table_style(table: QTableWidget) -> None:
+    table_font = table.font()
+    table_font.setPointSize(12)
+    table.setFont(table_font)
+    table.setAlternatingRowColors(False)
+    table.setStyleSheet(DOC_MAN_TABLE_QSS)
+
+
 class DocManWidget(QFrame):
     COL_INDEX = 0
     COL_CATEGORY = 1
@@ -73,21 +141,6 @@ class DocManWidget(QFrame):
             QFrame#DocManWidget {
                 background-color: #ffffff;
             }
-            QTableWidget {
-                gridline-color: #d1d5db;
-                background-color: #f9fafb;
-                border: 1px solid #d9e2ec;
-                border-radius: 8px;
-            }
-            QHeaderView::section {
-                background-color: #eaf1f8;
-                color: #12344d;
-                padding: 6px 8px;
-                border: none;
-                border-right: 1px solid #d1d5db;
-                font-weight: 600;
-                font-size: 12pt;
-            }
             QCheckBox::indicator {
                 width: 14px;
                 height: 14px;
@@ -98,33 +151,10 @@ class DocManWidget(QFrame):
                 background: #1677c5;
                 border: 1px solid #1677c5;
             }
-            QPushButton[class="DocManBlueButton"] {
-                min-height: 32px;
-                padding: 0 18px;
-                border: none;
-                border-radius: 6px;
-                background-color: #1677c5;
-                color: #ffffff;
-                font-size: 12pt;
-                font-weight: 600;
-            }
-            QPushButton[class="DocManBlueButton"]:hover {
-                background-color: #2186d4;
-            }
-            QPushButton[class="DocManCellButton"] {
-                min-height: 26px;
-                padding: 0 10px;
-                border: none;
-                border-radius: 5px;
-                background-color: #1677c5;
-                color: #ffffff;
-                font-size: 12pt;
-                font-weight: 600;
-            }
-            QPushButton[class="DocManCellButton"]:hover {
-                background-color: #2186d4;
-            }
             """
+            + DOC_MAN_TABLE_QSS
+            + DOC_MAN_BLUE_BUTTON_QSS
+            + DOC_MAN_CELL_BUTTON_QSS
         )
 
         layout = QVBoxLayout(self)
@@ -138,9 +168,7 @@ class DocManWidget(QFrame):
         self.table.setSelectionMode(QTableWidget.NoSelection)
         self.table.setEditTriggers(QTableWidget.DoubleClicked | QTableWidget.SelectedClicked)
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        table_font = self.table.font()
-        table_font.setPointSize(12)
-        self.table.setFont(table_font)
+        apply_docman_table_style(self.table)
         self.table.itemChanged.connect(self._on_item_changed)
 
         header = self.table.horizontalHeader()

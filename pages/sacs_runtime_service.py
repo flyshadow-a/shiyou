@@ -61,10 +61,25 @@ def ensure_runx_in_workdir(work_dir: str, runx_path: str = "") -> str:
 
 
 def build_bat_text(exe_path: str, runx_path: str, work_dir: str) -> str:
+    """
+    生成 SACS 计算 BAT。
+
+    关键优化：
+    - 不再把 SACS 大量 stdout/stderr 输出交给 PyQt QProcess 管道；
+    - 也不再把完整输出持续追加到 analysis_stdout.log；
+    - 只保留 analysis_summary.log 和 analysis_exitcode.txt。
+
+    原因：SACS 计算过程中可能持续输出大量日志。
+    如果这些输出进入 QProcess 管道，或者持续写入大日志文件，都会明显拖慢计算。
+    这里用 >nul 2>nul 丢弃大量运行输出，让软件启动方式尽量接近用户双击 bat。
+    """
     exe_path = os.path.normpath(exe_path)
     runx_path = os.path.normpath(runx_path)
     work_dir = os.path.normpath(work_dir)
     sacs_home = os.path.dirname(exe_path)
+
+    summary_log = os.path.join(work_dir, "analysis_summary.log")
+    exitcode_file = os.path.join(work_dir, "analysis_exitcode.txt")
 
     return rf"""@echo off
 setlocal
@@ -73,14 +88,27 @@ set "MODEL_DIR={work_dir}"
 set "SACS_EXE={exe_path}"
 set "SACS_HOME={sacs_home}"
 set "RUNX_FILE={runx_path}"
+set "SUMMARY_LOG={summary_log}"
+set "EXITCODE_FILE={exitcode_file}"
 
 cd /d "%MODEL_DIR%"
-"%SACS_EXE%" "%RUNX_FILE%" "%SACS_HOME%"
 
-echo.
-echo ExitCode=%errorlevel%
+echo MODEL_DIR=%MODEL_DIR% > "%SUMMARY_LOG%"
+echo SACS_EXE=%SACS_EXE% >> "%SUMMARY_LOG%"
+echo SACS_HOME=%SACS_HOME% >> "%SUMMARY_LOG%"
+echo RUNX_FILE=%RUNX_FILE% >> "%SUMMARY_LOG%"
+echo START_TIME=%date% %time% >> "%SUMMARY_LOG%"
+
+"%SACS_EXE%" "%RUNX_FILE%" "%SACS_HOME%" >nul 2>nul
+
+set "SACS_EXIT=%errorlevel%"
+
+echo END_TIME=%date% %time% >> "%SUMMARY_LOG%"
+echo ExitCode=%SACS_EXIT% >> "%SUMMARY_LOG%"
+echo %SACS_EXIT% > "%EXITCODE_FILE%"
+
 endlocal
-exit /b %errorlevel%
+exit /b %SACS_EXIT%
 """
 
 

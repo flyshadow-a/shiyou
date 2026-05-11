@@ -205,16 +205,16 @@ class ConstructionDocsPage(BasePage):
             """
             QPushButton {
                 min-height: 32px;
-                padding: 0 16px;
-                border: 1px solid #0f5ea5;
+                padding: 0 18px;
+                border: none;
                 border-radius: 6px;
-                background-color: #ffffff;
-                color: #0f5ea5;
-                font-size: 13px;
+                background-color: #1677c5;
+                color: #ffffff;
+                font-size: 12pt;
                 font-weight: 600;
             }
             QPushButton:hover {
-                background-color: #eaf4ff;
+                background-color: #2186d4;
             }
             """
         )

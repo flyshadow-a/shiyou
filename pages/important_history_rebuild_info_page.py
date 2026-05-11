@@ -37,7 +37,7 @@ from services.inspection_business_db_adapter import (
 from services.file_db_adapter import DOC_MAN_MODULE_CODE, soft_delete_files_by_prefix
 from .file_management_platforms import default_platform, sync_platform_dropdowns
 from .construction_docs_widget import ConstructionDocsWidget
-from .doc_man import DocManWidget
+from .doc_man import DocManWidget, apply_docman_table_style
 
 
 class ClickableLabel(QLabel):
@@ -216,37 +216,18 @@ class ImportantHistoryDetailWidget(QWidget):
         self._build_ui()
 
     def _init_table_common(self, table: QTableWidget):
+        apply_docman_table_style(table)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
         table.setAlternatingRowColors(False)
         table.setShowGrid(True)
 
-        table_font = table.font()
-        table_font.setPointSize(10)
-        table.setFont(table_font)
-
         table.verticalHeader().setVisible(False)
         header = table.horizontalHeader()
         header.setDefaultAlignment(Qt.AlignCenter)
         header.setHighlightSections(False)
         header.setSectionResizeMode(QHeaderView.Stretch)
-
-        table.setStyleSheet(
-            """
-            QTableWidget {
-                gridline-color: #d0d0d0;
-            }
-            QHeaderView::section {
-                background-color: #f3f4f6;
-                border-bottom: 1px solid #d0d0d0;
-                padding: 4px 8px;
-            }
-            QTableWidget::item:selected {
-                background-color: #cce8ff;
-            }
-            """
-        )
 
     def _set_center_item(self, table: QTableWidget, row: int, col: int, text: str):
         item = QTableWidgetItem(str(text))

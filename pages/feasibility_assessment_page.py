@@ -6,7 +6,7 @@
 # 本版改动：
 # - 三张表格采用“表内多行表头 + 合并单元格（setSpan）”来匹配原型图样式
 # - “高程及连接形式”列使用 QComboBox，并保证宽度可显示完整文本
-# - 每张表格右上角保留“保存”按钮（在表格外的 header 区域）
+# - 取消三张表格各自保存按钮，底部统一使用“保存数据”按钮；保存后才能创建新模型
 
 import os
 import shutil
@@ -51,6 +51,7 @@ from pages.sacs_runtime_service import ensure_analysis_bat, find_result_file
 from shiyou_db.runtime_db import get_mysql_url
 
 from pages.sacs_storage_service import get_job_runtime_dir, stage_support_files_for_job
+from services.history_rebuild_auto_service import prepare_latest_rebuild_runtime_for_analysis
 
 SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
 
@@ -147,6 +148,12 @@ class FeasibilityAssessmentPage(BasePage):
         self.current_exitcode_file = ""
 
         self.analysis_process = None
+
+        # 三个输入表格统一保存状态：
+        # 用户可以只填写井槽/立管/组块载荷中的任意一种或任意组合，
+        # 点击底部“保存数据”后统一写入数据库，之后才允许创建新模型。
+        self._input_data_saved = False
+        self._input_data_locked = False
 
         self._build_ui()
         self._refresh_runtime_paths_from_disk()
@@ -491,6 +498,8 @@ class FeasibilityAssessmentPage(BasePage):
             self.tbl3.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
 
     def _insert_dynamic_row(self, table_key: str):
+        if getattr(self, "_input_data_locked", False):
+            return
         meta = self._dynamic_table_meta.get(table_key)
         if not meta:
             return
@@ -524,6 +533,8 @@ class FeasibilityAssessmentPage(BasePage):
         scroll.setMaximumHeight(visible_h)
 
     def _insert_dynamic_row_at(self, table_key: str, row: int):
+        if getattr(self, "_input_data_locked", False):
+            return
         meta = self._dynamic_table_meta.get(table_key)
         if not meta:
             return
@@ -548,6 +559,8 @@ class FeasibilityAssessmentPage(BasePage):
         self._refresh_table_scroll_height(table_key)
 
     def _remove_dynamic_row(self, table_key: str):
+        if getattr(self, "_input_data_locked", False):
+            return
         meta = self._dynamic_table_meta.get(table_key)
         if not meta:
             return
@@ -562,6 +575,8 @@ class FeasibilityAssessmentPage(BasePage):
         self._refresh_table_scroll_height(table_key)
 
     def _remove_dynamic_row_at(self, table_key: str, row: int):
+        if getattr(self, "_input_data_locked", False):
+            return
         meta = self._dynamic_table_meta.get(table_key)
         if not meta:
             return
@@ -591,6 +606,8 @@ class FeasibilityAssessmentPage(BasePage):
         self._refresh_table_scroll_height(table_key)
 
     def _show_row_context_menu(self, table_key: str, pos):
+        if getattr(self, "_input_data_locked", False):
+            return
         meta = self._dynamic_table_meta.get(table_key)
         if not meta:
             return
@@ -669,6 +686,9 @@ class FeasibilityAssessmentPage(BasePage):
         for table_key, meta in self._dynamic_table_meta.items():
             if a0 is meta["viewport"]:
                 if a1.type() == QEvent.Type.MouseMove and isinstance(a1, QMouseEvent):
+                    if getattr(self, "_input_data_locked", False):
+                        self._set_hover_row(table_key, None)
+                        continue
                     row = meta["table"].rowAt(a1.pos().y())
                     last_row = self._get_last_data_row(table_key)
                     self._set_hover_row(table_key, row if row == last_row else None)
@@ -801,7 +821,14 @@ class FeasibilityAssessmentPage(BasePage):
         """ % SONGTI_FONT_FALLBACK)
         return btn
 
-    def _make_group_header(self, title: str, on_save) -> QWidget:
+    def _make_group_header(self, title: str, on_save=None) -> QWidget:
+        """
+        表格分组标题。
+
+        原来每个分组右上角都有一个“保存”按钮；现在按业务要求取消，
+        统一改为页面底部“保存数据”按钮一次性保存三个表格中的有效数据。
+        on_save 参数保留只是为了兼容旧调用，不再使用。
+        """
         head = QWidget()
         lay = QHBoxLayout(head)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -812,10 +839,6 @@ class FeasibilityAssessmentPage(BasePage):
         lab.setStyleSheet("font-family: %s; font-size: 12pt; font-weight: bold; color: #1d2b3a;" % SONGTI_FONT_FALLBACK)
         lay.addWidget(lab, 0)
         lay.addStretch(1)
-
-        btn = self._make_save_button()
-        btn.clicked.connect(on_save)
-        lay.addWidget(btn, 0)
         return head
 
     # ---------------- 表1：新增井槽信息（合并表头） ----------------
@@ -826,7 +849,7 @@ class FeasibilityAssessmentPage(BasePage):
         lay.setContentsMargins(10, 8, 10, 10)
         lay.setSpacing(6)
 
-        lay.addWidget(self._make_group_header("新增井槽信息", self._on_save_table1), 0)
+        lay.addWidget(self._make_group_header("新增井槽信息"), 0)
 
         # 表内表头：2 行
         header_rows = 2
@@ -944,7 +967,7 @@ class FeasibilityAssessmentPage(BasePage):
         lay.setContentsMargins(10, 8, 10, 10)
         lay.setSpacing(6)
 
-        lay.addWidget(self._make_group_header("新增立管/电缆信息", self._on_save_table2), 0)
+        lay.addWidget(self._make_group_header("新增立管/电缆信息"), 0)
 
         header_rows = 2
         data_rows = 3
@@ -1059,7 +1082,7 @@ class FeasibilityAssessmentPage(BasePage):
         lay.setContentsMargins(10, 8, 10, 10)
         lay.setSpacing(6)
 
-        lay.addWidget(self._make_group_header("新增组块载荷信息", self._on_save_table3), 0)
+        lay.addWidget(self._make_group_header("新增组块载荷信息"), 0)
 
         header_rows = 2
         data_rows = 6
@@ -1144,15 +1167,20 @@ class FeasibilityAssessmentPage(BasePage):
             """ % SONGTI_FONT_FALLBACK)
             return b
 
+        self.btn_save_data = mk("保存数据")
         self.btn_create = mk("创建新模型")
         self.btn_run = mk("计算分析")
         self.btn_view = mk("查看结果")
 
+        self.btn_save_data.clicked.connect(self._on_save_all_input_data)
         self.btn_create.clicked.connect(self._on_create_model)
         self.btn_run.clicked.connect(self._on_run_analysis)
         self.btn_view.clicked.connect(self._on_view_result)
 
+        # 创建新模型按钮保持可点击；如果用户尚未保存数据，点击时再给出提示。
+
         lay.addStretch(1)
+        lay.addWidget(self.btn_save_data, 0)
         lay.addWidget(self.btn_create, 0)
         lay.addWidget(self.btn_run, 0)
         lay.addWidget(self.btn_view, 0)
@@ -1169,7 +1197,7 @@ class FeasibilityAssessmentPage(BasePage):
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Warning)
         msg.setWindowTitle("确认保存")
-        msg.setText(f"{data_name}保存之后将无法修改，是否保存？")
+        msg.setText(f"{data_name}保存之后将无法修改，是否确认保存？")
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         msg.setDefaultButton(QMessageBox.No)
 
@@ -1213,6 +1241,97 @@ class FeasibilityAssessmentPage(BasePage):
         except Exception as e:
             QMessageBox.critical(self, "保存失败", f"新增组块载荷信息保存失败：\n{e}")
 
+    def _has_any_valid_input_data(self) -> bool:
+        """
+        判断三个输入表格中是否至少有一类构件/载荷填写了有效基础数据。
+        只看基础字段，不把连接形式下拉框的默认值当作有效输入。
+        """
+        for r in range(2, self.tbl1.rowCount()):
+            if self._table_has_any_data(self.tbl1, r, 1, 7):
+                return True
+
+        for r in range(2, self.tbl2.rowCount()):
+            if self._table_has_any_data(self.tbl2, r, 1, 8):
+                return True
+
+        for r in range(2, self.tbl3.rowCount()):
+            if self._table_has_any_data(self.tbl3, r, 1, 4):
+                return True
+
+        return False
+
+    def _lock_input_tables_after_save(self) -> None:
+        """保存后锁定三个表格，避免界面内容和数据库已保存内容不一致。"""
+        self._input_data_locked = True
+
+        for table in (self.tbl1, self.tbl2, self.tbl3):
+            table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            table.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+
+            for r in range(table.rowCount()):
+                for c in range(table.columnCount()):
+                    w = table.cellWidget(r, c)
+                    if w is None:
+                        continue
+                    combo = w.findChild(QComboBox)
+                    if combo is not None:
+                        combo.setEnabled(False)
+                    w.setEnabled(False)
+
+        for meta in self._dynamic_table_meta.values():
+            panel = meta.get("panel")
+            if panel is not None:
+                panel.hide()
+
+        if hasattr(self, "btn_save_data"):
+            # 保存成功后不把“保存数据”按钮置灰。
+            # 用户再次点击时，_on_save_all_input_data 会根据 _input_data_locked 给出
+            # “数据已经保存，不能重复修改”的提示。
+            self.btn_save_data.setEnabled(True)
+            self.btn_save_data.setText("保存数据")
+        if hasattr(self, "btn_create"):
+            self.btn_create.setEnabled(True)
+
+    def _on_save_all_input_data(self):
+        """
+        统一保存三个表格中的有效数据。
+
+        用户可以只填写井槽、只填写立管/电缆、只填写组块载荷，
+        也可以任意组合填写；保存时统一覆盖当前 job_name 下三类输入数据。
+        """
+        if getattr(self, "_input_data_locked", False):
+            QMessageBox.information(self, "提示", "数据已经保存，不能重复修改。")
+            return
+
+        if not self._has_any_valid_input_data():
+            QMessageBox.warning(
+                self,
+                "无法保存",
+                "三个表格中没有填写任何有效数据。\n"
+                "请至少填写井槽、立管/电缆或组块载荷中的一种数据后再保存。"
+            )
+            return
+
+        if not self._confirm_save_locked("新增数据"):
+            return
+
+        try:
+            self._save_well_slots_to_db()
+            self._save_risers_to_db()
+            self._save_topside_weights_to_db()
+
+            self._input_data_saved = True
+            self._lock_input_tables_after_save()
+
+            QMessageBox.information(
+                self,
+                "保存成功",
+                "新增数据已保存。"
+            )
+        except Exception as e:
+            self._input_data_saved = False
+            QMessageBox.critical(self, "保存失败", f"新增数据保存失败：\n{e}")
+
     def _save_table_as_csv(self, table: QTableWidget, header_rows: int, default_name: str,
                            with_combo_cols: bool, combo_start_col: int):
         path, _ = QFileDialog.getSaveFileName(self, "保存表格", default_name, "CSV (*.csv);;All Files (*)")
@@ -1248,9 +1367,13 @@ class FeasibilityAssessmentPage(BasePage):
     # ---------------- 业务按钮：占位实现（后续你定格式后再替换） ----------------
     def _on_create_model(self):
         try:
-            self._save_well_slots_to_db()
-            self._save_risers_to_db()
-            self._save_topside_weights_to_db()
+            if not getattr(self, "_input_data_saved", False):
+                QMessageBox.warning(
+                    self,
+                    "请先保存数据",
+                    "请先点击“保存数据”，确认保存新增数据后再创建新模型。"
+                )
+                return
 
             if not getattr(self, "job_name", "").strip():
                 raise ValueError("job_name 为空，无法创建新模型")
@@ -1394,11 +1517,24 @@ class FeasibilityAssessmentPage(BasePage):
 
     def _on_run_analysis(self):
         try:
+            # 每次计算前都重新准备当前最新模型。
+            # 有历史改造项目时，复制最新历史改造项目中的 sacinp.M1 / seainp.M1 到 runtime；
+            # 历史改造项目已全部删除时，自动回退到原始上传模型，避免继续计算已删除项目遗留的旧 M1。
+            try:
+                runtime_bundle = prepare_latest_rebuild_runtime_for_analysis(
+                    mysql_url=self.mysql_url,
+                    job_name=self.job_name,
+                )
+                self.current_model_dir = str(runtime_bundle.get("model_dir") or "").strip() or get_job_runtime_dir(self.job_name)
+            except Exception as exc:
+                QMessageBox.warning(self, "计算模型准备失败", str(exc))
+                return
+
             self._refresh_runtime_paths_from_disk()
 
             work_dir = getattr(self, "current_model_dir", "").strip() or self.model_files_root
             if not work_dir or not os.path.isdir(work_dir):
-                QMessageBox.warning(self, "提示", "未找到 model_files 目录，请先创建新模型。")
+                QMessageBox.warning(self, "提示", "未找到模型运行目录，请先创建新模型。")
                 return
 
             # 计算前再次从“当前模型/其他/用户上传/其他”复制必需辅助文件。
@@ -1425,7 +1561,23 @@ class FeasibilityAssessmentPage(BasePage):
             process.setWorkingDirectory(work_dir)
             process.setProgram("cmd")
             process.setArguments(["/c", bat_path])
-            process.setProcessChannelMode(QProcess.MergedChannels)
+            # 不使用 MergedChannels，避免 SACS 大量输出阻塞 QProcess 管道。
+            process.setProcessChannelMode(QProcess.SeparateChannels)
+
+            def drain_stdout():
+                try:
+                    _ = bytes(process.readAllStandardOutput())
+                except Exception:
+                    pass
+
+            def drain_stderr():
+                try:
+                    _ = bytes(process.readAllStandardError())
+                except Exception:
+                    pass
+
+            process.readyReadStandardOutput.connect(drain_stdout)
+            process.readyReadStandardError.connect(drain_stderr)
 
             def on_finished(exit_code, exit_status):
                 self.btn_run.setEnabled(True)
@@ -1433,10 +1585,19 @@ class FeasibilityAssessmentPage(BasePage):
                 self.analysis_process = None
                 self.current_result_file = find_result_file(work_dir)
 
-                if exit_code == 0:
-                    QMessageBox.information(self, "提示", "计算完成。")
-                else:
+                if exit_code != 0:
                     QMessageBox.critical(self, "提示", f"计算失败，退出码：{exit_code}")
+                    return
+
+                if not self.current_result_file:
+                    QMessageBox.warning(
+                        self,
+                        "未找到计算结果",
+                        f"SACS 进程已结束，但没有找到结果文件。\n计算目录：{work_dir}"
+                    )
+                    return
+
+                QMessageBox.information(self, "提示", f"计算完成。\n结果文件：{self.current_result_file}")
 
             def on_error(_err):
                 err_text = process.errorString()
