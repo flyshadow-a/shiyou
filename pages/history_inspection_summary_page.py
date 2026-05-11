@@ -47,7 +47,7 @@ from PyQt5.QtWidgets import (
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
-from pages.doc_man import DocManWidget
+from pages.doc_man import DocManWidget, apply_docman_table_style
 from services.inspection_business_db_adapter import (
     create_inspection_project,
     list_inspection_findings,
@@ -680,6 +680,7 @@ class HistoryInspectionSummaryPage(BasePage):
 
         self.periodic_overview_table = QTableWidget(len(self.periodic_demo_data), 4, page)
         self.periodic_overview_table.setObjectName("PeriodicOverviewTable")
+        apply_docman_table_style(self.periodic_overview_table)
         self.periodic_overview_table.setHorizontalHeaderLabels(["序号", "项目名称", "描述", "年份"])
         self.periodic_overview_table.verticalHeader().setVisible(False)
         self.periodic_overview_table.setAlternatingRowColors(False)
@@ -744,6 +745,7 @@ class HistoryInspectionSummaryPage(BasePage):
 
         self.periodic_files_table = QTableWidget(0, 6, page)
         self.periodic_files_table.setObjectName("PeriodicFilesTable")
+        apply_docman_table_style(self.periodic_files_table)
         self.periodic_files_table.setHorizontalHeaderLabels(["序号", "文件名", "修改时间", "上传", "下载", "备注"])
         self.periodic_files_table.verticalHeader().setVisible(False)
         self.periodic_files_table.setAlternatingRowColors(False)
@@ -786,6 +788,7 @@ class HistoryInspectionSummaryPage(BasePage):
 
         self.periodic_sampling_table = QTableWidget(0, 3, page)
         self.periodic_sampling_table.setObjectName("PeriodicSamplingTable")
+        apply_docman_table_style(self.periodic_sampling_table)
         self.periodic_sampling_table.setHorizontalHeaderLabels(["节点号", "检验等级", "检验结论"])
         self.periodic_sampling_table.verticalHeader().setVisible(False)
         self.periodic_sampling_table.setAlternatingRowColors(False)
@@ -814,6 +817,7 @@ class HistoryInspectionSummaryPage(BasePage):
 
         self.special_event_overview_table = QTableWidget(len(self.special_event_demo_data), 4, page)
         self.special_event_overview_table.setObjectName("SpecialEventOverviewTable")
+        apply_docman_table_style(self.special_event_overview_table)
         self.special_event_overview_table.setHorizontalHeaderLabels(["序号", "事件名称", "描述", "年份"])
         self.special_event_overview_table.verticalHeader().setVisible(False)
         self.special_event_overview_table.setAlternatingRowColors(False)
@@ -878,6 +882,7 @@ class HistoryInspectionSummaryPage(BasePage):
 
         self.special_event_files_table = QTableWidget(0, 6, page)
         self.special_event_files_table.setObjectName("SpecialEventFilesTable")
+        apply_docman_table_style(self.special_event_files_table)
         self.special_event_files_table.setHorizontalHeaderLabels(["序号", "文件名", "修改时间", "上传", "下载", "备注"])
         self.special_event_files_table.verticalHeader().setVisible(False)
         self.special_event_files_table.setAlternatingRowColors(False)
@@ -920,6 +925,7 @@ class HistoryInspectionSummaryPage(BasePage):
 
         self.special_event_records_table = QTableWidget(0, 3, page)
         self.special_event_records_table.setObjectName("SpecialEventRecordsTable")
+        apply_docman_table_style(self.special_event_records_table)
         self.special_event_records_table.setHorizontalHeaderLabels(["节点号", "检验等级", "检验结论"])
         self.special_event_records_table.verticalHeader().setVisible(False)
         self.special_event_records_table.setAlternatingRowColors(False)
@@ -1311,6 +1317,7 @@ class HistoryInspectionSummaryPage(BasePage):
         rows = self.folder_rows.get(folder_key, [])
         table = QTableWidget(len(rows), 7, self)
         table.setObjectName(f"HistoryTable_{folder_key}")
+        apply_docman_table_style(table)
 
         headers = ["序号", "文件类别", "文件格式", "修改时间", "上传", "下载", "备注"]
         table.setHorizontalHeaderLabels(headers)
@@ -1879,16 +1886,16 @@ class HistoryInspectionSummaryPage(BasePage):
             }
             QPushButton#OverviewActionButton {
                 min-height: 32px;
-                padding: 0 16px;
-                border: 1px solid #0f5ea5;
+                padding: 0 18px;
+                border: none;
                 border-radius: 6px;
-                background-color: #ffffff;
-                color: #0f5ea5;
-                font-size: 13px;
+                background-color: #1677c5;
+                color: #ffffff;
+                font-size: 12pt;
                 font-weight: 600;
             }
             QPushButton#OverviewActionButton:hover {
-                background-color: #eaf4ff;
+                background-color: #2186d4;
             }
             """
         )

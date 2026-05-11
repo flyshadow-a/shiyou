@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar
 from .file_management_platforms import default_platform, sync_platform_dropdowns
-from .doc_man import DocManWidget
+from .doc_man import DocManWidget, apply_docman_table_style
 from services.file_db_adapter import (
     hard_delete_record,
     is_file_db_configured,
@@ -212,7 +212,7 @@ class ModelFilesDocsWidget(QWidget):
 
         # 统一样式（蓝色 header bar + 白字）
         bar.setStyleSheet("""
-            QFrame#BreadcrumbBar { background-color: #1e3a8a; border: none; }
+            QFrame#BreadcrumbBar { background-color: #006bb3; border: none; }
             QLabel { color: #ffffff; }
             QLabel#BreadcrumbHome { font-weight: 600; }
             QLabel#BreadcrumbCrumb { font-weight: 600; }
@@ -320,33 +320,11 @@ class ModelFilesDocsWidget(QWidget):
     # 表格工具（来自旧代码）
     # ------------------------------------------------------------------
     def _init_table_common(self, table: QTableWidget):
+        apply_docman_table_style(table)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectItems)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
-        table.setAlternatingRowColors(True)
         table.setShowGrid(False)
-
-        table.setStyleSheet("""
-            QTableWidget {
-                background-color: #ffffff;
-                gridline-color: #d0d0d0;
-            }
-            QTableWidget::item {
-                border-bottom: 1px solid #d0d0d0;
-                border-right:  1px solid #d0d0d0;
-            }
-            QTableWidget::item:selected {
-                background-color: #dbeafe;
-                color: #111827;
-            }
-            QHeaderView::section {
-                background-color: #f3f4f6;
-                border: 0px;
-                border-bottom: 1px solid #d0d0d0;
-                border-right:  1px solid #d0d0d0;
-                padding: 4px 8px;
-            }
-        """)
 
         hh = table.horizontalHeader()
         hh.setDefaultAlignment(Qt.AlignCenter)

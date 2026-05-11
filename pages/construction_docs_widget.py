@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QIcon, QDesktopServices
 from PyQt5.QtCore import Qt, QSize, QDateTime, pyqtSignal, QUrl
 
-from pages.doc_man import DocManWidget
+from pages.doc_man import DocManWidget, apply_docman_table_style
 
 
 class ClickableLabel(QLabel):
@@ -175,15 +175,16 @@ class ConstructionDocsWidget(QWidget):
             }
 
             QPushButton.UploadButton {
-                background-color: #0090d0;
+                background-color: #1677c5;
                 color: #ffffff;
                 border: none;
-                border-radius: 4px;
-                padding: 6px 16px;
-                font-size: 13px;
+                border-radius: 6px;
+                padding: 6px 18px;
+                font-size: 12pt;
+                font-weight: 600;
             }
             QPushButton.UploadButton:hover {
-                background-color: #00a4f2;
+                background-color: #2186d4;
             }
 
             QTableWidget {
@@ -374,9 +375,9 @@ class ConstructionDocsWidget(QWidget):
         self.files_table.setHorizontalHeaderLabels(
             ["序号", "文件类别", "文件格式", "修改时间", "上传", "下载", "备注"]
         )
+        apply_docman_table_style(self.files_table)
         self.files_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.files_table.verticalHeader().setVisible(False)
-        self.files_table.setAlternatingRowColors(True)
         # 允许编辑，但我们在每个单元格上控制哪些可编辑
         self.files_table.setEditTriggers(QAbstractItemView.AllEditTriggers)
 
