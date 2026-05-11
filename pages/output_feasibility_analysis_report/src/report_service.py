@@ -140,15 +140,7 @@ def _build_platform_evaluation_conclusion_section(
     return existing_section
 
 
-def generate_report(
-    *,
-    factor_path: str,
-    template_path: str,
-    output_path: str,
-    chapter_1_3_sources: Mapping[str, Mapping[str, Any] | str] | None = None,
-) -> str:
-    # 报告联调阶段优先给出更明确的 factor_path 诊断信息，
-    # 便于区分“前端传参错误”和“后端进程看不到该文件”两类问题。
+def build_analysis_results_for_ui(factor_path: str) -> dict[str, Any]:
     factor_file = Path(factor_path)
     if not factor_file.exists():
         raise FileNotFoundError(
@@ -156,14 +148,6 @@ def generate_report(
         )
 
     lines = read_lines(factor_path)
-
-    validate_basic_case_loads_against_desc(lines)
-    validate_combo_case_loads_against_desc(lines)
-
-    basic_case_desc_rows = parse_basic_case_desc(lines)
-    basic_case_load_rows = parse_basic_case_loads(lines)
-    combo_case_desc_rows = parse_combo_case_desc(lines)
-    combo_case_load_rows = parse_combo_case_loads(lines)
 
     member_group_summary = parse_member_group_summary(lines)
     member_summary = build_member_summary(member_group_summary)
@@ -195,6 +179,53 @@ def generate_report(
         pile_stress_summary=pile_summary,
         pile_axial_capacity_summary=pile_axial_capacity_summary,
     )
+
+    return {
+        "analysis_summary": analysis_summary,
+        "member_group_summary": member_group_summary,
+        "member_summary": member_summary,
+        "joint_can_summary": joint_can_summary,
+        "joint_summary": joint_summary,
+        "pile_group_summary": pile_group_summary,
+        "pile_summary": pile_summary,
+        "pile_axial_capacity_summary": pile_axial_capacity_summary,
+    }
+
+
+def generate_report(
+    *,
+    factor_path: str,
+    template_path: str,
+    output_path: str,
+    chapter_1_3_sources: Mapping[str, Mapping[str, Any] | str] | None = None,
+) -> str:
+    # 报告联调阶段优先给出更明确的 factor_path 诊断信息，
+    # 便于区分“前端传参错误”和“后端进程看不到该文件”两类问题。
+    factor_file = Path(factor_path)
+    if not factor_file.exists():
+        raise FileNotFoundError(
+            f"无法读取文件: {factor_file} (exists={factor_file.exists()}, absolute={factor_file.resolve(strict=False)})"
+        )
+
+    lines = read_lines(factor_path)
+
+    validate_basic_case_loads_against_desc(lines)
+    validate_combo_case_loads_against_desc(lines)
+
+    basic_case_desc_rows = parse_basic_case_desc(lines)
+    basic_case_load_rows = parse_basic_case_loads(lines)
+    combo_case_desc_rows = parse_combo_case_desc(lines)
+    combo_case_load_rows = parse_combo_case_loads(lines)
+
+    analysis_results = build_analysis_results_for_ui(factor_path)
+    analysis_summary = analysis_results["analysis_summary"]
+    member_group_summary = analysis_results["member_group_summary"]
+    member_summary = analysis_results["member_summary"]
+    joint_can_summary = analysis_results["joint_can_summary"]
+    joint_summary = analysis_results["joint_summary"]
+    pile_group_summary = analysis_results["pile_group_summary"]
+    pile_summary = analysis_results["pile_summary"]
+    pile_axial_capacity_summary = analysis_results["pile_axial_capacity_summary"]
 
     chapter_1_3_sources_dict = deepcopy(dict(chapter_1_3_sources or {}))
     cover_meta = chapter_1_3_sources_dict.get("cover_meta", {})

@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 from PIL import Image
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QApplication, QMessageBox, QTableWidget
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +15,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from pages.feasibility_assessment_results_page import FeasibilityAssessmentResultsPage
 from src.path_config_loader import get_coordinate_system_config, get_overall_model_config, get_report_defaults, load_path_config
+
+
+_QT_APP = QApplication.instance() or QApplication([])
 
 
 class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
@@ -295,6 +298,109 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
                 page._generate_report({"chapter_1_3": {}})
 
         local_generate.assert_called_once()
+
+    def test_fill_summary_table_from_analysis_uses_report_summary_items(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page.tbl_summary = QTableWidget(3, 5)
+        page.HDR_BG = FeasibilityAssessmentResultsPage.HDR_BG
+        page.INDEX_BG = FeasibilityAssessmentResultsPage.INDEX_BG
+
+        page._fill_summary_table_from_analysis(
+            {
+                "items": [
+                    {
+                        "check_item": "构件",
+                        "position": "L541-L542",
+                        "value": "0.92",
+                        "case": "OL12",
+                        "is_pass": "满足",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual("构件", page.tbl_summary.item(2, 0).text())
+        self.assertEqual("L541-L542", page.tbl_summary.item(2, 1).text())
+        self.assertEqual("0.92", page.tbl_summary.item(2, 2).text())
+        self.assertEqual("OL12", page.tbl_summary.item(2, 3).text())
+        self.assertEqual("满足", page.tbl_summary.item(2, 4).text())
+
+    def test_fill_detail_tables_from_analysis_uses_report_pile_capacity_rows(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page.HDR_BG = FeasibilityAssessmentResultsPage.HDR_BG
+        page.INDEX_BG = FeasibilityAssessmentResultsPage.INDEX_BG
+        page._detail_table_rows = {}
+        page.cb_row_limit = type("FakeCombo", (), {"currentText": lambda self: "全部"})()
+        table = QTableWidget(3, 10)
+        table.setProperty("header_rows", 3)
+        page.detail_tables = {"操作工况桩基承载力": table}
+
+        page._fill_pile_capacity_detail_table(
+            "操作工况桩基承载力",
+            [
+                {
+                    "pile_head_id": "P108",
+                    "compression_capacity_kn": "110887",
+                    "tension_capacity_kn": "117019",
+                    "pile_weight_kn": "6864.3",
+                    "compression_case": "OL12",
+                    "compression_load_kn": "38993",
+                    "tension_case": "OL18",
+                    "tension_load_kn": "47123",
+                    "compression_sf": "2.42",
+                    "tension_sf": "2.91",
+                }
+            ],
+        )
+
+        self.assertEqual(4, table.rowCount())
+        self.assertEqual("P108", table.item(3, 0).text())
+        self.assertEqual("OL12", table.item(3, 4).text())
+        self.assertEqual("2.42", table.item(3, 8).text())
+
+    def test_detail_table_row_limit_applies_to_loaded_rows(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page.HDR_BG = FeasibilityAssessmentResultsPage.HDR_BG
+        page.INDEX_BG = FeasibilityAssessmentResultsPage.INDEX_BG
+        page.current_tab = "构件"
+        page.cb_row_limit = type("FakeCombo", (), {"currentText": lambda self: "10"})()
+        table = QTableWidget(2, 5)
+        table.setProperty("header_rows", 2)
+        page.table_stack = type(
+            "FakeStack",
+            (),
+            {
+                "currentIndex": lambda self: 0,
+                "widget": lambda self, index: table,
+            },
+        )()
+        page._detail_table_rows = {
+            "构件": [[str(index), f"M{index}", "0.9", "OL1", "满足"] for index in range(1, 13)]
+        }
+
+        page._update_current_table_rows()
+
+        self.assertEqual(12, table.rowCount())
+        self.assertEqual("M10", table.item(11, 1).text())
+
+    def test_start_analysis_results_loading_uses_background_thread(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page._analysis_thread = None
+        page._analysis_worker = None
+        page._analysis_results = {}
+        page._get_current_job_factor_path = lambda: "factor-path"
+        page._get_wordtemplate_project_root = lambda: PROJECT_ROOT / "pages" / "output_feasibility_analysis_report"
+
+        with patch("pages.feasibility_assessment_results_page.QThread") as thread_cls, patch(
+            "pages.feasibility_assessment_results_page.AnalysisResultsWorker"
+        ) as worker_cls:
+            thread = thread_cls.return_value
+            worker = worker_cls.return_value
+            page.start_analysis_results_loading()
+
+        worker_cls.assert_called_once_with(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report", "factor-path")
+        worker.moveToThread.assert_called_once_with(thread)
+        thread.start.assert_called_once()
 
     def test_open_report_output_directory_selects_generated_file(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)

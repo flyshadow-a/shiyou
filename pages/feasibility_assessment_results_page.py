@@ -111,6 +111,27 @@ class ReportGenerationWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class AnalysisResultsWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, project_root: Path, factor_path: str):
+        super().__init__()
+        self._project_root = project_root
+        self._factor_path = factor_path
+
+    def run(self):
+        try:
+            project_root_text = str(self._project_root)
+            if project_root_text not in sys.path:
+                sys.path.insert(0, project_root_text)
+            from src.report_service import build_analysis_results_for_ui
+
+            self.finished.emit(build_analysis_results_for_ui(self._factor_path))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class InpWireframeView(QGraphicsView):
     """
     简化版 INP 可视化：解析 *NODE 和 *ELEMENT（取前两节点连线），做 2D 投影显示线框。
@@ -311,8 +332,13 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._report_worker = None
         self._report_progress = None
         self._report_button = None
+        self._analysis_thread = None
+        self._analysis_worker = None
+        self._analysis_results = {}
+        self._detail_table_rows = {}
 
         self._build_ui()
+        self.start_analysis_results_loading()
         QTimer.singleShot(0, self.reload_model_view)
 
     # ---------------- UI ----------------
@@ -563,6 +589,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         # 准备堆叠容器存放不同的表格 (保留你之前的 QStackedWidget 逻辑)
         self.table_stack = QStackedWidget()
         self.detail_tables = {}
+        self._detail_table_rows = {}
 
         for i, t in enumerate(tabs):
             btn = QPushButton(t)
@@ -772,19 +799,21 @@ class FeasibilityAssessmentResultsPage(BasePage):
     # ------------------- 表格行数控制与事件 --------------------
     def _update_current_table_rows(self):
         """根据下拉框的值，动态调整当前显示表格的行数并填充空单元格"""
-        # 静态样表页（操作工况桩基承载力、极端工况桩基承载力）不参与动态行数切换
         idx = self.table_stack.currentIndex()
         if idx == -1:
             return
         current_tbl = self.table_stack.widget(idx)
-        if bool(current_tbl.property("static_mode")):
+        current_tab = self.current_tab
+        stored_rows = self._detail_table_rows.get(current_tab)
+        if stored_rows is not None:
+            if current_tab in {"操作工况桩基承载力", "极端工况桩基承载力"}:
+                self._render_pile_capacity_rows(current_tbl, stored_rows)
+            else:
+                self._render_standard_detail_rows(current_tbl, stored_rows)
             return
 
         limit_text = self.cb_row_limit.currentText()
-        if limit_text == "全部":
-            limit = 200  # UI占位：假设"全部"对应200行测试数据
-        else:
-            limit = int(limit_text)
+        limit = self._current_row_limit(default_all=200)
 
         header_rows = int(current_tbl.property("header_rows") or 2)
 
@@ -806,6 +835,174 @@ class FeasibilityAssessmentResultsPage(BasePage):
                     align_center = ("名称" not in header_text)
                     self._set_cell(current_tbl, r, c, "", bg=None, align_center=align_center)
 
+    def _current_row_limit(self, *, default_all: int | None = None) -> int | None:
+        limit_text = self.cb_row_limit.currentText()
+        if limit_text == "全部":
+            return default_all
+        return int(limit_text)
+
+    def _limited_detail_rows(self, rows: list) -> list:
+        limit = self._current_row_limit(default_all=None)
+        if limit is None:
+            return list(rows)
+        return list(rows)[:limit]
+
+    def _format_result_number(self, value, digits: int = 3) -> str:
+        try:
+            return f"{float(value):.{digits}f}".rstrip("0").rstrip(".")
+        except (TypeError, ValueError):
+            return "" if value is None else str(value)
+
+    def _is_pass_text_for_uc(self, value) -> str:
+        try:
+            return "满足" if float(value) < 1.0 else "不满足"
+        except (TypeError, ValueError):
+            return "无数据"
+
+    def _fill_summary_table_from_analysis(self, analysis_summary: dict) -> None:
+        rows = list((analysis_summary or {}).get("items", []))
+        for index, item in enumerate(rows, start=2):
+            if index >= self.tbl_summary.rowCount():
+                break
+            self._set_cell(self.tbl_summary, index, 0, str(item.get("check_item", "")), bg=self.HDR_BG, bold=False, align_center=False, editable=False)
+            self._set_cell(self.tbl_summary, index, 1, str(item.get("position", "")), editable=False)
+            self._set_cell(self.tbl_summary, index, 2, str(item.get("value", "")), editable=False)
+            self._set_cell(self.tbl_summary, index, 3, str(item.get("case", "")), editable=False)
+            self._set_cell(self.tbl_summary, index, 4, str(item.get("is_pass", "")), editable=False)
+
+    def _render_standard_detail_rows(self, table: QTableWidget, rows: List[List[str]]) -> None:
+        display_rows = self._limited_detail_rows(rows)
+        header_rows = int(table.property("header_rows") or 2)
+        table.setRowCount(header_rows + len(display_rows))
+        for row_index, values in enumerate(display_rows, start=header_rows):
+            table.setRowHeight(row_index, 32)
+            for column_index, value in enumerate(values):
+                bg = self.INDEX_BG if column_index == 0 else None
+                editable = False
+                align_center = column_index != 1
+                self._set_cell(table, row_index, column_index, value, bg=bg, editable=editable, align_center=align_center)
+
+    def _fill_standard_detail_table(self, tab_name: str, rows: List[List[str]]) -> None:
+        table = self.detail_tables.get(tab_name)
+        if table is None:
+            return
+        table.setProperty("static_mode", True)
+        self._detail_table_rows[tab_name] = list(rows)
+        self._render_standard_detail_rows(table, rows)
+
+    def _render_pile_capacity_rows(self, table: QTableWidget, rows: List[dict]) -> None:
+        display_rows = self._limited_detail_rows(rows)
+        header_rows = int(table.property("header_rows") or 3)
+        table.setRowCount(header_rows + len(display_rows))
+        keys = [
+            "pile_head_id",
+            "compression_capacity_kn",
+            "tension_capacity_kn",
+            "pile_weight_kn",
+            "compression_case",
+            "compression_load_kn",
+            "tension_case",
+            "tension_load_kn",
+            "compression_sf",
+            "tension_sf",
+        ]
+        for row_index, item in enumerate(display_rows, start=header_rows):
+            table.setRowHeight(row_index, 32)
+            for column_index, key in enumerate(keys):
+                bg = self.INDEX_BG if column_index == 0 else None
+                self._set_cell(table, row_index, column_index, str(item.get(key, "")), bg=bg, editable=False)
+
+    def _fill_pile_capacity_detail_table(self, tab_name: str, rows: List[dict]) -> None:
+        table = self.detail_tables.get(tab_name)
+        if table is None:
+            return
+        table.setProperty("static_mode", True)
+        self._detail_table_rows[tab_name] = list(rows)
+        self._render_pile_capacity_rows(table, rows)
+
+    def _fill_detail_tables_from_analysis(self, results: dict) -> None:
+        member_rows = []
+        for index, row in enumerate(results.get("member_group_summary", {}).get("rows", []), start=1):
+            uc = row.get("unity_check")
+            member_rows.append([
+                str(index),
+                str(row.get("member", "")),
+                self._format_result_number(uc, 2),
+                str(row.get("cond", "")),
+                self._is_pass_text_for_uc(uc),
+            ])
+        self._fill_standard_detail_table("构件", member_rows)
+
+        joint_rows = []
+        for index, row in enumerate(results.get("joint_can_summary", {}).get("rows", []), start=1):
+            uc = row.get("design_load_uc")
+            joint_rows.append([
+                str(index),
+                str(row.get("joint", "")),
+                self._format_result_number(uc, 3),
+                str(row.get("load_case", "")),
+                self._is_pass_text_for_uc(uc),
+            ])
+        self._fill_standard_detail_table("节点冲剪", joint_rows)
+
+        pile_rows = []
+        for index, row in enumerate(results.get("pile_group_summary", {}).get("rows", []), start=1):
+            uc = row.get("maximum_unity_check")
+            pile_rows.append([
+                str(index),
+                str(row.get("pile_head_id", "")),
+                self._format_result_number(row.get("distance_from_pilehead"), 3),
+                self._format_result_number(uc, 3),
+                str(row.get("critical_load_case", "")),
+                self._is_pass_text_for_uc(uc),
+            ])
+        self._fill_standard_detail_table("桩应力", pile_rows)
+
+        pile_axial = results.get("pile_axial_capacity_summary", {})
+        self._fill_pile_capacity_detail_table("操作工况桩基承载力", list(pile_axial.get("operation_table_rows", [])))
+        self._fill_pile_capacity_detail_table("极端工况桩基承载力", list(pile_axial.get("extreme_table_rows", [])))
+
+    def start_analysis_results_loading(self) -> None:
+        if self._analysis_thread is not None and self._analysis_thread.isRunning():
+            return
+
+        try:
+            factor_path = self._get_current_job_factor_path()
+            project_root = self._get_wordtemplate_project_root()
+        except Exception:
+            self._analysis_results = {}
+            return
+
+        thread = QThread(self)
+        worker = AnalysisResultsWorker(project_root, factor_path)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_analysis_results_loaded)
+        worker.failed.connect(self._on_analysis_results_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._on_analysis_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        self._analysis_thread = thread
+        self._analysis_worker = worker
+        thread.start()
+
+    def _on_analysis_results_loaded(self, results: dict) -> None:
+        self._analysis_results = results
+        self._fill_summary_table_from_analysis(results.get("analysis_summary", {}))
+        self._fill_detail_tables_from_analysis(results)
+
+    def _on_analysis_results_failed(self, message: str) -> None:
+        self._analysis_results = {}
+
+    def _on_analysis_thread_finished(self) -> None:
+        self._analysis_thread = None
+        self._analysis_worker = None
+
     def closeEvent(self, event):
         try:
             if hasattr(self, "model_panel") and self.model_panel is not None:
@@ -818,6 +1015,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 self._report_thread.wait(3000)
                 self._report_thread = None
                 self._report_worker = None
+            if self._analysis_thread is not None and self._analysis_thread.isRunning():
+                self._analysis_thread.quit()
+                self._analysis_thread.wait(3000)
+                self._analysis_thread = None
+                self._analysis_worker = None
         except Exception:
             pass
         super().closeEvent(event)
