@@ -56,5 +56,4 @@ def get_report_defaults() -> dict[str, Path]:
     section = config.get("report_defaults", {})
     return {
         "template_path": PROJECT_ROOT / str(section.get("template_file", "xxx平台改建可行性评估报告纯净版.docx")),
-        "appendix_a_reference_path": PROJECT_ROOT / str(section.get("appendix_a_reference_file", "xxx平台改建可行性评估报告.docx")),
     }

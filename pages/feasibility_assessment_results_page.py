@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 
-from PyQt5.QtCore import Qt, QTimer, QRectF
+from PyQt5.QtCore import QObject, QProcess, Qt, QThread, QTimer, QRectF, pyqtSignal
 
 from PyQt5.QtGui import QColor, QPen, QBrush, QFontMetrics
 from PyQt5.QtWidgets import (
@@ -42,6 +42,7 @@ from PyQt5.QtWidgets import (
     QStackedWidget,
     QComboBox,
     QFileDialog,
+    QProgressDialog,
 )
 
 from core.base_page import BasePage
@@ -92,6 +93,22 @@ def _resolve_result_model_paths(self):
         "new_model": new_model if os.path.exists(new_model) else "",
         "preview_model": preview_model,
     }
+
+
+class ReportGenerationWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, page, payload: dict):
+        super().__init__()
+        self._page = page
+        self._payload = payload
+
+    def run(self):
+        try:
+            self.finished.emit(self._page._generate_report(self._payload))
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class InpWireframeView(QGraphicsView):
@@ -290,6 +307,10 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self.env_oilfield = str(env_oilfield or "").strip()
         self.overall_model_image_path = str(overall_model_image_path or "").strip()
         self.current_tab = "构件"
+        self._report_thread = None
+        self._report_worker = None
+        self._report_progress = None
+        self._report_button = None
 
         self._build_ui()
         QTimer.singleShot(0, self.reload_model_view)
@@ -791,6 +812,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 self.model_panel.safe_close()
                 self.model_panel.deleteLater()
                 self.model_panel = None
+            self._close_report_progress()
+            if self._report_thread is not None and self._report_thread.isRunning():
+                self._report_thread.quit()
+                self._report_thread.wait(3000)
+                self._report_thread = None
+                self._report_worker = None
         except Exception:
             pass
         super().closeEvent(event)
@@ -828,6 +855,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             }
             QPushButton:hover { background: #4bbbe8; }
         """)
+        self._report_button = btn
         btn.clicked.connect(self._on_generate_report)
 
         lay.addWidget(btn, 0, Qt.AlignLeft)
@@ -1553,6 +1581,100 @@ class FeasibilityAssessmentResultsPage(BasePage):
     def _generate_report(self, payload: dict) -> dict:
         return self._generate_report_locally(payload)
 
+    def _open_report_output_directory(self, output_path: str) -> bool:
+        target = Path(str(output_path or "").strip())
+        if not target:
+            return False
+
+        if target.suffix and target.exists():
+            try:
+                if QProcess.startDetached("explorer", ["/select,", str(target.resolve())]):
+                    return True
+            except Exception:
+                pass
+
+        directory = target.parent if target.suffix else target
+        try:
+            os.startfile(str(directory.resolve()))
+            return True
+        except Exception:
+            return False
+
+    def _show_report_progress(self) -> None:
+        self._close_report_progress()
+        progress = QProgressDialog("正在生成可行性评估报告，请稍候...", None, 0, 0, self)
+        progress.setWindowTitle("生成报告")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        self._report_progress = progress
+        progress.show()
+
+    def _close_report_progress(self) -> None:
+        if self._report_progress is not None:
+            try:
+                self._report_progress.close()
+            except Exception:
+                pass
+            self._report_progress = None
+
+    def _set_report_running(self, running: bool) -> None:
+        if self._report_button is not None:
+            self._report_button.setEnabled(not running)
+
+    def _cleanup_report_worker(self) -> None:
+        if self._report_thread is not None:
+            if self._report_thread.isRunning():
+                self._report_thread.quit()
+                self._report_thread.wait()
+            self._report_thread = None
+        self._report_worker = None
+
+    def _on_report_thread_finished(self) -> None:
+        self._report_thread = None
+        self._report_worker = None
+
+    def _start_report_generation_worker(self, payload: dict) -> None:
+        self._set_report_running(True)
+        self._show_report_progress()
+
+        thread = QThread(self)
+        worker = ReportGenerationWorker(self, payload)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_report_generation_finished)
+        worker.failed.connect(self._on_report_generation_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._on_report_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        self._report_thread = thread
+        self._report_worker = worker
+        thread.start()
+
+    def _on_report_generation_finished(self, result: dict) -> None:
+        self._close_report_progress()
+        self._set_report_running(False)
+        output_path = str(result.get("output_path", "")).strip()
+        if not output_path:
+            QMessageBox.critical(self, "生成报告失败", f"报告服务返回异常：{result}")
+            return
+        opened = self._open_report_output_directory(output_path)
+        QMessageBox.information(self, "生成成功", f"报告已生成：\n{output_path}")
+        if not opened:
+            QMessageBox.warning(self, "打开目录失败", "报告已生成，但未能自动打开并选中生成文件。")
+
+    def _on_report_generation_failed(self, message: str) -> None:
+        self._close_report_progress()
+        self._set_report_running(False)
+        QMessageBox.critical(self, "生成报告失败", message)
+
     def _fetch_model_paths(self):
         sql = text("""
             SELECT model_file, new_model_file, workpoint
@@ -1585,6 +1707,10 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 self.model_panel.compare_view.clear_view(f"右侧模型加载失败：\n{e}")
 
     def _on_generate_report(self):
+        if self._report_thread is not None and self._report_thread.isRunning():
+            QMessageBox.information(self, "生成报告", "报告正在生成中，请稍候。")
+            return
+
         try:
             environment_error = self._validate_environment_conditions_for_report()
             if environment_error:
@@ -1597,10 +1723,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
             if not output_path:
                 return
             payload["output_path"] = output_path
-            result = self._generate_report(payload)
-            output_path = str(result.get("output_path", "")).strip()
-            if not output_path:
-                raise RuntimeError(f"报告服务返回异常：{result}")
-            QMessageBox.information(self, "生成成功", f"报告已生成：\n{output_path}")
+            self._start_report_generation_worker(payload)
         except Exception as e:
             QMessageBox.critical(self, "生成报告失败", str(e))

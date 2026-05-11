@@ -33,14 +33,6 @@ from src.parsers.summary_builder import build_analysis_summary
 from src.renderers.doc_renderer import render_report_doc
 
 
-def _read_appendix_c_psiinp_lines(factor_file: Path) -> list[str]:
-    runtime_dir = factor_file.parent
-    for candidate in sorted(runtime_dir.glob("psiinp*")):
-        if candidate.is_file():
-            return read_lines(str(candidate))
-    return []
-
-
 def _format_platform_evaluation_number(value: Any) -> str:
     try:
         number = float(value)
@@ -164,7 +156,6 @@ def generate_report(
         )
 
     lines = read_lines(factor_path)
-    appendix_c_lines = _read_appendix_c_psiinp_lines(factor_file)
 
     validate_basic_case_loads_against_desc(lines)
     validate_combo_case_loads_against_desc(lines)
@@ -244,7 +235,6 @@ def generate_report(
         member_group_summary=member_group_summary,
         joint_can_summary_result=joint_can_summary,
         pile_group_summary_result=pile_group_summary,
-        appendix_c_factor_lines=appendix_c_lines,
     )
 
 

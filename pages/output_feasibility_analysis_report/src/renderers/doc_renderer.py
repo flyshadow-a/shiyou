@@ -12,14 +12,12 @@ from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.shared import Cm
 from docx.shared import RGBColor
 from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 
 from src.config_loader import load_doc_renderer_config
-from src.path_config_loader import get_report_defaults
 from .table_writer import (
     find_table_by_header_row,
     find_tables_by_header_rows,
@@ -1270,183 +1268,6 @@ def _save_document(document: DocxDocument, output_path: str) -> str:
     return str(output)
 
 
-def _copy_element_relationships(source_document: DocxDocument, target_document: DocxDocument, element: Any) -> None:
-    relationship_attributes = (qn("r:embed"), qn("r:id"), qn("r:link"))
-    for node in element.iter():
-        for attribute in relationship_attributes:
-            old_rel_id = node.get(attribute)
-            if not old_rel_id or old_rel_id not in source_document.part.rels:
-                continue
-            source_rel = source_document.part.rels[old_rel_id]
-            if source_rel.is_external:
-                new_rel_id = target_document.part.relate_to(
-                    source_rel.target_ref,
-                    source_rel.reltype,
-                    is_external=True,
-                )
-            else:
-                new_rel_id = target_document.part.relate_to(
-                    source_rel.target_part,
-                    source_rel.reltype,
-                )
-            node.set(attribute, new_rel_id)
-
-
-def _append_copied_body_elements(
-    target_document: DocxDocument,
-    source_document: DocxDocument,
-    elements: Sequence[Any],
-) -> None:
-    target_body = target_document.element.body
-    section_properties = target_body.sectPr
-    for source_element in elements:
-        copied_element = deepcopy(source_element)
-        _copy_element_relationships(source_document, target_document, copied_element)
-        if section_properties is None:
-            target_body.append(copied_element)
-        else:
-            target_body.insert(target_body.index(section_properties), copied_element)
-
-
-def _find_appendix_a_elements(source_document: DocxDocument) -> list[Any]:
-    def is_appendix_title(text: str, appendix_name: str) -> bool:
-        return text.startswith(f"{appendix_name}：") or text.startswith(f"{appendix_name}:")
-
-    paragraphs = list(source_document.paragraphs)
-    appendix_a_indexes = [
-        index
-        for index, paragraph in enumerate(paragraphs)
-        if is_appendix_title(_normalize_text(paragraph.text), "附录A")
-    ]
-    if not appendix_a_indexes:
-        raise ValueError("参考报告中未找到附录A")
-
-    start_paragraph = paragraphs[appendix_a_indexes[-1]]
-    end_paragraph: Paragraph | None = None
-    for paragraph in paragraphs[appendix_a_indexes[-1] + 1:]:
-        text = _normalize_text(paragraph.text)
-        if is_appendix_title(text, "附录B") or is_appendix_title(text, "附录C"):
-            end_paragraph = paragraph
-            break
-
-    body_elements = list(source_document.element.body)
-    start_index = body_elements.index(start_paragraph._element)
-    end_index = body_elements.index(end_paragraph._element) if end_paragraph is not None else len(body_elements)
-    return [element for element in body_elements[start_index:end_index] if element.tag != qn("w:sectPr")]
-
-
-def append_appendix_a_from_reference(
-    document: DocxDocument,
-    *,
-    reference_path: str,
-) -> None:
-    reference = Path(reference_path)
-    if not reference.exists() or not reference.is_file():
-        return
-    reference_document = Document(str(reference))
-    appendix_elements = _find_appendix_a_elements(reference_document)
-    if not appendix_elements:
-        return
-    document.add_page_break()
-    _append_copied_body_elements(document, reference_document, appendix_elements)
-
-
-def _find_appendix_a_title_paragraph(document: DocxDocument) -> Paragraph | None:
-    for paragraph in document.paragraphs:
-        if _normalize_text(paragraph.text).startswith("附录A"):
-            return paragraph
-    return None
-
-
-def _copy_first_run_properties(source: Paragraph, target: Paragraph) -> None:
-    if not source.runs or not target.runs:
-        return
-    source_rpr = source.runs[0]._element.rPr
-    if source_rpr is not None:
-        target.runs[0]._element.insert(0, deepcopy(source_rpr))
-
-
-def _append_appendix_title(document: DocxDocument, title_text: str) -> Paragraph:
-    title = document.add_paragraph(title_text)
-    appendix_a_title = _find_appendix_a_title_paragraph(document)
-    if appendix_a_title is not None and appendix_a_title is not title:
-        if appendix_a_title.style is not None:
-            title.style = appendix_a_title.style
-        _clone_paragraph_properties(appendix_a_title, title)
-        _copy_first_run_properties(appendix_a_title, title)
-    else:
-        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        for run in title.runs:
-            run.bold = True
-    return title
-
-
-def append_empty_appendix_b(document: DocxDocument) -> None:
-    document.add_page_break()
-    _append_appendix_title(document, "附录B：新增井槽改造方案")
-
-
-def _normalize_marker_text(text: str) -> str:
-    return re.sub(r"[^A-Z0-9]+", "", str(text or "").upper())
-
-
-def _find_line_index_by_marker(lines: Sequence[str], marker: str, *, start_index: int = 0) -> int:
-    normalized_marker = _normalize_marker_text(marker)
-    for index in range(max(0, start_index), len(lines)):
-        if normalized_marker in _normalize_marker_text(lines[index]):
-            return index
-    raise ValueError(f"未找到原始块标记: {marker}")
-
-
-def _extract_appendix_c_pile_lines(lines: Sequence[str]) -> list[str]:
-    start_index = _find_line_index_by_marker(lines, "PSIOPT")
-    return [line.rstrip("\n\r") for line in lines[start_index:]]
-
-
-def _append_raw_text_lines(
-    document: DocxDocument,
-    lines: Sequence[str],
-    *,
-    font_size_pt: int = RAW_BLOCK_FONT_SIZE_PT,
-    font_name: str = "Courier New",
-) -> None:
-    for line in lines:
-        paragraph = document.add_paragraph()
-        paragraph.paragraph_format.space_before = Pt(0)
-        paragraph.paragraph_format.space_after = Pt(0)
-        paragraph.paragraph_format.line_spacing = Pt(font_size_pt + 1)
-        run = paragraph.add_run(line)
-        run.font.name = font_name
-        run.font.size = Pt(font_size_pt)
-        r_pr = run._element.get_or_add_rPr()
-        r_fonts = r_pr.get_or_add_rFonts()
-        r_fonts.set(qn("w:eastAsia"), font_name)
-        r_fonts.set(qn("w:ascii"), font_name)
-        r_fonts.set(qn("w:hAnsi"), font_name)
-        r_fonts.set(qn("w:cs"), font_name)
-
-
-def append_appendix_c_from_factor(
-    document: DocxDocument,
-    *,
-    factor_lines: Sequence[str],
-) -> None:
-    missing_message = "未能找到完整 PSI 输入桩基数据，请检查当前平台运行目录下 psiinp* 文件是否存在且内容完整。"
-    try:
-        appendix_lines = _extract_appendix_c_pile_lines(factor_lines)
-    except ValueError:
-        appendix_lines = [missing_message]
-    if not appendix_lines:
-        appendix_lines = [missing_message]
-    document.add_page_break()
-    _append_appendix_title(document, "附录C：桩基数据")
-    _append_raw_text_lines(document, appendix_lines, font_size_pt=7.5, font_name="宋体_GB2312")
-
-
-def _resolve_default_appendix_a_reference(template_path: str) -> str:
-    return str(get_report_defaults()["appendix_a_reference_path"])
-
-
 def _render_cover_fields(
     document: DocxDocument,
     *,
@@ -2043,8 +1864,6 @@ def render_report_doc(
     *,
     template_path: str,
     output_path: str,
-    appendix_a_reference_path: str | None = None,
-    appendix_c_factor_lines: Sequence[str] | None = None,
     cover_platform_name: str = "",
     report_date_text: str = "",
     analysis_summary: Mapping[str, Any],
@@ -2091,12 +1910,5 @@ def render_report_doc(
     _clear_fixed_analysis_model_prompts(document)
     _clear_design_level_analysis_template_prompts(document)
     _clear_45_template_prompts(document)
-    append_appendix_a_from_reference(
-        document,
-        reference_path=appendix_a_reference_path or _resolve_default_appendix_a_reference(template_path),
-    )
-    append_empty_appendix_b(document)
-    if appendix_c_factor_lines is not None:
-        append_appendix_c_from_factor(document, factor_lines=appendix_c_factor_lines)
 
     return _save_document(document, output_path)

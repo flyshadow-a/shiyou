@@ -2,8 +2,7 @@
   "special_strategy_images_root": "Y:\\special_strategy_images",
   "report_image_output_root": "Y:\\shiyou_file_storage\\image",
   "report_defaults": {
-    "template_file": "xxx平台改建可行性评估报告纯净版.docx",
-    "appendix_a_reference_file": "xxx平台改建可行性评估报告.docx"
+    "template_file": "xxx平台改建可行性评估报告纯净版.docx"
   },
   "analysis_model": {
     "overall_model": {

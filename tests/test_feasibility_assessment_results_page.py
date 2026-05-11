@@ -241,7 +241,7 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         self.assertEqual("YZ_左.png", coordinate_config["yz_file"])
         self.assertEqual(Path(r"Y:\shiyou_file_storage\image\WC19-1D\coordinate_system.png"), coordinate_config["output_path"])
         self.assertEqual(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report" / "xxx平台改建可行性评估报告纯净版.docx", report_defaults["template_path"])
-        self.assertEqual(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report" / "xxx平台改建可行性评估报告.docx", report_defaults["appendix_a_reference_path"])
+        self.assertNotIn("appendix_a_reference_path", report_defaults)
         self.assertNotIn("factor_path", report_defaults)
         self.assertNotIn("output_path", report_defaults)
 
@@ -295,6 +295,78 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
                 page._generate_report({"chapter_1_3": {}})
 
         local_generate.assert_called_once()
+
+    def test_open_report_output_directory_selects_generated_file(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch(
+            "pages.feasibility_assessment_results_page.QProcess.startDetached",
+            return_value=True,
+        ) as start_detached, patch(
+            "pages.feasibility_assessment_results_page.os.startfile"
+        ) as startfile:
+            output_path = Path(tmp_dir) / "WC19-1D_可行性评估报告.docx"
+            output_path.write_text("report", encoding="utf-8")
+
+            result = page._open_report_output_directory(str(output_path))
+
+        self.assertTrue(result)
+        start_detached.assert_called_once_with("explorer", ["/select,", str(output_path.resolve())])
+        startfile.assert_not_called()
+
+    def test_open_report_output_directory_falls_back_to_parent_directory(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch(
+            "pages.feasibility_assessment_results_page.QProcess.startDetached",
+            return_value=False,
+        ) as start_detached, patch(
+            "pages.feasibility_assessment_results_page.os.startfile"
+        ) as startfile:
+            output_path = Path(tmp_dir) / "WC19-1D_可行性评估报告.docx"
+            output_path.write_text("report", encoding="utf-8")
+
+            result = page._open_report_output_directory(str(output_path))
+
+        self.assertTrue(result)
+        start_detached.assert_called_once()
+        startfile.assert_called_once_with(str(Path(tmp_dir).resolve()))
+
+    def test_on_generate_report_starts_background_worker(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page._report_thread = None
+        output_path = r"C:\reports\WC19-1D_可行性评估报告.docx"
+
+        with patch.object(page, "_validate_environment_conditions_for_report", return_value=""), patch.object(
+            page,
+            "_build_report_payload",
+            return_value={"output_filename": "WC19-1D_可行性评估报告.docx"},
+        ), patch.object(page, "_select_report_output_path", return_value=output_path), patch.object(
+            page,
+            "_start_report_generation_worker",
+        ) as start_worker:
+            page._on_generate_report()
+
+        start_worker.assert_called_once()
+        payload = start_worker.call_args.args[0]
+        self.assertEqual(output_path, payload["output_path"])
+
+    def test_report_generation_finished_opens_selected_output_file(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page._report_progress = None
+        page._report_button = None
+        page._report_thread = None
+        page._report_worker = None
+        output_path = r"C:\reports\WC19-1D_可行性评估报告.docx"
+
+        with patch.object(page, "_open_report_output_directory", return_value=True) as open_directory, patch(
+            "pages.feasibility_assessment_results_page.QMessageBox.information"
+        ) as information, patch("pages.feasibility_assessment_results_page.QMessageBox.warning") as warning:
+            page._on_report_generation_finished({"output_path": output_path})
+
+        open_directory.assert_called_once_with(output_path)
+        information.assert_called_once()
+        warning.assert_not_called()
 
     def test_get_wordtemplate_project_root_points_to_embedded_report_module(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
