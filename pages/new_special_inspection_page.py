@@ -11,11 +11,11 @@ from typing import Any, List
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QWidget,
-    QFileDialog, QMessageBox, QScrollArea,
-    QAbstractItemView, QSizePolicy, QDialog, QDialogButtonBox,
+    QFileDialog, QMessageBox, QProgressDialog, QScrollArea,
+    QApplication, QAbstractItemView, QSizePolicy, QDialog, QDialogButtonBox,
     QTreeWidget, QTreeWidgetItem, QSplitter
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtCore import QObject, Qt, pyqtSignal, QThread, QTimer
 
 from core.app_paths import external_path, external_root, first_existing_path
 from core.base_page import BasePage
@@ -339,6 +339,34 @@ class _NoWheelFileTable(QTableWidget):
 
 
 
+class _SpecialStrategyCalculationWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        facility_code: str,
+        *,
+        param_overrides: dict[str, Any] | None = None,
+        input_overrides: dict[str, Any] | None = None,
+    ):
+        super().__init__()
+        self._facility_code = facility_code
+        self._param_overrides = dict(param_overrides or {})
+        self._input_overrides = dict(input_overrides or {})
+
+    def run(self) -> None:
+        try:
+            result = run_special_strategy_calculation(
+                self._facility_code,
+                param_overrides=self._param_overrides,
+                input_overrides=self._input_overrides,
+            )
+            self.finished.emit(result)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class NewSpecialInspectionPage(BasePage):
     """
     新增检测策略打开的页面：
@@ -368,8 +396,18 @@ class NewSpecialInspectionPage(BasePage):
         self.fatigue_input_files: List[str] = []
         self._file_meta_by_path: dict[str, dict[str, Any]] = {}
         self._model_files_helper_widget: ModelFilesDocsWidget | None = None
+        self.btn_update_risk: QPushButton | None = None
+        self.btn_view_result: QPushButton | None = None
+        self._risk_progress: QProgressDialog | None = None
+        self._risk_progress_base_text = ""
+        self._risk_progress_tick = 0
+        self._risk_thread: QThread | None = None
+        self._risk_worker: _SpecialStrategyCalculationWorker | None = None
 
         super().__init__("", parent)
+        self._risk_progress_timer = QTimer(self)
+        self._risk_progress_timer.setInterval(320)
+        self._risk_progress_timer.timeout.connect(self._update_risk_progress_text)
         self._build_ui()
         self._reload_system_files_from_backend()
 
@@ -898,11 +936,13 @@ class NewSpecialInspectionPage(BasePage):
         btn_update.setObjectName("BigBlueBtn")
         btn_update.setFixedWidth(200)
         btn_update.clicked.connect(self._on_update_risk_level)
+        self.btn_update_risk = btn_update
 
         btn_view = QPushButton("查看结果")
         btn_view.setObjectName("BigBlueBtn")
         btn_view.setFixedWidth(200)
         btn_view.clicked.connect(self._on_view_result)
+        self.btn_view_result = btn_view
 
         btn_row.addWidget(btn_update)
         btn_row.addWidget(btn_view)
@@ -951,25 +991,113 @@ class NewSpecialInspectionPage(BasePage):
         self._refresh_model_preview()
         QMessageBox.information(self, "提取模型", "已从系统文件库提取并刷新模型文件。")
 
-    def _on_update_risk_level(self):
-        if not self._validate_fatigue_groups():
-            return
-        try:
-            result_bundle = run_special_strategy_calculation(
-                self.facility_code,
-                param_overrides=self._collect_runtime_overrides(),
-                input_overrides=self._collect_runtime_input_overrides(),
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "更新风险等级失败", f"风险结果计算失败：\n{exc}")
-            return
+    def _show_risk_progress(self, text: str) -> None:
+        base_text = (text or "正在计算风险等级").rstrip(".。 ")
+        self._risk_progress_base_text = base_text
+        self._risk_progress_tick = 0
+        progress = self._risk_progress
+        if progress is None:
+            progress = QProgressDialog(f"{base_text}...", None, 0, 0, self)
+            progress.setWindowTitle("更新风险等级")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setCancelButton(None)
+            progress.setMinimumDuration(0)
+            progress.setAutoClose(False)
+            progress.setAutoReset(False)
+            self._risk_progress = progress
+        else:
+            progress.setLabelText(f"{base_text}...")
+        progress.show()
+        if not self._risk_progress_timer.isActive():
+            self._risk_progress_timer.start()
+        QApplication.processEvents()
 
+    def _update_risk_progress_text(self) -> None:
+        if self._risk_progress is None or not self._risk_progress_base_text:
+            return
+        dot_count = (self._risk_progress_tick % 3) + 1
+        self._risk_progress.setLabelText(f"{self._risk_progress_base_text}{'.' * dot_count}")
+        self._risk_progress_tick += 1
+
+    def _close_risk_progress(self) -> None:
+        if self._risk_progress_timer.isActive():
+            self._risk_progress_timer.stop()
+        if self._risk_progress is not None:
+            try:
+                self._risk_progress.close()
+            except Exception:
+                pass
+            self._risk_progress = None
+        self._risk_progress_base_text = ""
+        self._risk_progress_tick = 0
+
+    def _set_risk_running(self, running: bool) -> None:
+        if self.btn_update_risk is not None:
+            self.btn_update_risk.setEnabled(not running)
+        if self.btn_view_result is not None:
+            self.btn_view_result.setEnabled(not running)
+        if running:
+            self._show_risk_progress("正在计算风险等级")
+        else:
+            self._close_risk_progress()
+
+    def _on_risk_thread_finished(self) -> None:
+        self._risk_thread = None
+        self._risk_worker = None
+
+    def _start_risk_calculation_worker(
+        self,
+        *,
+        param_overrides: dict[str, Any] | None = None,
+        input_overrides: dict[str, Any] | None = None,
+    ) -> None:
+        self._set_risk_running(True)
+
+        thread = QThread(self)
+        worker = _SpecialStrategyCalculationWorker(
+            self.facility_code,
+            param_overrides=param_overrides,
+            input_overrides=input_overrides,
+        )
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_risk_calculation_finished)
+        worker.failed.connect(self._on_risk_calculation_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._on_risk_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        self._risk_thread = thread
+        self._risk_worker = worker
+        thread.start()
+
+    def _on_risk_calculation_finished(self, result_bundle: dict[str, Any]) -> None:
+        self._set_risk_running(False)
         self._risk_updated = True
         state = result_bundle.get("state") if isinstance(result_bundle, dict) else {}
         run_id = state.get("db_run_id") if isinstance(state, dict) else None
         self._latest_run_id = int(run_id) if isinstance(run_id, int) else run_id
         self.strategy_calculated.emit(self.facility_code, self._latest_run_id)
         QMessageBox.information(self, "更新风险等级", "已按当前参数完成风险结果计算。")
+
+    def _on_risk_calculation_failed(self, message: str) -> None:
+        self._set_risk_running(False)
+        QMessageBox.warning(self, "更新风险等级失败", f"风险结果计算失败：\n{message}")
+
+    def _on_update_risk_level(self):
+        if not self._validate_fatigue_groups():
+            return
+        if self._risk_thread is not None and self._risk_thread.isRunning():
+            QMessageBox.information(self, "提示", "风险结果正在计算，请稍候。")
+            return
+        self._start_risk_calculation_worker(
+            param_overrides=self._collect_runtime_overrides(),
+            input_overrides=self._collect_runtime_input_overrides(),
+        )
 
     def _validate_fatigue_groups(self) -> bool:
         result_files = self._sorted_existing_paths(

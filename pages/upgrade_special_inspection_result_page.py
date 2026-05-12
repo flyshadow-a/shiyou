@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 # pages/upgrade_special_inspection_result_page.py
 
+from pathlib import Path
 from typing import Any
 
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea,
-    QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider, QApplication
+    QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider, QApplication, QProgressDialog
 )
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QObject, Qt, pyqtSignal, QThread, QTimer
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 
 from core.base_page import BasePage
@@ -26,6 +27,24 @@ NODE_SUMMARY_CONTEXT_MAP = {
     "+20年": "第20年",
     "+25年": "第25年",
 }
+
+
+class _SpecialStrategyReportWorker(QObject):
+    finished = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, facility_code: str, run_id: int | None = None):
+        super().__init__()
+        self._facility_code = facility_code
+        self._run_id = run_id
+
+    def run(self) -> None:
+        try:
+            service = SpecialStrategyResultService()
+            report_path = service.generate_report(self._facility_code, run_id=self._run_id)
+            self.finished.emit(str(report_path))
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class PlanDiagram(QWidget):
@@ -163,6 +182,14 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._export_key = None
         self._pending_report_after_risk_export = False
         self.btn_report = None
+        self._report_progress = None
+        self._report_progress_base_text = ""
+        self._report_progress_tick = 0
+        self._report_thread = None
+        self._report_worker = None
+        self._report_progress_timer = QTimer(self)
+        self._report_progress_timer.setInterval(320)
+        self._report_progress_timer.timeout.connect(self._update_report_progress_text)
 
         self._build_ui()
         self._load_result_data()
@@ -1089,6 +1116,73 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             return
         btn.setEnabled(not busy)
         btn.setText(text if busy else "生成特检策略报告")
+        if busy:
+            self._show_report_progress(text)
+        else:
+            self._close_report_progress()
+
+    def _show_report_progress(self, text: str) -> None:
+        self._report_progress_base_text = (text or "正在处理").rstrip(".。 ")
+        self._report_progress_tick = 0
+        message = f"{self._report_progress_base_text}..."
+        progress = self._report_progress
+        if progress is None:
+            progress = QProgressDialog(message, None, 0, 0, self)
+            progress.setWindowTitle("生成特检策略报告")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setCancelButton(None)
+            progress.setMinimumDuration(0)
+            progress.setAutoClose(False)
+            progress.setAutoReset(False)
+            self._report_progress = progress
+        else:
+            progress.setLabelText(message)
+        progress.show()
+        if not self._report_progress_timer.isActive():
+            self._report_progress_timer.start()
+        QApplication.processEvents()
+
+    def _update_report_progress_text(self) -> None:
+        if self._report_progress is None or not self._report_progress_base_text:
+            return
+        dot_count = (self._report_progress_tick % 3) + 1
+        self._report_progress.setLabelText(f"{self._report_progress_base_text}{'.' * dot_count}")
+        self._report_progress_tick += 1
+
+    def _close_report_progress(self) -> None:
+        if self._report_progress_timer.isActive():
+            self._report_progress_timer.stop()
+        if self._report_progress is not None:
+            try:
+                self._report_progress.close()
+            except Exception:
+                pass
+            self._report_progress = None
+        self._report_progress_base_text = ""
+        self._report_progress_tick = 0
+
+    def _on_report_thread_finished(self) -> None:
+        self._report_thread = None
+        self._report_worker = None
+
+    def _start_report_generation_worker(self) -> None:
+        thread = QThread(self)
+        worker = _SpecialStrategyReportWorker(self.facility_code, self.run_id)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_report_generation_finished)
+        worker.failed.connect(self._on_report_generation_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._on_report_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        self._report_thread = thread
+        self._report_worker = worker
+        thread.start()
 
     def _on_report(self):
         """
@@ -1103,6 +1197,9 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         if self._export_timer.isActive():
             QMessageBox.information(self, "提示", "检验等级图正在导出，请稍候。")
             return
+        if self._report_thread is not None and self._report_thread.isRunning():
+            QMessageBox.information(self, "提示", "特检策略报告正在生成，请稍候。")
+            return
 
         self._pending_report_after_risk_export = True
         self._set_report_button_busy(True, "正在导出检验等级图...")
@@ -1110,12 +1207,28 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
     def _do_generate_report_after_risk_export(self):
         self._pending_report_after_risk_export = False
-        self._set_report_button_busy(True, "正在生成报告...")
-        try:
-            report_path = self._result_service.generate_report(self.facility_code, run_id=self.run_id)
-        except Exception as exc:
-            QMessageBox.warning(self, "生成报告失败", f"特检策略报告生成失败：\n{exc}")
-            self._set_report_button_busy(False)
+        if self._report_thread is not None and self._report_thread.isRunning():
             return
+        self._set_report_button_busy(True, "正在生成报告...")
+        self._start_report_generation_worker()
+
+    def _on_report_generation_finished(self, report_path_text: str) -> None:
         self._set_report_button_busy(False)
-        QMessageBox.information(self, "生成报告", f"特检策略报告已生成：\n{report_path}")
+        word_path = Path(str(report_path_text)).resolve()
+        pdf_path = word_path.with_suffix(".pdf")
+        if pdf_path.exists():
+            QMessageBox.information(
+                self,
+                "生成报告",
+                f"特检策略报告已生成：\nWord：{word_path}\nPDF：{pdf_path}",
+            )
+            return
+        QMessageBox.information(
+            self,
+            "生成报告",
+            f"特检策略报告已生成：\nWord：{word_path}",
+        )
+
+    def _on_report_generation_failed(self, message: str) -> None:
+        self._set_report_button_busy(False)
+        QMessageBox.warning(self, "生成报告失败", f"特检策略报告生成失败：\n{message}")

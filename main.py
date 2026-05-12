@@ -3,6 +3,7 @@
 
 import sys
 import os
+import ctypes
 
 from vtkmodules.vtkCommonCore import vtkObject, vtkLogger
 
@@ -41,6 +42,7 @@ WINDOWS_SONGTI_FONT_CANDIDATES = [
     "Microsoft YaHei UI",
     "Microsoft YaHei",
 ]
+WINDOWS_APP_USER_MODEL_ID = "shiyou.platform.load.management"
 
 
 def pick_windows_compatible_zh_font() -> str:
@@ -82,12 +84,38 @@ def get_external_path(relative_path):
 
 # ==========================================
 
+
+def load_app_icon() -> QIcon:
+    for relative_path in ("logo.ico", os.path.join("pict", "logo.png")):
+        icon_path = get_resource_path(relative_path)
+        if not os.path.exists(icon_path):
+            continue
+        icon = QIcon(icon_path)
+        if not icon.isNull():
+            return icon
+    return QIcon()
+
+
+def set_windows_app_user_model_id() -> None:
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_USER_MODEL_ID)
+    except Exception:
+        pass
+
+
+# ==========================================
+
 class MainWindow(QMainWindow):
     def __init__(self, auth_service: AuthService, session: UserSession | None = None):
         super().__init__()
         self.auth_service = auth_service
         self.session: UserSession | None = session
         self.setWindowTitle("海上平台结构载荷管理系统")
+        app_icon = load_app_icon()
+        if not app_icon.isNull():
+            self.setWindowIcon(app_icon)
         self.resize(1280, 720)
 
         # 左侧导航相关
@@ -781,6 +809,7 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    set_windows_app_user_model_id()
     # 开启高 DPI 自动缩放
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     # 开启高 DPI 图片自适应
@@ -793,6 +822,9 @@ def main():
     os.environ.setdefault("QT_OPENGL", "software")
 
     app = QApplication(sys.argv)
+    app_icon = load_app_icon()
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
     try:
         auth_service = AuthService()
     except Exception as exc:
@@ -800,6 +832,8 @@ def main():
         sys.exit(1)
 
     login_dialog = LoginDialog(auth_service=auth_service)
+    if not app_icon.isNull():
+        login_dialog.setWindowIcon(app_icon)
     if login_dialog.exec_() != login_dialog.Accepted or login_dialog.session is None:
         sys.exit(0)
 

@@ -29,6 +29,7 @@ def _collect_report_hiddenimports() -> list[str]:
 # Files listed in datas are copied beside the exe in the one-folder build.
 # They stay external to the executable itself.
 STATIC_DATAS = [
+    ('logo.ico', '.'),
     ('pict/*.png', 'pict'),
 ]
 EXTERNAL_RESOURCE_DATAS = [
@@ -83,7 +84,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['logo.ico'],
+    icon=str(PROJECT_ROOT / 'logo.ico'),
 )
 coll = COLLECT(
     exe,
