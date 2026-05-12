@@ -107,6 +107,25 @@ def set_windows_app_user_model_id() -> None:
 
 # ==========================================
 
+
+def maybe_run_auxiliary_worker() -> int | None:
+    worker_flag = "--report-image-export-worker"
+    if worker_flag not in sys.argv:
+        return None
+
+    filtered_argv = [sys.argv[0], *[arg for arg in sys.argv[1:] if arg != worker_flag]]
+    original_argv = list(sys.argv)
+    try:
+        sys.argv = filtered_argv
+        from services.report_image_batch_export_process import main as export_worker_main
+
+        return int(export_worker_main())
+    finally:
+        sys.argv = original_argv
+
+
+# ==========================================
+
 class MainWindow(QMainWindow):
     def __init__(self, auth_service: AuthService, session: UserSession | None = None):
         super().__init__()
@@ -843,4 +862,7 @@ def main():
 
 
 if __name__ == "__main__":
+    worker_exit_code = maybe_run_auxiliary_worker()
+    if worker_exit_code is not None:
+        sys.exit(worker_exit_code)
     main()

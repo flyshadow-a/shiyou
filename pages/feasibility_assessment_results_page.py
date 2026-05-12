@@ -1978,14 +1978,18 @@ class FeasibilityAssessmentResultsPage(BasePage):
             return
 
 
-    def _report_image_export_script_path(self) -> str:
-        return os.path.normpath(
+    def _report_image_export_command(self) -> tuple[str, list[str]]:
+        args = ["--report-image-export-worker"]
+        if getattr(sys, "frozen", False):
+            return sys.executable, args
+
+        entrypoint = os.path.normpath(
             os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "services",
-                "report_image_batch_export_process.py",
+                "main.py",
             )
         )
+        return sys.executable, [entrypoint, *args]
 
     def _set_report_button_busy(self, busy: bool, text: str = "生成评估报告") -> None:
         btn = getattr(self, "btn_generate_report", None)
@@ -2004,11 +2008,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
             QMessageBox.information(self, "提示", "轮廓图正在导出，请稍候。")
             return False
 
-        script = self._report_image_export_script_path()
-        if not os.path.exists(script):
-            QMessageBox.warning(self, "导出失败", f"未找到图片导出脚本：\n{script}")
-            return False
-
         self._outline_export_log = []
         self._pending_generate_report_after_outline = True
         self._set_report_button_busy(True, "正在导出轮廓图...")
@@ -2016,11 +2015,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
         proc = QProcess(self)
         self._outline_export_process = proc
 
-        args = [
-            script,
+        program, args = self._report_image_export_command()
+        args.extend([
             "--facility-code", str(self.facility_code or ""),
             "--mode", "outline",
-        ]
+        ])
 
         run_id = getattr(self, "run_id", None)
         if run_id:
@@ -2029,7 +2028,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             except Exception:
                 pass
 
-        proc.setProgram(sys.executable)
+        proc.setProgram(program)
         proc.setArguments(args)
         proc.setProcessChannelMode(QProcess.MergedChannels)
 

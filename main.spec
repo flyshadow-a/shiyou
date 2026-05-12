@@ -50,6 +50,7 @@ a = Analysis(
     hiddenimports=[
         'xlrd',
         'openpyxl',
+        'services.report_image_batch_export_process',
         *REPORT_HIDDENIMPORTS,
         *SPECIAL_STRATEGY_HIDDENIMPORTS,
     ],
