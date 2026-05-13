@@ -21,6 +21,11 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from core.file_name_utils import (
+    normalize_download_save_path,
+    sanitize_download_filename,
+    unique_download_target_path,
+)
 from services.file_db_adapter import (
     append_docman_file,
     FileBackendError,
@@ -514,6 +519,7 @@ class DocManWidget(QFrame):
                 self._load_record_list_from_db()
                 self._normalize_records()
                 self.refresh()
+                QMessageBox.information(self, "上传成功", "上传成功")
                 return
             except FileBackendError as exc:
                 QMessageBox.warning(self, "上传失败", str(exc))
@@ -537,9 +543,10 @@ class DocManWidget(QFrame):
                 rec["category"] = result.get("category_name") or current_category
                 rec["work_condition"] = result.get("work_condition") or rec.get("work_condition", "")
                 rec["logical_path"] = result.get("logical_path") or rec.get("logical_path", "")
-                dt = result.get("source_modified_at") or result.get("uploaded_at")
+                dt = result.get("uploaded_at") or result.get("source_modified_at") or result.get("updated_at")
                 rec["mtime"] = dt.strftime("%Y/%m/%d %H:%M") if dt else QDateTime.currentDateTime().toString("yyyy/M/d HH:mm")
                 self.refresh()
+                QMessageBox.information(self, "上传成功", "上传成功")
                 return
             except FileBackendError as exc:
                 QMessageBox.warning(self, "错误", str(exc))
@@ -560,12 +567,17 @@ class DocManWidget(QFrame):
         except Exception as exc:
             QMessageBox.warning(self, "错误", f"复制文件失败：{exc}")
             return
+        try:
+            os.utime(target_path, None)
+        except OSError:
+            pass
 
         rec["path"] = target_path
         rec["fmt"] = self._format_label_from_path(target_path)
         rec["filename"] = filename
         rec["mtime"] = QDateTime.currentDateTime().toString("yyyy/M/d HH:mm")
         self.refresh()
+        QMessageBox.information(self, "上传成功", "上传成功")
 
     @staticmethod
     def _format_label_from_path(file_path: str) -> str:
@@ -626,9 +638,16 @@ class DocManWidget(QFrame):
 
         if len(available) == 1:
             src_path, default_name = available[0]
-            save_path, _ = QFileDialog.getSaveFileName(self, "保存文件", default_name, "所有文件 (*.*)")
+            safe_default_name = sanitize_download_filename(default_name, fallback=os.path.basename(src_path))
+            save_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "保存文件",
+                safe_default_name,
+                "",
+            )
             if not save_path:
                 return
+            save_path = normalize_download_save_path(save_path, fallback_name=safe_default_name)
             try:
                 shutil.copy2(src_path, save_path)
             except Exception as exc:
@@ -646,12 +665,7 @@ class DocManWidget(QFrame):
 
         downloaded = 0
         for src_path, filename in available:
-            target_path = os.path.join(target_dir, filename)
-            root, ext = os.path.splitext(target_path)
-            suffix = 1
-            while os.path.exists(target_path):
-                target_path = f"{root} ({suffix}){ext}"
-                suffix += 1
+            target_path = unique_download_target_path(target_dir, filename)
             try:
                 shutil.copy2(src_path, target_path)
                 downloaded += 1

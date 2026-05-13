@@ -105,8 +105,7 @@ class HistoryRebuildFilesPage(BasePage):
         card_layout.setSpacing(0)
 
         self.detail_widget = ImportantHistoryDetailWidget(card)
-        self.detail_widget.lbl_home.hide()
-        self.detail_widget.lbl_sep.hide()
+        self.detail_widget.set_path_bar_home_visible(False)
         card_layout.addWidget(self.detail_widget)
 
         self.content_scroll = QScrollArea(self)

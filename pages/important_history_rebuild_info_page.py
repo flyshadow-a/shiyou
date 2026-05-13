@@ -39,19 +39,7 @@ from services.file_db_adapter import DOC_MAN_MODULE_CODE, soft_delete_files_by_p
 from .file_management_platforms import default_platform, sync_platform_dropdowns
 from .construction_docs_widget import ConstructionDocsWidget
 from .doc_man import DocManWidget, apply_docman_table_style
-
-
-class ClickableLabel(QLabel):
-    clicked = pyqtSignal()
-
-    def __init__(self, text="", parent=None):
-        super().__init__(text, parent)
-        self.setCursor(Qt.PointingHandCursor)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit()
-        super().mouseReleaseEvent(event)
+from .file_path_bar import PathBreadcrumbBar
 
 
 class FolderTile(QFrame):
@@ -205,6 +193,8 @@ class InspectionProjectDialog(QDialog):
 
 
 class ImportantHistoryDetailWidget(QWidget):
+    homeClicked = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -212,6 +202,7 @@ class ImportantHistoryDetailWidget(QWidget):
         self._breadcrumb_font_ratio = 0.015
         self._current_projects = []
         self._current_folder_name = "历史改造信息"
+        self._path_bar_show_home = True
         self.facility_code = ""
 
         self._build_ui()
@@ -345,39 +336,9 @@ class ImportantHistoryDetailWidget(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        header = QFrame(self)
-        header.setObjectName("PathBar")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(10, 3, 10, 3)
-        header_layout.setSpacing(6)
-
-        icon_label = QLabel(header)
-        pix = QPixmap(self._folder_icon_path)
-        if not pix.isNull():
-            pix = pix.scaled(20, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        icon_label.setPixmap(pix)
-        icon_label.setObjectName("PathIcon")
-
-        self.lbl_home = ClickableLabel("首页", header)
-        self.lbl_home.setObjectName("Breadcrumb")
-
-        self.lbl_sep = QLabel(">", header)
-        self.lbl_sep.setObjectName("BreadcrumbArrow")
-        self.lbl_sep.setContentsMargins(4, 0, 4, 0)
-
-        self.lbl_folder = QLabel("历史改造信息", header)
-        self.lbl_folder.setObjectName("BreadcrumbCurrent")
-
-        header_layout.addWidget(icon_label)
-        header_layout.addSpacing(4)
-        header_layout.addWidget(self.lbl_home)
-        header_layout.addSpacing(4)
-        header_layout.addWidget(self.lbl_sep)
-        header_layout.addSpacing(4)
-        header_layout.addWidget(self.lbl_folder)
-        header_layout.addStretch()
-
-        main_layout.addWidget(header, 0)
+        self.path_bar = PathBreadcrumbBar(self._folder_icon_path, self)
+        self.path_bar.pathClicked.connect(self._on_breadcrumb_path_clicked)
+        main_layout.addWidget(self.path_bar, 0)
 
         content = QFrame(self)
         content_layout = QVBoxLayout(content)
@@ -454,29 +415,6 @@ class ImportantHistoryDetailWidget(QWidget):
 
         self.setStyleSheet(
             """
-            QFrame#PathBar {
-                background-color: #006bb3;
-            }
-            QLabel#PathIcon {
-                background-color: #004a87;
-                border-radius: 3px;
-            }
-            QLabel#Breadcrumb {
-                color: #ffffff;
-                background-color: transparent;
-            }
-            QLabel#Breadcrumb:hover {
-                text-decoration: underline;
-            }
-            QLabel#BreadcrumbCurrent {
-                font-weight: bold;
-                color: #ffffff;
-                background-color: transparent;
-            }
-            QLabel#BreadcrumbArrow {
-                color: #ffffff;
-                background-color: transparent;
-            }
             QFrame#HistoryDescFrame {
                 background-color: #0b78d0;
                 border-radius: 8px;
@@ -517,12 +455,13 @@ class ImportantHistoryDetailWidget(QWidget):
 
         self.load_history_event("历史改造信息")
 
+    def _on_breadcrumb_path_clicked(self, path_prefix: list[str]):
+        if not path_prefix:
+            self.homeClicked.emit()
+
     def _update_breadcrumb_font_scale(self):
-        font_size = max(11.0, min(20.0, self.width() * self._breadcrumb_font_ratio - 2.0))
-        for widget in (self.lbl_home, self.lbl_sep, self.lbl_folder):
-            font = widget.font()
-            font.setPointSizeF(font_size)
-            widget.setFont(font)
+        if hasattr(self, "path_bar"):
+            self.path_bar.update_font_scale()
 
     def _folder_project_type(self, folder_name: str) -> str | None:
         mapping = {
@@ -571,7 +510,7 @@ class ImportantHistoryDetailWidget(QWidget):
 
     def load_history_event(self, folder_name: str):
         self._current_folder_name = folder_name
-        self.lbl_folder.setText(folder_name)
+        self.path_bar.set_path([folder_name], show_home=self._path_bar_show_home)
         facility_code = self.facility_code or default_platform()["facility_code"]
         project_type = self._folder_project_type(folder_name)
         rows = list_inspection_projects(facility_code, project_type) if project_type else []
@@ -687,6 +626,14 @@ class ImportantHistoryDetailWidget(QWidget):
         self.facility_code = (code or "").strip()
         self._reload_current_folder()
 
+    def set_path_bar_home_visible(self, visible: bool):
+        self._path_bar_show_home = bool(visible)
+        if hasattr(self, "path_bar"):
+            self.path_bar.set_path(
+                [self._current_folder_name],
+                show_home=self._path_bar_show_home,
+            )
+
     def _populate_files_table(self, files):
         self.files_table.clearContents()
         self.files_table.setRowCount(len(files))
@@ -782,7 +729,7 @@ class ImportantHistoryEventsPage(BasePage):
         self.stack.addWidget(self.home_page)
 
         self.detail_widget = ImportantHistoryDetailWidget(self)
-        self.detail_widget.lbl_home.clicked.connect(self._go_home)
+        self.detail_widget.homeClicked.connect(self._go_home)
         self.stack.addWidget(self.detail_widget)
         self.stack.setCurrentIndex(0)
 

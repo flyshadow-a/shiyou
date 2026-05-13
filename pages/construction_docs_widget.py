@@ -10,21 +10,11 @@ from PyQt5.QtWidgets import (
     QGridLayout, QToolButton, QPushButton, QTableWidget, QTableWidgetItem,
     QHeaderView, QFileDialog, QMessageBox, QAbstractItemView
 )
-from PyQt5.QtGui import QPixmap, QIcon, QDesktopServices
+from PyQt5.QtGui import QIcon, QDesktopServices
 from PyQt5.QtCore import Qt, QSize, QDateTime, pyqtSignal, QUrl
 
 from pages.doc_man import DocManWidget, apply_docman_table_style
-
-
-class ClickableLabel(QLabel):
-    """一个简单的可点击 QLabel，发出 clicked() 信号。"""
-    clicked = pyqtSignal()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
-
+from pages.file_path_bar import PathBreadcrumbBar
 
 class ConstructionDocsWidget(QWidget):
     navigationStateChanged = pyqtSignal(bool)
@@ -139,30 +129,6 @@ class ConstructionDocsWidget(QWidget):
                 border: 1px solid #d1d5db;
             }
 
-            QFrame#PathBar {
-                background-color: #006bb3;
-                color: #ffffff;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
-            }
-
-            QLabel#Breadcrumb {
-                color: #ffffff;
-                background-color: transparent;
-            }
-            QLabel#Breadcrumb:hover {
-                text-decoration: underline;
-            }
-            QLabel#BreadcrumbCurrent {
-                font-weight: bold;
-                color: #ffffff;
-                background-color: transparent;
-            }
-            QLabel#BreadcrumbArrow {
-                color: #ffffff;
-                background-color: transparent;
-            }
-
             QToolButton#FolderButton {
                 border: none;
                 padding: 4px;
@@ -263,37 +229,9 @@ class ConstructionDocsWidget(QWidget):
         card_layout.setContentsMargins(0, 0, 0, 0)
         card_layout.setSpacing(0)
 
-        # === 顶部蓝色路径栏 ===
-        self.path_bar = QFrame()
-        self.path_bar.setObjectName("PathBar")
-        path_layout = QHBoxLayout(self.path_bar)
-        path_layout.setContentsMargins(10, 4, 10, 4)
-        path_layout.setSpacing(8)
-
-        # 左侧小图标
-        self.path_icon_label = QLabel()
-        self.path_icon_label.setFixedSize(22, 22)
-        self.path_icon_label.setStyleSheet("""
-            background-color: #004a87;
-            border-radius: 3px;
-        """)
-        if os.path.exists(self.folder_icon_path):
-            pix = QPixmap(self.folder_icon_path)
-            if not pix.isNull():
-                pix = pix.scaled(20, 20, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.path_icon_label.setPixmap(pix)
-
-        # 面包屑
-        self.breadcrumb_container = QFrame()
-        self.breadcrumb_layout = QHBoxLayout(self.breadcrumb_container)
-        self.breadcrumb_layout.setContentsMargins(0, 0, 0, 0)
-        self.breadcrumb_layout.setSpacing(4)
+        self.path_bar = PathBreadcrumbBar(self.folder_icon_path, self)
+        self.path_bar.pathClicked.connect(self._on_breadcrumb_clicked)
         self._update_path_label()
-
-        path_layout.addWidget(self.path_icon_label)
-        path_layout.addWidget(self.breadcrumb_container)
-        path_layout.addStretch()
-
         card_layout.addWidget(self.path_bar)
 
         # === 中间内容区域 ===
@@ -403,49 +341,11 @@ class ConstructionDocsWidget(QWidget):
 
     # ---------------- 面包屑 ---------------- #
     def _update_path_label(self):
-        while self.breadcrumb_layout.count():
-            item = self.breadcrumb_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
-
-        segments = [("首页", [])]
-        for i, name in enumerate(self.current_path):
-            segments.append((name, self.current_path[: i + 1]))
-
-        for idx, (name, path_prefix) in enumerate(segments):
-            is_last = (idx == len(segments) - 1)
-            lbl = ClickableLabel(name)
-            if is_last:
-                lbl.setObjectName("BreadcrumbCurrent")
-            else:
-                lbl.setObjectName("Breadcrumb")
-                lbl.setCursor(Qt.PointingHandCursor)
-                lbl.clicked.connect(
-                    lambda p=path_prefix: self._on_breadcrumb_clicked(p)
-                )
-            self.breadcrumb_layout.addWidget(lbl)
-
-            if idx != len(segments) - 1:
-                arrow = QLabel(">")
-                arrow.setObjectName("BreadcrumbArrow")
-                self.breadcrumb_layout.addWidget(arrow)
-
-        self._update_breadcrumb_font_scale()
+        self.path_bar.set_path(self.current_path)
 
     def _update_breadcrumb_font_scale(self):
-        if not hasattr(self, "breadcrumb_layout"):
-            return
-
-        font_size = max(11.0, min(20.0, self.width() * self.breadcrumb_font_ratio - 2.0))
-        for i in range(self.breadcrumb_layout.count()):
-            item = self.breadcrumb_layout.itemAt(i)
-            widget = item.widget()
-            if widget is None or not isinstance(widget, QLabel):
-                continue
-            font = widget.font()
-            font.setPointSizeF(font_size)
-            widget.setFont(font)
+        if hasattr(self, "path_bar"):
+            self.path_bar.update_font_scale()
 
     def _on_breadcrumb_clicked(self, path_prefix: List[str]):
         self.current_path = list(path_prefix)
@@ -661,6 +561,10 @@ class ConstructionDocsWidget(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "错误", f"复制文件失败：{e}")
             return
+        try:
+            os.utime(dest_path, None)
+        except OSError:
+            pass
 
         now_str = QDateTime.currentDateTime().toString("yyyy/M/d")
         rec["mtime"] = now_str
@@ -668,7 +572,7 @@ class ConstructionDocsWidget(QWidget):
 
         self._fill_table(records)
 
-        QMessageBox.information(self, "上传成功", f"文件已上传到：\n{dest_path}")
+        QMessageBox.information(self, "上传成功", "上传成功")
 
     # 下载逻辑：打开对应行的文件
     def _handle_cell_download(self, row: int):

@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from services.special_strategy_runtime import generate_special_strategy_report, list_result_run_history, load_result_bundle
+from services.special_strategy_runtime import (
+    build_report_output_path,
+    generate_special_strategy_report,
+    list_result_run_history,
+    load_result_bundle,
+)
 
 
 @dataclass(frozen=True)
@@ -178,5 +183,14 @@ class SpecialStrategyResultService:
         *,
         run_id: int | None = None,
         metadata: dict[str, Any] | None = None,
+        output_path: str | None = None,
     ):
-        return generate_special_strategy_report(facility_code, run_id=run_id, metadata=metadata)
+        return generate_special_strategy_report(
+            facility_code,
+            run_id=run_id,
+            metadata=metadata,
+            output_path=output_path,
+        )
+
+    def default_report_path(self, facility_code: str) -> str:
+        return str(build_report_output_path(facility_code))

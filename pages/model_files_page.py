@@ -7,39 +7,33 @@ import datetime
 from typing import Any, Dict, List
 
 from PyQt5.QtCore import Qt, QUrl, pyqtSignal
-from PyQt5.QtGui import QDesktopServices, QFontMetrics, QPixmap
+from PyQt5.QtGui import QDesktopServices, QFontMetrics
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QSizePolicy, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QStackedWidget, QMessageBox, QFileDialog, QWidget
+    QScrollArea, QStackedWidget, QMessageBox, QFileDialog, QWidget
 )
 
-from base_page import BasePage
-from dropdown_bar import DropdownBar
+from core.base_page import BasePage
+from core.dropdown_bar import DropdownBar
+from core.file_name_utils import (
+    normalize_download_save_path,
+    sanitize_download_filename,
+    unique_download_target_path,
+)
 from .file_management_platforms import default_platform, sync_platform_dropdowns
-from .doc_man import DocManWidget
-from file_db_adapter import (
+from .doc_man import DocManWidget, apply_docman_table_style
+from .file_path_bar import PathBreadcrumbBar
+from services.file_db_adapter import (
+    hard_delete_record,
     is_file_db_configured,
     list_files_by_prefix,
     resolve_storage_path,
-    soft_delete_record,
     upload_file,
 )
 
 # ✅ 直接复用 ConstructionDocsWidget 的文件夹UI与交互（FolderButton / folder_grid / PathBar 等）
 from .construction_docs_widget import ConstructionDocsWidget
-
-# ============================================================
-# 辅助：可点击 Label（用于“首页”）
-# ============================================================
-class ClickableLabel(QLabel):
-    clicked = pyqtSignal()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
-
 
 # ============================================================
 # 1) Widget：文件夹UI = ConstructionDocsWidget；叶子表格页 = 旧逻辑表格
@@ -54,7 +48,7 @@ class ModelFilesDocsWidget(QWidget):
     模型文件专用内容区：
     - Folder View：直接用 ConstructionDocsWidget 画（严格复用其布局/样式/交互）
     - Leaf View：使用旧逻辑的 QTableWidget（序号|类别|格式|修改时间|上传|下载|备注）
-    - ✅ Breadcrumb：本文件自带的蓝色 HeaderBar 仅用于叶子页；文件夹页使用 ConstructionDocsWidget 自带 PathBar
+    - ✅ Breadcrumb：叶子页和文件夹页都使用统一 PathBreadcrumbBar
     """
 
     def __init__(self, parent=None):
@@ -197,120 +191,18 @@ class ModelFilesDocsWidget(QWidget):
                 break
         return node
 
-    # ------------------------------------------------------------------
-    # （保留）面包屑 HeaderBar：仅用于叶子页（不影响其他逻辑）
-    # ------------------------------------------------------------------
     def _build_breadcrumb_bar(self) -> QWidget:
-        bar = QFrame(self)
-        bar.setObjectName("BreadcrumbBar")
-        bar.setFixedHeight(40)
-
-        self.breadcrumb_layout = QHBoxLayout(bar)
-        self.breadcrumb_layout.setContentsMargins(12, 0, 12, 0)
-        self.breadcrumb_layout.setSpacing(8)
-        self.breadcrumb_layout.setAlignment(Qt.AlignVCenter)
-
-        # 统一样式（蓝色 header bar + 白字）
-        bar.setStyleSheet("""
-            QFrame#BreadcrumbBar { background-color: #1e3a8a; border: none; }
-            QLabel { color: #ffffff; }
-            QLabel#BreadcrumbHome { font-weight: 600; }
-            QLabel#BreadcrumbCrumb { font-weight: 600; }
-        """)
+        icon_path = os.path.join(self._get_project_root(), "pict", "wenjian.png")
+        bar = PathBreadcrumbBar(icon_path, self)
+        bar.pathClicked.connect(self._on_breadcrumb_clicked)
         return bar
 
-    def _clear_layout(self, layout: QHBoxLayout):
-        while layout.count():
-            item = layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-
-    def _load_folder_icon_pixmap(self):
-        # 优先使用项目根目录/pict 下的资源（按你项目约定）
-        project_root = self._get_project_root()
-        pict_dir = os.path.join(project_root, "pict")
-        candidates = [
-            os.path.join(pict_dir, "folder.png"),
-            os.path.join(pict_dir, "wenjian.png"),
-            os.path.join(pict_dir, "folder_icon.png"),
-        ]
-        for p in candidates:
-            if os.path.exists(p):
-                pix = QPixmap(p)
-                if not pix.isNull():
-                    return pix
-        return None
-
-    def _go_home_from_breadcrumb(self):
-        # 点击“首页” => 回根目录文件夹视图
-        self.current_path = []
-        self.current_leaf_key = ""
-        self._refresh_folder_view()
-        self.docs_widget.content_stack.setCurrentWidget(self.docs_widget.folder_page)
-
-        # ✅ 叶子页面包屑隐藏，文件夹页交给 ConstructionDocsWidget
-        self.breadcrumb_bar.hide()
-        self._emit_navigation_state()
-
     def _update_breadcrumb_bar(self):
-        # 清空并重建
-        self._clear_layout(self.breadcrumb_layout)
-
-        # 文件夹图标
-        lbl_folder_icon = QLabel(self.breadcrumb_bar)
-        lbl_folder_icon.setFixedSize(18, 18)
-        lbl_folder_icon.setScaledContents(True)
-        pix = self._load_folder_icon_pixmap()
-        if pix:
-            lbl_folder_icon.setPixmap(pix)
-        else:
-            lbl_folder_icon.setText("📁")
-            lbl_folder_icon.setAlignment(Qt.AlignCenter)
-
-        # “首页”
-        lbl_home = ClickableLabel("首页", self.breadcrumb_bar)
-        lbl_home.setObjectName("BreadcrumbHome")
-        lbl_home.setCursor(Qt.PointingHandCursor)
-        lbl_home.clicked.connect(self._go_home_from_breadcrumb)
-
-        self.breadcrumb_layout.addWidget(lbl_folder_icon, 0)
-        self.breadcrumb_layout.addWidget(lbl_home, 0)
-
-        # 逐级面包屑：首页 > A > B > C
-        prefix = []
-        for idx, name in enumerate(self.current_path):
-            # 分隔符 >
-            sep = QLabel(">", self.breadcrumb_bar)
-            self.breadcrumb_layout.addWidget(sep, 0)
-
-            # 每一级都可点（点到任意一级回退到该层）
-            crumb = ClickableLabel(name, self.breadcrumb_bar)
-            crumb.setObjectName("BreadcrumbCrumb")
-            crumb.setCursor(Qt.PointingHandCursor)
-
-            prefix.append(name)
-            crumb_prefix = list(prefix)  # 绑定当前 prefix 的副本
-            crumb.clicked.connect(lambda p=crumb_prefix: self._on_breadcrumb_clicked(p))
-
-            self.breadcrumb_layout.addWidget(crumb, 0)
-
-        self.breadcrumb_layout.addStretch(1)
-        self._update_breadcrumb_font_scale()
+        self.breadcrumb_bar.set_path(self.current_path)
 
     def _update_breadcrumb_font_scale(self):
-        if not hasattr(self, "breadcrumb_layout"):
-            return
-
-        font_size = max(11.0, min(20.0, self.width() * self.breadcrumb_font_ratio - 2.0))
-        for i in range(self.breadcrumb_layout.count()):
-            item = self.breadcrumb_layout.itemAt(i)
-            widget = item.widget()
-            if widget is None or not isinstance(widget, QLabel):
-                continue
-            font = widget.font()
-            font.setPointSizeF(font_size)
-            widget.setFont(font)
+        if hasattr(self, "breadcrumb_bar"):
+            self.breadcrumb_bar.update_font_scale()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -320,33 +212,11 @@ class ModelFilesDocsWidget(QWidget):
     # 表格工具（来自旧代码）
     # ------------------------------------------------------------------
     def _init_table_common(self, table: QTableWidget):
+        apply_docman_table_style(table)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectItems)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
-        table.setAlternatingRowColors(True)
         table.setShowGrid(False)
-
-        table.setStyleSheet("""
-            QTableWidget {
-                background-color: #ffffff;
-                gridline-color: #d0d0d0;
-            }
-            QTableWidget::item {
-                border-bottom: 1px solid #d0d0d0;
-                border-right:  1px solid #d0d0d0;
-            }
-            QTableWidget::item:selected {
-                background-color: #dbeafe;
-                color: #111827;
-            }
-            QHeaderView::section {
-                background-color: #f3f4f6;
-                border: 0px;
-                border-bottom: 1px solid #d0d0d0;
-                border-right:  1px solid #d0d0d0;
-                padding: 4px 8px;
-            }
-        """)
 
         hh = table.horizontalHeader()
         hh.setDefaultAlignment(Qt.AlignCenter)
@@ -387,7 +257,7 @@ class ModelFilesDocsWidget(QWidget):
         table.verticalHeader().setDefaultSectionSize(h)
 
     # ------------------------------------------------------------------
-    # UI 构建：叶子页才显示本文件蓝色面包屑；文件夹/首页完全交给 ConstructionDocsWidget
+    # UI 构建：叶子页显示统一路径栏；文件夹/首页交给 ConstructionDocsWidget
     # ------------------------------------------------------------------
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -470,16 +340,17 @@ class ModelFilesDocsWidget(QWidget):
             return
 
         if node.get("type") == "folder":
+            self.current_leaf_key = ""
             self._refresh_folder_view()
             self.docs_widget.content_stack.setCurrentWidget(self.docs_widget.folder_page)
 
-            # ✅ 文件夹页：隐藏本文件蓝色面包屑，使用 ConstructionDocsWidget 自带 PathBar
+            # 文件夹页：使用 ConstructionDocsWidget 内部的统一路径栏
             self.breadcrumb_bar.hide()
         else:
             self._show_files_for_current_leaf()
             self.docs_widget.content_stack.setCurrentWidget(self.docs_widget.files_page)
 
-            # ✅ 叶子页：显示本文件蓝色面包屑（不影响你旧逻辑）
+            # 叶子页：显示统一路径栏
             self._update_breadcrumb_bar()
             self.breadcrumb_bar.show()
         self._emit_navigation_state()
@@ -499,13 +370,13 @@ class ModelFilesDocsWidget(QWidget):
             self._refresh_folder_view()
             self.docs_widget.content_stack.setCurrentWidget(self.docs_widget.folder_page)
 
-            # ✅ 文件夹页：隐藏本文件蓝色面包屑，使用 ConstructionDocsWidget 自带 PathBar
+            # 文件夹页：使用 ConstructionDocsWidget 内部的统一路径栏
             self.breadcrumb_bar.hide()
         else:
             self._show_files_for_current_leaf()
             self.docs_widget.content_stack.setCurrentWidget(self.docs_widget.files_page)
 
-            # ✅ 叶子页：显示本文件蓝色面包屑（不影响你旧逻辑）
+            # 叶子页：显示统一路径栏
             self._update_breadcrumb_bar()
             self.breadcrumb_bar.show()
         self._emit_navigation_state()
@@ -564,10 +435,8 @@ class ModelFilesDocsWidget(QWidget):
         prefixes = self._db_prefixes_for_row(path_key, cfg)
         if not prefixes:
             return []
-
         matches: List[Dict[str, Any]] = []
         seen_ids: set[int] = set()
-
         for prefix in prefixes:
             rows = list_files_by_prefix(
                 module_code="model_files",
@@ -576,16 +445,12 @@ class ModelFilesDocsWidget(QWidget):
             )
             for row in rows:
                 row_id = row.get("id")
-
-                if row_id is not None and row_id in seen_ids:
+                if row_id in seen_ids:
                     continue
                 if not self._db_row_matches_cfg(row, cfg):
                     continue
-
-                if row_id is not None:
-                    seen_ids.add(row_id)
+                seen_ids.add(row_id)
                 matches.append(row)
-
         matches.sort(
             key=lambda item: (
                 str(item.get("logical_path") or ""),
@@ -594,58 +459,22 @@ class ModelFilesDocsWidget(QWidget):
         )
         return matches
 
-        
     def _db_prefixes_for_row(self, path_key: str, cfg: Dict[str, Any]) -> List[str]:
         if not self.facility_code or not path_key:
             return []
-
         parts = path_key.split("/")
         if len(parts) < 2:
             return []
-
         model_root = parts[0]
         base = f"{self.facility_code}/{model_root}"
         fmt = str(cfg.get("fmt") or "").lower()
-
-        prefix_map: dict[str, list[str]] = {
-            # 结构模型体系
-            "sacinp": [f"{base}/结构模型"],
-            "seainp": [f"{base}/结构模型", f"{base}/结构模型/海况"],
-            "psiinp": [f"{base}/结构模型", f"{base}/结构模型/桩基"],
-            "jcninp": [f"{base}/结构模型", f"{base}/结构模型/建模"],
-            "psilst": [f"{base}/静力", f"{base}/结构模型", f"{base}/静力分析"],
-
-            # 动力/地震
-            "dyninp": [f"{base}/地震分析", f"{base}/地震分析/输入"],
-            "dyrinp": [f"{base}/地震分析", f"{base}/地震分析/输入"],
-            "pilinp": [f"{base}/地震分析", f"{base}/地震分析/输入"],
-            "lst": [f"{base}/地震分析", f"{base}/地震分析/结果"],
-
-            # 疲劳
-            "ftginp": [f"{base}/疲劳分析", f"{base}/疲劳分析/输入"],
-            "ftglst": [f"{base}/疲劳分析", f"{base}/疲劳分析/结果"],
-            "wvrinp": [f"{base}/疲劳分析", f"{base}/疲劳分析/结果"],
-
-            # 倒塌
-            "clpinp": [f"{base}/倒塌分析", f"{base}/倒塌分析/模型"],
-            "clplog": [f"{base}/倒塌分析", f"{base}/倒塌分析/结果"],
-            "clplst": [f"{base}/倒塌分析", f"{base}/倒塌分析/结果"],
-            "clprst": [f"{base}/倒塌分析", f"{base}/倒塌分析/结果"],
-
-            # 其他
-            "othinp": [f"{base}/其他", f"{base}/其他模型"],
-            "othlst": [f"{base}/其他", f"{base}/其他分析结果"],
-        }
-
-        prefixes = prefix_map.get(fmt, [])
-        # 去重但保留顺序
-        out: list[str] = []
-        seen: set[str] = set()
-        for item in prefixes:
-            if item not in seen:
-                seen.add(item)
-                out.append(item)
-        return out
+        if fmt == "sacinp":
+            return [f"{base}/结构模型"]
+        if fmt.startswith("clp"):
+            return [f"{base}/倒塌分析"]
+        if fmt.startswith("ftg") or fmt == "wvrinp":
+            return [f"{base}/疲劳分析"]
+        return []
 
     def _db_row_matches_cfg(self, row: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
         name = str(row.get("original_name") or "").lower()
@@ -654,59 +483,24 @@ class ModelFilesDocsWidget(QWidget):
 
         if fmt == "sacinp":
             return name.startswith("sacinp")
-
-        if fmt == "seainp":
-            return name.startswith("seainp") or "/海况" in logical_path
-
-        if fmt == "psiinp":
-            return name.startswith("psiinp") or "/桩基" in logical_path
-
-        if fmt == "jcninp":
-            return name.startswith("jcninp") or "/建模" in logical_path or "/冲剪" in logical_path
-
-        if fmt == "psilst":
-            return name.startswith("psilst")
-
-        if fmt == "dyninp":
-            return name.startswith("dyninp")
-
-        if fmt == "dyrinp":
-            return name.startswith("dyrinp")
-
-        if fmt == "pilinp":
-            return name.startswith("pilinp")
-
-        if fmt == "lst":
-            return name == "lst" or name.startswith("lst")
-
         if fmt == "clpinp":
             return name.startswith("clpinp")
-
         if fmt == "clplog":
-            return name == "clplog"
-
+            return "clplog" in name
         if fmt == "clplst":
-            return name == "clplst"
-
+            return "clplst" in name
         if fmt == "clprst":
-            return name == "clprst"
-
+            return "clprst" in name
         if fmt == "ftginp":
-            return name.startswith("ftginp") and "/输入" in logical_path
-
+            # 优先匹配带/输入 路径的文件，但如果文件名以 ftginp 开头也接受
+            return name.startswith("ftginp") and ("/输入" in logical_path or "/疲劳分析/" in logical_path)
         if fmt == "ftglst":
-            return name.startswith("ftglst") and "/结果" in logical_path
-
+            # 优先匹配带/结果 路径的文件，但如果文件名以 ftglst 开头也接受
+            return name.startswith("ftglst") and ("/结果" in logical_path or "/疲劳分析/" in logical_path)
         if fmt == "wvrinp":
             return name.startswith("wvrinp")
-
-        if fmt == "othinp":
-            return name.startswith("othinp")
-
-        if fmt == "othlst":
-            return name.startswith("othlst")
-
         return False
+
     def _build_db_remark(self, records: List[Dict[str, Any]]) -> str:
         if not records:
             return ""
@@ -729,7 +523,7 @@ class ModelFilesDocsWidget(QWidget):
         return resolve_storage_path(row)
 
     def _record_datetime(self, row: Dict[str, Any], fallback_path: str = "") -> datetime.datetime | None:
-        dt_value = row.get("source_modified_at") or row.get("uploaded_at") or row.get("updated_at")
+        dt_value = row.get("uploaded_at") or row.get("source_modified_at") or row.get("updated_at")
         if isinstance(dt_value, datetime.datetime):
             return dt_value
         if fallback_path and os.path.exists(fallback_path):
@@ -839,7 +633,7 @@ class ModelFilesDocsWidget(QWidget):
             record_id = rec.get("record_id")
             if record_id is None:
                 continue
-            soft_delete_record(int(record_id))
+            hard_delete_record(int(record_id))
             total += 1
         path_key = self.current_leaf_key
         self.row_paths_by_path.pop(path_key, None)
@@ -884,6 +678,7 @@ class ModelFilesDocsWidget(QWidget):
                 overlay_from_db=not (self.current_path and self.current_path[0] == "\u5f53\u524d\u6a21\u578b"),
                 hide_empty_templates=True,
                 db_list_mode=not (self.current_path and self.current_path[0] == "\u5f53\u524d\u6a21\u578b"),
+                show_work_condition=self._leaf_supports_work_condition(self.current_path),
             )
             return
 
@@ -978,11 +773,15 @@ class ModelFilesDocsWidget(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "\u4e0a\u4f20\u5931\u8d25", f"\u590d\u5236\u6587\u4ef6\u65f6\u51fa\u9519\uff1a\\n{e}")
             return
+        try:
+            os.utime(dest_path, None)
+        except OSError:
+            pass
 
         row_paths = self._get_row_paths_for(self.current_leaf_key)
         row_paths[target_row_index] = dest_path
         self._show_files_for_current_leaf()
-        QMessageBox.information(self, "\u4e0a\u4f20\u6210\u529f", "\u6587\u4ef6\u5df2\u4e0a\u4f20\u3002")
+        QMessageBox.information(self, "\u4e0a\u4f20\u6210\u529f", "\u4e0a\u4f20\u6210\u529f")
 
     def _handle_download(self, row: int):
         if row < 0 or row >= len(self.current_table_rows):
@@ -992,10 +791,16 @@ class ModelFilesDocsWidget(QWidget):
             QMessageBox.information(self, "\u63d0\u793a", "\u8be5\u884c\u5c1a\u672a\u4e0a\u4f20\u6587\u4ef6\uff0c\u65e0\u6cd5\u4e0b\u8f7d\u3002")
             return
 
-        default_name = os.path.basename(path)
-        save_path, _ = QFileDialog.getSaveFileName(self, "\u9009\u62e9\u4fdd\u5b58\u4f4d\u7f6e", default_name, "\u6240\u6709\u6587\u4ef6 (*.*)")
+        default_name = sanitize_download_filename(os.path.basename(path))
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "\u9009\u62e9\u4fdd\u5b58\u4f4d\u7f6e",
+            default_name,
+            "",
+        )
         if not save_path:
             return
+        save_path = normalize_download_save_path(save_path, fallback_name=default_name)
 
         try:
             shutil.copy2(path, save_path)
@@ -1049,6 +854,11 @@ class ModelFilesDocsWidget(QWidget):
 
     def _build_doc_man_records(self) -> Dict[str, List[Dict]]:
         return {path_key: [] for path_key in self.doc_man_configs}
+
+    def _leaf_supports_work_condition(self, path_list: List[str] | None = None) -> bool:
+        target_path = list(path_list or self.current_path)
+        node = self._get_node_by_path(target_path)
+        return bool(node and node.get("type") == "leaf" and node.get("model_key") in {"fatigue", "collapse"})
 
     def _pick_category_option(self, categories: List[str], *keywords: str, fallback: str = "其他") -> str:
         for option in categories:
@@ -1141,16 +951,18 @@ class ModelFilesDocsWidget(QWidget):
         logical_path = rec.get("logical_path") or self._upload_logical_path_for_category(path_key, current_category)
         record_id = rec.get("record_id")
         if record_id is not None and not self._category_allows_multiple_files(current_category):
-            soft_delete_record(int(record_id))
+            hard_delete_record(int(record_id))
         result = upload_file(
             file_path,
             file_type_code=self._doc_category_to_file_type_code(current_category),
             module_code="model_files",
             logical_path=logical_path,
             facility_code=self.facility_code,
+            category_name=current_category,
+            work_condition=rec.get("work_condition") or "",
             remark=rec.get("remark") or "",
         )
-        dt = result.get("source_modified_at") or result.get("uploaded_at")
+        dt = result.get("uploaded_at") or result.get("source_modified_at") or result.get("updated_at")
         resolved_path = resolve_storage_path(result)
         rec["checked"] = False
         rec["category"] = current_category
@@ -1160,11 +972,12 @@ class ModelFilesDocsWidget(QWidget):
         rec["path"] = resolved_path
         rec["record_id"] = result.get("id")
         rec["logical_path"] = str(result.get("logical_path") or logical_path)
+        rec["work_condition"] = str(result.get("work_condition") or rec.get("work_condition") or "")
         rec["_force_visible"] = True
 
         self.row_paths_by_path.pop(path_key, None)
         self.row_db_records_by_path.pop(path_key, None)
-        QMessageBox.information(self, "上传成功", "文件已保存到当前目录。")
+        QMessageBox.information(self, "上传成功", "上传成功")
 
     def _handle_model_doc_download(self, selected: List[Dict[str, Any]], _records: List[Dict[str, Any]]):
         available: list[tuple[str, str]] = []
@@ -1182,9 +995,16 @@ class ModelFilesDocsWidget(QWidget):
 
         if len(available) == 1:
             src_path, default_name = available[0]
-            save_path, _ = QFileDialog.getSaveFileName(self, "保存文件", default_name, "所有文件 (*.*)")
+            safe_default_name = sanitize_download_filename(default_name, fallback=os.path.basename(src_path))
+            save_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "保存文件",
+                safe_default_name,
+                "",
+            )
             if not save_path:
                 return
+            save_path = normalize_download_save_path(save_path, fallback_name=safe_default_name)
             try:
                 shutil.copy2(src_path, save_path)
             except Exception as exc:
@@ -1202,12 +1022,7 @@ class ModelFilesDocsWidget(QWidget):
 
         downloaded = 0
         for src_path, filename in available:
-            target_path = os.path.join(target_dir, filename)
-            root, ext = os.path.splitext(target_path)
-            suffix = 1
-            while os.path.exists(target_path):
-                target_path = f"{root} ({suffix}){ext}"
-                suffix += 1
+            target_path = unique_download_target_path(target_dir, filename)
             try:
                 shutil.copy2(src_path, target_path)
                 downloaded += 1
@@ -1265,11 +1080,9 @@ class ModelFilesDocsWidget(QWidget):
     def _build_model_file_doc_records(self, path_key: str) -> List[Dict[str, Any]]:
         if not self.facility_code:
             return []
-
         categories = self.doc_man_configs.get(path_key, [])
         rows: List[Dict[str, Any]] = []
         seen_ids: set[int] = set()
-
         for prefix in self._current_model_prefixes(path_key):
             for row in list_files_by_prefix(
                 module_code="model_files",
@@ -1277,17 +1090,17 @@ class ModelFilesDocsWidget(QWidget):
                 facility_code=self.facility_code,
             ):
                 row_id = row.get("id")
-                if row_id is not None and row_id in seen_ids:
+                if row_id in seen_ids:
                     continue
-
                 logical_path = str(row.get("logical_path") or "")
-                dt = row.get("source_modified_at") or row.get("uploaded_at")
-
+                seen_ids.add(row_id)
+                dt = row.get("uploaded_at") or row.get("source_modified_at") or row.get("updated_at")
                 rows.append(
                     {
                         "index": len(rows) + 1,
                         "checked": False,
-                        "category": self._category_from_db_row(row, categories),
+                        "category": str(row.get("category_name") or "").strip() or self._category_from_db_row(row, categories),
+                        "work_condition": str(row.get("work_condition") or "").strip(),
                         "fmt": self._format_from_original_name(str(row.get("original_name") or "")),
                         "filename": str(row.get("original_name") or ""),
                         "mtime": dt.strftime("%Y/%m/%d") if dt else "",
@@ -1297,13 +1110,10 @@ class ModelFilesDocsWidget(QWidget):
                         "remark": str(row.get("remark") or ""),
                     }
                 )
-
-                if row_id is not None:
-                    seen_ids.add(row_id)
-
         rows.sort(
             key=lambda item: (
                 str(item.get("category") or ""),
+                str(item.get("work_condition") or ""),
                 str(item.get("logical_path") or ""),
                 str(item.get("filename") or ""),
             )
@@ -1311,7 +1121,7 @@ class ModelFilesDocsWidget(QWidget):
         for index, row in enumerate(rows, start=1):
             row["index"] = index
         return rows
-    
+
     def _emit_navigation_state(self):
         self.navigationStateChanged.emit(len(self.current_path) == 0)
 
@@ -1389,7 +1199,12 @@ class ModelFilesPage(BasePage):
         self.docs_widget = ModelFilesDocsWidget(card)
         card_layout.addWidget(self.docs_widget)
 
-        self.main_layout.addWidget(card, 1)
+        self.content_scroll = QScrollArea(self)
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QFrame.NoFrame)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.content_scroll.setWidget(card)
+        self.main_layout.addWidget(self.content_scroll, 1)
 
         # 可选：背景风格（不影响 ConstructionDocsWidget 内部布局）
         self.setStyleSheet("""

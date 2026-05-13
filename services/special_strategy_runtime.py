@@ -1132,6 +1132,7 @@ def generate_special_strategy_report(
     *,
     run_id: int | None = None,
     metadata: dict[str, Any] | None = None,
+    output_path: str | Path | None = None,
 ) -> Path:
     code = normalize_facility_code(facility_code)
     run_payload = load_strategy_run_by_id(run_id) if run_id else None
@@ -1196,7 +1197,13 @@ def generate_special_strategy_report(
     context["appendix_generated_plan"] = appendix_generated_plan
 
     paths = runtime_paths(code)
-    report_output_path = build_report_output_path(code, metadata_payload)
+    if output_path:
+        report_output_path = Path(output_path).expanduser().resolve()
+        if report_output_path.suffix.lower() != ".docx":
+            report_output_path = report_output_path.with_suffix(".docx")
+    else:
+        report_output_path = build_report_output_path(code, metadata_payload)
+    report_output_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_output_path = report_output_path.with_suffix(".pdf")
     report_template = Path(str(cfg["report_template"])).resolve()
     try:

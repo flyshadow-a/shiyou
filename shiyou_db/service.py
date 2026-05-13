@@ -4,7 +4,7 @@ import hashlib
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import inspect, select
@@ -221,7 +221,7 @@ class FileMetadataService:
                 stmt = stmt.where(FileRecord.facility_code == facility_code)
             if not include_deleted:
                 stmt = stmt.where(FileRecord.is_deleted.is_(False))
-            stmt = stmt.order_by(FileRecord.source_modified_at.desc(), FileRecord.uploaded_at.desc(), FileRecord.id.desc())
+            stmt = stmt.order_by(FileRecord.uploaded_at.desc(), FileRecord.updated_at.desc(), FileRecord.id.desc())
             rows = session.execute(stmt).scalars().all()
             return [self._record_to_dict(row) for row in rows]
 
@@ -235,7 +235,8 @@ class FileMetadataService:
                 raise FileNotFoundError(f"Stored file missing on disk: {source}")
             target_root = Path(target_dir).expanduser().resolve()
             target_root.mkdir(parents=True, exist_ok=True)
-            target = target_root / (download_name or row.original_name)
+            target_name = self._safe_filename(self._strip_save_dialog_wildcard(download_name or row.original_name))
+            target = target_root / target_name
             shutil.copy2(source, target)
             return str(target)
 
@@ -671,6 +672,14 @@ class FileMetadataService:
         cleaned = "".join(filtered).strip(" .")
         return cleaned or "default"
 
+    @staticmethod
+    def _strip_save_dialog_wildcard(text: str) -> str:
+        cleaned = str(text or "").strip()
+        while cleaned.endswith(".*") or cleaned.endswith("*"):
+            cleaned = cleaned[:-2] if cleaned.endswith(".*") else cleaned[:-1]
+            cleaned = cleaned.rstrip(" .")
+        return cleaned
+
     @classmethod
     def _safe_filename(cls, text: str) -> str:
         cleaned = cls._safe_storage_segment(text)
@@ -689,7 +698,18 @@ class FileMetadataService:
             "is_active": row.is_active,
         }
 
+    @staticmethod
+    def _utc_to_local_naive(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone().replace(tzinfo=None)
+
     def _record_to_dict(self, row: FileRecord) -> dict:
+        uploaded_at = self._utc_to_local_naive(row.uploaded_at)
+        updated_at = self._utc_to_local_naive(row.updated_at)
+        display_modified_at = uploaded_at or updated_at or row.source_modified_at
         return {
             "id": row.id,
             "original_name": row.original_name,
@@ -705,9 +725,10 @@ class FileMetadataService:
             "storage_rel_path": row.storage_rel_path,
             "file_size": row.file_size,
             "file_hash": row.file_hash,
-            "source_modified_at": row.source_modified_at,
-            "uploaded_at": row.uploaded_at,
-            "updated_at": row.updated_at,
+            "source_modified_at": display_modified_at,
+            "source_file_modified_at": row.source_modified_at,
+            "uploaded_at": uploaded_at,
+            "updated_at": updated_at,
             "category_name": row.category_name,
             "work_condition": row.work_condition,
             "remark": row.remark,

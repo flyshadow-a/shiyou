@@ -19,7 +19,7 @@ import shutil
 from typing import Dict, List
 
 from PyQt5.QtCore import Qt, QDateTime, QSize, QUrl, pyqtSignal
-from PyQt5.QtGui import QIcon, QPixmap, QDesktopServices, QFont
+from PyQt5.QtGui import QIcon, QDesktopServices, QFont
 from PyQt5.QtWidgets import (
     QWidget,
     QFrame,
@@ -49,6 +49,7 @@ from core.dropdown_bar import DropdownBar
 from core.message_boxes import ask_yes_no
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
 from pages.doc_man import DocManWidget, apply_docman_table_style
+from pages.file_path_bar import PathBreadcrumbBar
 from services.inspection_business_db_adapter import (
     create_inspection_project,
     list_inspection_findings,
@@ -61,18 +62,6 @@ from services.file_db_adapter import DOC_MAN_MODULE_CODE, soft_delete_files_by_p
 
 # ✅ 直接复用 ConstructionDocsWidget 的文件夹布局样式
 from pages.construction_docs_widget import ConstructionDocsWidget
-
-
-# ----------------------------------------------------------------------
-# 小工具：可点击的 QLabel，用于面包屑“首页”
-# ----------------------------------------------------------------------
-class LinkLabel(QLabel):
-    clicked = pyqtSignal()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
 
 
 class AddPeriodicInspectionDialog(QDialog):
@@ -557,63 +546,27 @@ class HistoryInspectionSummaryPage(BasePage):
     # 面包屑
     # ------------------------------------------------------------------
     def _create_breadcrumb_bar(self, parent: QWidget) -> QFrame:
-        bar = QFrame(parent)
-        bar.setObjectName("PathBar")
-        bar.setFixedHeight(40)
-
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(12, 0, 12, 0)
-        layout.setSpacing(6)
-
-        # 小文件夹图标 (深蓝底)
-        self.path_icon_label = QLabel(bar)
-        self.path_icon_label.setFixedSize(24, 24)
-        self.path_icon_label.setAlignment(Qt.AlignCenter)
-        self.path_icon_label.setObjectName("PathIcon")
-
-        pix = QPixmap(self.folder_icon_path)
-        if not pix.isNull():
-            pix = pix.scaled(18, 18, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.path_icon_label.setPixmap(pix)
-
-        layout.addWidget(self.path_icon_label)
-
-        # “首页”
-        self.lbl_home_link = LinkLabel("首页", bar)
-        self.lbl_home_link.setObjectName("Breadcrumb")
-        self.lbl_home_link.clicked.connect(lambda: self._switch_to("home"))
-        layout.addWidget(self.lbl_home_link)
-
-        # 分隔符 >
-        self.lbl_sep = QLabel(" >", bar)
-        self.lbl_sep.setObjectName("BreadcrumbArrow")
-        layout.addWidget(self.lbl_sep)
-
-        # 第二级标题：完工检测 / 第1次检测 / 第N次检测 / 历史抽检记录
-        self.lbl_second = QLabel("", bar)
-        self.lbl_second.setObjectName("BreadcrumbCurrent")
-        layout.addWidget(self.lbl_second)
-
-        layout.addStretch(1)
-
+        bar = PathBreadcrumbBar(self.folder_icon_path, parent)
+        bar.pathClicked.connect(self._on_breadcrumb_path_clicked)
         return bar
+
+    def _on_breadcrumb_path_clicked(self, path_prefix: List[str]):
+        if not path_prefix:
+            self._switch_to("home")
 
     def _update_breadcrumb(self):
         """根据 current_folder_key 更新面包屑显示。"""
+        name_map = {
+            "complete": "完工检测",
+            "periodic": "定期检测1-N",
+            "first": "第1次检测",
+            "nth": "第N次检测",
+            "history_sampling": "特殊事件检测（台风、碰撞等）",
+        }
         if self.current_folder_key == "home":
-            self.lbl_sep.setVisible(False)
-            self.lbl_second.setVisible(False)
+            self.breadcrumb_bar.set_path([])
         else:
-            self.lbl_sep.setVisible(True)
-            self.lbl_second.setVisible(True)
-            name_map = {
-                "complete": "完工检测",
-                "periodic": "定期检测1-N",
-                "first": "第1次检测",
-                "nth": "第N次检测",
-                "history_sampling": "特殊事件检测（台风、碰撞等）",
-            }
-            self.lbl_second.setText(name_map.get(self.current_folder_key, ""))
+            self.breadcrumb_bar.set_path([name_map.get(self.current_folder_key, "")])
 
     # ------------------------------------------------------------------
     # 首页：四个文件夹
@@ -1795,31 +1748,6 @@ class HistoryInspectionSummaryPage(BasePage):
                 border: none;
             }
 
-            /* 面包屑样式与 ConstructionDocsWidget 保持一致 */
-            QFrame#PathBar {
-                background-color: #006bb3;
-            }
-            QLabel#PathIcon {
-                background-color: #004a87;
-                border-radius: 3px;
-            }
-            QLabel#Breadcrumb {
-                color: #ffffff;
-                background-color: transparent;
-            }
-            QLabel#Breadcrumb:hover {
-                text-decoration: underline;
-            }
-            QLabel#BreadcrumbCurrent {
-                font-weight: bold;
-                color: #ffffff;
-                background-color: transparent;
-            }
-            QLabel#BreadcrumbArrow {
-                color: #ffffff;
-                background-color: transparent;
-            }
-
             /* 文件夹按钮 */
             QToolButton#FolderButton {
                 border: none;
@@ -1897,14 +1825,8 @@ class HistoryInspectionSummaryPage(BasePage):
         self._update_breadcrumb_font_scale()
 
     def _update_breadcrumb_font_scale(self):
-        if not hasattr(self, "lbl_home_link"):
-            return
-
-        font_size = max(11.0, min(20.0, self.width() * self.breadcrumb_font_ratio - 2.0))
-        for widget in (self.lbl_home_link, self.lbl_sep, self.lbl_second):
-            font = widget.font()
-            font.setPointSizeF(font_size)
-            widget.setFont(font)
+        if hasattr(self, "breadcrumb_bar"):
+            self.breadcrumb_bar.update_font_scale()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

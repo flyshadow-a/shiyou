@@ -452,7 +452,7 @@ def load_docman_records(
             rec["work_condition"] = latest.get("work_condition") or rec.get("work_condition", "")
             rec["remark"] = latest.get("remark") if latest.get("remark") is not None else rec.get("remark", "")
             rec["logical_path"] = latest.get("logical_path") or rec.get("logical_path", "")
-            dt = latest.get("source_modified_at") or latest.get("uploaded_at")
+            dt = latest.get("uploaded_at") or latest.get("source_modified_at") or latest.get("updated_at")
             if dt is not None:
                 rec["mtime"] = dt.strftime("%Y/%m/%d %H:%M")
         merged.append(rec)
@@ -481,7 +481,7 @@ def load_docman_record_list(
     )
     records: list[dict[str, Any]] = []
     for index, row in enumerate(ordered, start=1):
-        dt = row.get("source_modified_at") or row.get("uploaded_at")
+        dt = row.get("uploaded_at") or row.get("source_modified_at") or row.get("updated_at")
         records.append(
             {
                 "index": index,

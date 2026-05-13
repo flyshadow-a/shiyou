@@ -7,7 +7,8 @@ from typing import Any
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea,
-    QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider, QApplication, QProgressDialog
+    QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider, QApplication, QProgressDialog,
+    QFileDialog,
 )
 from PyQt5.QtCore import QObject, Qt, pyqtSignal, QThread, QTimer
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
@@ -33,15 +34,20 @@ class _SpecialStrategyReportWorker(QObject):
     finished = pyqtSignal(str)
     failed = pyqtSignal(str)
 
-    def __init__(self, facility_code: str, run_id: int | None = None):
+    def __init__(self, facility_code: str, run_id: int | None = None, output_path: str | None = None):
         super().__init__()
         self._facility_code = facility_code
         self._run_id = run_id
+        self._output_path = output_path
 
     def run(self) -> None:
         try:
             service = SpecialStrategyResultService()
-            report_path = service.generate_report(self._facility_code, run_id=self._run_id)
+            report_path = service.generate_report(
+                self._facility_code,
+                run_id=self._run_id,
+                output_path=self._output_path,
+            )
             self.finished.emit(str(report_path))
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -181,6 +187,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._export_context = None
         self._export_key = None
         self._pending_report_after_risk_export = False
+        self._pending_report_output_path = ""
         self.btn_report = None
         self._report_progress = None
         self._report_progress_base_text = ""
@@ -1165,9 +1172,9 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._report_thread = None
         self._report_worker = None
 
-    def _start_report_generation_worker(self) -> None:
+    def _start_report_generation_worker(self, output_path: str) -> None:
         thread = QThread(self)
-        worker = _SpecialStrategyReportWorker(self.facility_code, self.run_id)
+        worker = _SpecialStrategyReportWorker(self.facility_code, self.run_id, output_path=output_path)
         worker.moveToThread(thread)
 
         thread.started.connect(worker.run)
@@ -1183,6 +1190,35 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._report_thread = thread
         self._report_worker = worker
         thread.start()
+
+    def _select_report_output_path(self) -> str:
+        default_path = Path(self._result_service.default_report_path(self.facility_code))
+        default_name = str(default_path)
+        selected_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "选择特检策略报告保存路径",
+            default_name,
+            "Word 文档 (*.docx)",
+        )
+        selected_path = str(selected_path or "").strip()
+        if not selected_path:
+            return ""
+        output_path = Path(selected_path)
+        if output_path.suffix.lower() != ".docx":
+            output_path = output_path.with_suffix(".docx")
+        existing_paths = [path for path in (output_path, output_path.with_suffix(".pdf")) if path.exists()]
+        if existing_paths:
+            existing_text = "\n".join(str(path) for path in existing_paths)
+            reply = QMessageBox.question(
+                self,
+                "文件已存在",
+                f"目标位置已存在同名输出文件：\n{existing_text}\n\n是否替换？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return ""
+        return str(output_path)
 
     def _on_report(self):
         """
@@ -1201,7 +1237,12 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             QMessageBox.information(self, "提示", "特检策略报告正在生成，请稍候。")
             return
 
+        output_path = self._select_report_output_path()
+        if not output_path:
+            return
+
         self._pending_report_after_risk_export = True
+        self._pending_report_output_path = output_path
         self._set_report_button_busy(True, "正在导出检验等级图...")
         self._schedule_export_all_elevation_images(context, force=True)
 
@@ -1209,8 +1250,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._pending_report_after_risk_export = False
         if self._report_thread is not None and self._report_thread.isRunning():
             return
+        output_path = self._pending_report_output_path
+        self._pending_report_output_path = ""
+        if not output_path:
+            self._set_report_button_busy(False)
+            return
         self._set_report_button_busy(True, "正在生成报告...")
-        self._start_report_generation_worker()
+        self._start_report_generation_worker(output_path)
 
     def _on_report_generation_finished(self, report_path_text: str) -> None:
         self._set_report_button_busy(False)
