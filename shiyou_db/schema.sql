@@ -84,6 +84,19 @@ CREATE INDEX ix_inspection_projects_facility_type ON inspection_projects(facilit
 CREATE INDEX ix_inspection_projects_sort ON inspection_projects(facility_code, project_type, sort_order);
 CREATE INDEX ix_inspection_findings_project_sort ON inspection_findings(project_id, sort_order);
 
+CREATE TABLE IF NOT EXISTS platform_load_summary_snapshots (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    snapshot_key VARCHAR(100) NOT NULL,
+    snapshot_name VARCHAR(255) NULL,
+    rows_json LONGTEXT NULL,
+    row_count INT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT uk_platform_load_summary_snapshots_key UNIQUE (snapshot_key)
+);
+
+CREATE INDEX ix_platform_load_summary_snapshots_key ON platform_load_summary_snapshots(snapshot_key);
+
 CREATE TABLE IF NOT EXISTS auth_roles (
     id INT AUTO_INCREMENT PRIMARY KEY,
     code VARCHAR(50) NOT NULL UNIQUE,

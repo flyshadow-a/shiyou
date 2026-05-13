@@ -727,7 +727,7 @@ class MainWindow(QMainWindow):
         dlg = LoginDialog(auth_service=self.auth_service)
         if dlg.exec_() == dlg.Accepted and dlg.session is not None:
             self._apply_login_session(dlg.session)
-            self.show()
+            self.showMaximized()
             self.open_personal_center_page()
         else:
             self.close()
@@ -857,7 +857,7 @@ def main():
         sys.exit(0)
 
     window = MainWindow(auth_service, login_dialog.session)
-    window.show()
+    window.showMaximized()
     sys.exit(app.exec_())
 
 

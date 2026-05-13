@@ -167,3 +167,17 @@ def replace_platform_load_information_items(
     config_path: str | None = None,
 ) -> list[dict[str, Any]]:
     return _get_service(config_path).replace_platform_load_information_items(facility_code, rows)
+
+
+def save_platform_load_summary_snapshot(
+    rows: list[dict[str, Any]],
+    *,
+    snapshot_key: str = "latest",
+    snapshot_name: str | None = None,
+    config_path: str | None = None,
+) -> dict[str, Any]:
+    return _get_service(config_path).save_platform_load_summary_snapshot(
+        rows,
+        snapshot_key=snapshot_key,
+        snapshot_name=snapshot_name,
+    )

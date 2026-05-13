@@ -30,7 +30,7 @@ from PyQt5.QtWidgets import (
 
 from core.base_page import BasePage
 from core.message_boxes import ask_yes_no
-from services.inspection_business_db_adapter import save_facility_profile
+from services.inspection_business_db_adapter import list_facility_profiles, save_facility_profile
 
 try:
     import pandas as pd
@@ -218,21 +218,20 @@ class PlatformSummaryPage(BasePage):
         self.map_frame: QFrame | None = None
         self.map_canvas: QFrame | None = None
         self.map_label: QLabel | None = None
+        self._summary_refresh_timer: QTimer | None = None
 
-        bootstrap_df = self._load_default_dataframe()
-        if bootstrap_df is not None:
-            self.columns = list(bootstrap_df.columns)
-        else:
-            self.columns = ["分公司", "作业公司", "油气田", "设施编码", "设施名称"]
+        self.columns = [
+            "分公司",
+            "作业公司",
+            "油气田",
+            "设施编码",
+            "设施名称",
+            "投产时间",
+            "设计年限",
+        ]
 
         self._build_ui()
-
-        if bootstrap_df is not None:
-            self._apply_dataframe_to_table(bootstrap_df)
-        else:
-            self._load_fallback_rows()
-
-        self._sync_profiles_to_database(silent=True)
+        self._load_profiles_from_database()
 
     def _build_ui(self):
         root = QFrame()
@@ -331,9 +330,15 @@ class PlatformSummaryPage(BasePage):
             | QAbstractItemView.SelectedClicked
             | QAbstractItemView.EditKeyPressed
         )
+        self.table.itemChanged.connect(self._on_table_item_changed)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         table_layout.addWidget(self.table, 1)
+
+        self._summary_refresh_timer = QTimer(self)
+        self._summary_refresh_timer.setSingleShot(True)
+        self._summary_refresh_timer.setInterval(200)
+        self._summary_refresh_timer.timeout.connect(self._notify_summary_pages_refresh)
 
         table_btn_layout = QHBoxLayout()
         table_btn_layout.setContentsMargins(0, 0, 0, 0)
@@ -547,18 +552,56 @@ class PlatformSummaryPage(BasePage):
         if self.table is None:
             return
 
-        self._set_table_columns(list(df.columns))
-        self.table.setRowCount(0)
-        self.table.clearContents()
+        signals_blocked = self.table.blockSignals(True)
+        try:
+            self._set_table_columns(list(df.columns))
+            self.table.setRowCount(0)
+            self.table.clearContents()
 
-        for _, row_data in df.iterrows():
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            for col, col_name in enumerate(self.columns):
-                value = self._display_text(row_data.get(col_name, ""))
-                self.table.setItem(row, col, QTableWidgetItem(value))
+            for _, row_data in df.iterrows():
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                for col, col_name in enumerate(self.columns):
+                    value = self._display_text(row_data.get(col_name, ""))
+                    self.table.setItem(row, col, QTableWidgetItem(value))
 
-        self._update_table_columns()
+            self._update_table_columns()
+        finally:
+            self.table.blockSignals(signals_blocked)
+
+    def _load_profiles_from_database(self):
+        if self.table is None:
+            return
+        try:
+            profiles = list_facility_profiles()
+        except Exception as exc:
+            QMessageBox.warning(self, "读取失败", f"读取平台历史汇总信息失败：\n{exc}")
+            return
+        if not profiles:
+            return
+
+        signals_blocked = self.table.blockSignals(True)
+        try:
+            self.table.setRowCount(0)
+            self.table.clearContents()
+            for profile in profiles:
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                values = [
+                    profile.get("branch") or "",
+                    profile.get("op_company") or "",
+                    profile.get("oilfield") or "",
+                    profile.get("facility_code") or "",
+                    profile.get("facility_name") or "",
+                    profile.get("start_time") or "",
+                    profile.get("design_life") or "",
+                ]
+                for col, value in enumerate(values):
+                    self.table.setItem(row, col, QTableWidgetItem(str(value)))
+            self._update_table_columns()
+        finally:
+            self.table.blockSignals(signals_blocked)
+        self._schedule_summary_pages_refresh()
 
     def _sync_profiles_to_database(self, silent: bool = False) -> tuple[int, int, List[str]]:
         if self.table is None:
@@ -591,6 +634,29 @@ class PlatformSummaryPage(BasePage):
         if errors and not silent:
             QMessageBox.warning(self, "保存失败", "部分平台档案同步失败：\n" + "\n".join(errors[:5]))
         return saved, skipped, errors
+
+    def current_facility_profiles(self) -> List[dict]:
+        """Return profiles represented by the current table, including unsaved edits."""
+        if self.table is None:
+            return []
+
+        profiles: List[dict] = []
+        for row in range(self.table.rowCount()):
+            profile = {
+                "facility_code": self._row_value(row, ["设施编码", "平台编码", "编码"]),
+                "facility_name": self._row_value(row, ["设施名称", "平台名称"]),
+                "branch": self._row_value(row, ["分公司", "所属分公司"]),
+                "op_company": self._row_value(row, ["作业公司", "所属作业单元", "作业单元"]),
+                "oilfield": self._row_value(row, ["油气田", "所属油（气）田", "所属油气田"]),
+                "facility_type": self._row_value(row, ["设施类型", "平台类型"]),
+                "category": self._row_value(row, ["分类", "平台分类"]),
+                "start_time": self._row_value(row, ["投产时间", "投产日期"]),
+                "design_life": self._row_value(row, ["设计年限"]),
+            }
+            if not any(str(value or "").strip() for value in profile.values()):
+                continue
+            profiles.append(profile)
+        return profiles
 
     def _update_table_columns(self):
         if self.table is None:
@@ -634,6 +700,15 @@ class PlatformSummaryPage(BasePage):
 
         self.map_label.clear()
 
+    def _on_table_item_changed(self, _item: QTableWidgetItem):
+        self._schedule_summary_pages_refresh()
+
+    def _schedule_summary_pages_refresh(self):
+        if self._summary_refresh_timer is None:
+            self._notify_summary_pages_refresh()
+            return
+        self._summary_refresh_timer.start()
+
     def _update_map_display(self):
         if self._original_map_pixmap is None or self.map_label is None:
             return
@@ -669,6 +744,7 @@ class PlatformSummaryPage(BasePage):
                 self.table.setItem(row, col, QTableWidgetItem(value))
 
         self._update_table_columns()
+        self._schedule_summary_pages_refresh()
         QMessageBox.information(self, "新增完成", f"已新增 {len(rows)} 条平台记录。")
 
     def _generate_initial_data(self) -> List[List[str]]:
@@ -735,6 +811,7 @@ class PlatformSummaryPage(BasePage):
 
         for row in rows:
             self.table.removeRow(row)
+        self._schedule_summary_pages_refresh()
 
     def _copy_import_file(self, file_path: str) -> Optional[str]:
         try:
@@ -775,6 +852,7 @@ class PlatformSummaryPage(BasePage):
         saved_path = self._copy_import_file(file_path)
         self.source_excel_path = file_path
         self._apply_dataframe_to_table(df)
+        self._notify_summary_pages_refresh()
 
         message = f"已导入 {len(df)} 条平台记录。"
         if saved_path:

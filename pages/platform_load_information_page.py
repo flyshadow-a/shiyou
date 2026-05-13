@@ -16,8 +16,11 @@
 
 import os
 import csv
+import ctypes
 import random
 import re
+import subprocess
+import sys
 import openpyxl
 from typing import List, Tuple, Dict, Optional
 
@@ -57,6 +60,11 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib as mpl
 from matplotlib import font_manager
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
 def _setup_chinese_matplotlib_font():
     """为 matplotlib 设置中文字体（避免标题/坐标轴中文变成方块）。
@@ -540,7 +548,7 @@ class PlatformLoadInformationPage(BasePage):
         curve_section_layout.setSpacing(0)
 
         curve_wrap = QWidget()
-        curve_wrap.setStyleSheet("background:#ffffff; border:1px solid #c9d6e6;")
+        curve_wrap.setStyleSheet("background:#ffffff; border:none;")
         curve_layout = QVBoxLayout(curve_wrap)
         curve_layout.setContentsMargins(12, 12, 12, 12)
         curve_layout.setSpacing(10)
@@ -1935,11 +1943,80 @@ class PlatformLoadInformationPage(BasePage):
                 refresh()
 
     def _on_export(self):
-        os.makedirs(self.output_data_dir, exist_ok=True)
-        path = os.path.join(self.output_data_dir, "platform_load_information_export.csv")
-        with open(path, "w", encoding="utf-8-sig", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(self._columns())
-            for r in range(4, self._find_data_end_row()):
-                w.writerow([self._cell_text(r, c) for c in range(self.table.columnCount())])
-        QMessageBox.information(self, "导出数据", f"已导出：{path}")
+        if pd is None:
+            QMessageBox.warning(self, "导出失败", "当前导出 Excel 需要安装 pandas 和 openpyxl。")
+            return
+
+        header = self._columns()
+        rows = []
+        for r in range(4, self._find_data_end_row()):
+            row = [self._cell_text(r, c) for c in range(self.table.columnCount())]
+            if any(str(value or "").strip() for value in row):
+                rows.append(row)
+        if not rows:
+            QMessageBox.information(self, "导出数据", "当前无数据可导出。")
+            return
+
+        default_name = f"{self._get_top_value('设施编码').strip() or '平台'}_平台载荷信息.xlsx"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出平台载荷信息",
+            default_name,
+            "Excel 文件 (*.xlsx)",
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".xlsx"):
+            file_path += ".xlsx"
+
+        try:
+            pd.DataFrame(rows, columns=header).to_excel(file_path, index=False)
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", f"写入 Excel 失败：\n{exc}")
+            return
+
+        self._show_exported_file(file_path)
+
+    def _show_exported_file(self, file_path: str):
+        normalized = os.path.normpath(file_path)
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["explorer.exe", f"/select,{normalized}"])
+                self._raise_explorer_window()
+            else:
+                folder = os.path.dirname(normalized) or "."
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", folder])
+                else:
+                    subprocess.Popen(["xdg-open", folder])
+        except Exception:
+            pass
+
+    def _raise_explorer_window(self):
+        if not sys.platform.startswith("win"):
+            return
+
+        def _activate():
+            try:
+                user32 = ctypes.windll.user32
+                handles = []
+
+                @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+                def enum_proc(hwnd, _lparam):
+                    if not user32.IsWindowVisible(hwnd):
+                        return True
+                    class_name = ctypes.create_unicode_buffer(256)
+                    user32.GetClassNameW(hwnd, class_name, 256)
+                    if class_name.value in ("CabinetWClass", "ExploreWClass"):
+                        handles.append(hwnd)
+                    return True
+
+                user32.EnumWindows(enum_proc, 0)
+                if handles:
+                    hwnd = handles[-1]
+                    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+
+        QTimer.singleShot(400, _activate)

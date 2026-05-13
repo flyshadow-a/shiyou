@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 # pages/summary_information_table_page.py
 import csv
+import ctypes
 import os
+import subprocess
+import sys
 from typing import List, Dict, Any
 
 import pandas as pd
@@ -9,7 +12,7 @@ import pandas as pd
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox,
-    QHeaderView, QToolTip
+    QHeaderView, QToolTip, QFileDialog
 )
 from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtGui import QColor, QFont, QFontMetrics
@@ -20,6 +23,7 @@ from core.base_page import BasePage
 from services.inspection_business_db_adapter import (
     list_facility_profiles,
     load_platform_load_information_items,
+    save_platform_load_summary_snapshot,
 )
 
 
@@ -53,7 +57,7 @@ class SummaryInformationTablePage(BasePage):
         self.data_dir = first_existing_path("data")
         self.output_data_dir = external_path("data")
         self._build_ui()
-        self.refresh_from_database(show_warning=False)
+        self.refresh_from_file_summary_page()
 
     def _build_ui(self):
         # 更贴近示例图：浅蓝灰底、细边框、表头同色
@@ -145,7 +149,6 @@ class SummaryInformationTablePage(BasePage):
             "填表说明\n"
             "1、变化率、重心、桩基承载力安全系数、是否整体评估：每年更新一次，填写最新数据。\n"
             "2、变化量=变化总重/建造总操作重量。\n"
-            f"（数据来源：platform_total.xls；本页从样表筛选字段并映射到当前表格列）"
         )
         self.note_label.setWordWrap(True)
         self.note_label.setStyleSheet("color:#111827; font-size:12pt; padding:10px; background: #e6eef7; border-top: 1px solid #b6c2d6;")
@@ -270,17 +273,30 @@ class SummaryInformationTablePage(BasePage):
             return p2
         return os.path.join(self.output_data_dir, self.EXCEL_NAME)  # 默认返回外部 data 路径（用于报错提示）
 
-    def refresh_from_database(self, show_warning: bool = True):
-        try:
-            profiles = list_facility_profiles()
-        except Exception as exc:
-            if show_warning:
-                QMessageBox.warning(self, "读取失败", f"读取平台档案数据库失败：\n{exc}")
-            self._apply_data([])
-            return
-
-        rows = [self._build_summary_row(profile, index) for index, profile in enumerate(profiles, start=1)]
+    def refresh_from_file_summary_page(self):
+        profiles = self._profiles_from_open_file_summary_page()
+        rows = []
+        if profiles:
+            rows = [self._build_summary_row(profile, index) for index, profile in enumerate(profiles, start=1)]
         self._apply_data(rows)
+
+    def refresh_from_database(self, show_warning: bool = True):
+        self.refresh_from_file_summary_page()
+
+    def _profiles_from_open_file_summary_page(self) -> List[Dict[str, Any]] | None:
+        mw = self.window()
+        tab_widget = getattr(mw, "tab_widget", None)
+        if tab_widget is None:
+            return None
+
+        for index in range(tab_widget.count()):
+            page = tab_widget.widget(index)
+            if page is self:
+                continue
+            getter = getattr(page, "current_facility_profiles", None)
+            if callable(getter):
+                return getter()
+        return None
 
     def _build_summary_row(self, profile: Dict[str, Any], index: int) -> List[str]:
         facility_code = str(profile.get("facility_code") or "").strip()
@@ -477,28 +493,111 @@ class SummaryInformationTablePage(BasePage):
 
     # ---------- actions ----------
     def _on_save(self):
-        QMessageBox.information(self, "保存", "示例：保存当前汇总信息表（后续接真实存储逻辑）。")
+        rows = self._collect_data_rows()
+        if not rows:
+            QMessageBox.information(self, "保存", "当前无汇总数据可保存。")
+            return
+        try:
+            result = save_platform_load_summary_snapshot(
+                rows,
+                snapshot_key="latest",
+                snapshot_name="载荷汇总信息",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "保存失败", f"保存载荷汇总信息失败：\n{exc}")
+            return
+        QMessageBox.information(
+            self,
+            "保存成功",
+            f"已保存当前载荷汇总信息，共 {result.get('row_count', len(rows))} 条记录。",
+        )
+
+    def _collect_data_rows(self) -> List[Dict[str, str]]:
+        header = self._columns()
+        header_rows = 2
+        rows: List[Dict[str, str]] = []
+        for r in range(header_rows, self.table.rowCount()):
+            values: Dict[str, str] = {}
+            has_content = False
+            for c, name in enumerate(header):
+                item = self.table.item(r, c)
+                text = item.text() if item else ""
+                values[name] = text
+                if text.strip():
+                    has_content = True
+            if has_content:
+                rows.append(values)
+        return rows
 
     def _on_export(self):
-        # 导出当前表格（不含两行表头的“合并表头行”，仅导出数据）
-        os.makedirs(self.output_data_dir, exist_ok=True)
-        export_path = os.path.join(self.output_data_dir, "summary_information_table_export.csv")
         header = self._columns()
 
-        header_rows = 2
-        data_rows = self.table.rowCount() - header_rows
-        if data_rows <= 0:
+        data = self._collect_data_rows()
+        if not data:
             QMessageBox.information(self, "导出数据", "当前无数据可导出。")
             return
 
-        with open(export_path, "w", encoding="utf-8-sig", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(header)
-            for r in range(header_rows, self.table.rowCount()):
-                row = []
-                for c in range(self.table.columnCount()):
-                    it = self.table.item(r, c)
-                    row.append(it.text() if it else "")
-                w.writerow(row)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出载荷汇总信息",
+            "载荷汇总信息.xlsx",
+            "Excel 文件 (*.xlsx)",
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".xlsx"):
+            file_path += ".xlsx"
 
-        QMessageBox.information(self, "导出数据", f"已导出：{export_path}")
+        rows = [[row.get(name, "") for name in header] for row in data]
+
+        try:
+            pd.DataFrame(rows, columns=header).to_excel(file_path, index=False)
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", f"写入 Excel 失败：\n{exc}")
+            return
+
+        self._show_exported_file(file_path)
+
+    def _show_exported_file(self, file_path: str):
+        normalized = os.path.normpath(file_path)
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["explorer.exe", f"/select,{normalized}"])
+                self._raise_explorer_window()
+            else:
+                folder = os.path.dirname(normalized) or "."
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", folder])
+                else:
+                    subprocess.Popen(["xdg-open", folder])
+        except Exception:
+            pass
+
+    def _raise_explorer_window(self):
+        if not sys.platform.startswith("win"):
+            return
+
+        def _activate():
+            try:
+                user32 = ctypes.windll.user32
+                handles = []
+
+                @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+                def enum_proc(hwnd, _lparam):
+                    if not user32.IsWindowVisible(hwnd):
+                        return True
+                    class_name = ctypes.create_unicode_buffer(256)
+                    user32.GetClassNameW(hwnd, class_name, 256)
+                    if class_name.value in ("CabinetWClass", "ExploreWClass"):
+                        handles.append(hwnd)
+                    return True
+
+                user32.EnumWindows(enum_proc, 0)
+                if handles:
+                    hwnd = handles[-1]
+                    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+
+        QTimer.singleShot(400, _activate)

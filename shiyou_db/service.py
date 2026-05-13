@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -20,6 +21,7 @@ from .models import (
     InspectionFinding,
     InspectionProject,
     PlatformLoadInformationItem,
+    PlatformLoadSummarySnapshot,
 )
 
 DEFAULT_FILE_TYPES = [
@@ -516,6 +518,32 @@ class FileMetadataService:
             session.commit()
         return self.list_platform_load_information_items(code)
 
+    def save_platform_load_summary_snapshot(
+        self,
+        rows: list[dict],
+        *,
+        snapshot_key: str = "latest",
+        snapshot_name: str | None = None,
+    ) -> dict:
+        key = (snapshot_key or "latest").strip() or "latest"
+        normalized_rows = list(rows or [])
+        with self.session_factory() as session:
+            record = session.execute(
+                select(PlatformLoadSummarySnapshot).where(
+                    PlatformLoadSummarySnapshot.snapshot_key == key
+                )
+            ).scalar_one_or_none()
+            if record is None:
+                record = PlatformLoadSummarySnapshot(snapshot_key=key)
+                session.add(record)
+            record.snapshot_name = (snapshot_name or "载荷汇总信息").strip() or None
+            record.rows_json = json.dumps(normalized_rows, ensure_ascii=False)
+            record.row_count = len(normalized_rows)
+            record.updated_at = datetime.utcnow()
+            session.commit()
+            session.refresh(record)
+            return self._platform_load_summary_snapshot_to_dict(record)
+
     def _store_file(
         self,
         source: Path,
@@ -808,6 +836,22 @@ class FileMetadataService:
             "overall_assessment": row.overall_assessment,
             "assessment_org": row.assessment_org,
             "sort_order": row.sort_order,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+    @staticmethod
+    def _platform_load_summary_snapshot_to_dict(row: PlatformLoadSummarySnapshot) -> dict:
+        try:
+            rows = json.loads(row.rows_json or "[]")
+        except Exception:
+            rows = []
+        return {
+            "id": row.id,
+            "snapshot_key": row.snapshot_key,
+            "snapshot_name": row.snapshot_name,
+            "rows": rows,
+            "row_count": row.row_count,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }
