@@ -22,6 +22,7 @@ from .models import (
     InspectionProject,
     PlatformLoadInformationItem,
     PlatformLoadSummarySnapshot,
+    PlatformSummarySnapshot,
 )
 
 DEFAULT_FILE_TYPES = [
@@ -544,6 +545,47 @@ class FileMetadataService:
             session.refresh(record)
             return self._platform_load_summary_snapshot_to_dict(record)
 
+    def load_platform_summary_snapshot(self, snapshot_key: str = "latest") -> dict | None:
+        key = (snapshot_key or "latest").strip() or "latest"
+        with self.session_factory() as session:
+            record = session.execute(
+                select(PlatformSummarySnapshot).where(
+                    PlatformSummarySnapshot.snapshot_key == key
+                )
+            ).scalar_one_or_none()
+            if record is None:
+                return None
+            return self._platform_summary_snapshot_to_dict(record)
+
+    def save_platform_summary_snapshot(
+        self,
+        columns: list[str],
+        rows: list[list[str]],
+        *,
+        snapshot_key: str = "latest",
+        snapshot_name: str | None = None,
+    ) -> dict:
+        key = (snapshot_key or "latest").strip() or "latest"
+        normalized_columns = [str(col or "") for col in (columns or [])]
+        normalized_rows = [[str(cell or "") for cell in row] for row in (rows or [])]
+        with self.session_factory() as session:
+            record = session.execute(
+                select(PlatformSummarySnapshot).where(
+                    PlatformSummarySnapshot.snapshot_key == key
+                )
+            ).scalar_one_or_none()
+            if record is None:
+                record = PlatformSummarySnapshot(snapshot_key=key)
+                session.add(record)
+            record.snapshot_name = (snapshot_name or "平台汇总信息").strip() or None
+            record.columns_json = json.dumps(normalized_columns, ensure_ascii=False)
+            record.rows_json = json.dumps(normalized_rows, ensure_ascii=False)
+            record.row_count = len(normalized_rows)
+            record.updated_at = datetime.utcnow()
+            session.commit()
+            session.refresh(record)
+            return self._platform_summary_snapshot_to_dict(record)
+
     def _store_file(
         self,
         source: Path,
@@ -850,6 +892,27 @@ class FileMetadataService:
             "id": row.id,
             "snapshot_key": row.snapshot_key,
             "snapshot_name": row.snapshot_name,
+            "rows": rows,
+            "row_count": row.row_count,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+    @staticmethod
+    def _platform_summary_snapshot_to_dict(row: PlatformSummarySnapshot) -> dict:
+        try:
+            columns = json.loads(row.columns_json or "[]")
+        except Exception:
+            columns = []
+        try:
+            rows = json.loads(row.rows_json or "[]")
+        except Exception:
+            rows = []
+        return {
+            "id": row.id,
+            "snapshot_key": row.snapshot_key,
+            "snapshot_name": row.snapshot_name,
+            "columns": columns,
             "rows": rows,
             "row_count": row.row_count,
             "created_at": row.created_at,

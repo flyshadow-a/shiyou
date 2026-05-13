@@ -75,6 +75,30 @@ def list_facility_profiles(
     return _get_service(config_path).list_facility_profiles()
 
 
+def load_platform_summary_snapshot(
+    *,
+    snapshot_key: str = "latest",
+    config_path: str | None = None,
+) -> dict[str, Any] | None:
+    return _get_service(config_path).load_platform_summary_snapshot(snapshot_key=snapshot_key)
+
+
+def save_platform_summary_snapshot(
+    columns: list[str],
+    rows: list[list[str]],
+    *,
+    snapshot_key: str = "latest",
+    snapshot_name: str | None = None,
+    config_path: str | None = None,
+) -> dict[str, Any]:
+    return _get_service(config_path).save_platform_summary_snapshot(
+        columns,
+        rows,
+        snapshot_key=snapshot_key,
+        snapshot_name=snapshot_name,
+    )
+
+
 def list_inspection_projects(
     facility_code: str,
     project_type: str,

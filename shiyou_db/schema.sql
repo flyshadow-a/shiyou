@@ -97,6 +97,20 @@ CREATE TABLE IF NOT EXISTS platform_load_summary_snapshots (
 
 CREATE INDEX ix_platform_load_summary_snapshots_key ON platform_load_summary_snapshots(snapshot_key);
 
+CREATE TABLE IF NOT EXISTS platform_summary_snapshots (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    snapshot_key VARCHAR(100) NOT NULL,
+    snapshot_name VARCHAR(255) NULL,
+    columns_json LONGTEXT NULL,
+    rows_json LONGTEXT NULL,
+    row_count INT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT uk_platform_summary_snapshots_key UNIQUE (snapshot_key)
+);
+
+CREATE INDEX ix_platform_summary_snapshots_key ON platform_summary_snapshots(snapshot_key);
+
 CREATE TABLE IF NOT EXISTS auth_roles (
     id INT AUTO_INCREMENT PRIMARY KEY,
     code VARCHAR(50) NOT NULL UNIQUE,

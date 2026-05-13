@@ -275,6 +275,13 @@ class SummaryInformationTablePage(BasePage):
 
     def refresh_from_file_summary_page(self):
         profiles = self._profiles_from_open_file_summary_page()
+        if profiles is None:
+            try:
+                profiles = list_facility_profiles()
+            except Exception as exc:
+                QMessageBox.warning(self, "读取失败", f"读取平台档案数据库失败：\n{exc}")
+                profiles = []
+
         rows = []
         if profiles:
             rows = [self._build_summary_row(profile, index) for index, profile in enumerate(profiles, start=1)]
@@ -286,16 +293,18 @@ class SummaryInformationTablePage(BasePage):
     def _profiles_from_open_file_summary_page(self) -> List[Dict[str, Any]] | None:
         mw = self.window()
         tab_widget = getattr(mw, "tab_widget", None)
-        if tab_widget is None:
-            return None
+        if tab_widget is not None:
+            for index in range(tab_widget.count()):
+                page = tab_widget.widget(index)
+                if page is self:
+                    continue
+                getter = getattr(page, "current_facility_profiles", None)
+                if callable(getter):
+                    return getter()
 
-        for index in range(tab_widget.count()):
-            page = tab_widget.widget(index)
-            if page is self:
-                continue
-            getter = getattr(page, "current_facility_profiles", None)
-            if callable(getter):
-                return getter()
+        session_cache = getattr(mw, "platform_summary_profiles_cache", None) if mw is not None else None
+        if isinstance(session_cache, list):
+            return session_cache
         return None
 
     def _build_summary_row(self, profile: Dict[str, Any], index: int) -> List[str]:

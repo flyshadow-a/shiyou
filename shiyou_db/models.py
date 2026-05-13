@@ -160,6 +160,19 @@ class PlatformLoadSummarySnapshot(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class PlatformSummarySnapshot(Base):
+    __tablename__ = "platform_summary_snapshots"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    snapshot_key: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    snapshot_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    columns_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rows_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class AuthRole(Base):
     __tablename__ = "auth_roles"
 
@@ -220,6 +233,7 @@ Index("ix_inspection_projects_sort", InspectionProject.facility_code, Inspection
 Index("ix_inspection_findings_project_sort", InspectionFinding.project_id, InspectionFinding.sort_order)
 Index("ix_platform_load_information_facility_sort", PlatformLoadInformationItem.facility_code, PlatformLoadInformationItem.sort_order)
 Index("ix_platform_load_summary_snapshots_key", PlatformLoadSummarySnapshot.snapshot_key)
+Index("ix_platform_summary_snapshots_key", PlatformSummarySnapshot.snapshot_key)
 Index("ix_auth_users_role", AuthUser.role_code)
 Index("ix_auth_users_active", AuthUser.is_active, AuthUser.is_deleted)
 Index("ix_auth_login_logs_user", AuthLoginLog.user_id)

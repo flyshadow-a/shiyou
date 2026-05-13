@@ -3,8 +3,8 @@
 
 import datetime
 import os
+import re
 import shutil
-from pathlib import Path
 from typing import List, Optional
 
 from PyQt5.QtCore import QEvent, QTimer, Qt
@@ -30,7 +30,12 @@ from PyQt5.QtWidgets import (
 
 from core.base_page import BasePage
 from core.message_boxes import ask_yes_no
-from services.inspection_business_db_adapter import list_facility_profiles, save_facility_profile
+from services.inspection_business_db_adapter import (
+    list_facility_profiles,
+    load_platform_summary_snapshot,
+    save_facility_profile,
+    save_platform_summary_snapshot,
+)
 
 try:
     import pandas as pd
@@ -201,8 +206,6 @@ class PlatformBatchAddDialog(QDialog):
 
 class PlatformSummaryPage(BasePage):
     """平台汇总信息页面。"""
-
-    DEFAULT_SAMPLE_FILE = Path(r"d:\desk\横向\平台汇总信息样表 (1).xls")
     DEFAULT_HEADER_ROW = 1
 
     def __init__(self, parent: QWidget = None):
@@ -232,6 +235,15 @@ class PlatformSummaryPage(BasePage):
 
         self._build_ui()
         self._load_profiles_from_database()
+
+    def _store_session_profiles_cache(self):
+        mw = self.window()
+        if mw is None:
+            return
+        try:
+            setattr(mw, "platform_summary_profiles_cache", self.current_facility_profiles())
+        except Exception:
+            pass
 
     def _build_ui(self):
         root = QFrame()
@@ -441,38 +453,6 @@ class PlatformSummaryPage(BasePage):
         os.makedirs(root, exist_ok=True)
         return root
 
-    def _default_excel_candidates(self) -> List[Path]:
-        candidates = [self.DEFAULT_SAMPLE_FILE]
-
-        desk_dir = Path(r"d:\desk\横向")
-        if desk_dir.exists():
-            candidates.extend(
-                sorted(
-                    desk_dir.glob("*.xls"),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-            )
-
-        candidates.extend(
-            [
-                Path(self.project_root) / "data" / "platform_total.xls",
-                Path.cwd() / "data" / "platform_total.xls",
-            ]
-        )
-        return candidates
-
-    def _load_default_dataframe(self):
-        for candidate in self._default_excel_candidates():
-            if candidate.exists():
-                try:
-                    df = self._read_excel_dataframe(str(candidate))
-                    self.source_excel_path = str(candidate)
-                    return df
-                except Exception:
-                    continue
-        return None
-
     def _ensure_excel_support(self) -> bool:
         if pd is None:
             QMessageBox.warning(
@@ -524,12 +504,33 @@ class PlatformSummaryPage(BasePage):
         return "" if text == "nan" else text
 
     def _column_index(self, names: List[str]) -> int | None:
-        normalized = {str(name).strip(): index for index, name in enumerate(self.columns)}
+        normalized = {
+            self._normalize_header_name(name): index
+            for index, name in enumerate(self.columns)
+        }
         for name in names:
-            index = normalized.get(name)
+            index = normalized.get(self._normalize_header_name(name))
             if index is not None:
                 return index
+
+        requested = [self._normalize_header_name(name) for name in names if self._normalize_header_name(name)]
+        for index, candidate in enumerate(self.columns):
+            candidate_norm = self._normalize_header_name(candidate)
+            if not candidate_norm:
+                continue
+            for target in requested:
+                if target in candidate_norm or candidate_norm in target:
+                    return index
         return None
+
+    @staticmethod
+    def _normalize_header_name(value: object) -> str:
+        text = "" if value is None else str(value).strip()
+        if not text:
+            return ""
+        text = re.sub(r"\s+", "", text)
+        text = re.sub(r"[()（）\[\]【】,:：/\\._，；;\-]", "", text)
+        return text.lower()
 
     def _row_value(self, row: int, names: List[str]) -> str:
         if self.table is None:
@@ -568,10 +569,22 @@ class PlatformSummaryPage(BasePage):
             self._update_table_columns()
         finally:
             self.table.blockSignals(signals_blocked)
+        self._store_session_profiles_cache()
 
     def _load_profiles_from_database(self):
         if self.table is None:
             return
+        try:
+            snapshot = load_platform_summary_snapshot(snapshot_key="latest")
+        except Exception as exc:
+            snapshot = None
+            QMessageBox.warning(self, "读取失败", f"读取平台历史汇总信息失败：\n{exc}")
+
+        if snapshot and snapshot.get("columns"):
+            self._apply_snapshot_to_table(snapshot)
+            self._schedule_summary_pages_refresh()
+            return
+
         try:
             profiles = list_facility_profiles()
         except Exception as exc:
@@ -601,7 +614,49 @@ class PlatformSummaryPage(BasePage):
             self._update_table_columns()
         finally:
             self.table.blockSignals(signals_blocked)
+        self._store_session_profiles_cache()
         self._schedule_summary_pages_refresh()
+
+    def _apply_snapshot_to_table(self, snapshot: dict):
+        if self.table is None:
+            return
+        columns = [str(col or "") for col in (snapshot.get("columns") or [])]
+        rows = snapshot.get("rows") or []
+        if not columns:
+            return
+
+        signals_blocked = self.table.blockSignals(True)
+        try:
+            self._set_table_columns(columns)
+            self.table.setRowCount(0)
+            self.table.clearContents()
+            for row_data in rows:
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                values = list(row_data) if isinstance(row_data, list) else []
+                for col, value in enumerate(values[: len(columns)]):
+                    self.table.setItem(row, col, QTableWidgetItem(str(value or "")))
+            self._update_table_columns()
+        finally:
+            self.table.blockSignals(signals_blocked)
+        self._store_session_profiles_cache()
+
+    def _collect_snapshot_rows(self) -> List[List[str]]:
+        if self.table is None:
+            return []
+        rows: List[List[str]] = []
+        for row in range(self.table.rowCount()):
+            values: List[str] = []
+            has_content = False
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+                text = item.text() if item is not None else ""
+                if text.strip():
+                    has_content = True
+                values.append(text)
+            if has_content:
+                rows.append(values)
+        return rows
 
     def _sync_profiles_to_database(self, silent: bool = False) -> tuple[int, int, List[str]]:
         if self.table is None:
@@ -611,19 +666,19 @@ class PlatformSummaryPage(BasePage):
         skipped = 0
         errors: List[str] = []
         for row in range(self.table.rowCount()):
-            facility_code = self._row_value(row, ["设施编码", "平台编码", "编码"])
+            facility_code = self._row_value(row, ["设施编码", "设施编号", "平台编码", "平台编号", "编码"])
             if not facility_code:
                 skipped += 1
                 continue
             payload = {
                 "facility_name": self._row_value(row, ["设施名称", "平台名称"]),
                 "branch": self._row_value(row, ["分公司", "所属分公司"]),
-                "op_company": self._row_value(row, ["作业公司", "所属作业单元", "作业单元"]),
+                "op_company": self._row_value(row, ["作业公司", "所属作业单元", "所属作业公司", "作业单元", "作业单位"]),
                 "oilfield": self._row_value(row, ["油气田", "所属油（气）田", "所属油气田"]),
                 "facility_type": self._row_value(row, ["设施类型", "平台类型"]),
                 "category": self._row_value(row, ["分类", "平台分类"]),
-                "start_time": self._row_value(row, ["投产时间", "投产日期"]),
-                "design_life": self._row_value(row, ["设计年限"]),
+                "start_time": self._row_value(row, ["投产时间", "投产日期", "投产年月"]),
+                "design_life": self._row_value(row, ["设计年限", "设计寿命"]),
             }
             try:
                 save_facility_profile(facility_code, payload)
@@ -643,15 +698,15 @@ class PlatformSummaryPage(BasePage):
         profiles: List[dict] = []
         for row in range(self.table.rowCount()):
             profile = {
-                "facility_code": self._row_value(row, ["设施编码", "平台编码", "编码"]),
+                "facility_code": self._row_value(row, ["设施编码", "设施编号", "平台编码", "平台编号", "编码"]),
                 "facility_name": self._row_value(row, ["设施名称", "平台名称"]),
                 "branch": self._row_value(row, ["分公司", "所属分公司"]),
-                "op_company": self._row_value(row, ["作业公司", "所属作业单元", "作业单元"]),
+                "op_company": self._row_value(row, ["作业公司", "所属作业单元", "所属作业公司", "作业单元", "作业单位"]),
                 "oilfield": self._row_value(row, ["油气田", "所属油（气）田", "所属油气田"]),
                 "facility_type": self._row_value(row, ["设施类型", "平台类型"]),
                 "category": self._row_value(row, ["分类", "平台分类"]),
-                "start_time": self._row_value(row, ["投产时间", "投产日期"]),
-                "design_life": self._row_value(row, ["设计年限"]),
+                "start_time": self._row_value(row, ["投产时间", "投产日期", "投产年月"]),
+                "design_life": self._row_value(row, ["设计年限", "设计寿命"]),
             }
             if not any(str(value or "").strip() for value in profile.values()):
                 continue
@@ -670,21 +725,6 @@ class PlatformSummaryPage(BasePage):
         header.setStretchLastSection(False)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-    def _load_fallback_rows(self):
-        fallback_rows = [
-            ["湛江分公司", "文昌油田群作业公司", "文昌19-1油田", "WC19-1WHPC", "文昌19-1WHPC井口平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-1WHPB", "涠洲12-1WHPB井口平台"],
-        ]
-        if self.table is None:
-            return
-        self.table.setRowCount(0)
-        for row_data in fallback_rows:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            for col, value in enumerate(row_data):
-                self.table.setItem(row, col, QTableWidgetItem(value))
-        self._update_table_columns()
-
     def _load_map_image(self):
         if self.map_label is None:
             return
@@ -701,6 +741,7 @@ class PlatformSummaryPage(BasePage):
         self.map_label.clear()
 
     def _on_table_item_changed(self, _item: QTableWidgetItem):
+        self._store_session_profiles_cache()
         self._schedule_summary_pages_refresh()
 
     def _schedule_summary_pages_refresh(self):
@@ -744,39 +785,9 @@ class PlatformSummaryPage(BasePage):
                 self.table.setItem(row, col, QTableWidgetItem(value))
 
         self._update_table_columns()
+        self._store_session_profiles_cache()
         self._schedule_summary_pages_refresh()
         QMessageBox.information(self, "新增完成", f"已新增 {len(rows)} 条平台记录。")
-
-    def _generate_initial_data(self) -> List[List[str]]:
-        initial_rows = [
-            ["湛江分公司", "文昌油田群作业公司", "文昌19-1油田", "WC19-1WHPB", "文昌19-1WHPB井口平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲6-12油田", "WZ6-12WHP", "涠洲6-12WHP井口平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-1WHPB", "涠洲12-1WHPB井口平台"],
-            ["湛江分公司", "洞洲作业公司", "洞洲11-4油田", "WZ11-4WHPC", "洞洲11-4WHPC井口平台"],
-            ["湛江分公司", "洞洲作业公司", "洞洲11-4油田", "WZ11-4CEPA", "洞洲11-4CEPA中心平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-2WHPB", "涠洲12-2WHPB井口平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-1WWHPA", "涠洲12-1WWHPA井口平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲11-2油田", "WZ11-2WHPB", "涠洲11-2WHPB井口平台"],
-            ["湛江分公司", "洞洲作业公司", "洞洲11-4油田", "WZ11-4DWHPA", "洞洲11-4DWHPA井口平台"],
-            ["湛江分公司", "洞洲作业公司", "洞洲11-4N油田", "WZ11-1NWHPA", "洞洲11-1NWHPA井口平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-1PUQBCEP", "涠洲12-1PUQBCEP中心平台"],
-            ["湛江分公司", "文昌油田群作业公司", "文昌19-1油田", "WC19-1WHPC", "文昌19-1WHPC井口平台"],
-            ["湛江分公司", "文昌油田群作业公司", "文昌8-3油田", "WC8-3WHPB", "文昌8-3WHPB井口平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-1WHPC", "涠洲12-1WHPC井口平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲11-1油田", "WZ11-1WHPA", "涠洲11-1WHPA井口平台"],
-            ["湛江分公司", "文昌油田群作业公司", "文昌14-3油田", "WC14-3WHPA", "文昌14-3WHPA井口平台"],
-            ["湛江分公司", "洞洲作业公司", "洞洲11-4油田", "WZ11-4WHPB", "洞洲11-4WHPB井口平台"],
-            ["湛江分公司", "文昌油田群作业公司", "文昌13-2油田", "WC13-2WHPA", "文昌13-2WHPA井口平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲11-2油田", "WZ11-2WHPC", "涠洲11-2WHPC井口平台"],
-            ["湛江分公司", "文昌油田群作业公司", "文昌13-6油田", "WC13-6WHPA", "文昌13-6WHPA井口平台"],
-            ["湛江分公司", "文昌油田群作业公司", "文昌23-5油田", "WS23-5WHPA", "文昌23-5WHPA井口平台"],
-            ["湛江分公司", "洞洲作业公司", "洞洲11-4N油田", "WZ11-4NWHPC", "洞洲11-4NWHPC井口平台"],
-            ["湛江分公司", "文昌油田群作业公司", "文昌9-2气田", "WC9-2/9-3CEP", "文昌9-2/9-3CEP中心平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲12-1油田", "WZ12-1CEPA", "涠洲12-1CEPA中心平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲11-1油田", "WZ11-1RP", "涠洲11-1RP立管平台"],
-            ["湛江分公司", "涠洲作业公司", "涠洲6-8油田", "WZ6-8WHPA", "涠洲6-8WHPA井口平台"],
-        ]
-        return initial_rows
 
     # ------------------------------------------------------------------ #
     # 表格增删行
@@ -811,6 +822,7 @@ class PlatformSummaryPage(BasePage):
 
         for row in rows:
             self.table.removeRow(row)
+        self._store_session_profiles_cache()
         self._schedule_summary_pages_refresh()
 
     def _copy_import_file(self, file_path: str) -> Optional[str]:
@@ -852,6 +864,7 @@ class PlatformSummaryPage(BasePage):
         saved_path = self._copy_import_file(file_path)
         self.source_excel_path = file_path
         self._apply_dataframe_to_table(df)
+        self._store_session_profiles_cache()
         self._notify_summary_pages_refresh()
 
         message = f"已导入 {len(df)} 条平台记录。"
@@ -915,11 +928,23 @@ class PlatformSummaryPage(BasePage):
         if self.table is None:
             return
 
+        try:
+            save_platform_summary_snapshot(
+                self.columns,
+                self._collect_snapshot_rows(),
+                snapshot_key="latest",
+                snapshot_name="平台汇总信息",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "保存失败", f"保存平台汇总完整表失败：\n{exc}")
+            return
+
         saved, skipped, errors = self._sync_profiles_to_database()
+        self._store_session_profiles_cache()
         self._notify_summary_pages_refresh()
         msg = f"已保存 {saved} 条平台档案到数据库。"
         if skipped:
-            msg += f"\n跳过 {skipped} 条缺少设施编码的记录。"
+            msg += f"\n跳过 {skipped} 条未识别到设施编码的记录。"
         if errors:
             msg += "\n\n失败记录：\n" + "\n".join(errors[:5])
         QMessageBox.information(self, "保存", msg)
