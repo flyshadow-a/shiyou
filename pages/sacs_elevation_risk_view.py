@@ -558,10 +558,16 @@ class SacsElevationRiskView(QGraphicsView):
             self._facility_code = (facility_code or "").strip()
             self._row_name = (row_name or "XZ 前").strip()
 
-            override_model = os.path.normpath(str(model_path_override or "").strip())
-            if override_model:
+            # model_path_override 只在“报告导出原模型/改造后模型轮廓图”时传入。
+            # 注意：不能直接 os.path.normpath("")，否则空字符串会被转换成 "."，
+            # 后续会把当前目录当作模型文件读取，导致 PermissionError: [Errno 13] Permission denied: '.'.
+            raw_override = str(model_path_override or "").strip()
+            override_model = os.path.normpath(raw_override) if raw_override else ""
+
+            if override_model and os.path.isfile(override_model):
                 self._model_path = override_model
             else:
+                # 没有传入有效 override 时，仍按平台编码解析当前模型文件。
                 self._model_path = self._resolve_model_path(self._facility_code)
 
             print("[Elevation] facility_code =", self._facility_code)
@@ -569,7 +575,7 @@ class SacsElevationRiskView(QGraphicsView):
             print("[Elevation] model_path_override =", override_model)
             print("[Elevation] resolved model_path =", self._model_path)
 
-            if not self._model_path or not os.path.exists(self._model_path):
+            if not self._model_path or not os.path.isfile(self._model_path):
                 self._draw_message("未找到结构模型文件")
                 return
 
