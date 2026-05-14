@@ -42,7 +42,6 @@ from PyQt5.QtGui import QDesktopServices
 from sqlalchemy import create_engine, text
 
 from core.base_page import BasePage
-from core.message_boxes import ask_yes_no
 
 from pages.feasibility_assessment_results_page import FeasibilityAssessmentResultsPage
 from pages.sacs_create_model_service import create_new_model_files
@@ -594,11 +593,14 @@ class FeasibilityAssessmentPage(BasePage):
         if not (header_rows <= row < table.rowCount()):
             return
 
-        if not ask_yes_no(
+        reply = QMessageBox.question(
             self,
             "确认删除",
             f"确定删除第 {row - header_rows + 1} 行吗？",
-        ):
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
             return
 
         table.removeRow(row)
@@ -1745,8 +1747,57 @@ class FeasibilityAssessmentPage(BasePage):
         except Exception:
             return ""
 
+    def _read_analysis_exit_code(self, work_dir: str) -> Optional[int]:
+        """读取 Autorun.bat 写出的 SACS 退出码。
+
+        当前 BAT 会在执行结束时写入：
+        - analysis_exitcode.txt：只包含退出码；
+        - analysis_summary.log：包含 ExitCode=...。
+
+        如果读到了退出码，说明 BAT 已经执行到尾部。原来只等待
+        analysis_stdout.log 中的固定英文完成标记，在 stdout 没有该标记时会
+        卡在“等待结果写入...”。
+        """
+        work_dir = os.path.normpath(str(work_dir or "").strip())
+        if not work_dir:
+            return None
+
+        exitcode_path = os.path.join(work_dir, "analysis_exitcode.txt")
+        exit_text = self._read_tail_text(exitcode_path, max_bytes=8 * 1024).strip()
+        if exit_text:
+            # 通常内容就是一行 0；这里也兼容 ExitCode=0 等格式。
+            for token in exit_text.replace("=", " ").replace(";", " ").replace(",", " ").split():
+                token = token.strip()
+                if token.lstrip("+-").isdigit():
+                    try:
+                        return int(token)
+                    except Exception:
+                        pass
+
+        summary_path = os.path.join(work_dir, "analysis_summary.log")
+        summary_text = self._read_tail_text(summary_path, max_bytes=64 * 1024)
+        for raw_line in reversed(summary_text.splitlines()):
+            line = raw_line.strip()
+            if not line:
+                continue
+            low = line.lower().replace(" ", "")
+            if not low.startswith("exitcode="):
+                continue
+            value = line.split("=", 1)[-1].strip()
+            if value.lstrip("+-").isdigit():
+                try:
+                    return int(value)
+                except Exception:
+                    return None
+
+        return None
+
     def _analysis_output_has_error(self, work_dir: str, result_file: str) -> str:
-        """从日志/结果尾部识别明显错误。只做强错误判断，避免误杀正常结果。"""
+        """从退出码/日志/结果尾部识别明显错误。只做强错误判断，避免误杀正常结果。"""
+        exit_code = self._read_analysis_exit_code(work_dir)
+        if exit_code is not None and exit_code != 0:
+            return f"ExitCode={exit_code}"
+
         paths = [
             os.path.join(work_dir, "analysis_stdout.log"),
             os.path.join(work_dir, "analysis_stderr.log"),
@@ -1774,18 +1825,16 @@ class FeasibilityAssessmentPage(BasePage):
         return ""
 
     def _analysis_runx_has_done_marker(self, work_dir: str) -> bool:
-        """判断 RUNX 脚本是否真正跑到 EXIT 段。
+        """判断 RUNX/BAT 是否已经真正结束。
 
-        不能只看 QProcess.finished，也不能只看 psilst.factor 大小稳定。
-        SACS 不同模块之间可能隔几秒才继续写 psilst.factor；如果只连续 3 秒大小不变，
-        就容易把中间文件误判为“计算完成”。
-
-        RUNX 文件末尾会输出：
-            SACS Linear Static Analysis Finished
-        失败时会输出：
-            *** ERROR in SACS Execution ***
-        这两个标记都会进入 analysis_stdout.log，因此这里用它们判断 RUNX 是否走完。
+        优先依据 analysis_exitcode.txt / analysis_summary.log。只要 BAT 已经写出
+        ExitCode，就说明它已经执行到尾部；stdout/stderr 中的完成文本只作为
+        兼容旧版本 SACS 输出的兜底。
         """
+        exit_code = self._read_analysis_exit_code(work_dir)
+        if exit_code is not None:
+            return True
+
         stdout_text = self._read_tail_text(os.path.join(work_dir, "analysis_stdout.log"), max_bytes=512 * 1024)
         stderr_text = self._read_tail_text(os.path.join(work_dir, "analysis_stderr.log"), max_bytes=512 * 1024)
         text = (stdout_text + "\n" + stderr_text).lower()
@@ -1811,9 +1860,9 @@ class FeasibilityAssessmentPage(BasePage):
 
         新规则：
         1. psilst.factor 必须是本次计算后生成/更新；
-        2. analysis_stdout.log 必须出现 RUNX 完成/失败标记；
+        2. analysis_exitcode.txt / analysis_summary.log 写出 ExitCode，或 stdout/stderr 有完成标记；
         3. psilst.factor 大小必须连续较长时间稳定；
-        4. 若出现错误标记，后续 _analysis_output_has_error 会拦截归档。
+        4. 若退出码非 0 或出现强错误标记，后续 _analysis_output_has_error 会拦截归档。
         """
         work_dir = os.path.normpath(str(work_dir or "").strip())
         state = {
@@ -1866,10 +1915,12 @@ class FeasibilityAssessmentPage(BasePage):
             if state["elapsed"] >= int(max_wait_ms):
                 timer.stop()
                 timer.deleteLater()
+                exit_code = self._read_analysis_exit_code(work_dir)
                 detail = (
                     f"等待计算结果写入完成超时：{work_dir}\n"
                     f"result_file={result_file or ''}\n"
                     f"runx_done={runx_done}\n"
+                    f"exit_code={'' if exit_code is None else exit_code}\n"
                     f"stable_count={state['stable_count']}/{required_stable_count}"
                 )
                 on_ready(result_file or "", detail)

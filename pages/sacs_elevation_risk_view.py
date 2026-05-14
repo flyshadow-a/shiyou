@@ -365,8 +365,12 @@ class SacsElevationRiskView(QGraphicsView):
                 continue
         return hotspots
 
-    def build_hotspot_metadata_for_export(self, margin: int = 24) -> dict:
-        """生成与 export_current_scene_to_png 默认导出范围一致的热点元数据。"""
+    def build_hotspot_metadata_for_export(self, margin: int = 24, scale: float = 1.0) -> dict:
+        """生成与 export_current_scene_to_png 导出范围一致的热点元数据。
+
+        如果导出 PNG 时传入了 scale，这里也要传入相同的 scale，
+        避免缓存图热点坐标与图片像素尺寸不一致。
+        """
         if self.scene() is None:
             return {"hotspots": []}
         rect = self.scene().itemsBoundingRect()
@@ -375,11 +379,20 @@ class SacsElevationRiskView(QGraphicsView):
         if (not rect.isValid()) or rect.isNull():
             return {"hotspots": []}
         rect = rect.adjusted(-margin, -margin, margin, margin)
-        width = max(1, int(rect.width()))
-        height = max(1, int(rect.height()))
+
+        try:
+            export_scale = float(scale)
+        except Exception:
+            export_scale = 1.0
+        if export_scale <= 0:
+            export_scale = 1.0
+
+        width = max(1, int(rect.width() * export_scale))
+        height = max(1, int(rect.height() * export_scale))
         return {
             "source_rect": [rect.left(), rect.top(), rect.width(), rect.height()],
             "image_size": [width, height],
+            "scale": export_scale,
             "hotspots": self.build_hotspot_metadata_for_rect(rect, width, height),
         }
 
@@ -414,8 +427,14 @@ class SacsElevationRiskView(QGraphicsView):
             hotspots=hotspots or [],
         )
 
-    def export_current_scene_to_png(self, file_path: str, margin: int = 24) -> str:
-        """把当前 QGraphicsScene 导出为 PNG 图片。"""
+    def export_current_scene_to_png(self, file_path: str, margin: int = 24, scale: float = 1.0) -> str:
+        """把当前 QGraphicsScene 导出为 PNG 图片。
+
+        scale 用于提高导出分辨率：
+        - 轮廓图通常传 2.5；
+        - 检验等级图通常传 2.0；
+        - 页面普通导出可以保持默认 1.0。
+        """
         if self.scene() is None:
             raise ValueError("当前没有可导出的图形场景")
 
@@ -426,14 +445,24 @@ class SacsElevationRiskView(QGraphicsView):
             raise ValueError("当前没有可导出的立面风险图")
 
         rect = rect.adjusted(-margin, -margin, margin, margin)
-        width = max(1, int(rect.width()))
-        height = max(1, int(rect.height()))
+
+        try:
+            export_scale = float(scale)
+        except Exception:
+            export_scale = 1.0
+        if export_scale <= 0:
+            export_scale = 1.0
+
+        width = max(1, int(rect.width() * export_scale))
+        height = max(1, int(rect.height() * export_scale))
 
         image = QImage(width, height, QImage.Format_ARGB32)
         image.fill(Qt.white)
 
         painter = QPainter(image)
         painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         self.scene().render(
             painter,
             target=QRectF(0, 0, width, height),
@@ -523,15 +552,21 @@ class SacsElevationRiskView(QGraphicsView):
             row_name: str = "XZ 前",
             workpoint_override: Optional[float] = None,
             level_threshold_override: Optional[int] = None,
+            model_path_override: Optional[str] = None,
     ) -> None:
         try:
             self._facility_code = (facility_code or "").strip()
             self._row_name = (row_name or "XZ 前").strip()
 
-            self._model_path = self._resolve_model_path(self._facility_code)
+            override_model = os.path.normpath(str(model_path_override or "").strip())
+            if override_model:
+                self._model_path = override_model
+            else:
+                self._model_path = self._resolve_model_path(self._facility_code)
 
             print("[Elevation] facility_code =", self._facility_code)
             print("[Elevation] row_name =", self._row_name)
+            print("[Elevation] model_path_override =", override_model)
             print("[Elevation] resolved model_path =", self._model_path)
 
             if not self._model_path or not os.path.exists(self._model_path):
