@@ -5,10 +5,11 @@ import os
 from typing import Dict, List, Tuple, Optional
 
 from PyQt5.QtCore import Qt, QRectF, QTimer, QPointF
-from PyQt5.QtGui import QBrush, QColor, QPainter, QPen, QFont, QImage
+from PyQt5.QtGui import QBrush, QColor, QPainter, QPen, QFont, QImage, QPixmap
 from PyQt5.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsLineItem,
+    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
@@ -37,7 +38,7 @@ except Exception:
 class RiskNodeItem(QGraphicsEllipseItem):
     def __init__(self, rect: QRectF, tooltip: str = "", hover_callback=None, *args, **kwargs):
         super().__init__(rect, *args, **kwargs)
-        self.setAcceptHoverEvents(False)
+        self.setAcceptHoverEvents(True)
         self.setToolTip(tooltip)
         self._hover_callback = hover_callback
 
@@ -55,7 +56,7 @@ class RiskNodeItem(QGraphicsEllipseItem):
 class RiskMemberItem(QGraphicsLineItem):
     def __init__(self, x1, y1, x2, y2, tooltip: str = "", hover_callback=None, *args, **kwargs):
         super().__init__(x1, y1, x2, y2, *args, **kwargs)
-        self.setAcceptHoverEvents(False)
+        self.setAcceptHoverEvents(True)
         self.setToolTip(tooltip)
         self._hover_callback = hover_callback
 
@@ -68,6 +69,20 @@ class RiskMemberItem(QGraphicsLineItem):
         if self._hover_callback:
             self._hover_callback("")
         super().hoverLeaveEvent(event)
+
+
+class CachedHotspotItem(QGraphicsRectItem):
+    """透明热点层，用于缓存 PNG / 预渲染图片的鼠标悬停提示。"""
+
+    def __init__(self, rect: QRectF, tooltip: str = "", *args, **kwargs):
+        super().__init__(rect, *args, **kwargs)
+        self.setAcceptHoverEvents(True)
+        self.setToolTip(str(tooltip or ""))
+        self.setPen(QPen(Qt.NoPen))
+        # 使用几乎透明的填充，保证图元有可命中的 shape，但视觉上不可见。
+        self.setBrush(QBrush(QColor(0, 0, 0, 1)))
+        self.setZValue(1000)
+
 
 
 class SacsElevationRiskView(QGraphicsView):
@@ -95,6 +110,8 @@ class SacsElevationRiskView(QGraphicsView):
 
         # 直线图其实不需要太强的抗锯齿，关掉后首帧会更轻一些
         self.setRenderHint(QPainter.Antialiasing, False)
+        # 文字单独开启抗锯齿，避免历史检测图例预渲染后发虚。
+        self.setRenderHint(QPainter.TextAntialiasing, True)
         self.setBackgroundBrush(QBrush(self.COLOR_BG))
         self.setFrameShape(QGraphicsView.NoFrame)
         self.setDragMode(QGraphicsView.NoDrag)
@@ -151,6 +168,10 @@ class SacsElevationRiskView(QGraphicsView):
         self._member_items_by_key = {}
         self._node_items_by_joint = {}
         self._placed_label_rects = []
+
+        self._history_overlay_enabled = False
+        self._history_overlay_items = []
+        self._history_overlay_legend = []
 
         # ===== 检验等级标注显示策略（避免图面过密）=====
         # II：只改变颜色，不显示文字牌；III/IV：显示文字牌。
@@ -222,6 +243,176 @@ class SacsElevationRiskView(QGraphicsView):
         cy = self._initial_scene_rect.center().y() - max_dy * (y_value / 100.0)
 
         self.centerOn(QPointF(cx, cy))
+
+    def _add_cached_hotspots(self, hotspots: list | None, scale_x: float = 1.0, scale_y: float = 1.0) -> None:
+        """在缓存图片上叠加透明热点，保留 tooltip 交互能力。"""
+        if not hotspots:
+            return
+        for item in hotspots:
+            try:
+                tooltip = str(item.get("tooltip") or "").strip()
+                if not tooltip:
+                    continue
+                rect_values = item.get("rect") or item.get("pixel_rect") or []
+                if isinstance(rect_values, dict):
+                    x = float(rect_values.get("x", 0))
+                    y = float(rect_values.get("y", 0))
+                    w = float(rect_values.get("w", rect_values.get("width", 0)))
+                    h = float(rect_values.get("h", rect_values.get("height", 0)))
+                else:
+                    if len(rect_values) < 4:
+                        continue
+                    x, y, w, h = [float(v) for v in rect_values[:4]]
+                if w <= 0 or h <= 0:
+                    continue
+                rect = QRectF(x * scale_x, y * scale_y, w * scale_x, h * scale_y)
+                # 稍微放大命中范围，避免缓存图缩放后鼠标难以命中。
+                pad = max(3.0, min(rect.width(), rect.height()) * 0.35)
+                rect = rect.adjusted(-pad, -pad, pad, pad)
+                hotspot = CachedHotspotItem(rect, tooltip=tooltip)
+                self._scene.addItem(hotspot)
+            except Exception:
+                continue
+
+    def display_cached_pixmap(
+        self,
+        pixmap: QPixmap,
+        *,
+        row_name: str = "",
+        description: str = "缓存图",
+        hotspots: list | None = None,
+    ) -> bool:
+        """直接显示内存中的预渲染图片，并可叠加透明 tooltip 热点。"""
+        if pixmap is None or pixmap.isNull():
+            self._draw_message("缓存图读取失败")
+            return False
+        try:
+            self._scene.blockSignals(True)
+            self.setUpdatesEnabled(False)
+
+            self._scene.clear()
+            item = self._scene.addPixmap(pixmap)
+            item.setPos(0, 0)
+            item.setZValue(0)
+
+            self._add_cached_hotspots(hotspots or [])
+
+            self._row_name = (row_name or self._row_name or "XZ 前").strip()
+            rect = QRectF(pixmap.rect()).adjusted(-8, -8, 8, 8)
+            self._scene.setSceneRect(rect)
+            self._initial_scene_rect = QRectF(rect)
+            self._fit_done = False
+            self._zoom_steps = 0
+            self.reset_pan_state()
+
+            if self._info_label is not None:
+                self._info_label.setText(
+                    f"当前显示：{self._row_name} {description}；滚轮缩放，双击恢复初始视图。"
+                )
+
+            if not self._reset_pending:
+                self._reset_pending = True
+                QTimer.singleShot(0, self.reset_view)
+            return True
+        finally:
+            self._scene.blockSignals(False)
+            self.setUpdatesEnabled(True)
+            self.viewport().update()
+
+    def build_hotspot_metadata_for_rect(self, source_rect: QRectF, target_width: int, target_height: int) -> list[dict]:
+        """把当前 scene 中带 tooltip 的交互图元转换成图片像素坐标热点。"""
+        if self.scene() is None or source_rect is None or (not source_rect.isValid()) or source_rect.isNull():
+            return []
+        sx = float(target_width) / max(1e-6, float(source_rect.width()))
+        sy = float(target_height) / max(1e-6, float(source_rect.height()))
+        hotspots: list[dict] = []
+        for item in self.scene().items():
+            try:
+                tooltip = str(item.toolTip() or "").strip()
+                if not tooltip:
+                    continue
+                if isinstance(item, CachedHotspotItem):
+                    continue
+                if not isinstance(item, (RiskNodeItem, RiskMemberItem)):
+                    continue
+                br = item.sceneBoundingRect()
+                if not br.isValid() or br.isNull():
+                    continue
+                # 线段热点加粗；点热点略放大，便于鼠标命中。
+                if isinstance(item, RiskMemberItem):
+                    br = br.adjusted(-5, -5, 5, 5)
+                    kind = "member"
+                else:
+                    br = br.adjusted(-4, -4, 4, 4)
+                    kind = "node"
+                x = (br.left() - source_rect.left()) * sx
+                y = (br.top() - source_rect.top()) * sy
+                w = br.width() * sx
+                h = br.height() * sy
+                # 跳过完全落在导出区域外的热点。
+                if x + w < 0 or y + h < 0 or x > target_width or y > target_height:
+                    continue
+                x = max(0.0, min(float(target_width), x))
+                y = max(0.0, min(float(target_height), y))
+                w = max(1.0, min(float(target_width) - x, w))
+                h = max(1.0, min(float(target_height) - y, h))
+                hotspots.append({
+                    "kind": kind,
+                    "tooltip": tooltip,
+                    "rect": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
+                })
+            except Exception:
+                continue
+        return hotspots
+
+    def build_hotspot_metadata_for_export(self, margin: int = 24) -> dict:
+        """生成与 export_current_scene_to_png 默认导出范围一致的热点元数据。"""
+        if self.scene() is None:
+            return {"hotspots": []}
+        rect = self.scene().itemsBoundingRect()
+        if (not rect.isValid()) or rect.isNull():
+            rect = self.scene().sceneRect()
+        if (not rect.isValid()) or rect.isNull():
+            return {"hotspots": []}
+        rect = rect.adjusted(-margin, -margin, margin, margin)
+        width = max(1, int(rect.width()))
+        height = max(1, int(rect.height()))
+        return {
+            "source_rect": [rect.left(), rect.top(), rect.width(), rect.height()],
+            "image_size": [width, height],
+            "hotspots": self.build_hotspot_metadata_for_rect(rect, width, height),
+        }
+
+    def display_cached_image(
+        self,
+        image_path: str,
+        row_name: str = "",
+        description: str = "缓存检验等级图",
+        hotspots: list | None = None,
+    ) -> bool:
+        """直接显示服务器中已导出的 PNG 缓存图。
+
+        用途：特检策略主页右上角“查看结果”查看历史最新结果时，
+        优先读取图二“生成特检策略报告”时导出的风险等级图，避免重新解析模型和绘制。
+        该方法只显示图片，不依赖节点/构件坐标；仍保留滚轮缩放、双击复位、外部滑条平移。
+        如果传入 hotspots，会在缓存图上叠加透明热点，保留鼠标悬停提示能力。
+        """
+        path = os.path.normpath(str(image_path or "").strip())
+        if not path or not os.path.exists(path):
+            self._draw_message("未找到缓存检验等级图")
+            return False
+
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            self._draw_message("缓存检验等级图读取失败")
+            return False
+
+        return self.display_cached_pixmap(
+            pixmap,
+            row_name=row_name,
+            description=description,
+            hotspots=hotspots or [],
+        )
 
     def export_current_scene_to_png(self, file_path: str, margin: int = 24) -> str:
         """把当前 QGraphicsScene 导出为 PNG 图片。"""
@@ -497,6 +688,137 @@ class SacsElevationRiskView(QGraphicsView):
         self._visible_projected_members = []
         self._visible_projected_nodes = {}
 
+    def clear_history_overlay(self):
+        self._history_overlay_enabled = False
+        self._history_overlay_items = []
+        self._history_overlay_legend = []
+
+    def _history_color(self, color_text: str) -> QColor:
+        color = QColor(str(color_text or "").strip())
+        if color.isValid():
+            return color
+        return QColor("#E74C3C")
+
+    def _history_tooltip_for_item(self, item: dict) -> str:
+        parts = [f"节点: {str(item.get('joint_id') or '').strip()}"]
+        round_label = str(item.get('round_label') or '').strip()
+        if round_label:
+            parts.append(f"检测批次: {round_label}")
+        inspect_level = str(item.get('inspect_level') or '').strip()
+        if inspect_level:
+            parts.append(f"检验等级: {inspect_level}")
+        risk_level = str(item.get('risk_level') or '').strip()
+        if risk_level:
+            parts.append(f"风险等级: {risk_level}")
+        brace = str(item.get('brace') or '').strip()
+        if brace:
+            parts.append(f"Brace: {brace}")
+        joint_type = str(item.get('joint_type') or '').strip()
+        if joint_type:
+            parts.append(f"类型: {joint_type}")
+        conclusion = str(item.get('conclusion') or '').strip()
+        if conclusion:
+            parts.append(f"检验结论: {conclusion}")
+        return "\n".join(parts)
+
+    def _draw_history_legend(self):
+        """绘制历史检测点图例。
+
+        原来使用 Arial 8 号字，预渲染为图片后再缩放显示时会偏小、发虚。
+        这里改为中文字体 + 更大字号 + 白色背景框，提高可读性。
+        """
+        if not self._history_overlay_legend:
+            return
+
+        x0 = 16.0
+        y0 = 14.0
+        dot_size = 11.0
+        title_font = QFont("Microsoft YaHei UI", 11, QFont.Bold)
+        item_font = QFont("Microsoft YaHei UI", 10)
+        title_text = "历史检测点"
+
+        legend_texts = []
+        max_chars = len(title_text)
+        for entry in self._history_overlay_legend:
+            label = str(entry.get("round_label") or "").strip()
+            count = entry.get("count")
+            text = label
+            if count not in (None, ""):
+                text += f" ({count})"
+            legend_texts.append((entry, text))
+            max_chars = max(max_chars, len(text))
+
+        panel_w = max(150.0, 18.0 + max_chars * 11.0)
+        panel_h = 34.0 + max(1, len(legend_texts)) * 22.0
+        bg = self._scene.addRect(
+            QRectF(x0 - 8.0, y0 - 8.0, panel_w, panel_h),
+            QPen(QColor("#b9c6d6"), 0.8),
+            QBrush(QColor(255, 255, 255, 235)),
+        )
+        bg.setZValue(198)
+
+        title = QGraphicsSimpleTextItem(title_text)
+        title.setBrush(QBrush(QColor("#203040")))
+        title.setFont(title_font)
+        title.setPos(x0, y0)
+        title.setZValue(200)
+        self._scene.addItem(title)
+
+        y = y0 + 24.0
+        for entry, text in legend_texts:
+            color = self._history_color(entry.get("round_color"))
+            dot = self._scene.addEllipse(
+                QRectF(x0, y + 3.0, dot_size, dot_size),
+                QPen(color, 1.2),
+                QBrush(color),
+            )
+            dot.setZValue(200)
+
+            item = QGraphicsSimpleTextItem(text)
+            item.setBrush(QBrush(QColor("#203040")))
+            item.setFont(item_font)
+            item.setPos(x0 + dot_size + 9.0, y - 1.0)
+            item.setZValue(200)
+            self._scene.addItem(item)
+            y += 22.0
+
+    def _draw_history_overlay(self):
+        if not self._history_overlay_enabled:
+            return
+        if not self._history_overlay_items:
+            return
+
+        grouped = {}
+        for item in self._history_overlay_items:
+            joint_id = str(item.get('joint_id') or '').strip()
+            if not joint_id:
+                continue
+            if joint_id not in self._visible_projected_nodes:
+                continue
+            grouped.setdefault(joint_id, []).append(item)
+
+        for joint_id, rows in grouped.items():
+            x, y = self._visible_projected_nodes[joint_id]
+            total = len(rows)
+            for idx, item in enumerate(rows):
+                color = self._history_color(item.get('round_color'))
+                if total <= 1:
+                    dx = dy = 0.0
+                else:
+                    shift = 6.0
+                    start = -(total - 1) / 2.0
+                    dx = (start + idx) * shift
+                    dy = - (start + idx) * shift * 0.35
+                r = 4.2
+                tooltip = self._history_tooltip_for_item(item)
+                dot = RiskNodeItem(QRectF(x + dx - r, y + dy - r, 2 * r, 2 * r), tooltip=tooltip)
+                dot.setPen(QPen(color, 1.2))
+                dot.setBrush(QBrush(color))
+                dot.setZValue(120)
+                self._scene.addItem(dot)
+
+        self._draw_history_legend()
+
     def _clear_render_cache(self):
         self._row_render_cache = {}
         self._last_render_cache_key = None
@@ -752,6 +1074,14 @@ class SacsElevationRiskView(QGraphicsView):
         self._node_items_by_joint = dict(overlay.get("node_items_by_joint") or {})
 
         # 关键：有模型数据时，立刻重画
+        if self.nodes and self.members:
+            self._render_row_elevation()
+
+    def set_history_overlay(self, overlay: dict | None):
+        overlay = overlay or {}
+        self._history_overlay_enabled = True
+        self._history_overlay_items = list(overlay.get("items") or [])
+        self._history_overlay_legend = list(overlay.get("legend") or [])
         if self.nodes and self.members:
             self._render_row_elevation()
 
@@ -2324,6 +2654,7 @@ class SacsElevationRiskView(QGraphicsView):
 
             self._scene.setSceneRect(QRectF(0, 0, view_w, view_h))
             self._draw_inspection_overlay()
+            self._draw_history_overlay()
             self._show_hover_info()
 
         except Exception:

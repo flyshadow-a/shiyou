@@ -9,7 +9,11 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy import create_engine, text
 
-from services.inspection_business_db_adapter import create_inspection_project, list_inspection_projects
+from services.inspection_business_db_adapter import (
+    create_inspection_project,
+    list_inspection_projects,
+    update_inspection_project,
+)
 from services.file_db_adapter import (
     append_docman_file,
     list_files_by_prefix,
@@ -61,22 +65,49 @@ def _list_history_projects(facility_code: str) -> list[dict[str, Any]]:
     return [dict(row) for row in (rows or [])]
 
 
-def _project_sort_key(row: dict[str, Any], fallback_index: int = 0) -> tuple[int, int, int]:
-    name = str(row.get("project_name") or row.get("name") or "")
-    no = _extract_project_no(name)
+def _project_order_no(row: dict[str, Any], fallback_index: int = 0) -> int:
+    """返回历史改造项目的真实顺序号。
+
+    新逻辑：
+    1. 优先使用数据库中的 sort_order，避免用户修改项目名称后影响版本判断；
+    2. 旧数据如果没有 sort_order，再兼容从“历史改造项目N”名称中提取 N；
+    3. 最后用 fallback_index/id 兜底，避免排序键为空。
+    """
     sort_order = _safe_int(row.get("sort_order"), 0)
+    if sort_order > 0:
+        return sort_order
+
+    name = str(row.get("project_name") or row.get("name") or "")
+    name_no = _extract_project_no(name)
+    if name_no > 0:
+        return name_no
+
     row_id = _safe_int(row.get("id"), 0)
-    return (no, sort_order or fallback_index, row_id)
+    return _safe_int(fallback_index, 0) or row_id
+
+
+def _project_sort_key(row: dict[str, Any], fallback_index: int = 0) -> tuple[int, int]:
+    """历史改造项目排序键。
+
+    只把项目名称作为旧数据兜底，不再把名称中的数字作为主排序依据。
+    因此用户把“历史改造项目2”改成“历史改造项目test”后，只要 sort_order 仍为 2，
+    它仍然会被当作第 2 次改造。
+    """
+    order_no = _project_order_no(row, fallback_index)
+    row_id = _safe_int(row.get("id"), 0)
+    return (order_no, row_id)
 
 
 def _next_project_no(facility_code: str) -> int:
+    """返回用于创建前临时命名的下一个编号。
+
+    真正归档后的编号以后续 create_inspection_project 返回的 sort_order 为准。
+    这里仅用于创建前给数据库一个非空项目名，兼容旧流程。
+    """
     projects = _list_history_projects(facility_code)
     max_no = 0
     for idx, row in enumerate(projects, start=1):
-        no = _extract_project_no(str(row.get("project_name") or row.get("name") or ""))
-        if no <= 0:
-            no = _safe_int(row.get("sort_order"), 0) or idx
-        max_no = max(max_no, no)
+        max_no = max(max_no, _project_order_no(row, idx))
     return max_no + 1
 
 
@@ -204,6 +235,7 @@ def find_latest_active_history_model_bundle(facility_code: str) -> dict[str, Any
                 "source": "history",
                 "project_id": project_id,
                 "project_name": project.get("project_name") or project.get("name") or "",
+                "project_order": _project_order_no(project, _idx),
                 "model_file": model_file,
                 "sea_file": sea_file,
             }
@@ -237,6 +269,7 @@ def find_active_history_model_bundles(facility_code: str) -> list[dict[str, Any]
             "source": "history",
             "project_id": project_id,
             "project_name": project.get("project_name") or project.get("name") or "",
+            "project_order": _project_order_no(project, _idx),
             "model_file": model_file,
             "sea_file": sea_file,
         })
@@ -326,8 +359,10 @@ def get_latest_rebuild_compare_model_paths(
             "new_sea_file": new_sea,
             "latest_project_id": latest.get("project_id"),
             "latest_project_name": latest.get("project_name"),
+            "latest_project_order": latest.get("project_order"),
             "baseline_project_id": baseline_project_id,
             "baseline_project_name": baseline_project_name,
+            "baseline_project_order": baseline.get("project_order") if isinstance(baseline, dict) else None,
         }
 
     # 没有历史改造项目时，回退到用户原始上传模型，相当于初始化状态。
@@ -340,6 +375,61 @@ def get_latest_rebuild_compare_model_paths(
             "new_sea_file": _norm(original.get("sea_file") or ""),
         }
     return {}
+
+
+def prepare_original_runtime_for_analysis(
+    *,
+    mysql_url: str | None = None,
+    job_name: str,
+) -> dict[str, Any]:
+    """给“原模型计算”使用。
+
+    当页面三张新增数据表为空、用户没有保存数据且没有创建新模型时，计算应当基于
+    用户最初上传的原模型，而不是最新历史改造 M1。
+
+    这里做的事情：
+    1. 从文件库中找到原始 sacinp / seainp；
+    2. 复制到 feasibility_assessment_runtime/<平台>/ 下，并保留原文件名；
+    3. 返回运行目录和运行时文件名，供 RUNX 修正与 BAT 生成使用。
+    """
+    code = (job_name or "").strip()
+    if not code:
+        raise ValueError("job_name/facility_code 为空，无法准备原模型计算")
+
+    bundle = find_original_uploaded_model_bundle(code)
+    model_file = _norm(bundle.get("model_file") or "")
+    sea_file = _norm(bundle.get("sea_file") or "")
+
+    if not _file_exists(model_file):
+        raise FileNotFoundError(
+            f"未找到可用于计算的原始模型文件。平台：{code}\n"
+            "请确认【模型文件】中已上传当前模型的 sacinp 原始结构模型。"
+        )
+
+    runtime_dir = get_job_runtime_dir(code)
+    os.makedirs(runtime_dir, exist_ok=True)
+
+    runtime_model_file = os.path.join(runtime_dir, os.path.basename(model_file))
+    runtime_sea_file = os.path.join(runtime_dir, os.path.basename(sea_file)) if _file_exists(sea_file) else ""
+
+    _copy_file_if_needed(model_file, runtime_model_file)
+    if _file_exists(sea_file):
+        _copy_file_if_needed(sea_file, runtime_sea_file)
+
+    return {
+        "source": "original",
+        "project_id": None,
+        "project_name": "原始模型",
+        "model_dir": runtime_dir,
+        "model_file": model_file,
+        "sea_file": sea_file,
+        "new_model_file": runtime_model_file,
+        "new_sea_file": runtime_sea_file,
+        "runtime_model_file": runtime_model_file,
+        "runtime_sea_file": runtime_sea_file,
+        "runtime_model_filename": os.path.basename(runtime_model_file),
+        "runtime_sea_filename": os.path.basename(runtime_sea_file) if runtime_sea_file else "",
+    }
 
 def prepare_latest_rebuild_runtime_for_analysis(
     *,
@@ -383,6 +473,7 @@ def prepare_latest_rebuild_runtime_for_analysis(
         "source": bundle.get("source") or "unknown",
         "project_id": bundle.get("project_id"),
         "project_name": bundle.get("project_name"),
+        "project_order": bundle.get("project_order"),
         "model_dir": runtime_dir,
         "model_file": model_file,
         "sea_file": sea_file,
@@ -547,6 +638,7 @@ def sync_current_model_baseline_for_next_rebuild(
         "source": bundle.get("source") or "unknown",
         "project_id": bundle.get("project_id"),
         "project_name": bundle.get("project_name"),
+        "project_order": bundle.get("project_order"),
         "model_file": model_file,
         "sea_file": sea_file,
         "reimport": reimport_result,
@@ -584,23 +676,40 @@ def archive_model_files_as_history_rebuild(
     # 没有海况文件时允许只归档模型文件，兼容早期没有 sea_file 的模型。
     has_sea = _file_exists(new_sea_file)
 
-    project_no = _next_project_no(facility_code)
+    # 先用临时编号创建项目；真正编号以后端返回的 sort_order 为准。
+    # 这样即使用户删除了“历史改造项目2”，新建项目的 sort_order 仍会继续递增为 3，
+    # 不会复用“2”；同时用户后续修改项目名称也不会影响版本顺序。
+    initial_project_no = _next_project_no(facility_code)
+    initial_project_name = f"{PROJECT_NAME_PREFIX}{initial_project_no}"
+    auto_summary = summary_text is None
+
+    created = create_inspection_project(
+        facility_code=facility_code,
+        project_type=HISTORY_PROJECT_TYPE,
+        project_name=initial_project_name,
+        project_year=_current_year_label(),
+        summary_text="" if auto_summary else summary_text,
+    )
+    project_id = int(created.get("id"))
+
+    project_no = _safe_int(created.get("sort_order"), 0) or initial_project_no
     project_name = f"{PROJECT_NAME_PREFIX}{project_no}"
-    if summary_text is None:
+
+    if auto_summary:
         summary_text = (
             f"系统自动生成的第{project_no}次改造记录。"
             "本次创建新模型后，已自动归档新模型文件和新海况文件；"
             "后续再次创建新模型时，将在当前仍存在的最新改造项目模型基础上继续修改。"
         )
 
-    created = create_inspection_project(
-        facility_code=facility_code,
-        project_type=HISTORY_PROJECT_TYPE,
-        project_name=project_name,
-        project_year=_current_year_label(),
-        summary_text=summary_text,
-    )
-    project_id = int(created.get("id"))
+    if project_name != str(created.get("project_name") or "") or auto_summary:
+        created = update_inspection_project(
+            project_id,
+            project_name=project_name,
+            summary_text=summary_text,
+        )
+        project_no = _safe_int(created.get("sort_order"), project_no) or project_no
+        project_name = str(created.get("project_name") or project_name)
 
     model_row = _upload_history_file(
         local_path=new_model_file,
@@ -638,6 +747,7 @@ def archive_model_files_as_history_rebuild(
     return {
         "project_id": project_id,
         "project_no": project_no,
+        "project_sort_order": _safe_int(created.get("sort_order"), project_no) or project_no,
         "project_name": project_name,
         "project_year": _current_year_label(),
         "model_record_id": model_row.get("id"),

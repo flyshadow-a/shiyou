@@ -39,13 +39,62 @@ def _pump_events(app: QApplication, times: int = 4) -> None:
         app.processEvents()
 
 
-def _load_row_names(view, facility_code: str, context: dict, year_label: str, app: QApplication) -> list[str]:
+def _norm(value: object) -> str:
+    return os.path.normpath(str(value or "").strip()) if str(value or "").strip() else ""
+
+
+def _resolve_outline_model_bundles(facility_code: str) -> dict[str, dict]:
+    """为“生成评估报告”准备原模型/改造后模型。
+
+    - original: 用户最初上传的当前结构模型；
+    - rebuilt : 当前仍有效的最新历史改造模型；若不存在，则回退到 original。
+
+    这样：
+    1) 旧报告流程仍可使用 rebuilt 作为默认轮廓图；
+    2) 同时额外保存 original / rebuilt 两套轮廓图，供新报告模板插图。
+    """
+    from services.history_rebuild_auto_service import (
+        find_latest_active_history_model_bundle,
+        find_original_uploaded_model_bundle,
+    )
+
+    original = find_original_uploaded_model_bundle(facility_code) or {}
+    latest = find_latest_active_history_model_bundle(facility_code) or {}
+
+    original_model = _norm(original.get("model_file"))
+    latest_model = _norm(latest.get("model_file")) or original_model
+
+    return {
+        "original": {
+            "source": original.get("source") or "original",
+            "project_id": original.get("project_id"),
+            "project_name": original.get("project_name") or "原始模型",
+            "model_file": original_model,
+        },
+        "rebuilt": {
+            "source": latest.get("source") or ("history" if latest_model and latest_model != original_model else "original_fallback"),
+            "project_id": latest.get("project_id"),
+            "project_name": latest.get("project_name") or ("最新改造模型" if latest_model and latest_model != original_model else "原始模型"),
+            "model_file": latest_model,
+        },
+    }
+
+
+def _load_row_names(
+    view,
+    facility_code: str,
+    context: dict,
+    year_label: str,
+    app: QApplication,
+    model_path_override: str = "",
+) -> list[str]:
     view.clear_inspection_overlay()
     view.load_for_facility(
         facility_code=facility_code,
         context=context,
         year_label=year_label,
         row_name="XZ 前",
+        model_path_override=model_path_override or None,
     )
     _pump_events(app, times=8)
     row_names = view.available_row_names()
@@ -67,6 +116,7 @@ def _export_one_image(
     row_name: str,
     overlay: dict | None = None,
     remark: str = "",
+    model_path_override: str = "",
 ) -> str:
     from services.special_strategy_image_service import build_strategy_image_path, save_strategy_image_record
 
@@ -76,6 +126,7 @@ def _export_one_image(
         context=context,
         year_label=year_label or "当前",
         row_name=row_name,
+        model_path_override=model_path_override or None,
     )
     if overlay and hasattr(view, "set_inspection_overlay"):
         view.set_inspection_overlay(overlay)
@@ -92,7 +143,8 @@ def _export_one_image(
     )
 
     # 使用 SacsElevationRiskView 已存在的 export_current_scene_to_png，避免调用不存在的 capture_current_scene_to_image。
-    saved_path = view.export_current_scene_to_png(str(image_path))
+    export_scale = 2.5 if str(image_type or "").startswith("elevation_outline") else 2.0
+    saved_path = view.export_current_scene_to_png(str(image_path), scale=export_scale)
     save_strategy_image_record(
         facility_code=facility_code,
         run_id=run_id,
@@ -118,10 +170,22 @@ def export_report_images(
     mode:
         outline：只导出轮廓图，对应“生成评估报告”按钮。
         risk   ：只导出风险等级图，对应“生成特检策略报告”按钮。
-        all    ：轮廓图 + 风险等级图，兼容旧调用。
+        all    ：轮廓图 + 风险图，兼容旧调用。
 
-    include_outline:
-        兼容旧参数。旧代码传 include_outline=False 时，等价于 mode="risk"。
+    轮廓图分开保存：
+        1. 原模型轮廓图：
+           page_code = special_inspection_strategy
+           image_type = elevation_outline_original
+           用途：特检策略主页快速读取缓存图，避免进入页面实时绘图卡顿。
+
+        2. 改造后轮廓图：
+           page_code = feasibility_assessment_results_page
+           image_type = elevation_outline_rebuilt
+           用途：生成评估报告时插入报告。
+
+    注意：这里不会生成新的 M1 文件，只会读取已有的：
+        - 原模型：当前模型目录下的 sacinp.JKnew / sacinp...
+        - 改造后模型：最新有效历史改造项目下的 sacinp.M1
     """
     _ensure_project_root_on_path()
 
@@ -148,21 +212,73 @@ def export_report_images(
     year_labels = mapper.display_labels()
 
     view = SacsElevationRiskView()
-    view.resize(900, 900)
+    view.resize(1200, 1200)
     view.showMinimized()
     _pump_events(app)
 
-    row_names = _load_row_names(view, facility_code, context, mapper.default_display_label(), app)
+    outline_bundles = _resolve_outline_model_bundles(facility_code)
+    original_bundle = outline_bundles.get("original") or {}
+    rebuilt_bundle = outline_bundles.get("rebuilt") or {}
 
-    outline_count = len(row_names) if mode in {"all", "outline"} else 0
-    risk_count = len(row_names) * len(year_labels) if mode in {"all", "risk"} else 0
+    original_model_path = _norm(original_bundle.get("model_file"))
+    rebuilt_model_path = _norm(rebuilt_bundle.get("model_file")) or original_model_path
+
+    original_row_names: list[str] = []
+    rebuilt_row_names: list[str] = []
+    risk_row_names: list[str] = []
+
+    if mode in {"all", "outline"}:
+        if original_model_path and os.path.exists(original_model_path):
+            original_row_names = _load_row_names(
+                view,
+                facility_code,
+                context,
+                mapper.default_display_label(),
+                app,
+                model_path_override=original_model_path,
+            )
+        else:
+            print(f"[ReportImageExporter] original model missing: {original_model_path}", flush=True)
+
+        if rebuilt_model_path and os.path.exists(rebuilt_model_path):
+            rebuilt_row_names = _load_row_names(
+                view,
+                facility_code,
+                context,
+                mapper.default_display_label(),
+                app,
+                model_path_override=rebuilt_model_path,
+            )
+        else:
+            print(f"[ReportImageExporter] rebuilt model missing: {rebuilt_model_path}", flush=True)
+
+        if not original_row_names and not rebuilt_row_names:
+            raise RuntimeError(f"未找到可用于导出轮廓图的结构模型：{facility_code}")
+
+    if mode in {"all", "risk"}:
+        risk_probe_model = rebuilt_model_path or original_model_path
+        risk_row_names = _load_row_names(
+            view,
+            facility_code,
+            context,
+            mapper.default_display_label(),
+            app,
+            model_path_override=risk_probe_model,
+        )
+
+    outline_count = len(original_row_names) + len(rebuilt_row_names) if mode in {"all", "outline"} else 0
+    risk_count = len(risk_row_names) * len(year_labels) if mode in {"all", "risk"} else 0
     total = outline_count + risk_count
     done = 0
-    print(f"[ReportImageExporter] start export, mode={mode}, total={total}", flush=True)
+    print(
+        f"[ReportImageExporter] start export, mode={mode}, "
+        f"original_outline={len(original_row_names)}, rebuilt_outline={len(rebuilt_row_names)}, risk={risk_count}",
+        flush=True,
+    )
 
-    # 图一：轮廓图，仅在“生成评估报告”按钮里触发。
+    # A. 原模型轮廓图：只放在特检策略主页专用位置。
     if mode in {"all", "outline"}:
-        for row_name in row_names:
+        for row_name in original_row_names:
             _export_one_image(
                 app=app,
                 view=view,
@@ -170,16 +286,36 @@ def export_report_images(
                 run_id=run_id,
                 context=context,
                 page_code="special_inspection_strategy",
-                image_type="elevation_outline",
+                image_type="elevation_outline_original",
                 year_label=None,
                 row_name=row_name,
                 overlay=None,
-                remark="生成评估报告前导出：模型立面轮廓图",
+                remark=f"生成评估报告前导出：原模型立面轮廓图（{original_bundle.get('project_name') or '原始模型'}），供特检策略主页缓存显示",
+                model_path_override=original_model_path,
             )
             done += 1
-            print(f"[ReportImageExporter] progress {done}/{total}: outline {row_name}", flush=True)
+            print(f"[ReportImageExporter] progress {done}/{total}: original outline {row_name}", flush=True)
 
-    # 图二：风险等级图，仅在“生成特检策略报告”按钮里触发。
+        # B. 改造后轮廓图：只放在评估结果/报告专用位置，不再写入 special_inspection_strategy。
+        for row_name in rebuilt_row_names:
+            _export_one_image(
+                app=app,
+                view=view,
+                facility_code=facility_code,
+                run_id=run_id,
+                context=context,
+                page_code="feasibility_assessment_results_page",
+                image_type="elevation_outline_rebuilt",
+                year_label=None,
+                row_name=row_name,
+                overlay=None,
+                remark=f"生成评估报告前导出：改造后立面轮廓图（{rebuilt_bundle.get('project_name') or '最新改造模型'}），供评估报告插图使用",
+                model_path_override=rebuilt_model_path,
+            )
+            done += 1
+            print(f"[ReportImageExporter] progress {done}/{total}: rebuilt outline {row_name}", flush=True)
+
+    # C. 风险等级图：保持原逻辑。
     if mode in {"all", "risk"}:
         for year_label in year_labels:
             try:
@@ -192,7 +328,7 @@ def export_report_images(
                 print(f"[ReportImageExporter] load overlay failed: year={year_label}, err={exc}", flush=True)
                 overlay = {}
 
-            for row_name in row_names:
+            for row_name in risk_row_names:
                 _export_one_image(
                     app=app,
                     view=view,
@@ -205,6 +341,7 @@ def export_report_images(
                     row_name=row_name,
                     overlay=overlay,
                     remark="生成特检策略报告前导出：更新风险结果页模型立面风险图",
+                    model_path_override=rebuilt_model_path or original_model_path,
                 )
                 done += 1
                 print(f"[ReportImageExporter] progress {done}/{total}: risk {year_label} {row_name}", flush=True)

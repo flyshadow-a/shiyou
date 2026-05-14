@@ -6,14 +6,14 @@ import os
 import csv
 from typing import List, Tuple, Dict, Optional
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
+from PyQt5.QtCore import Qt, QTimer, QRectF
+from PyQt5.QtGui import QPainter, QPen, QColor, QBrush, QPixmap
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QPushButton, QScrollArea, QSizePolicy, QLabel,
 
-    QDialog, QAbstractItemView, QMessageBox, QApplication
+    QDialog, QAbstractItemView, QMessageBox, QApplication, QProgressBar
 )
 from PyQt5.QtWidgets import QSlider
 from core.app_paths import first_existing_path
@@ -33,6 +33,8 @@ from services.special_strategy_services import (
 from pages.sacs_elevation_risk_view import SacsElevationRiskView
 from pages.platform_strength_page import PlatformStrengthPage
 from services.special_strategy_image_service import build_strategy_image_path, save_strategy_image_record
+from services.special_strategy_state_db import list_strategy_risk_images
+from services.special_strategy_history_overlay_service import load_history_detection_overlay
 
 NODE_YEAR_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]
 NODE_YEAR_CONTEXT_MAP = {
@@ -274,6 +276,14 @@ class SpecialInspectionStrategy(BasePage):
         self._active_facility_code = ""
         self.current_year = self._year_mapper.default_display_label()
         self._batch_exported_keys = set()
+        self._history_overlay_mode = False
+        self._history_overlay_bundle = {}
+        self._current_result_context = {}
+        self._cached_outline_records = []
+        self._cached_outline_record_key = None
+        self._history_render_cache = {}
+        self._history_render_cache_key = None
+        self._history_render_row_names = []
 
         # 后台分步导出图片：每次只处理一张，避免一次性批量保存时卡死界面。
         self._export_timer = QTimer(self)
@@ -1001,6 +1011,15 @@ class SpecialInspectionStrategy(BasePage):
             self._clear_summary_table(self.node_table)
             self._active_facility_code = facility_code
             self._active_run_id = run_id
+            self._current_result_context = {}
+            self._history_overlay_bundle = {}
+            self._history_overlay_mode = False
+            self._history_render_cache = {}
+            self._history_render_cache_key = None
+            self._history_render_row_names = []
+            if hasattr(self, "btn_view_history"):
+                self.btn_view_history.setEnabled(bool(facility_code))
+                self.btn_view_history.setText("查看历史")
 
             if hasattr(self, "elevation_view"):
                 self.elevation_view._draw_message("当前没有可用的特检结果")
@@ -1018,6 +1037,15 @@ class SpecialInspectionStrategy(BasePage):
 
         self._active_facility_code = facility_code
         self._active_run_id = run_id
+        self._current_result_context = context or {}
+        self._history_overlay_bundle = {}
+        self._history_overlay_mode = False
+        self._history_render_cache = {}
+        self._history_render_cache_key = None
+        self._history_render_row_names = []
+        if hasattr(self, "btn_view_history"):
+            self.btn_view_history.setEnabled(bool(facility_code))
+            self.btn_view_history.setText("查看历史")
         self._fill_component_from_context(context)
         self._fill_node_from_context(context, self.current_year)
 
@@ -1030,6 +1058,518 @@ class SpecialInspectionStrategy(BasePage):
 
     def _fill_node_from_context(self, context: Dict, year: str):
         self._fill_rows(self.node_table, self._summary_builder.build_node_inspection_rows(context, year))
+
+    @staticmethod
+    def _norm_row_name_for_match(value: object) -> str:
+        return str(value or "").strip().replace(" ", "").replace("_", "").lower()
+
+    def _load_cached_outline_records(self, facility_code: str) -> List[Dict]:
+        """读取服务器中已保存的原模型轮廓图记录。
+
+        普通进入“特检策略”页面时优先显示这些 PNG 缓存图，避免重新解析模型。
+        查看历史模式需要节点坐标，所以仍然走实时绘制。
+        """
+        code = str(facility_code or "").strip()
+        if not code:
+            return []
+
+        cache_key = (code, self._active_run_id)
+        if self._cached_outline_record_key == cache_key:
+            return list(self._cached_outline_records or [])
+
+        rows: List[Dict] = []
+        try:
+            # 优先当前 run_id；如果 run_id 为空，函数内部就是查当前平台全部记录。
+            if self._active_run_id is not None:
+                rows.extend(list_strategy_risk_images(
+                    code,
+                    run_id=self._active_run_id,
+                    page_code="special_inspection_strategy",
+                    limit=500,
+                ) or [])
+            rows.extend(list_strategy_risk_images(
+                code,
+                page_code="special_inspection_strategy",
+                limit=500,
+            ) or [])
+        except Exception as exc:
+            print("[Strategy] list cached outline images failed:", exc)
+            rows = []
+
+        filtered: List[Dict] = []
+        seen = set()
+        for row in rows:
+            if str(row.get("image_type") or "").strip() != "elevation_outline_original":
+                continue
+            image_path = os.path.normpath(str(row.get("image_path") or "").strip())
+            if not image_path or not os.path.exists(image_path):
+                continue
+            key = (self._norm_row_name_for_match(row.get("row_name")), image_path)
+            if key in seen:
+                continue
+            seen.add(key)
+            item = dict(row)
+            item["image_path"] = image_path
+            filtered.append(item)
+
+        self._cached_outline_record_key = cache_key
+        self._cached_outline_records = filtered
+        return list(filtered)
+
+    def _sync_row_combo_from_cached_images(self, facility_code: str) -> None:
+        if not hasattr(self, "row_combo"):
+            return
+        records = self._load_cached_outline_records(facility_code)
+        names: List[str] = []
+        seen = set()
+        for row in records:
+            name = str(row.get("row_name") or "").strip()
+            if not name:
+                continue
+            key = self._norm_row_name_for_match(name)
+            if key in seen:
+                continue
+            seen.add(key)
+            names.append(name)
+        if not names:
+            return
+
+        current = self.row_combo.currentText().strip() or names[0]
+        old_options = [self.row_combo.itemText(i) for i in range(self.row_combo.count())]
+        self.row_combo.blockSignals(True)
+        try:
+            if old_options != names:
+                self.row_combo.clear()
+                self.row_combo.addItems(names)
+            if current in names:
+                self.row_combo.setCurrentText(current)
+            else:
+                self.row_combo.setCurrentText(names[0])
+        finally:
+            self.row_combo.blockSignals(False)
+
+    def _try_show_cached_outline_image(self, facility_code: str, row_name: str) -> bool:
+        """普通轮廓模式优先显示服务器缓存 PNG。"""
+        if self._history_overlay_mode:
+            return False
+        if not hasattr(self, "elevation_view"):
+            return False
+
+        records = self._load_cached_outline_records(facility_code)
+        if not records:
+            return False
+
+        target_key = self._norm_row_name_for_match(row_name)
+        selected = None
+        for row in records:
+            if self._norm_row_name_for_match(row.get("row_name")) == target_key:
+                selected = row
+                break
+        if selected is None:
+            return False
+
+        image_path = os.path.normpath(str(selected.get("image_path") or "").strip())
+        if not image_path or not os.path.exists(image_path):
+            return False
+
+        pix = QPixmap(image_path)
+        if pix.isNull():
+            return False
+
+        view = self.elevation_view
+        try:
+            # 历史图以内存图片方式显示，开启平滑缩放和文字抗锯齿。
+            view.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            view.setRenderHint(QPainter.TextAntialiasing, True)
+            if hasattr(view, "clear_inspection_overlay"):
+                view.clear_inspection_overlay()
+            if hasattr(view, "clear_history_overlay"):
+                view.clear_history_overlay()
+            view._scene.clear()
+            item = view._scene.addPixmap(pix)
+            item.setZValue(1)
+            view._scene.setSceneRect(item.boundingRect())
+            view._row_name = row_name
+            view._initial_scene_rect = view._scene.sceneRect()
+            view._fit_done = False
+            view._zoom_steps = 0
+            QTimer.singleShot(0, view.reset_view)
+            if hasattr(self, "elevation_hint_label"):
+                self.elevation_hint_label.setText(
+                    f"当前显示：{row_name} 原模型缓存立面轮廓图；滚轮缩放，双击恢复初始视图。"
+                )
+            print("[Strategy] show cached outline image:", image_path)
+            return True
+        except Exception as exc:
+            print("[Strategy] show cached outline image failed:", exc)
+            return False
+
+    def _set_row_combo_options(self, names: List[str], current: str = "") -> None:
+        if not hasattr(self, "row_combo"):
+            return
+        clean_names: List[str] = []
+        seen = set()
+        for name in names or []:
+            text = str(name or "").strip()
+            if not text:
+                continue
+            key = self._norm_row_name_for_match(text)
+            if key in seen:
+                continue
+            seen.add(key)
+            clean_names.append(text)
+        if not clean_names:
+            return
+
+        current = str(current or "").strip() or self.row_combo.currentText().strip() or clean_names[0]
+        old_options = [self.row_combo.itemText(i) for i in range(self.row_combo.count())]
+        self.row_combo.blockSignals(True)
+        try:
+            if old_options != clean_names:
+                self.row_combo.clear()
+                self.row_combo.addItems(clean_names)
+            if current in clean_names:
+                self.row_combo.setCurrentText(current)
+            else:
+                self.row_combo.setCurrentText(clean_names[0])
+        finally:
+            self.row_combo.blockSignals(False)
+
+    def _show_pixmap_in_elevation_view(self, pix: QPixmap, row_name: str, hint_text: str = "", hotspots: list | None = None) -> bool:
+        if pix is None or pix.isNull() or not hasattr(self, "elevation_view"):
+            return False
+        view = self.elevation_view
+        try:
+            if hasattr(view, "clear_inspection_overlay"):
+                view.clear_inspection_overlay()
+            if hasattr(view, "clear_history_overlay"):
+                view.clear_history_overlay()
+
+            if hasattr(view, "display_cached_pixmap"):
+                ok = view.display_cached_pixmap(
+                    pix,
+                    row_name=row_name,
+                    description="历史检测节点图",
+                    hotspots=hotspots or [],
+                )
+            else:
+                view._scene.clear()
+                item = view._scene.addPixmap(pix)
+                item.setZValue(1)
+                view._scene.setSceneRect(item.boundingRect())
+                view._row_name = row_name
+                view._initial_scene_rect = view._scene.sceneRect()
+                view._fit_done = False
+                view._zoom_steps = 0
+                QTimer.singleShot(0, view.reset_view)
+                ok = True
+
+            if ok and hasattr(self, "elevation_hint_label"):
+                self.elevation_hint_label.setText(
+                    hint_text or f"当前显示：{row_name} 立面图；滚轮缩放，双击恢复初始视图。"
+                )
+            return bool(ok)
+        except Exception as exc:
+            print("[Strategy] show pixmap in elevation view failed:", exc)
+            return False
+
+    def _capture_current_elevation_scene_pixmap(self, margin: int = 16, scale: float = 2.5) -> QPixmap:
+        """把当前实时绘制完成的场景转成内存图片，用于历史点位模式快速切换。
+
+        这里优先使用 sceneRect，而不是 itemsBoundingRect。
+        原因：历史图左上角有图例，itemsBoundingRect 会把图例也作为最左边界，
+        导致结构主体在导出的缓存图中整体偏右。使用完整 sceneRect 可以保留
+        原始绘图坐标系，让结构主体保持居中。
+        """
+        if not hasattr(self, "elevation_view") or self.elevation_view.scene() is None:
+            return QPixmap()
+
+        scene = self.elevation_view.scene()
+
+        rect = scene.sceneRect()
+        if (not rect.isValid()) or rect.isNull():
+            rect = scene.itemsBoundingRect()
+        if (not rect.isValid()) or rect.isNull():
+            return QPixmap()
+
+        rect = rect.adjusted(-margin, -margin, margin, margin)
+
+        w = max(1, int(rect.width() * float(scale)))
+        h = max(1, int(rect.height() * float(scale)))
+        pix = QPixmap(w, h)
+        pix.fill(Qt.white)
+
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        scene.render(painter, target=QRectF(0, 0, w, h), source=rect)
+        painter.end()
+        return pix
+
+    def _capture_current_elevation_scene_snapshot(self, margin: int = 16, scale: float = 2.5) -> Dict:
+        """把当前历史点位场景转为内存图片，同时记录透明热点。"""
+        if not hasattr(self, "elevation_view") or self.elevation_view.scene() is None:
+            return {"pixmap": QPixmap(), "hotspots": []}
+
+        scene = self.elevation_view.scene()
+        rect = scene.sceneRect()
+        if (not rect.isValid()) or rect.isNull():
+            rect = scene.itemsBoundingRect()
+        if (not rect.isValid()) or rect.isNull():
+            return {"pixmap": QPixmap(), "hotspots": []}
+
+        rect = rect.adjusted(-margin, -margin, margin, margin)
+        w = max(1, int(rect.width() * float(scale)))
+        h = max(1, int(rect.height() * float(scale)))
+        pix = QPixmap(w, h)
+        pix.fill(Qt.white)
+
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        scene.render(painter, target=QRectF(0, 0, w, h), source=rect)
+        painter.end()
+
+        hotspots = []
+        try:
+            if hasattr(self.elevation_view, "build_hotspot_metadata_for_rect"):
+                hotspots = self.elevation_view.build_hotspot_metadata_for_rect(rect, w, h)
+        except Exception as exc:
+            print("[Strategy] build history hotspots failed:", exc)
+            hotspots = []
+        return {"pixmap": pix, "hotspots": hotspots}
+
+    def _history_render_key(self, context: Optional[Dict], overlay: Optional[Dict] = None) -> tuple:
+        facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
+        try:
+            workpoint_override, level_threshold_override = self._get_shared_section_params(context or {})
+        except Exception:
+            workpoint_override, level_threshold_override = None, None
+        overlay = overlay or self._history_overlay_bundle or {}
+        items = overlay.get("items") or []
+        item_sig = tuple(
+            (str(item.get("round_label") or ""), str(item.get("joint_id") or ""), str(item.get("round_color") or ""))
+            for item in items
+        )
+        return (
+            str(facility_code or ""),
+            int(self._active_run_id) if self._active_run_id else 0,
+            str(self.current_year or ""),
+            str(workpoint_override),
+            str(level_threshold_override),
+            item_sig,
+        )
+
+    def _try_show_cached_history_image(self, row_name: str) -> bool:
+        if not self._history_overlay_mode:
+            return False
+        key = self._norm_row_name_for_match(row_name)
+        entry = (self._history_render_cache or {}).get(key)
+        if not entry:
+            return False
+        pix = entry.get("pixmap")
+        hotspots = entry.get("hotspots") or []
+        display_name = entry.get("row_name") or row_name
+        return self._show_pixmap_in_elevation_view(
+            pix,
+            display_name,
+            f"当前显示：{display_name} 历史检测节点图；滚轮缩放，双击恢复初始视图。",
+            hotspots=hotspots,
+        )
+
+    def _update_history_busy_dialog(self, busy: QDialog, text: str = "", value: int | None = None, maximum: int | None = None) -> None:
+        try:
+            hint = busy.findChild(QLabel, "BusyHint")
+            if hint is not None and text:
+                hint.setText(text)
+            progress = busy.findChild(QProgressBar, "BusyProgress")
+            if progress is not None:
+                if maximum is not None:
+                    progress.setRange(0, max(1, int(maximum)))
+                if value is not None:
+                    progress.setValue(max(0, int(value)))
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+    def _show_history_draw_busy_dialog(self) -> QDialog:
+        """显示历史点位图绘制中的提示窗口。
+
+        说明：历史点位图需要实时解析模型并计算当前立面节点投影，
+        该过程仍在主线程执行，因此进度条采用“忙碌/等待”样式，
+        主要用于明确告诉用户当前正在绘制，不是程序卡死。
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle("正在绘制")
+        dlg.setModal(False)
+        dlg.setFixedSize(360, 138)
+        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        dlg.setStyleSheet("""
+            QDialog {
+                background: #ffffff;
+                border: 1px solid #b9c6d6;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+            }
+            QLabel#BusyTitle {
+                color: #0b4f80;
+                font-size: 12pt;
+                font-weight: bold;
+            }
+            QLabel#BusyHint {
+                color: #5d6f85;
+                font-size: 10pt;
+            }
+            QProgressBar {
+                min-height: 18px;
+                border: 1px solid #b9c6d6;
+                border-radius: 4px;
+                background: #eef4fb;
+                text-align: center;
+                color: #1d2b3a;
+            }
+            QProgressBar::chunk {
+                border-radius: 3px;
+                background: #2aa9df;
+            }
+        """)
+
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(22, 18, 22, 18)
+        lay.setSpacing(10)
+
+        title = QLabel("正在绘制历史检测节点图", dlg)
+        title.setObjectName("BusyTitle")
+        title.setAlignment(Qt.AlignCenter)
+        lay.addWidget(title, 0)
+
+        hint = QLabel("正在解析模型并叠加检测点，请稍候……", dlg)
+        hint.setObjectName("BusyHint")
+        hint.setAlignment(Qt.AlignCenter)
+        lay.addWidget(hint, 0)
+
+        progress = QProgressBar(dlg)
+        progress.setObjectName("BusyProgress")
+        progress.setRange(0, 0)  # 初始忙碌模式；预绘制立面列表后切换为确定进度
+        progress.setTextVisible(False)
+        lay.addWidget(progress, 0)
+
+        dlg.show()
+        QApplication.processEvents()
+        return dlg
+
+    def _refresh_history_elevation_view_with_busy(self):
+        """点击“查看历史”时一次性预绘制所有立面/平面历史点位图。
+
+        这样在历史点位模式下切换 XZ/YZ/XY 面时，不再重新解析模型和重画点位，
+        而是直接显示内存中的预绘制图片，避免切换卡顿。
+        """
+        overlay = self._history_overlay_bundle or self._load_history_overlay_bundle()
+        items = list((overlay or {}).get("items") or [])
+        if not items:
+            return
+
+        context = self._current_result_context or {}
+        render_key = self._history_render_key(context, overlay)
+        current_row = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前"
+
+        # 如果同一平台/同一结果/同一组点位已经预绘制过，直接显示当前面。
+        if self._history_render_cache_key == render_key and self._history_render_cache:
+            self._set_row_combo_options(self._history_render_row_names, current=current_row)
+            row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else current_row
+            if self._try_show_cached_history_image(row_name):
+                return
+
+        busy = self._show_history_draw_busy_dialog()
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            QApplication.processEvents()
+
+            facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
+            workpoint_override, level_threshold_override = self._get_shared_section_params(context)
+
+            # 第一步：先解析一次模型，拿到全部可用立面/平面名称。
+            self._update_history_busy_dialog(busy, "正在准备绘制历史检测节点图，请稍候……")
+            if hasattr(self.elevation_view, "clear_inspection_overlay"):
+                self.elevation_view.clear_inspection_overlay()
+            if hasattr(self.elevation_view, "clear_history_overlay"):
+                self.elevation_view.clear_history_overlay()
+            self.elevation_view.load_for_facility(
+                facility_code=facility_code,
+                context=context,
+                year_label=self.current_year,
+                row_name=current_row or "XZ 前",
+                workpoint_override=workpoint_override,
+                level_threshold_override=level_threshold_override,
+            )
+            QApplication.processEvents()
+
+            row_names = self.elevation_view.available_row_names()
+            if not row_names:
+                row_names = ["XZ 前", "XZ 后", "YZ 左", "YZ 右"]
+            self._set_row_combo_options(row_names, current=current_row)
+
+            total = len(row_names)
+            self._update_history_busy_dialog(busy, "正在绘制历史检测节点图，请稍候……", value=0, maximum=total)
+
+            history_cache: Dict[str, Dict] = {}
+            for idx, row_name in enumerate(row_names, start=1):
+                self._update_history_busy_dialog(
+                    busy,
+                    "正在绘制历史检测节点图，请稍候……",
+                    value=idx - 1,
+                    maximum=total,
+                )
+
+                if hasattr(self.elevation_view, "clear_inspection_overlay"):
+                    self.elevation_view.clear_inspection_overlay()
+                if hasattr(self.elevation_view, "clear_history_overlay"):
+                    self.elevation_view.clear_history_overlay()
+
+                self.elevation_view.load_for_facility(
+                    facility_code=facility_code,
+                    context=context,
+                    year_label=self.current_year,
+                    row_name=row_name,
+                    workpoint_override=workpoint_override,
+                    level_threshold_override=level_threshold_override,
+                )
+                if hasattr(self.elevation_view, "set_history_overlay"):
+                    self.elevation_view.set_history_overlay(overlay)
+                QApplication.processEvents()
+
+                snapshot = self._capture_current_elevation_scene_snapshot(margin=18, scale=2.5)
+                pix = snapshot.get("pixmap")
+                if pix is not None and not pix.isNull():
+                    history_cache[self._norm_row_name_for_match(row_name)] = {
+                        "row_name": row_name,
+                        "pixmap": pix,
+                        "hotspots": snapshot.get("hotspots") or [],
+                    }
+
+                self._update_history_busy_dialog(busy, value=idx, maximum=total)
+
+            self._history_render_cache = history_cache
+            self._history_render_cache_key = render_key
+            self._history_render_row_names = list(row_names)
+
+            # 预绘制完成后，显示用户当前选择的面；如果当前面不存在，显示第一个。
+            display_row = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else current_row
+            if not self._try_show_cached_history_image(display_row) and row_names:
+                self._set_row_combo_options(row_names, current=row_names[0])
+                self._try_show_cached_history_image(row_names[0])
+
+        finally:
+            try:
+                QApplication.restoreOverrideCursor()
+            except Exception:
+                pass
+            try:
+                busy.close()
+                busy.deleteLater()
+            except Exception:
+                pass
 
     def _refresh_elevation_view(self, context: Optional[Dict] = None):
         if not hasattr(self, "elevation_view"):
@@ -1050,9 +1590,24 @@ class SpecialInspectionStrategy(BasePage):
 
         workpoint_override, level_threshold_override = self._get_shared_section_params(context)
 
-        # 图一主页永远只显示轮廓，不显示检验等级
+        # 历史点位模式下，优先显示“查看历史”时已经预绘制好的内存图片。
+        # 这样切换 XZ/YZ/XY 面时不再实时解析模型和重绘节点。
+        if self._history_overlay_mode and self._history_render_cache:
+            if self._try_show_cached_history_image(row_name):
+                return
+
+        # 普通轮廓模式优先读取服务器缓存图片；查看历史模式如果没有预绘制缓存，才退回实时绘制。
+        if not self._history_overlay_mode:
+            self._sync_row_combo_from_cached_images(facility_code)
+            row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else row_name
+            if self._try_show_cached_outline_image(facility_code, row_name):
+                return
+
+        # 图一主页默认只显示轮廓；查看历史模式下在轮廓图上叠加历史点。
         if hasattr(self.elevation_view, "clear_inspection_overlay"):
             self.elevation_view.clear_inspection_overlay()
+        if hasattr(self.elevation_view, "clear_history_overlay"):
+            self.elevation_view.clear_history_overlay()
 
         self.elevation_view.load_for_facility(
             facility_code=facility_code,
@@ -1064,6 +1619,19 @@ class SpecialInspectionStrategy(BasePage):
         )
 
         self._sync_dynamic_row_combo_from_view()
+
+        if self._history_overlay_mode:
+            overlay = self._history_overlay_bundle or self._load_history_overlay_bundle()
+            items = list((overlay or {}).get("items") or [])
+            if items and hasattr(self.elevation_view, "set_history_overlay"):
+                self._history_overlay_bundle = overlay
+                self.elevation_view.set_history_overlay(overlay)
+                if hasattr(self, "btn_view_history"):
+                    self.btn_view_history.setText("返回轮廓")
+            else:
+                self._history_overlay_mode = False
+                if hasattr(self, "btn_view_history"):
+                    self.btn_view_history.setText("查看历史")
 
         # 页面浏览阶段只负责显示轮廓图，不在这里自动保存。
         # 轮廓图统一在图一“生成评估报告”按钮中导出/上传。
@@ -1377,7 +1945,52 @@ class SpecialInspectionStrategy(BasePage):
         if self.main_window is not None and hasattr(self.main_window, "open_upgrade_special_inspection_result_tab"):
             self.main_window.open_upgrade_special_inspection_result_tab(facility_code, run_id=None)
 
+    def _load_history_overlay_bundle(self) -> Dict:
+        facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
+        if not facility_code:
+            return {}
+        try:
+            overlay = load_history_detection_overlay(
+                facility_code,
+                run_id=self._active_run_id,
+            ) or {}
+        except Exception as exc:
+            print("[SpecialInspectionStrategy] load history overlay failed:", exc)
+            overlay = {}
+        return overlay
+
     def _on_view_history(self):
-        return None
+        facility_code = self._active_facility_code or self._get_dropdown_value("facility_code")
+        if not facility_code:
+            QMessageBox.information(self, "查看历史", "请先选择平台。")
+            return
+
+        # 已经在历史点位模式：再次点击恢复普通轮廓图。
+        if self._history_overlay_mode:
+            self._history_overlay_mode = False
+            self._history_overlay_bundle = {}
+            if hasattr(self, "btn_view_history"):
+                self.btn_view_history.setText("查看历史")
+            self._refresh_elevation_view(self._current_result_context or None)
+            return
+
+        overlay = self._load_history_overlay_bundle()
+        items = list((overlay or {}).get("items") or [])
+        if not items:
+            QMessageBox.information(
+                self,
+                "查看历史",
+                "没有可显示的指定历史检测点。",
+            )
+            return
+
+        self._history_overlay_mode = True
+        self._history_overlay_bundle = overlay
+        if hasattr(self, "btn_view_history"):
+            self.btn_view_history.setText("返回轮廓")
+
+        # 重新加载当前轮廓图，并在绘制完成后由 _refresh_elevation_view 叠加历史点。
+        # 查看历史需要节点坐标，所以这里实时绘制；绘制期间显示提示窗口。
+        self._refresh_history_elevation_view_with_busy()
 
     # Clean overrides for platform linkage.

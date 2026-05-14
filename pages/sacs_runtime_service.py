@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 
 
@@ -79,6 +80,8 @@ def build_bat_text(exe_path: str, runx_path: str, work_dir: str) -> str:
     sacs_home = os.path.dirname(exe_path)
 
     summary_log = os.path.join(work_dir, "analysis_summary.log")
+    stdout_log = os.path.join(work_dir, "analysis_stdout.log")
+    stderr_log = os.path.join(work_dir, "analysis_stderr.log")
     exitcode_file = os.path.join(work_dir, "analysis_exitcode.txt")
 
     return rf"""@echo off
@@ -89,6 +92,8 @@ set "SACS_EXE={exe_path}"
 set "SACS_HOME={sacs_home}"
 set "RUNX_FILE={runx_path}"
 set "SUMMARY_LOG={summary_log}"
+set "STDOUT_LOG={stdout_log}"
+set "STDERR_LOG={stderr_log}"
 set "EXITCODE_FILE={exitcode_file}"
 
 cd /d "%MODEL_DIR%"
@@ -99,7 +104,8 @@ echo SACS_HOME=%SACS_HOME% >> "%SUMMARY_LOG%"
 echo RUNX_FILE=%RUNX_FILE% >> "%SUMMARY_LOG%"
 echo START_TIME=%date% %time% >> "%SUMMARY_LOG%"
 
-"%SACS_EXE%" "%RUNX_FILE%" "%SACS_HOME%" >nul 2>nul
+rem 不把输出写入 PyQt 管道，避免阻塞；但保留到文件，便于判断是否执行完整/失败。
+"%SACS_EXE%" "%RUNX_FILE%" "%SACS_HOME%" > "%STDOUT_LOG%" 2> "%STDERR_LOG%"
 
 set "SACS_EXIT=%errorlevel%"
 
@@ -121,21 +127,34 @@ def ensure_analysis_bat(
     work_dir = os.path.normpath(work_dir)
     ensure_dir(work_dir)
 
-    # 计算分析可能被用户直接点击；此时再次尝试从“当前模型/其他”复制辅助文件。
-    try:
-        from pages.sacs_storage_service import stage_support_files_for_job
-        job_name = os.path.basename(work_dir)
-        staged = stage_support_files_for_job(job_name, require_all=False)
-        runx_path = runx_path or staged.get("runx", "")
-        psiinp_path = psiinp_path or staged.get("psiinp", "")
-        jcninp_path = jcninp_path or staged.get("jcninp", "")
-    except Exception:
-        pass
+    # 注意：
+    # _on_run_analysis 中会先把用户上传的 psiFACTOR.runx 复制到运行目录，
+    # 然后根据“原模型 / 改造后模型”把 RUNX 中的 sacinp/seainp 文件名改好。
+    #
+    # 旧逻辑这里又调用了一次 stage_support_files_for_job()，会把用户上传的
+    # 原始 RUNX 再复制到运行目录，从而覆盖已经修正过的 RUNX，导致计算时
+    # 仍然引用 sacinp.JKnew / seainp.JKnew FACTOR。
+    #
+    # 因此这里必须遵循：如果调用方已经传入 runx_path，绝不重新复制 RUNX。
+    # 只在 runx_path 为空时才兜底查找/复制 RUNX；psiinp/jcninp 也同理只补缺失项。
+    if not runx_path or not psiinp_path or not jcninp_path:
+        try:
+            from pages.sacs_storage_service import stage_support_file_for_job
+            job_name = os.path.basename(work_dir)
+
+            if not runx_path:
+                runx_path = stage_support_file_for_job(job_name, "runx", required=False) or ""
+            if not psiinp_path:
+                psiinp_path = stage_support_file_for_job(job_name, "psiinp", required=False) or ""
+            if not jcninp_path:
+                jcninp_path = stage_support_file_for_job(job_name, "jcninp", required=False) or ""
+        except Exception:
+            pass
 
     exe_path = resolve_analysis_engine_exe()
     local_runx = ensure_runx_in_workdir(work_dir, runx_path)
 
-    # 新增：保证 psiinp / jcninp 也在工作目录
+    # 保证 psiinp / jcninp 也在工作目录
     ensure_support_inputs_in_workdir(
         work_dir=work_dir,
         psiinp_path=psiinp_path,
@@ -236,3 +255,91 @@ def ensure_support_inputs_in_workdir(
         default_path=get_sacs_default_jcninp_path(),
     )
     return psiinp_file, jcninp_file
+
+# =========================
+# RUNX 文件输入名修正
+# =========================
+def _unique_non_empty(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def rewrite_runx_input_file_names(
+    runx_path: str,
+    *,
+    model_filename: str,
+    sea_filename: str = "",
+    model_candidates: list[str] | None = None,
+    sea_candidates: list[str] | None = None,
+) -> str:
+    """把 RUNX 中引用的模型/海况文件名修正为当前运行目录中的文件名。
+
+    背景：用户上传的 psiFACTOR.runx 通常引用原始模型名，例如：
+        sacinp.JKnew
+        seainp.JKnew FACTOR
+
+    计算改造后模型时，运行目录中真正参与计算的文件是：
+        sacinp.M1
+        seainp.M1
+
+    因此需要在运行前把 RUNX 中的输入文件名替换为当前应计算的文件名。
+    反过来，当当前页面没有任何新增数据、需要计算原模型时，也可以把 RUNX
+    从 M1 引用恢复为原始文件名，避免误算最新改造模型。
+    """
+    runx_path = os.path.normpath(str(runx_path or "").strip())
+    if not runx_path or not os.path.isfile(runx_path):
+        raise FileNotFoundError(f"RUNX 文件不存在：{runx_path}")
+
+    target_model = str(model_filename or "").strip()
+    target_sea = str(sea_filename or "").strip()
+    if not target_model:
+        raise ValueError("model_filename 不能为空，无法修正 RUNX 文件")
+
+    with open(runx_path, "r", encoding="utf-8", errors="ignore") as fp:
+        raw = fp.read()
+
+    model_names = _unique_non_empty(
+        list(model_candidates or [])
+        + [
+            "sacinp.JKnew",
+            "sacinp.M1",
+            target_model,
+        ]
+    )
+    sea_names = _unique_non_empty(
+        list(sea_candidates or [])
+        + [
+            "seainp.JKnew FACTOR",
+            "seainp.M1",
+            target_sea,
+        ]
+    )
+
+    def replace_names(content: str, names: list[str], target: str) -> str:
+        if not target:
+            return content
+        # 长文件名优先，例如先替换 "seainp.JKnew FACTOR"，再替换 "seainp.M1"。
+        for old in sorted(names, key=len, reverse=True):
+            if not old or old.lower() == target.lower():
+                continue
+            content = re.sub(re.escape(old), target, content, flags=re.IGNORECASE)
+        return content
+
+    new_text = replace_names(raw, model_names, target_model)
+    new_text = replace_names(new_text, sea_names, target_sea)
+
+    if new_text != raw:
+        with open(runx_path, "w", encoding="utf-8", newline="\r\n") as fp:
+            fp.write(new_text)
+
+    return runx_path

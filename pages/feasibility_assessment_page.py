@@ -11,6 +11,7 @@
 import os
 import shutil
 import subprocess
+import time
 from typing import List, Optional, cast
 
 from PyQt5.QtCore import QEvent, QTimer, Qt, QUrl,QProcess
@@ -47,12 +48,15 @@ from pages.feasibility_assessment_results_page import FeasibilityAssessmentResul
 from pages.sacs_create_model_service import create_new_model_files
 from core.app_paths import first_existing_path
 
-from pages.sacs_runtime_service import ensure_analysis_bat, find_result_file
+from pages.sacs_runtime_service import ensure_analysis_bat, find_result_file, rewrite_runx_input_file_names
 
 from shiyou_db.runtime_db import get_mysql_url
 
 from pages.sacs_storage_service import get_job_runtime_dir, stage_support_files_for_job
-from services.history_rebuild_auto_service import prepare_latest_rebuild_runtime_for_analysis
+from services.history_rebuild_auto_service import (
+    prepare_latest_rebuild_runtime_for_analysis,
+    prepare_original_runtime_for_analysis,
+)
 
 SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
 
@@ -155,6 +159,7 @@ class FeasibilityAssessmentPage(BasePage):
         # 点击底部“保存数据”后统一写入数据库，之后才允许创建新模型。
         self._input_data_saved = False
         self._input_data_locked = False
+        self._model_created_in_session = False
 
         self._build_ui()
         self._refresh_runtime_paths_from_disk()
@@ -1424,6 +1429,7 @@ class FeasibilityAssessmentPage(BasePage):
             if self.current_bat_file:
                 msg_lines.append(f"BAT文件：{self.current_bat_file}")
 
+            self._model_created_in_session = True
             QMessageBox.information(self, "创建完成", "\n".join(msg_lines))
 
         except Exception as e:
@@ -1513,16 +1519,384 @@ class FeasibilityAssessmentPage(BasePage):
         candidates.sort(reverse=True)
         return candidates[0][1]
 
+    def _should_calculate_original_model(self) -> bool:
+        """是否应直接计算原模型。
+
+        业务规则：
+        - 三个新增数据表均为空；
+        - 本次没有点击“保存数据”；
+        - 本次没有点击“创建新模型”。
+
+        满足以上条件时，点击“计算分析”应计算原始上传模型，而不是默认计算
+        最新历史改造项目下的 M1。
+        """
+        return (
+            not self._has_any_valid_input_data()
+            and not getattr(self, "_input_data_saved", False)
+            and not getattr(self, "_input_data_locked", False)
+            and not getattr(self, "_model_created_in_session", False)
+        )
+
+    def _archive_analysis_result_file(self, result_file: str, *, analysis_mode: str, runtime_bundle: dict) -> str:
+        """把 SACS 计算结果文件归档到对应业务位置。
+
+        规则：
+        - 原模型计算结果：归档到【模型文件 / 当前模型 / 静力 / 结果 / 自动计算 / 原模型】；
+        - 改造后计算结果：归档到最新历史改造项目下，和该项目的 sacinp.M1 / seainp.M1 放在一起。
+
+        这样用户在“历史改造文件”中选中某个改造项目时，可以直接看到：
+        1) 模型文件 sacinp.M1；
+        2) 海况文件 seainp.M1；
+        3) 本项目对应的计算结果文件。
+        """
+        result_file = os.path.normpath(str(result_file or "").strip())
+        if not result_file or not os.path.isfile(result_file):
+            return ""
+
+        mode_label = "原模型" if analysis_mode == "original" else "改造后模型"
+        source_label = str(runtime_bundle.get("project_name") or runtime_bundle.get("source") or "").strip()
+
+        try:
+            from services.file_db_adapter import (
+                append_docman_file,
+                load_docman_record_list,
+                replace_docman_list_file,
+                resolve_storage_path,
+                upload_file,
+            )
+        except Exception:
+            return ""
+
+        # 改造后模型：结果文件保存到对应历史改造项目下。
+        if analysis_mode != "original":
+            project_id = runtime_bundle.get("project_id")
+            try:
+                project_id_int = int(project_id or 0)
+            except Exception:
+                project_id_int = 0
+
+            if project_id_int > 0:
+                path_segments = ["历史改造信息", f"project_{project_id_int}"]
+                remark = (
+                    f"{source_label or '历史改造项目'} 对应的结构强度/改造可行性评估计算结果；"
+                    f"计算对象：{mode_label}"
+                )
+
+                try:
+                    # 同一个历史改造项目重复计算时，优先覆盖该项目下已有的计算结果文件，
+                    # 避免每次计算都新增一条重复的 psilst.factor。
+                    existing_records = load_docman_record_list(
+                        path_segments,
+                        facility_code=self.job_name,
+                    )
+                    target_record = None
+                    for rec in existing_records or []:
+                        category = str(rec.get("category") or "").strip()
+                        filename = str(rec.get("filename") or "").strip().lower()
+                        remark_text = str(rec.get("remark") or "").strip()
+                        if (
+                            "计算结果" in category
+                            or "静力分析结果" in category
+                            or filename.startswith("psilst")
+                            or "计算结果" in remark_text
+                        ):
+                            target_record = rec
+                            break
+
+                    if target_record and target_record.get("logical_path"):
+                        record = replace_docman_list_file(
+                            result_file,
+                            logical_path=str(target_record.get("logical_path") or ""),
+                            record_id=int(target_record.get("record_id") or 0) if target_record.get("record_id") else None,
+                            category="计算结果文件",
+                            work_condition=mode_label,
+                            remark=remark,
+                            facility_code=self.job_name,
+                        )
+                    else:
+                        record = append_docman_file(
+                            result_file,
+                            path_segments=path_segments,
+                            category="计算结果文件",
+                            work_condition=mode_label,
+                            remark=remark,
+                            facility_code=self.job_name,
+                        )
+                    return resolve_storage_path(record) or result_file
+                except Exception as exc:
+                    print("[FeasibilityAssessmentPage] archive rebuild analysis result failed:", exc)
+                    return ""
+
+        # 原模型计算结果，或者找不到 project_id 的兜底情况：仍保存到模型文件页。
+        logical_path = f"{self.job_name}/当前模型/静力/结果/自动计算/{mode_label}"
+        remark = (
+            f"结构强度/改造可行性评估计算结果；计算对象：{mode_label}；"
+            f"来源：{source_label}"
+        )
+
+        try:
+            record = upload_file(
+                result_file,
+                file_type_code="other",
+                module_code="model_files",
+                logical_path=logical_path,
+                facility_code=self.job_name,
+                category_name="静力分析结果文件",
+                work_condition=mode_label,
+                remark=remark,
+            )
+            return resolve_storage_path(record) or result_file
+        except Exception as exc:
+            print("[FeasibilityAssessmentPage] archive original analysis result failed:", exc)
+            return ""
+
+    def _rewrite_runx_for_current_analysis(self, runx_path: str, *, analysis_mode: str, runtime_bundle: dict) -> str:
+        """根据当前计算对象修正 RUNX 中的模型/海况文件名。"""
+        runx_path = os.path.normpath(str(runx_path or "").strip())
+        if not runx_path:
+            return ""
+
+        if analysis_mode == "original":
+            model_file = str(runtime_bundle.get("new_model_file") or runtime_bundle.get("runtime_model_file") or "")
+            sea_file = str(runtime_bundle.get("new_sea_file") or runtime_bundle.get("runtime_sea_file") or "")
+            model_filename = os.path.basename(model_file)
+            sea_filename = os.path.basename(sea_file) if sea_file else ""
+            return rewrite_runx_input_file_names(
+                runx_path,
+                model_filename=model_filename,
+                sea_filename=sea_filename,
+                model_candidates=[
+                    os.path.basename(str(runtime_bundle.get("model_file") or "")),
+                    "sacinp.M1",
+                    "sacinp.JKnew",
+                ],
+                sea_candidates=[
+                    os.path.basename(str(runtime_bundle.get("sea_file") or "")),
+                    "seainp.M1",
+                    "seainp.JKnew FACTOR",
+                ],
+            )
+
+        # 改造后模型统一使用运行目录中的 M1 文件。
+        return rewrite_runx_input_file_names(
+            runx_path,
+            model_filename="sacinp.M1",
+            sea_filename="seainp.M1",
+            model_candidates=[
+                os.path.basename(str(runtime_bundle.get("model_file") or "")),
+                os.path.basename(str(runtime_bundle.get("new_model_file") or "")),
+                "sacinp.JKnew",
+                "sacinp.M1",
+            ],
+            sea_candidates=[
+                os.path.basename(str(runtime_bundle.get("sea_file") or "")),
+                os.path.basename(str(runtime_bundle.get("new_sea_file") or "")),
+                "seainp.JKnew FACTOR",
+                "seainp.M1",
+            ],
+        )
+
+    def _cleanup_previous_analysis_outputs(self, work_dir: str) -> None:
+        """计算前清理旧的结果文件，避免把上一次/半截结果误判为本次结果。"""
+        work_dir = os.path.normpath(str(work_dir or "").strip())
+        if not work_dir or not os.path.isdir(work_dir):
+            return
+
+        delete_names = {
+            "analysis_exitcode.txt",
+            "analysis_summary.log",
+            "analysis_stdout.log",
+            "analysis_stderr.log",
+        }
+        for fn in list(os.listdir(work_dir)):
+            low = fn.lower()
+            full = os.path.join(work_dir, fn)
+            should_delete = (
+                low in delete_names
+                or low.startswith("psilst")
+                or low.endswith(".listing")
+            )
+            if not should_delete:
+                continue
+            try:
+                if os.path.isdir(full):
+                    shutil.rmtree(full, ignore_errors=True)
+                else:
+                    os.remove(full)
+            except Exception as exc:
+                print("[FeasibilityAssessmentPage] cleanup old analysis output failed:", full, exc)
+
+    def _read_tail_text(self, path: str, max_bytes: int = 256 * 1024) -> str:
+        path = os.path.normpath(str(path or "").strip())
+        if not path or not os.path.isfile(path):
+            return ""
+        try:
+            with open(path, "rb") as fp:
+                fp.seek(0, os.SEEK_END)
+                size = fp.tell()
+                fp.seek(max(0, size - int(max_bytes)), os.SEEK_SET)
+                data = fp.read()
+            for enc in ("utf-8", "gbk", "cp1252", "latin-1"):
+                try:
+                    return data.decode(enc, errors="ignore")
+                except Exception:
+                    continue
+            return data.decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+
+    def _analysis_output_has_error(self, work_dir: str, result_file: str) -> str:
+        """从日志/结果尾部识别明显错误。只做强错误判断，避免误杀正常结果。"""
+        paths = [
+            os.path.join(work_dir, "analysis_stdout.log"),
+            os.path.join(work_dir, "analysis_stderr.log"),
+            os.path.join(work_dir, "analysis_summary.log"),
+            result_file,
+        ]
+        joined = "\n".join(self._read_tail_text(path) for path in paths if path)
+        low = joined.lower()
+        strong_error_tokens = [
+            "*** error in sacs execution ***",
+            "please check output listing files",
+            "fatal error",
+            "severe error",
+            "cannot open",
+            "can not open",
+            "could not open",
+            "file not found",
+            "no such file",
+            "系统找不到指定的文件",
+            "找不到指定的文件",
+        ]
+        for token in strong_error_tokens:
+            if token in low:
+                return token
+        return ""
+
+    def _analysis_runx_has_done_marker(self, work_dir: str) -> bool:
+        """判断 RUNX 脚本是否真正跑到 EXIT 段。
+
+        不能只看 QProcess.finished，也不能只看 psilst.factor 大小稳定。
+        SACS 不同模块之间可能隔几秒才继续写 psilst.factor；如果只连续 3 秒大小不变，
+        就容易把中间文件误判为“计算完成”。
+
+        RUNX 文件末尾会输出：
+            SACS Linear Static Analysis Finished
+        失败时会输出：
+            *** ERROR in SACS Execution ***
+        这两个标记都会进入 analysis_stdout.log，因此这里用它们判断 RUNX 是否走完。
+        """
+        stdout_text = self._read_tail_text(os.path.join(work_dir, "analysis_stdout.log"), max_bytes=512 * 1024)
+        stderr_text = self._read_tail_text(os.path.join(work_dir, "analysis_stderr.log"), max_bytes=512 * 1024)
+        text = (stdout_text + "\n" + stderr_text).lower()
+        return (
+            "sacs linear static analysis finished" in text
+            or "*** error in sacs execution ***" in text
+            or "please check output listing files" in text
+        )
+
+    def _wait_for_fresh_result_file(
+        self,
+        *,
+        work_dir: str,
+        start_time: float,
+        on_ready,
+        max_wait_ms: int = 30 * 60 * 1000,
+        interval_ms: int = 2000,
+    ) -> None:
+        """等待本次结果文件出现、RUNX 走完、且文件大小长时间稳定。
+
+        之前“计算很快完成但 psilst.factor 没写完”的根因是：只等了文件大小连续短时间稳定。
+        SACS 各模块之间可能存在较长间隔，导致中间文件被提前归档。
+
+        新规则：
+        1. psilst.factor 必须是本次计算后生成/更新；
+        2. analysis_stdout.log 必须出现 RUNX 完成/失败标记；
+        3. psilst.factor 大小必须连续较长时间稳定；
+        4. 若出现错误标记，后续 _analysis_output_has_error 会拦截归档。
+        """
+        work_dir = os.path.normpath(str(work_dir or "").strip())
+        state = {
+            "elapsed": 0,
+            "last_path": "",
+            "last_size": -1,
+            "stable_count": 0,
+            "last_debug": "",
+        }
+
+        # 2 秒检查一次，连续 8 次稳定约等于 16 秒。
+        # 这个时间比原来的 3 秒保守很多，避免 SACS 模块间隔造成误判。
+        required_stable_count = 8
+        min_result_size = 8 * 1024
+
+        timer = QTimer(self)
+        timer.setInterval(max(500, int(interval_ms)))
+
+        def check_once():
+            state["elapsed"] += timer.interval()
+            result_file = find_result_file(work_dir)
+            runx_done = self._analysis_runx_has_done_marker(work_dir)
+
+            if result_file and os.path.isfile(result_file):
+                try:
+                    mtime = os.path.getmtime(result_file)
+                    size = os.path.getsize(result_file)
+                except OSError:
+                    mtime = 0
+                    size = 0
+
+                # 必须是本次计算开始后生成/更新的文件，避免误用旧结果。
+                is_fresh = mtime >= float(start_time) - 2.0
+                if is_fresh and size >= min_result_size:
+                    if result_file == state["last_path"] and size == state["last_size"]:
+                        state["stable_count"] += 1
+                    else:
+                        state["stable_count"] = 0
+                        state["last_path"] = result_file
+                        state["last_size"] = size
+
+                    if runx_done and state["stable_count"] >= required_stable_count:
+                        timer.stop()
+                        timer.deleteLater()
+                        on_ready(result_file, "")
+                        return
+                else:
+                    state["stable_count"] = 0
+
+            if state["elapsed"] >= int(max_wait_ms):
+                timer.stop()
+                timer.deleteLater()
+                detail = (
+                    f"等待计算结果写入完成超时：{work_dir}\n"
+                    f"result_file={result_file or ''}\n"
+                    f"runx_done={runx_done}\n"
+                    f"stable_count={state['stable_count']}/{required_stable_count}"
+                )
+                on_ready(result_file or "", detail)
+                return
+
+        timer.timeout.connect(check_once)
+        timer.start()
+        check_once()
+
     def _on_run_analysis(self):
         try:
-            # 每次计算前都重新准备当前最新模型。
-            # 有历史改造项目时，复制最新历史改造项目中的 sacinp.M1 / seainp.M1 到 runtime；
-            # 历史改造项目已全部删除时，自动回退到原始上传模型，避免继续计算已删除项目遗留的旧 M1。
+            analysis_mode = "original" if self._should_calculate_original_model() else "rebuild"
+
+            # 每次计算前都重新准备当前计算模型。
+            # - 三张表为空、未保存、未创建新模型：计算原始上传模型；
+            # - 否则：计算当前仍有效的最新历史改造 M1。
             try:
-                runtime_bundle = prepare_latest_rebuild_runtime_for_analysis(
-                    mysql_url=self.mysql_url,
-                    job_name=self.job_name,
-                )
+                if analysis_mode == "original":
+                    runtime_bundle = prepare_original_runtime_for_analysis(
+                        mysql_url=self.mysql_url,
+                        job_name=self.job_name,
+                    )
+                else:
+                    runtime_bundle = prepare_latest_rebuild_runtime_for_analysis(
+                        mysql_url=self.mysql_url,
+                        job_name=self.job_name,
+                    )
                 self.current_model_dir = str(runtime_bundle.get("model_dir") or "").strip() or get_job_runtime_dir(self.job_name)
             except Exception as exc:
                 QMessageBox.warning(self, "计算模型准备失败", str(exc))
@@ -1532,13 +1906,25 @@ class FeasibilityAssessmentPage(BasePage):
 
             work_dir = getattr(self, "current_model_dir", "").strip() or self.model_files_root
             if not work_dir or not os.path.isdir(work_dir):
-                QMessageBox.warning(self, "提示", "未找到模型运行目录，请先创建新模型。")
+                QMessageBox.warning(self, "提示", "未找到模型运行目录，请先确认模型文件已上传。")
                 return
 
             # 计算前再次从“当前模型/其他/用户上传/其他”复制必需辅助文件。
-            # 这样用户只要上传一次 RUNX / PSIINP / JCNINP，即可在此处直接计算。
+            # RUNX 文件复制后会根据计算对象修正其中引用的模型/海况文件名。
             support_files = stage_support_files_for_job(self.job_name, require_all=True)
-            runx_path = getattr(self, "current_runx_file", "").strip() or support_files.get("runx", "")
+            runx_path = support_files.get("runx", "") or getattr(self, "current_runx_file", "").strip()
+            if runx_path:
+                try:
+                    runx_path = self._rewrite_runx_for_current_analysis(
+                        runx_path,
+                        analysis_mode=analysis_mode,
+                        runtime_bundle=runtime_bundle,
+                    )
+                except Exception as exc:
+                    QMessageBox.warning(self, "RUNX 文件修正失败", str(exc))
+                    return
+            self.current_runx_file = runx_path
+
             bat_path = ensure_analysis_bat(
                 work_dir=work_dir,
                 runx_path=runx_path,
@@ -1546,6 +1932,11 @@ class FeasibilityAssessmentPage(BasePage):
                 jcninp_path=support_files.get("jcninp", "") or os.path.join(work_dir, "Jcninp.19-1d"),
             )
             self.current_bat_file = bat_path
+
+            # 计算前清理旧结果，并记录本次开始时间。
+            # 否则 find_result_file 可能找到上一次或半截 psilst.factor，造成“秒完成但结果不完整”。
+            self._cleanup_previous_analysis_outputs(work_dir)
+            analysis_start_time = time.time()
 
             if self.analysis_process is not None:
                 QMessageBox.information(self, "提示", "当前已有计算任务正在运行。")
@@ -1578,24 +1969,66 @@ class FeasibilityAssessmentPage(BasePage):
             process.readyReadStandardError.connect(drain_stderr)
 
             def on_finished(exit_code, exit_status):
-                self.btn_run.setEnabled(True)
-                self.btn_run.setText("计算分析")
                 self.analysis_process = None
-                self.current_result_file = find_result_file(work_dir)
 
                 if exit_code != 0:
-                    QMessageBox.critical(self, "提示", f"计算失败，退出码：{exit_code}")
+                    self.btn_run.setEnabled(True)
+                    self.btn_run.setText("计算分析")
+                    QMessageBox.critical(self, "提示", f"计算失败，退出码：{exit_code}\n请查看计算目录下的 analysis_stdout.log / analysis_stderr.log。")
                     return
 
-                if not self.current_result_file:
-                    QMessageBox.warning(
-                        self,
-                        "未找到计算结果",
-                        f"SACS 进程已结束，但没有找到结果文件。\n计算目录：{work_dir}"
+                self.btn_run.setText("等待结果写入...")
+
+                def on_result_ready(result_file: str, wait_error: str):
+                    self.btn_run.setEnabled(True)
+                    self.btn_run.setText("计算分析")
+                    self.current_result_file = result_file or ""
+
+                    if wait_error:
+                        QMessageBox.warning(
+                            self,
+                            "计算结果未完成",
+                            f"SACS 外层进程已结束，但结果文件没有在限定时间内稳定。\n{wait_error}\n"
+                            f"请稍后打开计算目录检查：{work_dir}"
+                        )
+                        return
+
+                    if not self.current_result_file:
+                        QMessageBox.warning(
+                            self,
+                            "未找到计算结果",
+                            f"SACS 进程已结束，但没有找到本次新生成的结果文件。\n计算目录：{work_dir}\n"
+                            "请查看 analysis_stdout.log / analysis_stderr.log。"
+                        )
+                        return
+
+                    error_token = self._analysis_output_has_error(work_dir, self.current_result_file)
+                    if error_token:
+                        QMessageBox.warning(
+                            self,
+                            "计算可能失败",
+                            f"结果/日志中检测到错误标记：{error_token}\n"
+                            f"结果文件暂不归档，请先检查：\n{self.current_result_file}"
+                        )
+                        return
+
+                    archived_path = self._archive_analysis_result_file(
+                        self.current_result_file,
+                        analysis_mode=analysis_mode,
+                        runtime_bundle=runtime_bundle,
                     )
-                    return
 
-                QMessageBox.information(self, "提示", f"计算完成。\n结果文件：{self.current_result_file}")
+                    mode_text = "原模型" if analysis_mode == "original" else "最新改造模型"
+                    msg = f"计算完成。\n计算对象：{mode_text}\n结果文件：{self.current_result_file}"
+                    if archived_path:
+                        msg += f"\n服务器归档：{archived_path}"
+                    QMessageBox.information(self, "提示", msg)
+
+                self._wait_for_fresh_result_file(
+                    work_dir=work_dir,
+                    start_time=analysis_start_time,
+                    on_ready=on_result_ready,
+                )
 
             def on_error(_err):
                 err_text = process.errorString()

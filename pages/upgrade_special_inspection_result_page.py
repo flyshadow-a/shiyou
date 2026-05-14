@@ -3,21 +3,24 @@
 
 from pathlib import Path
 from typing import Any
+import os
+import json
 
+from PyQt5.QtCore import QObject, Qt, pyqtSignal, QThread, QTimer
+from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea,
-    QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider, QApplication, QProgressDialog,
-    QFileDialog,
+    QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider, QApplication,
+    QDialog, QProgressBar, QProgressDialog, QFileDialog,
 )
-from PyQt5.QtCore import QObject, Qt, pyqtSignal, QThread, QTimer
-from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 
 from core.base_page import BasePage
 from services.special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService
 from pages.sacs_elevation_risk_view import SacsElevationRiskView
 from services.special_strategy_inspection_overlay_service import load_strategy_inspection_overlay
 from services.special_strategy_image_service import build_strategy_image_path, save_strategy_image_record
+from services.special_strategy_state_db import list_strategy_risk_images
 
 NODE_SUMMARY_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]
 NODE_SUMMARY_CONTEXT_MAP = {
@@ -187,6 +190,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._export_context = None
         self._export_key = None
         self._pending_report_after_risk_export = False
+
+        # 生成报告相关状态：先导出检验等级图，再生成 Word/PDF 报告
         self._pending_report_output_path = ""
         self.btn_report = None
         self._report_progress = None
@@ -197,6 +202,14 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._report_progress_timer = QTimer(self)
         self._report_progress_timer.setInterval(320)
         self._report_progress_timer.timeout.connect(self._update_report_progress_text)
+
+        # run_id 为 None 时，表示从“特检策略”主页右上角“查看结果”进入：
+        # 优先读取“生成特检策略报告”时已经上传到服务器的最新风险等级缓存图。
+        # run_id 不为空时，表示从“新增特检策略”更新风险等级后进入：
+        # 必须实时绘制本次更新结果，不能读取旧缓存。
+        self._cached_risk_image_records = None
+        self._cached_risk_latest_group_key = None
+        self._is_refreshing_elevation = False
 
         self._build_ui()
         self._load_result_data()
@@ -373,12 +386,10 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         t.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         t.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # 列宽：用 Stretch（和你现有实现一致）
-        # t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-
         # ---- row 0: group headers ----
         hdr_bg = QColor("#f3f6fb")
         bold = True
+
         # 基本信息：0..3
         t.setSpan(0, 0, 1, 4)
         self._set_cell(t, 0, 0, "基本信息", hdr_bg, bold)
@@ -403,17 +414,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
         header = t.horizontalHeader()
         for c in range(cols):
-            # 将所有列均设为根据内容自适应，包括最后一列“风险等级”
             header.setSectionResizeMode(c, QHeaderView.ResizeToContents)
 
-        # 确保列宽不仅贴合内容，还留有最小安全边距
         t.resizeColumnsToContents()
         for c in range(cols):
             w = t.columnWidth(c)
-            # 在自适应宽度基础上，强行再增加 10 像素的安全边距
             t.setColumnWidth(c, max(80, w + 10))
 
-        # 禁用自动拉伸最后一列，以防破坏已计算好的宽度
         header.setStretchLastSection(True)
         # ============================================
 
@@ -423,11 +430,6 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         for r in range(2, t.rowCount()):
             t.setRowHeight(r, 24)
 
-        # minimum height so it looks like the sample (scroll inside table)
-        # fixed_height = t.frameWidth() * 2 + 2
-        # fixed_height += t.rowHeight(0) + t.rowHeight(1)
-        # fixed_height += 20 * 24
-        # t.setFixedHeight(fixed_height)
         t.setMinimumHeight(420)
 
         return t
@@ -476,21 +478,14 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         t.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         t.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # Tag row
-        # t.setSpan(0, 0, 1, cols)
-        tag_bg = QColor("#e3e7ef")
         green = QColor("#cfe6b8")
         for r, text in enumerate(labels):
             t.setSpan(r * 4, 0, 1, 6)
             self._set_cell(t, r * 4, 0, text, green, True)
 
         # Year blocks
-        green = QColor("#cfe6b8")
         for i, _year in enumerate(labels):
             base_r = 1 + i * 4
-
-            # row base_r: year label + risk headers
-            # self._set_cell(t, base_r, 0, year, green, True)
 
             for k in range(5):
                 it = QTableWidgetItem(self.RISK_LABELS[k])
@@ -501,17 +496,15 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 it.setFont(f)
                 t.setItem(base_r, 1 + k, it)
 
-            # row base_r+1: 风险等级
+            # row base_r: 风险等级
             self._set_cell(t, base_r, 0, "风险等级", QColor("#e3e7ef"), True)
-            # for k in range(1,5):
-            #     self._set_cell(t, base_r + 1, 1 + k, "", None, False)
 
-            # row base_r+2: 数量
+            # row base_r+1: 数量
             self._set_cell(t, base_r + 1, 0, "数量", QColor("#e3e7ef"), True)
             for k in range(5):
                 self._set_cell(t, base_r + 1, 1 + k, "", None, False)
 
-            # row base_r+3: 占比
+            # row base_r+2: 占比
             self._set_cell(t, base_r + 2, 0, "占比", QColor("#e3e7ef"), True)
             for k in range(5):
                 self._set_cell(t, base_r + 2, 1 + k, "", None, False)
@@ -712,36 +705,315 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             return ""
         return str(value)
 
+    def _is_new_strategy_result_entry(self) -> bool:
+        """run_id 不为空：从“新增特检策略”页面查看本次更新结果，必须实时绘图。"""
+        return self.run_id is not None
+
+    def _is_history_latest_entry(self) -> bool:
+        """run_id 为空：从“特检策略”主页右上角查看历史最新结果，优先读缓存图。"""
+        return self.run_id is None
+
+    def _show_realtime_draw_busy_dialog(self, message: str | None = None) -> QDialog:
+        """显示结果加载提示窗口。
+
+        这里只保留一个提示文案，避免标题和正文重复。
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle("正在加载结果")
+        dlg.setModal(True)
+        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        dlg.setFixedSize(360, 118)
+        dlg.setStyleSheet("""
+            QDialog { background: #ffffff; }
+            QLabel {
+                color: #1d2b3a;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 13pt;
+                font-weight: bold;
+            }
+            QProgressBar {
+                border: 1px solid #b9c6d6;
+                border-radius: 4px;
+                background: #eef3f8;
+                height: 18px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                border-radius: 4px;
+                background: #2aa9df;
+            }
+        """)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(24, 20, 24, 18)
+        layout.setSpacing(14)
+
+        title = QLabel("正在加载结果")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        bar = QProgressBar()
+        bar.setRange(0, 0)
+        layout.addWidget(bar)
+
+        dlg.show()
+        QApplication.processEvents()
+        return dlg
+
+    @staticmethod
+    def _normalize_image_text(value: object) -> str:
+        return str(value or "").strip()
+
+    @staticmethod
+    def _normalize_run_group(value: object) -> str:
+        if value in (None, ""):
+            return "__none__"
+        try:
+            return str(int(value))
+        except Exception:
+            return str(value).strip()
+
+    @staticmethod
+    def _hotspot_meta_path_for_image(image_path: str) -> str:
+        path = os.path.normpath(str(image_path or "").strip())
+        if not path:
+            return ""
+        return f"{path}.hotspots.json"
+
+    def _load_hotspots_for_cached_image(self, image_path: str) -> list[dict]:
+        meta_path = self._hotspot_meta_path_for_image(image_path)
+        if not meta_path or not os.path.exists(meta_path):
+            return []
+        try:
+            with open(meta_path, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+            hotspots = data.get("hotspots") if isinstance(data, dict) else data
+            return list(hotspots or [])
+        except Exception as exc:
+            print("[UpgradeSpecialInspectionResultPage] load cached hotspot metadata failed:", exc)
+            return []
+
+    def _save_hotspots_for_exported_image(self, image_path: str, view: SacsElevationRiskView) -> None:
+        meta_path = self._hotspot_meta_path_for_image(image_path)
+        if not meta_path or view is None:
+            return
+        try:
+            data = {}
+            if hasattr(view, "build_hotspot_metadata_for_export"):
+                data = view.build_hotspot_metadata_for_export(margin=24) or {}
+            if not data:
+                data = {"hotspots": []}
+            data["image_path"] = os.path.normpath(str(image_path or ""))
+            data["facility_code"] = self.facility_code
+            data["run_id"] = self.run_id
+            data["page_code"] = "upgrade_special_inspection_result"
+            data["image_type"] = "elevation_risk"
+            folder = os.path.dirname(meta_path)
+            if folder:
+                os.makedirs(folder, exist_ok=True)
+            with open(meta_path, "w", encoding="utf-8") as fp:
+                json.dump(data, fp, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            print("[UpgradeSpecialInspectionResultPage] save hotspot metadata failed:", exc)
+
+    def _load_latest_cached_risk_image_records(self, *, force: bool = False) -> list[dict]:
+        """读取服务器中“最新一次生成报告”导出的检验等级图记录。
+
+        只在 run_id=None 的历史最新入口使用。这里不按当前页面 run_id 过滤，
+        而是从该平台所有 upgrade_special_inspection_result/elevation_risk 记录中，
+        取更新时间最新的一组 run_id 作为“历史最新一次结果缓存”。
+        """
+        if (not force) and self._cached_risk_image_records is not None:
+            return list(self._cached_risk_image_records)
+
+        try:
+            rows = list_strategy_risk_images(
+                self.facility_code,
+                page_code="upgrade_special_inspection_result",
+                limit=2000,
+            ) or []
+        except Exception as exc:
+            print("[UpgradeSpecialInspectionResultPage] list cached risk images failed:", exc)
+            rows = []
+
+        valid: list[dict] = []
+        for row in rows:
+            if str(row.get("image_type") or "").strip() != "elevation_risk":
+                continue
+            path = os.path.normpath(str(row.get("image_path") or "").strip())
+            if not path or not os.path.exists(path):
+                continue
+            item = dict(row)
+            item["image_path"] = path
+            valid.append(item)
+
+        if not valid:
+            self._cached_risk_image_records = []
+            self._cached_risk_latest_group_key = None
+            return []
+
+        latest_group_key = self._normalize_run_group(valid[0].get("run_id"))
+        latest_records = [
+            row for row in valid
+            if self._normalize_run_group(row.get("run_id")) == latest_group_key
+        ]
+
+        self._cached_risk_image_records = latest_records
+        self._cached_risk_latest_group_key = latest_group_key
+        print(
+            "[UpgradeSpecialInspectionResultPage] cached risk images:",
+            "group=", latest_group_key,
+            "count=", len(latest_records),
+        )
+        return list(latest_records)
+
+    def _cached_rows_for_year(self, year_label: str) -> list[str]:
+        records = self._load_latest_cached_risk_image_records()
+        target_year = self._normalize_image_text(year_label)
+        out: list[str] = []
+        seen: set[str] = set()
+        for row in records:
+            if self._normalize_image_text(row.get("year_label")) != target_year:
+                continue
+            row_name = self._normalize_image_text(row.get("row_name"))
+            if not row_name or row_name in seen:
+                continue
+            seen.add(row_name)
+            out.append(row_name)
+        return out
+
+    def _sync_row_combo_from_cached_images(self) -> None:
+        if not hasattr(self, "row_combo"):
+            return
+        rows = self._cached_rows_for_year(self.current_year)
+        if not rows:
+            return
+
+        current = self.row_combo.currentText().strip()
+        old_options = [self.row_combo.itemText(i) for i in range(self.row_combo.count())]
+
+        self.row_combo.blockSignals(True)
+        try:
+            if old_options != rows:
+                self.row_combo.clear()
+                self.row_combo.addItems(rows)
+            if current in rows:
+                self.row_combo.setCurrentText(current)
+            else:
+                self.row_combo.setCurrentText(rows[0])
+        finally:
+            self.row_combo.blockSignals(False)
+
+    def _find_cached_risk_image_for_current_view(self) -> dict | None:
+        records = self._load_latest_cached_risk_image_records()
+        if not records:
+            return None
+
+        self._sync_row_combo_from_cached_images()
+        year_label = self._normalize_image_text(self.current_year)
+        row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前"
+
+        for row in records:
+            if self._normalize_image_text(row.get("year_label")) != year_label:
+                continue
+            if self._normalize_image_text(row.get("row_name")) != row_name:
+                continue
+            path = self._normalize_image_text(row.get("image_path"))
+            if path and os.path.exists(path):
+                return row
+        return None
+
+    def _try_load_cached_risk_image(self) -> bool:
+        """历史最新入口优先显示服务器缓存图。成功返回 True。"""
+        record = self._find_cached_risk_image_for_current_view()
+        if not record:
+            return False
+
+        row_name = self._normalize_image_text(record.get("row_name")) or (
+            self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前"
+        )
+        image_path = self._normalize_image_text(record.get("image_path"))
+
+        hotspots = self._load_hotspots_for_cached_image(image_path)
+        if hasattr(self.elevation_view, "display_cached_image"):
+            ok = self.elevation_view.display_cached_image(
+                image_path,
+                row_name=row_name,
+                description="历史最新检验等级缓存图",
+                hotspots=hotspots,
+            )
+        else:
+            ok = False
+
+        if ok:
+            if self.elevation_hint_label is not None:
+                self.elevation_hint_label.setText(
+                    f"当前显示：{row_name} 历史最新检验等级缓存图；滚轮缩放，双击恢复初始视图。"
+                )
+            return True
+        return False
+
     def _refresh_elevation_view(self):
         if not hasattr(self, "elevation_view"):
             return
-
-        bundle = self._result_bundle or {}
-        context = bundle.get("context") or {}
-        if not context:
-            self.elevation_view._draw_message("当前没有可用的特检结果")
+        if getattr(self, "_is_refreshing_elevation", False):
             return
 
+        self._is_refreshing_elevation = True
         try:
-            self.elevation_view.load_for_facility(
-                facility_code=self.facility_code,
-                context=context,
-                year_label=self.current_year,
-                row_name=self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前",
-            )
+            bundle = self._result_bundle or {}
+            context = bundle.get("context") or {}
+            if not context:
+                self.elevation_view._draw_message("当前没有可用的特检结果")
+                return
 
-            # 先同步立面下拉
-            self._sync_dynamic_row_combo_from_view()
+            # 入口区别：
+            # 1. run_id is None：来自“特检策略”主页右上角查看结果，查看历史最新结果，优先读服务器缓存图；
+            # 2. run_id != None：来自“新增特检策略”更新风险等级后的查看结果，必须实时绘制，不能读旧缓存。
+            if self._is_history_latest_entry():
+                if self._try_load_cached_risk_image():
+                    return
+                # 没有缓存时才回退实时绘制，避免页面空白。
+                busy = self._show_realtime_draw_busy_dialog()
+            else:
+                busy = self._show_realtime_draw_busy_dialog()
 
-            # 再叠加检验等级
-            if hasattr(self.elevation_view, "set_inspection_overlay"):
-                self.elevation_view.set_inspection_overlay(self._overlay_bundle)
+            try:
+                QApplication.setOverrideCursor(Qt.WaitCursor)
+                QApplication.processEvents()
 
-            # 页面浏览阶段不再导出/上传检验等级图；报告图片统一在“生成特检策略报告”时处理。
+                self.elevation_view.load_for_facility(
+                    facility_code=self.facility_code,
+                    context=context,
+                    year_label=self.current_year,
+                    row_name=self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前",
+                )
+
+                # 先同步立面下拉
+                self._sync_dynamic_row_combo_from_view()
+
+                # 再叠加检验等级
+                if hasattr(self.elevation_view, "set_inspection_overlay"):
+                    self.elevation_view.set_inspection_overlay(self._overlay_bundle)
+
+                # 页面浏览阶段不再导出/上传检验等级图；报告图片统一在“生成特检策略报告”时处理。
+
+            finally:
+                try:
+                    QApplication.restoreOverrideCursor()
+                except Exception:
+                    pass
+                try:
+                    busy.close()
+                    busy.deleteLater()
+                except Exception:
+                    pass
+                QApplication.processEvents()
 
         except Exception as exc:
             print("[UpgradeSpecialInspectionResultPage] refresh elevation failed:", exc)
             self.elevation_view._draw_message(f"立面图加载失败：{exc}")
+        finally:
+            self._is_refreshing_elevation = False
 
     def _save_current_elevation_image(self):
         """导出当前右侧模型立面检验等级图，并把图片路径写入数据库。"""
@@ -762,6 +1034,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 row_name=row_name,
             )
             saved_path = self.elevation_view.export_current_scene_to_png(str(image_path))
+            self._save_hotspots_for_exported_image(saved_path, self.elevation_view)
             save_strategy_image_record(
                 facility_code=self.facility_code,
                 run_id=self.run_id,
@@ -779,17 +1052,21 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
     def _batch_export_key(self, context: dict | None) -> tuple:
         state = (self._result_bundle or {}).get("state") or (
-            (context or {}).get("state") if isinstance(context, dict) else {})
+            (context or {}).get("state") if isinstance(context, dict) else {}
+        )
         if not isinstance(state, dict):
             state = {}
         source_key = (
-                str(state.get("intermediate_workbook") or "")
-                or str((context or {}).get("intermediate_workbook") or "")
-                or str((context or {}).get("source_workbook") or "")
+            str(state.get("intermediate_workbook") or "")
+            or str((context or {}).get("intermediate_workbook") or "")
+            or str((context or {}).get("source_workbook") or "")
         )
         return (
-        "upgrade_special_inspection_result", str(self.facility_code or ""), int(self.run_id) if self.run_id else 0,
-        source_key)
+            "upgrade_special_inspection_result",
+            str(self.facility_code or ""),
+            int(self.run_id) if self.run_id else 0,
+            source_key,
+        )
 
     def _schedule_export_all_elevation_images(self, context: dict | None, *, force: bool = False):
         """结果页异步批量导出所有年份/所有面，不阻塞界面。
@@ -906,6 +1183,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 row_name=row_name,
             )
             saved_path = self._export_view.export_current_scene_to_png(str(image_path))
+            self._save_hotspots_for_exported_image(saved_path, self._export_view)
 
             save_strategy_image_record(
                 facility_code=self.facility_code,
@@ -920,7 +1198,9 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
             self._export_index += 1
             print(
-                f"[UpgradeSpecialInspectionResultPage] async risk image export progress: {self._export_index}/{self._export_total}")
+                f"[UpgradeSpecialInspectionResultPage] async risk image export progress: "
+                f"{self._export_index}/{self._export_total}"
+            )
 
             if self._export_index >= self._export_total:
                 self._finish_async_export()
@@ -929,7 +1209,9 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
         except Exception as exc:
             print(
-                f"[UpgradeSpecialInspectionResultPage] async risk image export failed: year={year_label}, row={row_name}, err={exc}")
+                f"[UpgradeSpecialInspectionResultPage] async risk image export failed: "
+                f"year={year_label}, row={row_name}, err={exc}"
+            )
             self._export_index += 1
             if self._export_index >= self._export_total:
                 self._finish_async_export()
@@ -1100,22 +1382,9 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
         apply(self.table_comp)
         apply(self.table_node)
-        # self._sync_current_tab_height()
 
     def _sync_current_tab_height(self, _index: int | None = None) -> None:
         return
-        # if not hasattr(self, "tabs"):
-        #     return
-        # page = self.tabs.currentWidget()
-        # if page is None:
-        #     return
-        # layout = page.layout()
-        # if layout is not None:
-        #     layout.activate()
-        # page.adjustSize()
-        # page_height = page.sizeHint().height()
-        # tab_bar_height = self.tabs.tabBar().sizeHint().height()
-        # self.tabs.setFixedHeight(tab_bar_height + page_height + 8)
 
     def _set_report_button_busy(self, busy: bool, text: str = "生成特检策略报告") -> None:
         btn = getattr(self, "btn_report", None)
@@ -1233,6 +1502,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         if self._export_timer.isActive():
             QMessageBox.information(self, "提示", "检验等级图正在导出，请稍候。")
             return
+
         if self._report_thread is not None and self._report_thread.isRunning():
             QMessageBox.information(self, "提示", "特检策略报告正在生成，请稍候。")
             return
@@ -1248,13 +1518,17 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
     def _do_generate_report_after_risk_export(self):
         self._pending_report_after_risk_export = False
+
         if self._report_thread is not None and self._report_thread.isRunning():
             return
+
         output_path = self._pending_report_output_path
         self._pending_report_output_path = ""
+
         if not output_path:
             self._set_report_button_busy(False)
             return
+
         self._set_report_button_busy(True, "正在生成报告...")
         self._start_report_generation_worker(output_path)
 
@@ -1262,6 +1536,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._set_report_button_busy(False)
         word_path = Path(str(report_path_text)).resolve()
         pdf_path = word_path.with_suffix(".pdf")
+
         if pdf_path.exists():
             QMessageBox.information(
                 self,
@@ -1269,6 +1544,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 f"特检策略报告已生成：\nWord：{word_path}\nPDF：{pdf_path}",
             )
             return
+
         QMessageBox.information(
             self,
             "生成报告",
