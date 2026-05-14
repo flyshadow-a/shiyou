@@ -1175,7 +1175,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         return {
             "factor_path": factor_path,
-            "output_filename": f"{self.facility_code}_可行性评估报告.docx",
+            "output_filename": f"{self.facility_code}_可行性评估报告.pdf",
             "chapter_1_3": chapter_1_3,
         }
 
@@ -1184,7 +1184,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
         if not save_dir:
             return ""
 
-        output_path = Path(save_dir) / output_filename
+        normalized_name = str(output_filename or "").strip() or f"{self.facility_code}_可行性评估报告.pdf"
+        output_path = (Path(save_dir) / normalized_name).with_suffix(".pdf")
         if output_path.exists():
             reply = QMessageBox.question(
                 self,
@@ -1891,9 +1892,9 @@ class FeasibilityAssessmentResultsPage(BasePage):
             QMessageBox.critical(self, "生成报告失败", f"报告服务返回异常：{result}")
             return
         opened = self._open_report_output_directory(output_path)
-        QMessageBox.information(self, "生成成功", f"报告已生成：\n{output_path}")
+        QMessageBox.information(self, "生成成功", f"PDF 报告已生成：\n{output_path}")
         if not opened:
-            QMessageBox.warning(self, "打开目录失败", "报告已生成，但未能自动打开并选中生成文件。")
+            QMessageBox.warning(self, "打开目录失败", "PDF 报告已生成，但未能自动打开并选中生成文件。")
 
     def _on_report_generation_failed(self, message: str) -> None:
         self._close_report_progress()

@@ -30,7 +30,19 @@ from src.parsers.pile_group_summary_parser import parse_pile_group_summary
 from src.parsers.psilst_reader import read_lines
 from src.path_config_loader import get_report_defaults
 from src.parsers.summary_builder import build_analysis_summary
+from src.pdf_converter import convert_docx_to_pdf
 from src.renderers.doc_renderer import render_report_doc
+
+
+def _build_docx_output_path(output_path: str | Path) -> Path:
+    output = Path(output_path)
+    if output.suffix.lower() == ".pdf":
+        return output.with_suffix(".docx")
+    return output
+
+
+def _build_pdf_output_path(output_path: str | Path) -> Path:
+    return Path(output_path).with_suffix(".pdf")
 
 
 def _format_platform_evaluation_number(value: Any) -> str:
@@ -248,9 +260,12 @@ def generate_report(
 
     chapter_1_3_context = build_chapter_1_3_context(chapter_1_3_sources_dict)
 
-    return render_report_doc(
+    docx_output_path = _build_docx_output_path(output_path)
+    pdf_output_path = _build_pdf_output_path(output_path)
+
+    rendered_docx_path = render_report_doc(
         template_path=template_path,
-        output_path=output_path,
+        output_path=str(docx_output_path),
         cover_platform_name=cover_platform_name,
         report_date_text=report_date_text,
         analysis_summary=analysis_summary,
@@ -267,6 +282,7 @@ def generate_report(
         joint_can_summary_result=joint_can_summary,
         pile_group_summary_result=pile_group_summary,
     )
+    return convert_docx_to_pdf(rendered_docx_path, pdf_output_path)
 
 
 def generate_report_with_project_defaults(

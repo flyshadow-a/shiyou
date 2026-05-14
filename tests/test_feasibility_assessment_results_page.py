@@ -279,11 +279,11 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         with patch.object(
             page,
             "_generate_report_locally",
-            return_value={"message": "report generated (local)", "output_path": "local.docx"},
+            return_value={"message": "report generated (local)", "output_path": "local.pdf"},
         ) as local_generate:
             result = page._generate_report({"chapter_1_3": {}})
 
-        self.assertEqual("local.docx", result["output_path"])
+        self.assertEqual("local.pdf", result["output_path"])
         local_generate.assert_called_once()
 
     def test_generate_report_raises_local_errors_without_http_fallback(self) -> None:
@@ -411,7 +411,7 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         ) as start_detached, patch(
             "pages.feasibility_assessment_results_page.os.startfile"
         ) as startfile:
-            output_path = Path(tmp_dir) / "WC19-1D_可行性评估报告.docx"
+            output_path = Path(tmp_dir) / "WC19-1D_可行性评估报告.pdf"
             output_path.write_text("report", encoding="utf-8")
 
             result = page._open_report_output_directory(str(output_path))
@@ -429,7 +429,7 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         ) as start_detached, patch(
             "pages.feasibility_assessment_results_page.os.startfile"
         ) as startfile:
-            output_path = Path(tmp_dir) / "WC19-1D_可行性评估报告.docx"
+            output_path = Path(tmp_dir) / "WC19-1D_可行性评估报告.pdf"
             output_path.write_text("report", encoding="utf-8")
 
             result = page._open_report_output_directory(str(output_path))
@@ -441,17 +441,17 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
     def test_on_generate_report_starts_background_worker(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
         page._report_thread = None
-        output_path = r"C:\reports\WC19-1D_可行性评估报告.docx"
+        output_path = r"C:\reports\WC19-1D_可行性评估报告.pdf"
 
         with patch.object(page, "_validate_environment_conditions_for_report", return_value=""), patch.object(
             page,
             "_build_report_payload",
-            return_value={"output_filename": "WC19-1D_可行性评估报告.docx"},
+            return_value={"output_filename": "WC19-1D_可行性评估报告.pdf"},
         ), patch.object(page, "_select_report_output_path", return_value=output_path), patch.object(
             page,
             "_start_report_generation_worker",
-        ) as start_worker:
-            page._on_generate_report()
+        ) as start_worker, patch.object(page, "_set_report_button_busy"):
+            page._do_generate_report_after_outline_export()
 
         start_worker.assert_called_once()
         payload = start_worker.call_args.args[0]
@@ -463,7 +463,7 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         page._report_button = None
         page._report_thread = None
         page._report_worker = None
-        output_path = r"C:\reports\WC19-1D_可行性评估报告.docx"
+        output_path = r"C:\reports\WC19-1D_可行性评估报告.pdf"
 
         with patch.object(page, "_open_report_output_directory", return_value=True) as open_directory, patch(
             "pages.feasibility_assessment_results_page.QMessageBox.information"
@@ -488,16 +488,16 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
             "pages.feasibility_assessment_results_page.QFileDialog.getExistingDirectory",
             return_value=tmp_dir,
         ), patch("pages.feasibility_assessment_results_page.QMessageBox.question") as question:
-            result = page._select_report_output_path("WC19-1D_可行性评估报告.docx")
+            result = page._select_report_output_path("WC19-1D_可行性评估报告.pdf")
 
-        self.assertEqual(str(Path(tmp_dir) / "WC19-1D_可行性评估报告.docx"), result)
+        self.assertEqual(str(Path(tmp_dir) / "WC19-1D_可行性评估报告.pdf"), result)
         question.assert_not_called()
 
     def test_select_report_output_path_returns_empty_when_existing_file_not_replaced(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            output_path = Path(tmp_dir) / "WC19-1D_可行性评估报告.docx"
+            output_path = Path(tmp_dir) / "WC19-1D_可行性评估报告.pdf"
             output_path.write_text("existing", encoding="utf-8")
             with patch(
                 "pages.feasibility_assessment_results_page.QFileDialog.getExistingDirectory",
@@ -514,7 +514,7 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            output_path = Path(tmp_dir) / "WC19-1D_可行性评估报告.docx"
+            output_path = Path(tmp_dir) / "WC19-1D_可行性评估报告.pdf"
             output_path.write_text("existing", encoding="utf-8")
             with patch(
                 "pages.feasibility_assessment_results_page.QFileDialog.getExistingDirectory",
