@@ -255,6 +255,13 @@ class PyVistaSacsView(QFrame):
         return leg_joints, tubular_joints
 
     def render_structure(self, nodes, members, leg_joints, tubular_joints):
+        """渲染当前模型。
+
+        按最新需求：
+        - 不再区分 Main Structure / Leg Joint / Tubular Joint 的颜色与点位标注；
+        - 整个模型统一用黄色绘制；
+        - 保留坐标轴与相机行为不变。
+        """
         self.plotter.clear()
         self.plotter.set_background(self.COLOR_SCHEME["background"])
 
@@ -275,55 +282,26 @@ class PyVistaSacsView(QFrame):
         if lines:
             mesh.lines = np.array(lines)
 
-        # 主结构：恢复为更好看的管状体效果
         try:
             structure = mesh.tube(radius=0.12, n_sides=8)
             self.plotter.add_mesh(
                 structure,
                 color=self.COLOR_SCHEME["main_structure"],
-                opacity=0.85,
-                label="Main Structure"
+                opacity=0.90,
+                label="Structure",
             )
         except Exception:
             self.plotter.add_mesh(
                 mesh,
                 color=self.COLOR_SCHEME["main_structure"],
                 line_width=1.2,
-                opacity=0.9,
-                label="Main Structure"
+                opacity=0.95,
+                label="Structure",
             )
 
-        # 主腿节点：红色球
-        if leg_joints:
-            leg_cloud = pv.PolyData(np.array(leg_joints, dtype=float))
-            self.plotter.add_mesh(
-                leg_cloud.glyph(
-                    geom=pv.Sphere(radius=0.55, theta_resolution=12, phi_resolution=12),
-                    scale=False,
-                    orient=False
-                ),
-                color=self.COLOR_SCHEME["leg_joint"],
-                label="Leg Joint"
-            )
-
-        # 核心管节点：蓝色球
-        if tubular_joints:
-            tub_cloud = pv.PolyData(np.array(tubular_joints, dtype=float))
-            self.plotter.add_mesh(
-                tub_cloud.glyph(
-                    geom=pv.Sphere(radius=0.30, theta_resolution=10, phi_resolution=10),
-                    scale=False,
-                    orient=False
-                ),
-                color=self.COLOR_SCHEME["tubular_joint"],
-                label="Tubular Joint"
-            )
-
-        #self.plotter.add_legend(bcolor="white")
         self.plotter.add_axes()
         self.plotter.reset_camera()
 
-        # 记录“初始视图”
         cam = self.plotter.camera
         self._initial_camera_position = tuple(cam.position)
         self._initial_camera_focal_point = tuple(cam.focal_point)
@@ -1463,9 +1441,7 @@ class PlatformStrengthPage(BasePage):
             return item
 
         lay.addStretch(1)
-        lay.addWidget(make_item("#E9D012", "Main Structure"), 0)
-        lay.addWidget(make_item("#B22222", "Leg Joint"), 0)
-        lay.addWidget(make_item("#2A7F9E", "Tubular Joint"), 0)
+        lay.addWidget(make_item("#E9D012", "Structure"), 0)
 
         return w
     # ---------------- 右侧模型 ----------------

@@ -299,82 +299,55 @@ def get_latest_rebuild_compare_model_paths(
     """
     给“查看结果”使用的模型路径。
 
-    当前规则按用户最新要求改为“上一版 M1 vs 最新 M1”：
-
-    - 如果至少有 2 个仍存在的历史改造项目：
-      old_model_file = 上一次历史改造项目的 sacinp.M1；
-      new_model_file = 最新历史改造项目的 sacinp.M1。
-
-    - 如果只有 1 个历史改造项目：
-      old_model_file = 原始上传模型；
-      new_model_file = 历史改造项目1的 sacinp.M1。
-
-    - 如果没有任何历史改造项目，或历史项目的 M1 被删除：
-      回退到原始上传模型。
-
-    这样第二次改造后，图中只高亮“第二次相对第一次新增/变化”的构件；
-    第一次改造已存在的构件会作为旧模型已有结构参与对比，不再被标为本次新增。
+    新规则：
+    - old_model_file：始终使用【模型文件】中用户上传的原始 sacinp；
+    - new_model_file：优先使用 feasibility_assessment_runtime/<平台>/sacinp.M1；
+    - 如果还没有创建新模型，则 new_model_file 回退为原始 sacinp。
     """
     code = (job_name or "").strip()
     if not code:
         return {}
 
     original = find_original_uploaded_model_bundle(code)
-    history_bundles = find_active_history_model_bundles(code)  # 新 -> 旧
+    original_model = _norm(original.get("model_file") or "")
+    original_sea = _norm(original.get("sea_file") or "")
 
-    if history_bundles:
-        latest = history_bundles[0]
+    if not _file_exists(original_model):
+        return {}
 
-        if len(history_bundles) >= 2:
-            baseline = history_bundles[1]
-            baseline_source = "history_previous"
-            baseline_project_id = baseline.get("project_id")
-            baseline_project_name = baseline.get("project_name")
-        else:
-            baseline = original
-            baseline_source = "original"
-            baseline_project_id = None
-            baseline_project_name = "原始模型"
+    runtime_model = _norm(get_job_new_model_file(code))
+    runtime_sea = _norm(get_job_new_sea_file(code))
 
-        old_model = _norm(baseline.get("model_file") or "")
-        old_sea = _norm(baseline.get("sea_file") or "")
-        new_model = _norm(latest.get("model_file") or "")
-        new_sea = _norm(latest.get("sea_file") or "")
-
-        # 如果上一版 M1 或原始模型被删除，退化为最新模型自身，避免页面崩溃。
-        # 正常项目删除逻辑下，find_active_history_model_bundles 已经会跳过失效项目。
-        if not _file_exists(old_model):
-            old_model = new_model
-            old_sea = new_sea
-            baseline_source = "latest_self_fallback"
-            baseline_project_id = latest.get("project_id")
-            baseline_project_name = latest.get("project_name")
-
+    if _file_exists(runtime_model):
         return {
-            "source": "history_previous_vs_latest",
-            "baseline_source": baseline_source,
-            "old_model_file": old_model,
-            "new_model_file": new_model,
-            "old_sea_file": old_sea,
-            "new_sea_file": new_sea,
-            "latest_project_id": latest.get("project_id"),
-            "latest_project_name": latest.get("project_name"),
-            "latest_project_order": latest.get("project_order"),
-            "baseline_project_id": baseline_project_id,
-            "baseline_project_name": baseline_project_name,
-            "baseline_project_order": baseline.get("project_order") if isinstance(baseline, dict) else None,
+            "source": "original_vs_runtime_m1",
+            "baseline_source": "original",
+            "old_model_file": original_model,
+            "new_model_file": runtime_model,
+            "old_sea_file": original_sea,
+            "new_sea_file": runtime_sea if _file_exists(runtime_sea) else "",
+            "latest_project_id": None,
+            "latest_project_name": "本次创建的新模型",
+            "latest_project_order": None,
+            "baseline_project_id": None,
+            "baseline_project_name": "原始模型",
+            "baseline_project_order": None,
         }
 
-    # 没有历史改造项目时，回退到用户原始上传模型，相当于初始化状态。
-    if original.get("model_file"):
-        return {
-            "source": "original",
-            "old_model_file": _norm(original.get("model_file") or ""),
-            "new_model_file": _norm(original.get("model_file") or ""),
-            "old_sea_file": _norm(original.get("sea_file") or ""),
-            "new_sea_file": _norm(original.get("sea_file") or ""),
-        }
-    return {}
+    return {
+        "source": "original",
+        "baseline_source": "original",
+        "old_model_file": original_model,
+        "new_model_file": original_model,
+        "old_sea_file": original_sea,
+        "new_sea_file": original_sea,
+        "latest_project_id": None,
+        "latest_project_name": "原始模型",
+        "latest_project_order": None,
+        "baseline_project_id": None,
+        "baseline_project_name": "原始模型",
+        "baseline_project_order": None,
+    }
 
 
 def prepare_original_runtime_for_analysis(
@@ -439,46 +412,62 @@ def prepare_latest_rebuild_runtime_for_analysis(
     """
     给“计算分析”使用。
 
-    SACS 实际计算通常读取 feasibility_assessment_runtime/<平台>/sacinp.M1 和 seainp.M1。
-    因此每次点击计算前，都把“当前仍存在的最新历史改造 M1”同步到 runtime 目录。
-
-    若用户删除了所有历史改造项目，则同步原始上传模型到 runtime，避免继续计算已删除项目遗留的旧 M1。
+    新规则：
+    - 如果 feasibility_assessment_runtime/<平台>/sacinp.M1 已经存在，
+      说明用户已经点击过“创建新模型”，则计算这个 M1；
+    - 如果 M1 不存在，则回退为原始上传模型；
+    - 不再从“历史改造文件”中寻找最新 M1。
     """
     code = (job_name or "").strip()
     if not code:
         raise ValueError("job_name/facility_code 为空，无法准备计算模型")
 
-    bundle = find_latest_active_history_model_bundle(code)
-    if not bundle:
-        bundle = find_original_uploaded_model_bundle(code)
+    runtime_dir = get_job_runtime_dir(code)
+    runtime_model = get_job_new_model_file(code)
+    runtime_sea = get_job_new_sea_file(code)
 
+    if _file_exists(runtime_model):
+        return {
+            "source": "runtime_created_model",
+            "project_id": None,
+            "project_name": "本次创建的新模型",
+            "project_order": None,
+            "model_dir": runtime_dir,
+            "model_file": runtime_model,
+            "sea_file": runtime_sea if _file_exists(runtime_sea) else "",
+            "new_model_file": runtime_model,
+            "new_sea_file": runtime_sea if _file_exists(runtime_sea) else "",
+        }
+
+    bundle = find_original_uploaded_model_bundle(code)
     model_file = _norm(bundle.get("model_file") or "")
     sea_file = _norm(bundle.get("sea_file") or "")
+
     if not _file_exists(model_file):
         raise FileNotFoundError(
             f"未找到可用于计算的模型文件。平台：{code}\n"
-            "请先创建新模型，或确认原始模型/历史改造模型文件仍然存在。"
+            "请先创建新模型，或确认【模型文件】页面中已上传原始模型文件。"
         )
 
-    runtime_dir = get_job_runtime_dir(code)
-    dst_model = get_job_new_model_file(code)
-    dst_sea = get_job_new_sea_file(code)
+    os.makedirs(runtime_dir, exist_ok=True)
 
-    copied_model = _copy_file_if_needed(model_file, dst_model)
-    copied_sea = ""
+    runtime_model_file = os.path.join(runtime_dir, os.path.basename(model_file))
+    runtime_sea_file = os.path.join(runtime_dir, os.path.basename(sea_file)) if _file_exists(sea_file) else ""
+
+    _copy_file_if_needed(model_file, runtime_model_file)
     if _file_exists(sea_file):
-        copied_sea = _copy_file_if_needed(sea_file, dst_sea)
+        _copy_file_if_needed(sea_file, runtime_sea_file)
 
     return {
-        "source": bundle.get("source") or "unknown",
-        "project_id": bundle.get("project_id"),
-        "project_name": bundle.get("project_name"),
-        "project_order": bundle.get("project_order"),
+        "source": "original",
+        "project_id": None,
+        "project_name": "原始模型",
+        "project_order": None,
         "model_dir": runtime_dir,
         "model_file": model_file,
         "sea_file": sea_file,
-        "new_model_file": copied_model,
-        "new_sea_file": copied_sea,
+        "new_model_file": runtime_model_file,
+        "new_sea_file": runtime_sea_file,
     }
 
 
@@ -598,27 +587,25 @@ def sync_current_model_baseline_for_next_rebuild(
     job_name: str,
 ) -> dict[str, Any]:
     """
-    创建新模型前调用，重新确定本次改造的基础模型：
+    创建新模型前调用，重新确定本次改造的基础模型。
 
-    1. 若存在未删除的历史改造项目，且最新项目下仍有 sacinp.M1，则基于该 M1 继续改造；
-    2. 若所有历史改造项目被删除，或历史项目下 M1 文件被删除，则回退到用户原始上传模型；
-    3. 将选中的基础模型重新导入 wizard_model_info，保证 export_model_bundle 使用正确基线。
+    新规则：
+    每一次创建新模型，都固定使用【模型文件 / 当前模型】中用户上传的原始 sacinp / seainp，
+    不再使用历史改造项目中的 sacinp.M1 作为下一次改造基础。
     """
     code = (job_name or "").strip()
     if not code:
         raise ValueError("job_name/facility_code 为空，无法确定改造基础模型")
 
-    bundle = find_latest_active_history_model_bundle(code)
-    if not bundle:
-        bundle = find_original_uploaded_model_bundle(code)
+    bundle = find_original_uploaded_model_bundle(code)
 
     model_file = _norm(bundle.get("model_file") or "")
     sea_file = _norm(bundle.get("sea_file") or "")
 
     if not _file_exists(model_file):
         raise FileNotFoundError(
-            f"未找到可用的基础模型文件。平台：{code}\n"
-            "请确认当前模型中存在原始 sacinp 文件，或历史改造项目中存在 sacinp.M1。"
+            f"未找到可用的原始模型文件。平台：{code}\n"
+            "请确认【模型文件】页面中已上传当前模型的原始 sacinp 文件。"
         )
     if sea_file and not _file_exists(sea_file):
         sea_file = ""
@@ -635,10 +622,10 @@ def sync_current_model_baseline_for_next_rebuild(
     )
 
     return {
-        "source": bundle.get("source") or "unknown",
-        "project_id": bundle.get("project_id"),
-        "project_name": bundle.get("project_name"),
-        "project_order": bundle.get("project_order"),
+        "source": "original",
+        "project_id": None,
+        "project_name": "原始模型",
+        "project_order": None,
         "model_file": model_file,
         "sea_file": sea_file,
         "reimport": reimport_result,
@@ -653,7 +640,11 @@ def archive_model_files_as_history_rebuild(
     summary_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    每次创建新模型成功后调用：
+    旧版兼容函数：当前“创建新模型”流程已经不再调用本函数。
+
+    如果其他旧页面仍然显式调用它，则仍按旧逻辑生成历史改造项目。
+
+    旧逻辑：
     1. 自动创建“历史改造项目N”；
     2. 将 sacinp.M1 / seainp.M1 上传到历史改造文件页面对应项目下；
     3. 将本次归档后的 M1 文件重新导入为当前基础模型，保证下一次改造基于上一次 M1。

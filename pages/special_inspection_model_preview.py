@@ -226,7 +226,47 @@ class SpecialInspectionSacsView(QFrame):
 
         return leg_joints, tubular_joints
 
-    def render_structure(self, nodes, members, leg_joints, tubular_joints):
+    def _history_marker_radius(self, points: np.ndarray) -> float:
+        if points is None or len(points) == 0:
+            return 1.0
+        try:
+            extent = np.ptp(points, axis=0)
+            diag = float(np.linalg.norm(extent))
+        except Exception:
+            diag = 0.0
+        return max(1.0, min(2.2, diag * 0.015 if diag > 0 else 1.0))
+
+    def _add_history_detection_markers(self, nodes, points: np.ndarray, history_overlay=None):
+        items = list((history_overlay or {}).get("items") or [])
+        if not items:
+            return
+
+        radius = self._history_marker_radius(points)
+        grouped: dict[tuple[str, str], list[list[float]]] = {}
+        for item in items:
+            joint_id = str(item.get("joint_id") or "").strip()
+            if not joint_id or joint_id not in nodes:
+                continue
+            label = str(item.get("round_label") or "历史检测节点").strip() or "历史检测节点"
+            color = str(item.get("round_color") or "#D64541").strip() or "#D64541"
+            grouped.setdefault((label, color), []).append(nodes[joint_id])
+
+        for (label, color), marker_points in grouped.items():
+            if not marker_points:
+                continue
+            cloud = pv.PolyData(np.array(marker_points, dtype=float))
+            glyph = cloud.glyph(
+                geom=pv.Sphere(radius=radius, theta_resolution=16, phi_resolution=16),
+                scale=False,
+                orient=False,
+            )
+            self.plotter.add_mesh(
+                glyph,
+                color=color,
+                label=label,
+            )
+
+    def render_structure(self, nodes, members, history_overlay=None):
         self.plotter.clear()
         self.plotter.set_background(self.COLOR_SCHEME["background"])
 
@@ -252,41 +292,19 @@ class SpecialInspectionSacsView(QFrame):
             self.plotter.add_mesh(
                 structure,
                 color=self.COLOR_SCHEME["main_structure"],
-                opacity=0.85,
-                label="Main Structure",
+                opacity=0.92,
+                label="Structure",
             )
         except Exception:
             self.plotter.add_mesh(
                 mesh,
                 color=self.COLOR_SCHEME["main_structure"],
                 line_width=1.2,
-                opacity=0.9,
-                label="Main Structure",
+                opacity=0.95,
+                label="Structure",
             )
 
-        if leg_joints:
-            leg_cloud = pv.PolyData(np.array(leg_joints, dtype=float))
-            self.plotter.add_mesh(
-                leg_cloud.glyph(
-                    geom=pv.Sphere(radius=0.55, theta_resolution=12, phi_resolution=12),
-                    scale=False,
-                    orient=False,
-                ),
-                color=self.COLOR_SCHEME["leg_joint"],
-                label="Leg Joint",
-            )
-
-        if tubular_joints:
-            tub_cloud = pv.PolyData(np.array(tubular_joints, dtype=float))
-            self.plotter.add_mesh(
-                tub_cloud.glyph(
-                    geom=pv.Sphere(radius=0.30, theta_resolution=10, phi_resolution=10),
-                    scale=False,
-                    orient=False,
-                ),
-                color=self.COLOR_SCHEME["tubular_joint"],
-                label="Tubular Joint",
-            )
+        self._add_history_detection_markers(nodes, points, history_overlay=history_overlay)
 
         self.plotter.add_axes()
         self.plotter.reset_camera()
@@ -303,7 +321,7 @@ class SpecialInspectionSacsView(QFrame):
 
         self.plotter.render()
 
-    def load_inp(self, file_path: str, target_z: float = 9.1):
+    def load_inp(self, file_path: str, target_z: float = 9.1, history_overlay=None):
         self._loaded_path = file_path
 
         nodes, members, groups_od = self.parse_sacs_full_robust(file_path)
@@ -315,11 +333,7 @@ class SpecialInspectionSacsView(QFrame):
             self.clear_view("未解析到有效的 SACS JOINT/MEMBER 数据")
             return
 
-        leg_joints, tubular_joints = self.apply_pdf_logic_diagnostic(
-            self._nodes, self._members, self._groups_od, target_z=target_z
-        )
-
-        self.render_structure(self._nodes, self._members, leg_joints, tubular_joints)
+        self.render_structure(self._nodes, self._members, history_overlay=history_overlay)
 
 
 class SpecialInspectionModelPreviewPanel(QFrame):
@@ -389,36 +403,15 @@ class SpecialInspectionModelPreviewPanel(QFrame):
 
         meta_layout.addWidget(self.path_row, 0)
 
-        # ---- 第二行：图例 ----
+        # ---- 第二行：图例（动态） ----
         self.legend_row = QWidget(self)
-        legend_layout = QHBoxLayout(self.legend_row)
-        legend_layout.setContentsMargins(0, 0, 0, 0)
-        legend_layout.setSpacing(12)
-
-        legend_layout.addWidget(
-            self._build_legend_item(
-                "Main Structure",
-                SpecialInspectionSacsView.COLOR_SCHEME["main_structure"]
-            ),
-            0
-        )
-        legend_layout.addWidget(
-            self._build_legend_item(
-                "Leg Joint",
-                SpecialInspectionSacsView.COLOR_SCHEME["leg_joint"]
-            ),
-            0
-        )
-        legend_layout.addWidget(
-            self._build_legend_item(
-                "Tubular Joint",
-                SpecialInspectionSacsView.COLOR_SCHEME["tubular_joint"]
-            ),
-            0
-        )
-        legend_layout.addStretch(1)
-
+        self.legend_layout = QHBoxLayout(self.legend_row)
+        self.legend_layout.setContentsMargins(0, 0, 0, 0)
+        self.legend_layout.setSpacing(12)
         meta_layout.addWidget(self.legend_row, 0)
+        self._set_legend_entries([
+            ("Structure", SpecialInspectionSacsView.COLOR_SCHEME["main_structure"]),
+        ])
 
         outer.addWidget(self.meta_container, 0)
 
@@ -476,6 +469,46 @@ class SpecialInspectionModelPreviewPanel(QFrame):
 
         return w
 
+    def _clear_legend(self) -> None:
+        if not hasattr(self, "legend_layout") or self.legend_layout is None:
+            return
+        while self.legend_layout.count():
+            item = self.legend_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _set_legend_entries(self, entries: list[tuple[str, str]]) -> None:
+        self._clear_legend()
+        if not hasattr(self, "legend_layout") or self.legend_layout is None:
+            return
+        for text, color in entries:
+            self.legend_layout.addWidget(self._build_legend_item(text, color), 0)
+        self.legend_layout.addStretch(1)
+
+    @staticmethod
+    def _history_legend_entries(history_overlay=None) -> list[tuple[str, str]]:
+        entries: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        legends = list((history_overlay or {}).get("legend") or [])
+        items = list((history_overlay or {}).get("items") or [])
+
+        for row in legends:
+            label = str(row.get("round_label") or "").strip()
+            color = str(row.get("round_color") or row.get("color") or "").strip()
+            if label and color and (label, color) not in seen:
+                seen.add((label, color))
+                entries.append((label, color))
+
+        if not entries:
+            for row in items:
+                label = str(row.get("round_label") or "历史检测节点").strip() or "历史检测节点"
+                color = str(row.get("round_color") or "#D64541").strip() or "#D64541"
+                if (label, color) not in seen:
+                    seen.add((label, color))
+                    entries.append((label, color))
+        return entries
+
     def _set_path_text(self, full_path: str):
         full_path = os.path.normpath(full_path) if full_path else ""
         if not full_path:
@@ -495,8 +528,11 @@ class SpecialInspectionModelPreviewPanel(QFrame):
     def _on_pan_changed(self):
         self.view.pan_view(self.slider_h.value(), self.slider_v.value())
 
-    def load_model(self, file_path: str, target_z: float = 9.1):
+    def load_model(self, file_path: str, target_z: float = 9.1, history_overlay=None):
         self._current_path = os.path.normpath(str(file_path or "").strip())
+        legend_entries = [("Structure", SpecialInspectionSacsView.COLOR_SCHEME["main_structure"])]
+        legend_entries.extend(self._history_legend_entries(history_overlay))
+        self._set_legend_entries(legend_entries)
 
         if not self._current_path:
             self._set_path_text("")
@@ -518,7 +554,7 @@ class SpecialInspectionModelPreviewPanel(QFrame):
             self.slider_v.blockSignals(False)
 
             self.view.reset_pan_state()
-            self.view.load_inp(self._current_path, target_z=target_z)
+            self.view.load_inp(self._current_path, target_z=target_z, history_overlay=history_overlay)
         except Exception as exc:
             self.view.clear_view(f"模型预览失败：\n{exc}")
 

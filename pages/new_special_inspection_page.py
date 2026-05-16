@@ -38,6 +38,7 @@ from services.special_strategy_runtime import (
     run_special_strategy_calculation,
     special_strategy_inputs_dir,
 )
+from services.special_strategy_history_overlay_service import load_history_detection_overlay
 
 from pages.special_inspection_model_preview import SpecialInspectionModelPreviewPanel
 
@@ -98,7 +99,8 @@ class _SystemFilePickerDialog(QDialog):
 
         for row_idx, row in enumerate(rows):
             storage_path = os.path.normpath(str(row.get("storage_path") or "").strip())
-            original_name = str(row.get("original_name") or os.path.basename(storage_path)).strip() or os.path.basename(storage_path)
+            original_name = str(row.get("original_name") or os.path.basename(storage_path)).strip() or os.path.basename(
+                storage_path)
             display_path = str(row.get("display_path") or storage_path).strip()
             logical_path = str(row.get("logical_path") or "").replace("\\", "/").strip().strip("/")
             modified = row.get("source_modified_at") or row.get("uploaded_at") or row.get("updated_at")
@@ -165,7 +167,8 @@ class _SystemFilePickerDialog(QDialog):
 
 
 class _SystemLibraryPickerDialog(QDialog):
-    def __init__(self, title: str, tree_spec: list[dict[str, Any]], fetch_rows, *, group_mode: bool = False, parent=None):
+    def __init__(self, title: str, tree_spec: list[dict[str, Any]], fetch_rows, *, group_mode: bool = False,
+                 parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(1120, 620)
@@ -268,7 +271,8 @@ class _SystemLibraryPickerDialog(QDialog):
         self.table.setRowCount(len(rows))
         for row_idx, row in enumerate(rows):
             storage_path = os.path.normpath(str(row.get("storage_path") or "").strip())
-            original_name = str(row.get("original_name") or os.path.basename(storage_path)).strip() or os.path.basename(storage_path)
+            original_name = str(row.get("original_name") or os.path.basename(storage_path)).strip() or os.path.basename(
+                storage_path)
             current_path = str(row.get("display_path") or storage_path).strip()
             logical_path = str(row.get("logical_path") or "").replace("\\", "/").strip().strip("/")
             modified = row.get("source_modified_at") or row.get("uploaded_at") or row.get("updated_at")
@@ -331,12 +335,10 @@ class _SystemLibraryPickerDialog(QDialog):
         return list(self._selected_rows)
 
 
-
 class _NoWheelFileTable(QTableWidget):
     def wheelEvent(self, event):
         # 不在表格内部滚动，把滚轮交回外层滚动区域
         event.ignore()
-
 
 
 class _SpecialStrategyCalculationWorker(QObject):
@@ -344,11 +346,11 @@ class _SpecialStrategyCalculationWorker(QObject):
     failed = pyqtSignal(str)
 
     def __init__(
-        self,
-        facility_code: str,
-        *,
-        param_overrides: dict[str, Any] | None = None,
-        input_overrides: dict[str, Any] | None = None,
+            self,
+            facility_code: str,
+            *,
+            param_overrides: dict[str, Any] | None = None,
+            input_overrides: dict[str, Any] | None = None,
     ):
         super().__init__()
         self._facility_code = facility_code
@@ -840,6 +842,7 @@ class NewSpecialInspectionPage(BasePage):
         header.setSectionResizeMode(6, QHeaderView.Interactive)
 
         table.setColumnWidth(0, 52)
+
     def _adjust_files_table_widths(self) -> None:
         if not hasattr(self, "files_table") or self.files_table is None:
             return
@@ -1046,10 +1049,10 @@ class NewSpecialInspectionPage(BasePage):
         self._risk_worker = None
 
     def _start_risk_calculation_worker(
-        self,
-        *,
-        param_overrides: dict[str, Any] | None = None,
-        input_overrides: dict[str, Any] | None = None,
+            self,
+            *,
+            param_overrides: dict[str, Any] | None = None,
+            input_overrides: dict[str, Any] | None = None,
     ) -> None:
         self._set_risk_running(True)
 
@@ -1188,10 +1191,10 @@ class NewSpecialInspectionPage(BasePage):
         return rows
 
     def _filter_file_rows_by_branch(
-        self,
-        category: str,
-        rows: List[dict[str, Any]],
-        branch: str | None,
+            self,
+            category: str,
+            rows: List[dict[str, Any]],
+            branch: str | None,
     ) -> List[dict[str, Any]]:
         return [row for row in rows if self._is_runtime_supported_row(row, category, branch)]
 
@@ -1202,6 +1205,7 @@ class NewSpecialInspectionPage(BasePage):
         当数据库配置存在时，系统导入只从数据库中选文件；
         仅在未配置数据库时，才回退到本地 upload/model_files 扫描。
         """
+
         def _normalize_rows(rows: List[dict[str, Any]]) -> List[dict[str, Any]]:
             normalized: List[dict[str, Any]] = []
             for row in rows:
@@ -1584,20 +1588,20 @@ class NewSpecialInspectionPage(BasePage):
         return os.path.exists(normalized)
 
     def _remember_file_meta(
-        self,
-        path: str,
-        row: dict[str, Any] | None = None,
-        *,
-        original_name: str | None = None,
-        logical_path: str | None = None,
-        display_path: str | None = None,
-        remark: str | None = None,
-        category_name: str | None = None,
-        work_condition: str | None = None,
-        modified_at: Any = None,
-        branch_label: str | None = None,
-        format_label: str | None = None,
-        source_label: str | None = None,
+            self,
+            path: str,
+            row: dict[str, Any] | None = None,
+            *,
+            original_name: str | None = None,
+            logical_path: str | None = None,
+            display_path: str | None = None,
+            remark: str | None = None,
+            category_name: str | None = None,
+            work_condition: str | None = None,
+            modified_at: Any = None,
+            branch_label: str | None = None,
+            format_label: str | None = None,
+            source_label: str | None = None,
     ) -> None:
         normalized = os.path.normpath(str(path or "").strip())
         if not normalized:
@@ -1679,7 +1683,8 @@ class NewSpecialInspectionPage(BasePage):
             return "result"
         return ""
 
-    def _is_runtime_supported_name(self, name: str, category: str, branch: str | None = None, logical_path: str = "") -> bool:
+    def _is_runtime_supported_name(self, name: str, category: str, branch: str | None = None,
+                                   logical_path: str = "") -> bool:
         stem = self._name_stem(name)
         if category == self.CATEGORY_MODEL:
             return stem.startswith("sacinp")
@@ -1801,7 +1806,8 @@ class NewSpecialInspectionPage(BasePage):
     def _friendly_tooltip(self, path: str) -> str:
         normalized = os.path.normpath(str(path or "").strip())
         meta = self._file_meta(normalized)
-        payload = self._file_display_payload(normalized, category=self._infer_category_from_meta(meta), branch=self._infer_branch_from_meta(meta))
+        payload = self._file_display_payload(normalized, category=self._infer_category_from_meta(meta),
+                                             branch=self._infer_branch_from_meta(meta))
         lines = [f"文件名：{payload['filename']}"]
         if payload["category"]:
             lines.append(f"文件类别：{payload['category']}")
@@ -1918,11 +1924,11 @@ class NewSpecialInspectionPage(BasePage):
         return spec
 
     def _system_library_rows_for_leaf(
-        self,
-        path_key: str,
-        model_key: str,
-        category: str,
-        branch: str | None = None,
+            self,
+            path_key: str,
+            model_key: str,
+            category: str,
+            branch: str | None = None,
     ) -> List[dict[str, Any]]:
         helper = self._model_files_helper()
         if category == self.CATEGORY_MODEL and model_key == "__model_root__":
@@ -1931,9 +1937,9 @@ class NewSpecialInspectionPage(BasePage):
             rows: List[dict[str, Any]] = []
             seen_ids: set[int] = set()
             for row in list_files_by_prefix(
-                module_code="model_files",
-                logical_path_prefix=prefix,
-                facility_code=facility,
+                    module_code="model_files",
+                    logical_path_prefix=prefix,
+                    facility_code=facility,
             ):
                 row_id = row.get("id")
                 if row_id in seen_ids:
@@ -1981,9 +1987,9 @@ class NewSpecialInspectionPage(BasePage):
 
         # 直接搜索该前缀下的所有文件
         for row in list_files_by_prefix(
-            module_code="model_files",
-            logical_path_prefix=prefix,
-            facility_code=facility,
+                module_code="model_files",
+                logical_path_prefix=prefix,
+                facility_code=facility,
         ):
             row_id = row.get("id")
             if row_id in seen_ids:
@@ -2034,7 +2040,8 @@ class NewSpecialInspectionPage(BasePage):
             chosen_path = os.path.normpath(str(chosen_row.get("storage_path") or "").strip())
 
             if not self._is_usable_path(chosen_path):
-                QMessageBox.warning(self, "系统导入", "所选文件记录的物理路径无效，请检查数据库字段 storage_path / stored_name / storage_root。")
+                QMessageBox.warning(self, "系统导入",
+                                    "所选文件记录的物理路径无效，请检查数据库字段 storage_path / stored_name / storage_root。")
                 return ""
 
             self._remember_file_meta(chosen_path, row=chosen_row)
@@ -2073,6 +2080,7 @@ class NewSpecialInspectionPage(BasePage):
         if not chosen_paths:
             QMessageBox.warning(self, "系统导入", "当前文件夹下没有可用于计算的文件。")
         return chosen_paths
+
     def _pick_system_file_dialog(self, category: str, title: str, branch: str | None = None) -> str:
         candidate_rows = self._db_fetch_file_rows(category, branch)
         if not candidate_rows:
@@ -2157,14 +2165,14 @@ class NewSpecialInspectionPage(BasePage):
 
     # ---------------- 文件动态表格刷新与事件 ----------------
     def _set_file_table_row(
-        self,
-        table: QTableWidget,
-        row: int,
-        index: int,
-        path: str,
-        *,
-        category: str,
-        branch: str | None = None,
+            self,
+            table: QTableWidget,
+            row: int,
+            index: int,
+            path: str,
+            *,
+            category: str,
+            branch: str | None = None,
     ) -> None:
         payload = self._file_display_payload(path, category=category, branch=branch)
         values = [
@@ -2206,16 +2214,16 @@ class NewSpecialInspectionPage(BasePage):
         table.setRowHeight(row, 36)
 
     def _append_file_section(
-        self,
-        table: QTableWidget,
-        *,
-        title: str,
-        buttons_info: list[tuple[str, Any]],
-        paths: List[str],
-        row_map: dict[int, int] | None,
-        category: str,
-        branch: str | None = None,
-        empty_hint: str,
+            self,
+            table: QTableWidget,
+            *,
+            title: str,
+            buttons_info: list[tuple[str, Any]],
+            paths: List[str],
+            row_map: dict[int, int] | None,
+            category: str,
+            branch: str | None = None,
+            empty_hint: str,
     ) -> None:
         header_row = table.rowCount()
         table.insertRow(header_row)
@@ -2311,7 +2319,8 @@ class NewSpecialInspectionPage(BasePage):
         if not fp:
             return
         if self._sacinp_name_score(fp) <= 0 or not self._scan_model_signature(fp):
-            QMessageBox.warning(self, "导入失败", "当前选择的文件不是可参与计算的结构模型文件，请重新选择 sacinp 模型文件。")
+            QMessageBox.warning(self, "导入失败",
+                                "当前选择的文件不是可参与计算的结构模型文件，请重新选择 sacinp 模型文件。")
             return
         try:
             system_path = self._db_store_local_file(fp, self.CATEGORY_MODEL)
@@ -2340,7 +2349,6 @@ class NewSpecialInspectionPage(BasePage):
 
     def _on_add_model_sys(self):
         return
-
 
     def _on_add_collapse_sys(self):
         return
@@ -2400,7 +2408,6 @@ class NewSpecialInspectionPage(BasePage):
         self._append_unique_path(self.collapse_files, system_path)
         self._refresh_files_table()
 
-
     def _on_del_collapse(self):
         selected = self.files_table.selectionModel().selectedRows()
         if not selected:
@@ -2436,7 +2443,8 @@ class NewSpecialInspectionPage(BasePage):
         actual_branch = self._runtime_fatigue_branch_for_name(fp)
         if actual_branch != branch:
             target_label = "ftginp" if branch == "input" else "ftglst"
-            QMessageBox.warning(self, "导入失败", f"当前选择的文件不是可参与计算的 {target_label} 文件，请检查后重新导入。")
+            QMessageBox.warning(self, "导入失败",
+                                f"当前选择的文件不是可参与计算的 {target_label} 文件，请检查后重新导入。")
             return
         try:
             system_path = self._db_store_local_file(fp, self.CATEGORY_FATIGUE, branch)
@@ -2500,16 +2508,15 @@ class NewSpecialInspectionPage(BasePage):
 
     def _on_add_fatigue_result_sys(self):
         return
+
     def _on_add_fatigue_input_sys(self):
         return
-        
+
     def _on_del_fatigue_result(self):
         self._on_del_fatigue("result")
 
     def _on_add_fatigue_input_local(self):
         self._on_add_fatigue_local("input")
-
-
 
     def _on_del_fatigue_input(self):
         self._on_del_fatigue("input")
@@ -2522,8 +2529,15 @@ class NewSpecialInspectionPage(BasePage):
         if self.model_files:
             model_path = self.model_files[0]
 
+        history_overlay = {}
+        try:
+            history_overlay = load_history_detection_overlay(self.facility_code) or {}
+        except Exception as exc:
+            print("[NewSpecialInspectionPage] load history overlay failed:", exc)
+            history_overlay = {}
+
         if model_path and os.path.exists(model_path):
-            self.model_preview_panel.load_model(model_path, target_z=9.1)
+            self.model_preview_panel.load_model(model_path, target_z=9.1, history_overlay=history_overlay)
         else:
             self.model_preview_panel.clear_model("当前未加载模型文件")
 
@@ -2538,7 +2552,8 @@ class NewSpecialInspectionPage(BasePage):
 
         # 左侧标题文本
         lbl = QLabel(title_text)
-        lbl.setStyleSheet('font-weight: bold; color: #333; border: none; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
+        lbl.setStyleSheet(
+            'font-weight: bold; color: #333; border: none; font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 12pt;')
         lay.addWidget(lbl)
 
         # 弹簧，将按钮挤到最右侧

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from typing import Any, Dict, Optional
 
 from sqlalchemy import create_engine, text
@@ -25,7 +26,6 @@ from pages.sacs_topside_service import (
 from pages.sacs_export_service import export_model_bundle
 from pages.sacs_storage_service import get_job_runtime_dir
 from services.history_rebuild_auto_service import (
-    archive_model_files_as_history_rebuild,
     sync_current_model_baseline_for_next_rebuild,
 )
 
@@ -142,6 +142,62 @@ def _normalize_export_info(export_info: Optional[Dict[str, Any]], job_name: str)
     return export_info
 
 
+
+def _copy_created_files_to_user_dir(export_info: Dict[str, Any], user_export_dir: str = "") -> Dict[str, Any]:
+    """
+    将创建新模型生成的运行文件额外复制到用户选择的目录。
+
+    注意：
+    - 不影响系统内部统一运行目录 feasibility_assessment_runtime/<平台>/；
+    - 只是给用户导出一份副本；
+    - 文件已存在时直接覆盖。
+    """
+    export_dir = os.path.normpath(str(user_export_dir or "").strip())
+    result = {
+        "export_dir": export_dir,
+        "copied_files": [],
+        "skipped_files": [],
+    }
+
+    if not export_dir:
+        return result
+
+    os.makedirs(export_dir, exist_ok=True)
+
+    keys = [
+        "new_model_file",
+        "new_sea_file",
+        "runx_file",
+        "psiinp_file",
+        "jcninp_file",
+        "bat_file",
+    ]
+
+    seen = set()
+    for key in keys:
+        src = os.path.normpath(str(export_info.get(key) or "").strip())
+        if not src or src in seen:
+            continue
+        seen.add(src)
+
+        if not os.path.isfile(src):
+            result["skipped_files"].append(src)
+            continue
+
+        dst = os.path.join(export_dir, os.path.basename(src))
+        dst = os.path.normpath(dst)
+
+        try:
+            if os.path.normcase(src) != os.path.normcase(dst):
+                shutil.copy2(src, dst)
+            result["copied_files"].append(dst)
+        except Exception as exc:
+            raise RuntimeError(
+                f"导出文件失败：\n源文件：{src}\n目标文件：{dst}\n原因：{exc}"
+            ) from exc
+
+    return result
+
 def _count_table_rows(conn, table_name: str, job_name: str) -> int:
     """
     统计当前 job 的某类输入数据数量。
@@ -189,17 +245,18 @@ def create_new_model_files(
     mysql_url: str,
     job_name: str,
     overwrite_job: bool = True,
-    generate_bat: bool = False
+    generate_bat: bool = False,
+    user_export_dir: str = "",
 ) -> dict:
     """
     基于当前已保存的输入数据创建新模型。
 
-    三类输入数据均为可选：井槽、立管/电缆、组块载荷可以只填其中一种，
-    也可以任意组合。创建前会先根据“仍然存在的历史改造项目”重新确定基础模型：
-
-    - 若存在历史改造项目及可用 M1，则基于最新可用 M1 继续改造；
-    - 若用户手动删除了所有历史改造项目，或删除了最新项目下的 M1，则自动回退原始上传模型；
-    - 因此删除历史改造项目就等价于把后续改造基础初始化到原模型或上一个仍存在的改造版本。
+    当前业务规则：
+    1. “保存数据”逻辑不变，三类输入数据可任意组合；
+    2. 每次点击“创建新模型”时，都重新以【模型文件/当前模型】中用户上传的原始模型作为基础模型；
+    3. 生成的 sacinp.M1、seainp.M1、RUNX、BAT 等文件仍统一保存到系统内部运行目录；
+    4. 不再自动生成【历史改造文件】中的历史改造项目；
+    5. 如果传入 user_export_dir，则额外把本次生成文件复制到用户选择的目录。
     """
     job_name = (job_name or "").strip()
     if not job_name:
@@ -221,9 +278,8 @@ def create_new_model_files(
                 "请先填写井槽、立管/电缆或组块载荷中的至少一种，并点击保存数据。"
             )
 
-    # 关键修复：创建新模型前重新同步基础模型。
-    # 这样用户删除历史改造项目后，下一次创建会自动回退到仍存在的最新历史版本；
-    # 如果历史项目已全部删除，则回退原始上传模型。
+    # 创建新模型前，固定重新同步用户上传的原始模型作为本次改造基础。
+    # 这里不再读取“历史改造文件”中的 M1，也不再在创建后自动生成历史改造项目。
     baseline = sync_current_model_baseline_for_next_rebuild(
         mysql_url=mysql_url,
         job_name=job_name,
@@ -267,10 +323,9 @@ def create_new_model_files(
     )
     result_export = _normalize_export_info(result_export, job_name)
 
-    history_project = archive_model_files_as_history_rebuild(
-        mysql_url=mysql_url,
-        job_name=job_name,
-        export_info=result_export,
+    user_export = _copy_created_files_to_user_dir(
+        result_export,
+        user_export_dir=user_export_dir,
     )
 
     return {
@@ -281,5 +336,6 @@ def create_new_model_files(
         "riser": result_riser,
         "topside": result_topside,
         "export": result_export,
-        "history_project": history_project,
+        "user_export": user_export,
+        "history_project": None,
     }

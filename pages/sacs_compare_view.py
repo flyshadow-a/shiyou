@@ -455,6 +455,13 @@ class PyVistaSacsCompareView(QFrame):
             tubular_joints,
             added_node_ids,
     ):
+        """渲染结构改造对比图。
+
+        按最新需求：
+        - 原结构统一用黄色绘制；
+        - 新增构件统一用红色绘制；
+        - 不再额外绘制 Leg Joint / Tubular Joint / Added Node 点位标记。
+        """
         if not self._can_render():
             return
 
@@ -468,7 +475,7 @@ class PyVistaSacsCompareView(QFrame):
                 color=self.COLOR_SCHEME["main_structure"],
                 label="Original Structure",
                 tube_radius=0.12,
-                opacity=0.35,
+                opacity=0.90,
             )
 
             added_mesh = self.build_polyline_mesh(new_nodes, added_members)
@@ -477,29 +484,7 @@ class PyVistaSacsCompareView(QFrame):
                 color=self.COLOR_SCHEME["added_structure"],
                 label="Added Structure",
                 tube_radius=0.20,
-                opacity=0.95,
-            )
-
-            self.add_point_cloud(
-                leg_joints,
-                color=self.COLOR_SCHEME["leg_joint"],
-                label="Leg Joint",
-                radius=0.8,
-            )
-
-            self.add_point_cloud(
-                tubular_joints,
-                color=self.COLOR_SCHEME["tubular_joint"],
-                label="Tubular Joint",
-                radius=0.3,
-            )
-
-            added_points = [new_nodes[nid] for nid in added_node_ids if nid in new_nodes]
-            self.add_point_cloud(
-                added_points,
-                color=self.COLOR_SCHEME["added_node"],
-                label="Added Node",
-                radius=0.45,
+                opacity=0.98,
             )
 
             self.plotter.add_axes()
@@ -588,9 +573,6 @@ class SacsComparePanel(QFrame):
         lay.addStretch(1)
         lay.addWidget(make_item("#E9D012", "Original Structure"), 0)
         lay.addWidget(make_item("#D95D39", "Added Structure"), 0)
-        lay.addWidget(make_item("#B22222", "Leg Joint"), 0)
-        lay.addWidget(make_item("#2A7F9E", "Tubular Joint"), 0)
-        lay.addWidget(make_item("#2E8B57", "Added Node"), 0)
 
         return w
 
