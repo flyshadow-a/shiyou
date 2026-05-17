@@ -17,6 +17,8 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QWidget,
     QSlider,
+    QPushButton,
+    QDialog,
 )
 
 
@@ -96,6 +98,41 @@ class PyVistaSacsCompareView(QFrame):
             self.plotter.render()
         except Exception:
             pass
+
+    def _open_fullscreen_view(self):
+        if not self._old_file or not self._new_file:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("模型对比图 - 全屏")
+        dlg.resize(1280, 860)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        top = QWidget(dlg)
+        top_lay = QHBoxLayout(top)
+        top_lay.setContentsMargins(0, 0, 0, 0)
+        top_lay.setSpacing(8)
+        title = QLabel("模型对比图（全屏）", top)
+        title.setStyleSheet("font-size:13pt; font-weight:bold; color:#1d2b3a;")
+        hint = QLabel("右键或双击恢复初始视图，ESC/关闭按钮退出。", top)
+        hint.setStyleSheet("font-size:10pt; color:#5d6f85;")
+        btn_close = QPushButton("关闭", top)
+        btn_close.setFixedSize(72, 28)
+        btn_close.clicked.connect(dlg.close)
+        top_lay.addWidget(title, 0)
+        top_lay.addWidget(hint, 1)
+        top_lay.addWidget(btn_close, 0)
+        layout.addWidget(top, 0)
+
+        panel = SacsComparePanel(dlg)
+        layout.addWidget(panel, 1)
+        panel.load_files(self._old_file, self._new_file, target_z=self._target_z)
+
+        dlg.showMaximized()
+        dlg.exec_()
 
     def safe_close(self):
         if self._closed:
@@ -508,16 +545,42 @@ class PyVistaSacsCompareView(QFrame):
 class SacsComparePanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._old_file = ""
+        self._new_file = ""
+        self._target_z = 9.1
         self.setStyleSheet("QFrame { background: #ffffff; border: 1px solid #b9c6d6; }")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(6)
 
+        top_row = QWidget(self)
+        top_lay = QHBoxLayout(top_row)
+        top_lay.setContentsMargins(0, 0, 0, 0)
+        top_lay.setSpacing(6)
+
         self.path_label = QLabel("")
         self.path_label.setWordWrap(True)
         self.path_label.setStyleSheet("color:#4a5b70; font-size:12px;")
-        outer.addWidget(self.path_label, 0)
+        top_lay.addWidget(self.path_label, 1)
+
+        self.btn_fullscreen = QPushButton("全屏", self)
+        self.btn_fullscreen.setFixedSize(64, 26)
+        self.btn_fullscreen.setCursor(Qt.PointingHandCursor)
+        self.btn_fullscreen.setStyleSheet("""
+            QPushButton {
+                background: #2aa9df;
+                color: #ffffff;
+                border: 1px solid #1b6f91;
+                border-radius: 3px;
+                font-size: 10pt;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #42bce9; }
+        """)
+        self.btn_fullscreen.clicked.connect(self._open_fullscreen_view)
+        top_lay.addWidget(self.btn_fullscreen, 0)
+        outer.addWidget(top_row, 0)
 
         outer.addWidget(self._build_custom_legend(), 0)
 
@@ -577,6 +640,9 @@ class SacsComparePanel(QFrame):
         return w
 
     def load_files(self, old_file: str, new_file: str, target_z: float = 9.1):
+        self._old_file = os.path.normpath(str(old_file or "").strip())
+        self._new_file = os.path.normpath(str(new_file or "").strip())
+        self._target_z = target_z
         self.path_label.setText(
             f"原模型文件：{old_file}\n新模型文件：{new_file}"
         )
@@ -591,6 +657,41 @@ class SacsComparePanel(QFrame):
 
         self.compare_view.reset_pan_state()
         self.compare_view.load_compare(old_file, new_file, target_z=target_z)
+
+    def _open_fullscreen_view(self):
+        if not self._old_file or not self._new_file:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("模型对比图 - 全屏")
+        dlg.resize(1280, 860)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        top = QWidget(dlg)
+        top_lay = QHBoxLayout(top)
+        top_lay.setContentsMargins(0, 0, 0, 0)
+        top_lay.setSpacing(8)
+        title = QLabel("模型对比图（全屏）", top)
+        title.setStyleSheet("font-size:13pt; font-weight:bold; color:#1d2b3a;")
+        hint = QLabel("右键或双击恢复初始视图，ESC/关闭按钮退出。", top)
+        hint.setStyleSheet("font-size:10pt; color:#5d6f85;")
+        btn_close = QPushButton("关闭", top)
+        btn_close.setFixedSize(72, 28)
+        btn_close.clicked.connect(dlg.close)
+        top_lay.addWidget(title, 0)
+        top_lay.addWidget(hint, 1)
+        top_lay.addWidget(btn_close, 0)
+        layout.addWidget(top, 0)
+
+        panel = SacsComparePanel(dlg)
+        layout.addWidget(panel, 1)
+        panel.load_files(self._old_file, self._new_file, target_z=self._target_z)
+
+        dlg.showMaximized()
+        dlg.exec_()
 
     def safe_close(self):
         try:

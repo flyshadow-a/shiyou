@@ -11,7 +11,7 @@ from pyvistaqt import QtInteractor
 from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
-    QSizePolicy, QSlider, QWidget
+    QSizePolicy, QSlider, QWidget, QPushButton, QDialog
 )
 
 
@@ -340,6 +340,8 @@ class SpecialInspectionModelPreviewPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._current_path = ""
+        self._current_target_z = 9.1
+        self._current_history_overlay = {}
 
         self.setStyleSheet("""
             QFrame {
@@ -352,7 +354,13 @@ class SpecialInspectionModelPreviewPanel(QFrame):
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(6)
 
-        # ===== 标题 =====
+        # ===== 标题 + 全屏按钮 =====
+        title_row = QWidget(self)
+        title_row.setStyleSheet("QWidget{border:none; background:transparent;}")
+        title_layout = QHBoxLayout(title_row)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(6)
+
         self.title_label = QLabel("结构模型预览")
         self.title_label.setFixedHeight(24)
         self.title_label.setStyleSheet("""
@@ -365,7 +373,26 @@ class SpecialInspectionModelPreviewPanel(QFrame):
                 padding-left: 6px;
             }
         """)
-        outer.addWidget(self.title_label, 0)
+        title_layout.addWidget(self.title_label, 1)
+
+        self.btn_fullscreen = QPushButton("全屏", self)
+        self.btn_fullscreen.setFixedSize(64, 24)
+        self.btn_fullscreen.setCursor(Qt.PointingHandCursor)
+        self.btn_fullscreen.setStyleSheet("""
+            QPushButton {
+                background: #2aa9df;
+                color: #ffffff;
+                border: 1px solid #1b6f91;
+                border-radius: 3px;
+                font-size: 10pt;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #42bce9; }
+        """)
+        self.btn_fullscreen.clicked.connect(self._open_fullscreen_view)
+        title_layout.addWidget(self.btn_fullscreen, 0)
+
+        outer.addWidget(title_row, 0)
 
         # ===== 路径栏 + 图例栏（分两行） =====
         self.meta_container = QFrame(self)
@@ -442,6 +469,45 @@ class SpecialInspectionModelPreviewPanel(QFrame):
         outer.addWidget(self.slider_h, 0)
 
         self.view.bind_sliders(self.slider_h, self.slider_v)
+
+    def _open_fullscreen_view(self):
+        if not self._current_path or not os.path.exists(self._current_path):
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("结构模型预览 - 全屏")
+        dlg.resize(1280, 860)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        top = QWidget(dlg)
+        top_lay = QHBoxLayout(top)
+        top_lay.setContentsMargins(0, 0, 0, 0)
+        top_lay.setSpacing(8)
+        title = QLabel("结构模型预览（全屏）", top)
+        title.setStyleSheet("font-size:13pt; font-weight:bold; color:#1d2b3a;")
+        hint = QLabel("右键或双击恢复初始视图，ESC/关闭按钮退出。", top)
+        hint.setStyleSheet("font-size:10pt; color:#5d6f85;")
+        btn_close = QPushButton("关闭", top)
+        btn_close.setFixedSize(72, 28)
+        btn_close.clicked.connect(dlg.close)
+        top_lay.addWidget(title, 0)
+        top_lay.addWidget(hint, 1)
+        top_lay.addWidget(btn_close, 0)
+        layout.addWidget(top, 0)
+
+        panel = SpecialInspectionModelPreviewPanel(dlg)
+        layout.addWidget(panel, 1)
+        panel.load_model(
+            self._current_path,
+            target_z=getattr(self, "_current_target_z", 9.1),
+            history_overlay=getattr(self, "_current_history_overlay", {}) or {},
+        )
+
+        dlg.showMaximized()
+        dlg.exec_()
 
     def _build_legend_item(self, text: str, color: str) -> QWidget:
         w = QWidget(self)
@@ -530,6 +596,8 @@ class SpecialInspectionModelPreviewPanel(QFrame):
 
     def load_model(self, file_path: str, target_z: float = 9.1, history_overlay=None):
         self._current_path = os.path.normpath(str(file_path or "").strip())
+        self._current_target_z = target_z
+        self._current_history_overlay = dict(history_overlay or {})
         legend_entries = [("Structure", SpecialInspectionSacsView.COLOR_SCHEME["main_structure"])]
         legend_entries.extend(self._history_legend_entries(history_overlay))
         self._set_legend_entries(legend_entries)

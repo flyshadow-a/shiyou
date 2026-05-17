@@ -5,7 +5,7 @@ import os
 from typing import Dict, List, Tuple, Optional
 
 from PyQt5.QtCore import Qt, QRectF, QTimer, QPointF
-from PyQt5.QtGui import QBrush, QColor, QPainter, QPen, QFont, QImage, QPixmap
+from PyQt5.QtGui import QBrush, QColor, QPainter, QPen, QFont, QImage, QPixmap, QPolygonF
 from PyQt5.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsLineItem,
@@ -13,6 +13,13 @@ from PyQt5.QtWidgets import (
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QWidget,
+    QSlider,
 )
 
 from services.file_db_adapter import (
@@ -975,6 +982,144 @@ class SacsElevationRiskView(QGraphicsView):
         self._placed_badge_centers.append((x, y))
         return True
 
+    def _find_brace_scene_point(self, joint_id: str, brace_id: str):
+        """根据节点号和 Brace 号，找到箭头的起始方向点。
+
+        优先使用当前立面中可见节点的投影坐标；如果 Brace 节点没有单独记录在
+        _visible_projected_nodes 中，则从当前可见构件线段里寻找 joint-brace 这条线，
+        用线段另一端作为方向来源。
+        """
+        joint_id = str(joint_id or "").strip()
+        brace_id = str(brace_id or "").strip()
+        if not joint_id or not brace_id or brace_id == joint_id:
+            return None
+
+        pt = self._visible_projected_nodes.get(brace_id)
+        if pt is not None:
+            return pt
+
+        for seg in self._visible_projected_members or []:
+            ja = str(seg.get("joint_a") or "").strip()
+            jb = str(seg.get("joint_b") or "").strip()
+            p1 = seg.get("scene_p1")
+            p2 = seg.get("scene_p2")
+            if not p1 or not p2:
+                continue
+            if ja == joint_id and jb == brace_id:
+                return p2
+            if jb == joint_id and ja == brace_id:
+                return p1
+        return None
+
+    def _draw_direction_arrow(
+        self,
+        source_pt,
+        target_pt,
+        *,
+        color: QColor,
+        tooltip: str = "",
+        z_value: float = 58.0,
+    ) -> None:
+        """绘制从 Brace 方向指向风险节点的短箭头。
+
+        注意：这里只新增“方向指向”，不改变原来的节点圆点、等级牌和 tooltip。
+        箭头采用靠近目标节点的一段短线，避免整条线覆盖结构轮廓。
+        """
+        try:
+            sx, sy = float(source_pt[0]), float(source_pt[1])
+            tx, ty = float(target_pt[0]), float(target_pt[1])
+        except Exception:
+            return
+
+        vx = tx - sx
+        vy = ty - sy
+        dist = (vx * vx + vy * vy) ** 0.5
+        if dist < 1e-6:
+            return
+
+        ux = vx / dist
+        uy = vy / dist
+
+        # 靠近目标节点绘制短箭头，既能表示“从哪边来”，又不遮挡原图。
+        arrow_len = max(20.0, min(46.0, dist * 0.55))
+        end_gap = 5.5
+        x2 = tx - ux * end_gap
+        y2 = ty - uy * end_gap
+        x1 = tx - ux * (arrow_len + end_gap)
+        y1 = ty - uy * (arrow_len + end_gap)
+
+        pen = QPen(color, 1.7)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        line = RiskMemberItem(x1, y1, x2, y2, tooltip=tooltip)
+        line.setPen(pen)
+        line.setZValue(z_value)
+        self._scene.addItem(line)
+
+        # 箭头头部：以线段方向为轴，构造一个小三角。
+        head_len = 8.0
+        head_w = 4.8
+        bx = x2 - ux * head_len
+        by = y2 - uy * head_len
+        nx = -uy
+        ny = ux
+        polygon = QPolygonF([
+            QPointF(x2, y2),
+            QPointF(bx + nx * head_w, by + ny * head_w),
+            QPointF(bx - nx * head_w, by - ny * head_w),
+        ])
+        head = self._scene.addPolygon(
+            polygon,
+            QPen(color, 1.0),
+            QBrush(color),
+        )
+        head.setZValue(z_value + 0.5)
+        head.setToolTip(str(tooltip or ""))
+
+    def _draw_node_direction_arrows(self, joint_id: str, target_pt, fallback_level: str, fallback_tooltip: str) -> None:
+        """为节点检验标注增加 Brace -> Joint 的方向箭头。
+
+        - 保留原来的等级牌和鼠标悬浮提示；
+        - 不额外显示节点号；
+        - 若一个节点对应多个 Brace，则最多绘制 3 个方向箭头，避免图面过密。
+        """
+        joint_id = str(joint_id or "").strip()
+        if not joint_id:
+            return
+
+        rows = list(self._node_items_by_joint.get(joint_id, []) or [])
+        if not rows:
+            return
+
+        drawn_braces = set()
+        draw_count = 0
+        for row in rows:
+            brace = str(row.get("brace") or "").strip()
+            if not brace or brace in drawn_braces:
+                continue
+
+            source_pt = self._find_brace_scene_point(joint_id, brace)
+            if source_pt is None:
+                continue
+
+            level = str(row.get("inspect_level") or fallback_level or "").strip().upper()
+            if level not in ("II", "III", "IV"):
+                level = str(fallback_level or "").strip().upper()
+            color = self._inspection_color(level)
+
+            tooltip = fallback_tooltip or self._badge_tooltip_for_node(joint_id, level)
+            self._draw_direction_arrow(
+                source_pt,
+                target_pt,
+                color=color,
+                tooltip=tooltip,
+                z_value=57.0,
+            )
+            drawn_braces.add(brace)
+            draw_count += 1
+            if draw_count >= 3:
+                break
+
     def _draw_inspection_overlay(self):
         if not self._inspection_overlay_enabled:
             return
@@ -1027,6 +1172,10 @@ class SacsElevationRiskView(QGraphicsView):
             x, y = scene_pt
             r = 2.8 if level == "II" else (3.4 if level == "III" else 4.0)
             tooltip = self._badge_tooltip_for_node(joint_id, level)
+
+            # 新增：在原有节点等级标注基础上，增加 Brace 方向指向箭头。
+            # 不改变原来的等级牌、节点圆点和鼠标悬浮信息。
+            self._draw_node_direction_arrows(joint_id, (x, y), level, tooltip)
 
             dot = RiskNodeItem(QRectF(x - r, y - r, 2 * r, 2 * r), tooltip=tooltip)
             dot.setPen(QPen(color, 1.0))
@@ -2718,6 +2867,101 @@ class SacsElevationRiskView(QGraphicsView):
 
         rect = item.boundingRect().adjusted(-20, -20, 40, 40)
         self._scene.setSceneRect(rect)
+
+    def _copy_render_state_to(self, target: "SacsElevationRiskView") -> None:
+        """把当前立面图状态复制到另一个 SacsElevationRiskView，用于全屏窗口。"""
+        target._facility_code = self._facility_code
+        target._model_path = self._model_path
+        target._row_name = self._row_name
+        target._workpoint_z = self._workpoint_z
+        target._level_threshold = self._level_threshold
+
+        target.nodes = dict(self.nodes or {})
+        target.members = list(self.members or [])
+        target.node_risk_map = dict(self.node_risk_map or {})
+        target.member_risk_map = dict(self.member_risk_map or {})
+        target._groups_od = dict(self._groups_od or {})
+
+        target._inspection_overlay_enabled = bool(self._inspection_overlay_enabled)
+        target._member_inspect_level_map = dict(self._member_inspect_level_map or {})
+        target._node_inspect_level_map = dict(self._node_inspect_level_map or {})
+        target._node_brace_inspect_level_map = dict(self._node_brace_inspect_level_map or {})
+        target._member_items_by_key = dict(self._member_items_by_key or {})
+        target._node_items_by_joint = dict(self._node_items_by_joint or {})
+
+        target._history_overlay_enabled = bool(self._history_overlay_enabled)
+        target._history_overlay_items = list(self._history_overlay_items or [])
+        target._history_overlay_legend = list(self._history_overlay_legend or [])
+
+        target._cached_model_path = self._cached_model_path
+        target._cached_nodes = dict(self._cached_nodes or {})
+        target._cached_members = list(self._cached_members or [])
+        target._cached_groups_od = dict(self._cached_groups_od or {})
+
+    def open_fullscreen_window(self, title: str = "模型立面检验等级图") -> None:
+        """在新的最大化窗口中显示当前立面图。
+
+        不改变原页面视图；全屏窗口会复制当前模型、立面、检验等级、历史点位、
+        风险标记、鼠标提示等绘图状态，并重新渲染一份。
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"{title} - 全屏")
+        dlg.resize(1280, 880)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        top = QWidget(dlg)
+        top_lay = QHBoxLayout(top)
+        top_lay.setContentsMargins(0, 0, 0, 0)
+        top_lay.setSpacing(8)
+        title_label = QLabel(f"{title}（全屏）", top)
+        title_label.setStyleSheet("font-size:13pt; font-weight:bold; color:#1d2b3a;")
+        info_label = QLabel("滚轮缩放，双击恢复初始视图，ESC/关闭按钮退出。", top)
+        info_label.setStyleSheet("font-size:10pt; color:#5d6f85;")
+        btn_close = QPushButton("关闭", top)
+        btn_close.setFixedSize(72, 28)
+        btn_close.clicked.connect(dlg.close)
+        top_lay.addWidget(title_label, 0)
+        top_lay.addWidget(info_label, 1)
+        top_lay.addWidget(btn_close, 0)
+        layout.addWidget(top, 0)
+
+        view_row = QHBoxLayout()
+        view_row.setContentsMargins(0, 0, 0, 0)
+        view_row.setSpacing(6)
+
+        full_view = SacsElevationRiskView(dlg)
+        full_view.set_info_label(info_label)
+        view_row.addWidget(full_view, 1)
+
+        slider_v = QSlider(Qt.Vertical, dlg)
+        slider_v.setRange(-100, 100)
+        slider_v.setValue(0)
+        view_row.addWidget(slider_v, 0)
+        layout.addLayout(view_row, 1)
+
+        slider_h = QSlider(Qt.Horizontal, dlg)
+        slider_h.setRange(-100, 100)
+        slider_h.setValue(0)
+        layout.addWidget(slider_h, 0)
+
+        full_view.bind_sliders(slider_h, slider_v)
+        slider_h.valueChanged.connect(lambda v: full_view.pan_view(v, slider_v.value()))
+        slider_v.valueChanged.connect(lambda v: full_view.pan_view(slider_h.value(), v))
+
+        self._copy_render_state_to(full_view)
+        if full_view.nodes and full_view.members:
+            full_view._render_row_elevation()
+            full_view._fit_done = False
+            full_view._zoom_steps = 0
+            QTimer.singleShot(0, full_view.reset_view)
+        else:
+            full_view._draw_message("当前没有可全屏显示的图形")
+
+        dlg.showMaximized()
+        dlg.exec_()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

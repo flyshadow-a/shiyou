@@ -597,6 +597,24 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         top_row.addWidget(lbl_year, 0)
         top_row.addWidget(self.year_combo, 0)
         top_row.addStretch(1)
+
+        self.btn_elevation_fullscreen = QPushButton("全屏")
+        self.btn_elevation_fullscreen.setFixedSize(72, 30)
+        self.btn_elevation_fullscreen.setCursor(Qt.PointingHandCursor)
+        self.btn_elevation_fullscreen.setStyleSheet("""
+            QPushButton {
+                background: #2aa9df;
+                color: #ffffff;
+                border: 1px solid #1b6f91;
+                border-radius: 3px;
+                font-size: 10pt;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #42bce9; }
+        """)
+        self.btn_elevation_fullscreen.clicked.connect(self._on_elevation_fullscreen)
+        top_row.addWidget(self.btn_elevation_fullscreen, 0)
+
         outer.addLayout(top_row, 0)
 
         self.elevation_hint_label = QLabel("当前显示：立面轮廓图 + 检验等级；滚轮缩放，双击恢复初始视图。")
@@ -697,6 +715,19 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         v.addWidget(btn, 0)
 
         return panel
+
+    def _on_elevation_fullscreen(self):
+        if not hasattr(self, "elevation_view") or self.elevation_view is None:
+            return
+        try:
+            row_name = self.row_combo.currentText().strip() if hasattr(self, "row_combo") else ""
+            year_name = self.year_combo.currentText().strip() if hasattr(self, "year_combo") else ""
+            title = "模型立面检验等级图"
+            if row_name or year_name:
+                title = f"模型立面检验等级图 {row_name} {year_name}".strip()
+            self.elevation_view.open_fullscreen_window(title)
+        except Exception as exc:
+            QMessageBox.warning(self, "全屏显示失败", f"打开全屏窗口失败：\n{exc}")
 
     # ---------------- real data fill ----------------
     @staticmethod
