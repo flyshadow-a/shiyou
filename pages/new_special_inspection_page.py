@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QWidget,
     QFileDialog, QMessageBox, QProgressDialog, QScrollArea,
     QApplication, QAbstractItemView, QSizePolicy, QDialog, QDialogButtonBox,
-    QTreeWidget, QTreeWidgetItem, QSplitter
+    QTreeWidget, QTreeWidgetItem, QSplitter, QComboBox
 )
 from PyQt5.QtCore import QObject, Qt, pyqtSignal, QThread, QTimer
 
@@ -33,14 +33,26 @@ from services.file_db_adapter import (
 from pages.model_files_page import ModelFilesDocsWidget
 from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
 from services.special_strategy_runtime import (
+    finalize_special_strategy_calculation,
     load_base_config,
     load_latest_strategy_params,
+    prepare_special_strategy_calculation,
+    resolve_current_model_inputs,
     run_special_strategy_calculation,
     special_strategy_inputs_dir,
 )
 from services.special_strategy_history_overlay_service import load_history_detection_overlay
 
 from pages.special_inspection_model_preview import SpecialInspectionModelPreviewPanel
+from pages.output_special_strategy.inspection_tool import parse_sacinp
+from pages.special_strategy_rule_dialogs import (
+    RULE_MODE_JOINT_CLASSIFICATION,
+    RULE_MODE_JOINT_EXCLUSION,
+    RULE_MODE_MEMBER_CLASSIFICATION,
+    RULE_MODE_MEMBER_EXCLUSION,
+    SpecialStrategyRuleDialog,
+    normalize_rule_overrides,
+)
 
 
 class _SystemFilePickerDialog(QDialog):
@@ -342,29 +354,55 @@ class _NoWheelFileTable(QTableWidget):
 
 
 class _SpecialStrategyCalculationWorker(QObject):
-    finished = pyqtSignal(dict)
+    finished = pyqtSignal(object)
     failed = pyqtSignal(str)
 
     def __init__(
+<<<<<<< HEAD
             self,
             facility_code: str,
             *,
             param_overrides: dict[str, Any] | None = None,
             input_overrides: dict[str, Any] | None = None,
+=======
+        self,
+        facility_code: str,
+        *,
+        stage: str = "run",
+        param_overrides: dict[str, Any] | None = None,
+        input_overrides: dict[str, Any] | None = None,
+        prepared_calculation: dict[str, Any] | None = None,
+>>>>>>> 17efb79 (更新特检策略相关代码)
     ):
         super().__init__()
         self._facility_code = facility_code
+        self._stage = stage
         self._param_overrides = dict(param_overrides or {})
         self._input_overrides = dict(input_overrides or {})
+        self._prepared_calculation = prepared_calculation
 
     def run(self) -> None:
         try:
-            result = run_special_strategy_calculation(
-                self._facility_code,
-                param_overrides=self._param_overrides,
-                input_overrides=self._input_overrides,
-            )
-            self.finished.emit(result)
+            if self._stage == "prepare":
+                result = prepare_special_strategy_calculation(
+                    self._facility_code,
+                    param_overrides=self._param_overrides,
+                    input_overrides=self._input_overrides,
+                )
+            elif self._stage == "finalize":
+                if self._prepared_calculation is None:
+                    raise ValueError("missing prepared calculation for finalize stage")
+                result = finalize_special_strategy_calculation(
+                    self._prepared_calculation,
+                    rule_overrides=self._param_overrides.get("rule_overrides"),
+                )
+            else:
+                result = run_special_strategy_calculation(
+                    self._facility_code,
+                    param_overrides=self._param_overrides,
+                    input_overrides=self._input_overrides,
+                )
+            self.finished.emit({"stage": self._stage, "payload": result})
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -381,6 +419,23 @@ class NewSpecialInspectionPage(BasePage):
     CATEGORY_COLLAPSE = "collapse"
     CATEGORY_FATIGUE = "fatigue"
     FILE_TABLE_HEADERS = ["序号", "文件类别", "工况", "文件名", "文件格式", "修改时间", "备注"]
+    RISK_LEVEL_OPTIONS = {
+        "life_safety_level": {
+            "S-1": "有人不撤离——有人员居住的平台，且在设计时未考虑在极端情况下人员的撤离，如风暴、地震等，或实际无法实施撤离的情况。",
+            "S-2": "有人可撤离——有人员居住的平台，在极端情况下人员可以实施撤离的情况。",
+            "S-3": "无人——无人员居住的平台。",
+        },
+        "failure_consequence_level": {
+            "C-1": "高后果——发生失效时有可能发生油气泄露的平台。此外，它还包括失效时不具备关停油气生产的平台，以及具有储油/气功能或连接主要输油管道的平台。以及水深>=120米的平台（投资较大）。中心平台一般归入此类。",
+            "C-2": "中后果——包含功能齐全的地下安全阀（SSSV），可在故障时关停油气生产的平台，以及作为中转和缓冲仅临时储油/气存储的平台。井口平台一般归入此类。",
+            "C-3": "低后果——所有井口包含功能齐全的SSSV，在平台失效时，生产系统可以自行运转而不受影响。这些平台可以支持不依托平台的生产，平台仅包含低输量的内部管道，仅含有工艺库存。",
+        },
+        "global_level_tag": {
+            "L-1": "",
+            "L-2": "",
+            "L-3": "",
+        },
+    }
     strategy_calculated = pyqtSignal(str, object)
 
     def __init__(self, facility_code: str, parent=None):
@@ -390,6 +445,7 @@ class NewSpecialInspectionPage(BasePage):
         self.upload_root = external_path("upload", "model_files")
         self.packaged_upload_root = first_existing_path("upload", "model_files")
         self._default_params = self._load_default_params()
+        self._rule_overrides = normalize_rule_overrides((self._default_params or {}).get("rule_overrides"))
 
         # 页面仅展示"系统文件库"记录（当前用 upload/model_files 代替数据库）
         self.model_files: List[str] = []
@@ -405,6 +461,8 @@ class NewSpecialInspectionPage(BasePage):
         self._risk_progress_tick = 0
         self._risk_thread: QThread | None = None
         self._risk_worker: _SpecialStrategyCalculationWorker | None = None
+        self._active_worker_stage = ""
+        self._pending_prepared_calculation: dict[str, Any] | None = None
 
         super().__init__("", parent)
         self._risk_progress_timer = QTimer(self)
@@ -506,8 +564,6 @@ class NewSpecialInspectionPage(BasePage):
         points = list(self._default_params.get("work_points") or [])
         if not points:
             points = self._fallback_work_point_pairs(leg_count)
-        elif len(points) < leg_count:
-            points.extend([("", "")] * (leg_count - len(points)))
         rows: list[tuple[int, str, str]] = []
         for idx, pair in enumerate(points, start=1):
             x, y = pair if isinstance(pair, (list, tuple)) and len(pair) >= 2 else ("", "")
@@ -521,7 +577,7 @@ class NewSpecialInspectionPage(BasePage):
                 "label": "生命安全等级",
                 "key": "life_safety_level",
                 "value": self._fmt_default_value(raw.get("life_safety_level", "S-2")),
-                "description": "有人可撤离。有人居住的平台，在极端情况下人员可以实施撤离的情况。",
+                "description": "",
                 "numeric": False,
                 "integer": False,
                 "editable": True,
@@ -530,7 +586,7 @@ class NewSpecialInspectionPage(BasePage):
                 "label": "失效后果等级",
                 "key": "failure_consequence_level",
                 "value": self._fmt_default_value(raw.get("failure_consequence_level", "C-1")),
-                "description": "高后果。发生失效时有可能发生油气泄露的平台；包括失效时不具备关停油气生产、储油或切断主要输油管道能力的平台，以及水深>=120米的平台。",
+                "description": "",
                 "numeric": False,
                 "integer": False,
                 "editable": True,
@@ -590,6 +646,34 @@ class NewSpecialInspectionPage(BasePage):
                 "editable": True,
             },
         ]
+
+    @classmethod
+    def _risk_level_description(cls, key: str, value: str) -> str:
+        return str(cls.RISK_LEVEL_OPTIONS.get(key, {}).get(value, ""))
+
+    def _create_risk_level_combo(self, row: int, key: str, value: str) -> QComboBox:
+        options = self.RISK_LEVEL_OPTIONS[key]
+        combo = QComboBox(self.risk_param_table)
+        combo.setObjectName("RiskLevelAlertCombo" if key == "global_level_tag" else "RiskLevelCombo")
+        combo.addItems(list(options.keys()))
+        current = value if value in options else next(iter(options))
+        combo.setCurrentText(current)
+        combo.currentTextChanged.connect(
+            lambda text, row_idx=row, spec_key=key: self._on_risk_level_changed(row_idx, spec_key, text)
+        )
+        return combo
+
+    def _on_risk_level_changed(self, row: int, key: str, value: str) -> None:
+        description = self._risk_level_description(key, value)
+        if 0 <= row < len(getattr(self, "_risk_param_specs", [])):
+            self._risk_param_specs[row]["value"] = value
+            self._risk_param_specs[row]["description"] = description
+        item = self.risk_param_table.item(row, 2)
+        if item is not None:
+            item.setText(description)
+            self.risk_param_table.resizeRowToContents(row)
+            self.risk_param_table.setRowHeight(row, max(self.risk_param_table.rowHeight(row), 42 if row < 2 else 34))
+            self._fit_table_height(self.risk_param_table)
 
     def _build_ui(self):
         # 整页浅蓝灰背景
@@ -654,6 +738,47 @@ class NewSpecialInspectionPage(BasePage):
                 border: 1px solid #c7d2e3;
                 padding: 4px 6px;
                 font-size: 12pt;
+            }
+            QLabel#ModelInfoSubTitle {
+                color: #1f3b57;
+                font-size: 12pt;
+                font-weight: bold;
+            }
+            QLabel#ModelInfoHint {
+                color: #5b6775;
+                font-size: 11pt;
+            }
+            QPushButton#ModelInfoMiniBtn {
+                background: #ffffff;
+                color: #1b2a3a;
+                border: 1px solid #b9c6d6;
+                border-radius: 4px;
+                min-height: 30px;
+                padding: 0 12px;
+                font-size: 12pt;
+            }
+            QPushButton#ModelInfoMiniBtn:hover {
+                background: #d9e6f5;
+            }
+            QComboBox#RiskLevelCombo,
+            QComboBox#RiskLevelAlertCombo {
+                border: 0px;
+                padding: 2px 8px;
+                min-height: 28px;
+                font-size: 12pt;
+            }
+            QComboBox#RiskLevelCombo {
+                background: #ffffff;
+                color: #000000;
+            }
+            QComboBox#RiskLevelAlertCombo {
+                background: #ff0000;
+                color: #ffffff;
+            }
+            QComboBox#RiskLevelCombo::drop-down,
+            QComboBox#RiskLevelAlertCombo::drop-down {
+                width: 22px;
+                border: 0px;
             }
         """)
 
@@ -724,11 +849,15 @@ class NewSpecialInspectionPage(BasePage):
         block.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         block_lay = QVBoxLayout(block)
         block_lay.setContentsMargins(0, 0, 0, 0)
-        block_lay.setSpacing(6)
+        block_lay.setSpacing(8)
 
         title = QLabel("结构模型信息")
         title.setObjectName("SectionTitle")
         block_lay.addWidget(title)
+
+        param_title = QLabel("模型参数")
+        param_title.setObjectName("ModelInfoSubTitle")
+        block_lay.addWidget(param_title)
 
         # 参数表（两列：项目/值，默认从平台参数读取，值列可编辑）
         params = self._default_model_param_rows()
@@ -744,7 +873,6 @@ class NewSpecialInspectionPage(BasePage):
             item_k.setTextAlignment(Qt.AlignCenter)
             item_v.setTextAlignment(Qt.AlignCenter)
             item_k.setFlags(item_k.flags() & ~Qt.ItemIsEditable)
-            item_v.setBackground(Qt.yellow)
             param_table.setItem(r, 0, item_k)
             param_table.setItem(r, 1, item_v)
 
@@ -758,11 +886,35 @@ class NewSpecialInspectionPage(BasePage):
 
         block_lay.addWidget(param_table)
 
+        coord_head = QHBoxLayout()
+        coord_head.setContentsMargins(0, 2, 0, 0)
+        coord_head.setSpacing(8)
+
+        coord_title = QLabel("腿柱工作点坐标")
+        coord_title.setObjectName("ModelInfoSubTitle")
+        coord_head.addWidget(coord_title)
+        coord_head.addStretch(1)
+
+        btn_add_coord = QPushButton("新增一行")
+        btn_add_coord.setObjectName("ModelInfoMiniBtn")
+        btn_add_coord.clicked.connect(self._append_coord_row)
+        coord_head.addWidget(btn_add_coord)
+
+        btn_del_coord = QPushButton("删除选中行")
+        btn_del_coord.setObjectName("ModelInfoMiniBtn")
+        btn_del_coord.clicked.connect(self._remove_selected_coord_rows)
+        coord_head.addWidget(btn_del_coord)
+        block_lay.addLayout(coord_head)
+
+        coord_hint = QLabel("按实际腿柱数量维护坐标行，X/Y 坐标需成对填写。")
+        coord_hint.setObjectName("ModelInfoHint")
+        block_lay.addWidget(coord_hint)
+
         # 坐标表（默认从平台参数读取，X/Y 可编辑）
         coords = self._default_work_points()
         self.coord_table = QTableWidget(max(len(coords), 1), 3)
         coord_table = self.coord_table
-        coord_table.setHorizontalHeaderLabels(["柱腿工作点坐标", "X坐标（m）", "Y坐标（m）"])
+        coord_table.setHorizontalHeaderLabels(["序号", "X坐标（m）", "Y坐标（m）"])
         coord_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         coord_table.verticalHeader().setVisible(False)
 
@@ -772,8 +924,6 @@ class NewSpecialInspectionPage(BasePage):
                 it.setTextAlignment(Qt.AlignCenter)
                 if c == 0:
                     it.setFlags(it.flags() & ~Qt.ItemIsEditable)
-                else:
-                    it.setBackground(Qt.yellow)
                 coord_table.setItem(r, c, it)
 
         self._lock_table_with_scroll(coord_table, row_height=34, visible_rows=min(max(len(coords), 4), 8))
@@ -783,10 +933,70 @@ class NewSpecialInspectionPage(BasePage):
             | QAbstractItemView.EditKeyPressed
         )
         coord_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        coord_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._sync_leg_count_from_coord_rows()
 
         block_lay.addWidget(coord_table)
         block.setMinimumHeight(block.sizeHint().height())
         return block
+
+    def _coord_visible_rows(self) -> int:
+        return min(max(self.coord_table.rowCount(), 4), 8)
+
+    def _refresh_coord_table_layout(self) -> None:
+        self._lock_table_with_scroll(
+            self.coord_table,
+            row_height=34,
+            visible_rows=self._coord_visible_rows(),
+        )
+
+    def _renumber_coord_rows(self) -> None:
+        for row in range(self.coord_table.rowCount()):
+            item = self.coord_table.item(row, 0)
+            if item is None:
+                item = QTableWidgetItem()
+                self.coord_table.setItem(row, 0, item)
+            item.setText(str(row + 1))
+            item.setTextAlignment(Qt.AlignCenter)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+
+    def _sync_leg_count_from_coord_rows(self) -> None:
+        if not hasattr(self, "model_param_table") or self.model_param_table.rowCount() < 4:
+            return
+        item = self.model_param_table.item(3, 1)
+        if item is not None:
+            item.setText(str(self.coord_table.rowCount()))
+
+    def _append_coord_row(self) -> None:
+        row = self.coord_table.rowCount()
+        self.coord_table.insertRow(row)
+        for col in range(3):
+            item = QTableWidgetItem("" if col else str(row + 1))
+            item.setTextAlignment(Qt.AlignCenter)
+            if col == 0:
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self.coord_table.setItem(row, col, item)
+        self.coord_table.selectRow(row)
+        self._renumber_coord_rows()
+        self._sync_leg_count_from_coord_rows()
+        self._refresh_coord_table_layout()
+
+    def _remove_selected_coord_rows(self) -> None:
+        selected_rows = sorted(
+            {index.row() for index in self.coord_table.selectionModel().selectedRows()},
+            reverse=True,
+        )
+        if not selected_rows:
+            QMessageBox.information(self, "提示", "请先选中要删除的坐标行。")
+            return
+        if self.coord_table.rowCount() - len(selected_rows) < 1:
+            QMessageBox.information(self, "提示", "工作点坐标表至少保留一行。")
+            return
+        for row in selected_rows:
+            self.coord_table.removeRow(row)
+        self._renumber_coord_rows()
+        self._sync_leg_count_from_coord_rows()
+        self._refresh_coord_table_layout()
 
     # # ---------------- 上半：模型文件（新增） ----------------
     def _build_model_files_block(self) -> QFrame:
@@ -895,6 +1105,13 @@ class NewSpecialInspectionPage(BasePage):
         table.setWordWrap(True)
 
         for r, spec in enumerate(rows):
+            key = str(spec.get("key", "")).strip()
+            if key in self.RISK_LEVEL_OPTIONS:
+                spec["value"] = str(spec.get("value") or "")
+                if spec["value"] not in self.RISK_LEVEL_OPTIONS[key]:
+                    spec["value"] = next(iter(self.RISK_LEVEL_OPTIONS[key]))
+                spec["description"] = self._risk_level_description(key, spec["value"])
+
             it0 = QTableWidgetItem(str(spec["label"]))
             it1 = QTableWidgetItem(str(spec["value"]))
             it2 = QTableWidgetItem(str(spec["description"]))
@@ -904,21 +1121,18 @@ class NewSpecialInspectionPage(BasePage):
             it2.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
             it0.setFlags(it0.flags() & ~Qt.ItemIsEditable)
+            it2.setFlags(it2.flags() & ~Qt.ItemIsEditable)
             if spec.get("editable", False):
                 it1.setBackground(Qt.white)
                 it2.setBackground(Qt.white)
             else:
                 it1.setFlags(it1.flags() & ~Qt.ItemIsEditable)
-                it2.setFlags(it2.flags() & ~Qt.ItemIsEditable)
             table.setItem(r, 0, it0)
             table.setItem(r, 1, it1)
             table.setItem(r, 2, it2)
 
-        highlight = table.item(2, 1)
-        if highlight:
-            highlight.setBackground(Qt.red)
-            highlight.setForeground(Qt.white)
-            highlight.setTextAlignment(Qt.AlignCenter)
+            if key in self.RISK_LEVEL_OPTIONS:
+                table.setCellWidget(r, 1, self._create_risk_level_combo(r, key, spec["value"]))
 
         table.setEditTriggers(
             QAbstractItemView.DoubleClicked
@@ -926,11 +1140,14 @@ class NewSpecialInspectionPage(BasePage):
             | QAbstractItemView.EditKeyPressed
         )
         table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.resizeRowsToContents()
         for r in range(table.rowCount()):
-            table.setRowHeight(r, 42 if r < 2 else 34)
+            min_height = 42 if r < 2 else 34
+            table.setRowHeight(r, max(table.rowHeight(r), min_height))
         self._fit_table_height(table)
         table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         v.addWidget(table, 1)
+
         # 两个大按钮（对应截图：更新风险等级 / 查看结果）
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
@@ -1045,22 +1262,37 @@ class NewSpecialInspectionPage(BasePage):
             self._close_risk_progress()
 
     def _on_risk_thread_finished(self) -> None:
+        finished_stage = self._active_worker_stage
         self._risk_thread = None
         self._risk_worker = None
+        self._active_worker_stage = ""
+        if finished_stage == "prepare" and self._pending_prepared_calculation is not None:
+            QTimer.singleShot(0, self._begin_post_risk_rule_stage)
 
     def _start_risk_calculation_worker(
+<<<<<<< HEAD
             self,
             *,
             param_overrides: dict[str, Any] | None = None,
             input_overrides: dict[str, Any] | None = None,
+=======
+        self,
+        *,
+        stage: str = "run",
+        param_overrides: dict[str, Any] | None = None,
+        input_overrides: dict[str, Any] | None = None,
+        prepared_calculation: dict[str, Any] | None = None,
+>>>>>>> 17efb79 (更新特检策略相关代码)
     ) -> None:
         self._set_risk_running(True)
 
         thread = QThread(self)
         worker = _SpecialStrategyCalculationWorker(
             self.facility_code,
+            stage=stage,
             param_overrides=param_overrides,
             input_overrides=input_overrides,
+            prepared_calculation=prepared_calculation,
         )
         worker.moveToThread(thread)
 
@@ -1076,12 +1308,19 @@ class NewSpecialInspectionPage(BasePage):
 
         self._risk_thread = thread
         self._risk_worker = worker
+        self._active_worker_stage = stage
         thread.start()
 
     def _on_risk_calculation_finished(self, result_bundle: dict[str, Any]) -> None:
         self._set_risk_running(False)
+        stage = str(result_bundle.get("stage") or "") if isinstance(result_bundle, dict) else ""
+        payload = result_bundle.get("payload") if isinstance(result_bundle, dict) else result_bundle
+        if stage == "prepare":
+            self._pending_prepared_calculation = payload if isinstance(payload, dict) else None
+            return
+
         self._risk_updated = True
-        state = result_bundle.get("state") if isinstance(result_bundle, dict) else {}
+        state = payload.get("state") if isinstance(payload, dict) else {}
         run_id = state.get("db_run_id") if isinstance(state, dict) else None
         self._latest_run_id = int(run_id) if isinstance(run_id, int) else run_id
         self.strategy_calculated.emit(self.facility_code, self._latest_run_id)
@@ -1097,7 +1336,10 @@ class NewSpecialInspectionPage(BasePage):
         if self._risk_thread is not None and self._risk_thread.isRunning():
             QMessageBox.information(self, "提示", "风险结果正在计算，请稍候。")
             return
+        if not self._run_pre_risk_rule_dialog_sequence():
+            return
         self._start_risk_calculation_worker(
+            stage="prepare",
             param_overrides=self._collect_runtime_overrides(),
             input_overrides=self._collect_runtime_input_overrides(),
         )
@@ -1173,6 +1415,138 @@ class NewSpecialInspectionPage(BasePage):
         QMessageBox.warning(self, "错误", "未找到 MainWindow/tab_widget，无法打开结果页。")
 
     # ---------------- 文件来源：后续数据库接入接口（先走 upload/model_files） ----------------
+    def _current_model_path_for_rule_preview(self) -> str:
+        input_overrides = self._collect_runtime_input_overrides()
+        override_model = str(input_overrides.get("model") or "").strip()
+        if override_model:
+            return override_model
+        try:
+            cfg = load_base_config(self.facility_code)
+            current_inputs = resolve_current_model_inputs(self.facility_code, cfg)
+        except Exception:
+            return ""
+        return str(current_inputs.get("model") or "").strip()
+
+    def _load_rule_preview_inputs(self) -> tuple[list[str], list[tuple[str, str]], bool]:
+        model_path = self._current_model_path_for_rule_preview()
+        if not model_path or not Path(model_path).exists():
+            return [], [], False
+        try:
+            joints_df, _, members_df, _ = parse_sacinp(model_path)
+        except Exception:
+            return [], [], False
+        joint_ids = [
+            str(value or "").strip()
+            for value in joints_df.get("Joint", []).tolist()
+            if str(value or "").strip()
+        ]
+        member_pairs = [
+            (str(row.get("A") or "").strip(), str(row.get("B") or "").strip())
+            for _, row in members_df.iterrows()
+            if str(row.get("A") or "").strip() and str(row.get("B") or "").strip()
+        ]
+        return joint_ids, member_pairs, True
+
+    def _open_rule_dialog(
+        self,
+        mode: str,
+        *,
+        joint_ids: list[str],
+        member_pairs: list[tuple[str, str]],
+        preview_available: bool,
+        current_rules: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        dialog = SpecialStrategyRuleDialog(
+            mode,
+            current_rules,
+            joint_ids=joint_ids,
+            member_pairs=member_pairs,
+            preview_available=preview_available,
+            parent=self,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return None
+        return normalize_rule_overrides(dialog.result_rules)
+
+    def _run_pre_risk_rule_dialog_sequence(self) -> bool:
+        joint_ids, member_pairs, preview_available = self._load_rule_preview_inputs()
+        current_rules = normalize_rule_overrides(self._rule_overrides)
+        for mode in (
+            RULE_MODE_MEMBER_CLASSIFICATION,
+            RULE_MODE_JOINT_CLASSIFICATION,
+        ):
+            next_rules = self._open_rule_dialog(
+                mode,
+                joint_ids=joint_ids,
+                member_pairs=member_pairs,
+                preview_available=preview_available,
+                current_rules=current_rules,
+            )
+            if next_rules is None:
+                return False
+            current_rules = next_rules
+        self._rule_overrides = current_rules
+        return True
+
+    def _load_post_risk_rule_preview_inputs(
+        self,
+        prepared_calculation: dict[str, Any],
+    ) -> tuple[list[str], list[tuple[str, str]], bool]:
+        prepared_pipeline = prepared_calculation.get("prepared_pipeline")
+        if not isinstance(prepared_pipeline, dict):
+            return [], [], False
+
+        member_risk_df = prepared_pipeline.get("member_risk_df")
+        forecast_df = prepared_pipeline.get("forecast_df")
+        try:
+            member_pairs = [
+                (str(row.get("JointA") or "").strip(), str(row.get("JointB") or "").strip())
+                for _, row in member_risk_df.iterrows()
+                if str(row.get("JointA") or "").strip() and str(row.get("JointB") or "").strip()
+            ]
+            joint_ids = [
+                str(value or "").strip()
+                for value in forecast_df.get("JoitID", []).tolist()
+                if str(value or "").strip()
+            ]
+        except Exception:
+            return [], [], False
+        return joint_ids, member_pairs, True
+
+    def _run_post_risk_rule_dialog_sequence(self, prepared_calculation: dict[str, Any]) -> bool:
+        joint_ids, member_pairs, preview_available = self._load_post_risk_rule_preview_inputs(prepared_calculation)
+        current_rules = normalize_rule_overrides(self._rule_overrides)
+        for mode in (
+            RULE_MODE_MEMBER_EXCLUSION,
+            RULE_MODE_JOINT_EXCLUSION,
+        ):
+            next_rules = self._open_rule_dialog(
+                mode,
+                joint_ids=joint_ids,
+                member_pairs=member_pairs,
+                preview_available=preview_available,
+                current_rules=current_rules,
+            )
+            if next_rules is None:
+                return False
+            current_rules = next_rules
+        self._rule_overrides = current_rules
+        return True
+
+    def _begin_post_risk_rule_stage(self) -> None:
+        prepared_calculation = self._pending_prepared_calculation
+        self._pending_prepared_calculation = None
+        if not isinstance(prepared_calculation, dict):
+            QMessageBox.warning(self, "更新风险等级失败", "未能取得第 8 步后的中间结果，无法继续后置过滤。")
+            return
+        if not self._run_post_risk_rule_dialog_sequence(prepared_calculation):
+            return
+        self._start_risk_calculation_worker(
+            stage="finalize",
+            param_overrides=self._collect_runtime_overrides(),
+            prepared_calculation=prepared_calculation,
+        )
+
     def _wrap_storage_paths_as_rows(self, records: List[str]) -> List[dict[str, Any]]:
         rows: List[dict[str, Any]] = []
         for raw_path in records:
@@ -1334,6 +1708,9 @@ class NewSpecialInspectionPage(BasePage):
 
     def _collect_runtime_overrides(self) -> dict:
         def get_text(table: QTableWidget, row: int, col: int) -> str:
+            widget = table.cellWidget(row, col)
+            if isinstance(widget, QComboBox):
+                return widget.currentText().strip()
             item = table.item(row, col)
             return item.text().strip() if item is not None else ""
 
@@ -1379,6 +1756,9 @@ class NewSpecialInspectionPage(BasePage):
             work_points.append([x_val, y_val])
         if work_points:
             overrides["work_points"] = work_points
+            overrides["no_legs"] = len(work_points)
+
+        overrides["rule_overrides"] = normalize_rule_overrides(self._rule_overrides)
 
         return overrides
 

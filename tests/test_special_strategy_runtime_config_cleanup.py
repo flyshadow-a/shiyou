@@ -14,11 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 class SpecialStrategyRuntimeConfigCleanupTests(unittest.TestCase):
     def test_run_configs_do_not_embed_local_output_special_strategy_paths(self) -> None:
         targets = [
-            REPO_ROOT / "pages" / "output_special_strategy" / "wc19_1d_run_config.json",
-            REPO_ROOT / "pages" / "output_special_strategy" / "wc19_1d_run_config.preview.json",
-            REPO_ROOT / "pages" / "output_special_strategy" / "wc19_1d_run_config.example.json",
-            REPO_ROOT / "pages" / "output_special_strategy" / "wc9_7_run_config.json",
-            REPO_ROOT / "pages" / "output_special_strategy" / "wc9_7_run_config.example.json",
+            REPO_ROOT / "pages" / "output_special_strategy" / "special_strategy_run_config.json",
+            REPO_ROOT / "pages" / "output_special_strategy" / "special_strategy_run_config.example.json",
         ]
         bad_snippets = (
             "pages/output_special_strategy/",
@@ -32,15 +29,19 @@ class SpecialStrategyRuntimeConfigCleanupTests(unittest.TestCase):
                 with self.subTest(path=path.name, snippet=snippet):
                     self.assertNotIn(snippet, text)
 
-    def test_load_base_config_routes_output_artifacts_to_runtime_dir(self) -> None:
+    def test_load_base_config_routes_artifacts_to_expected_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("services.special_strategy_runtime.shared_storage_dir", return_value=tmp):
+            report_root = Path(tmp) / "reports"
+            with (
+                patch("services.special_strategy_runtime.shared_storage_dir", return_value=tmp),
+                patch("services.special_strategy_runtime.local_report_output_dir", return_value=report_root),
+            ):
                 cfg = load_base_config("WC19-1D")
 
             runtime_root = (Path(tmp) / "WC19-1D").resolve()
             self.assertEqual(
                 cfg["output_report"],
-                str((runtime_root / "special_strategy.docx").resolve()),
+                str((report_root / "special_strategy.docx").resolve()),
             )
             self.assertEqual(
                 cfg["intermediate_workbook"],
@@ -91,14 +92,18 @@ class SpecialStrategyRuntimeConfigCleanupTests(unittest.TestCase):
 
     def test_run_artifact_paths_groups_each_run_into_its_own_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("services.special_strategy_runtime.shared_storage_dir", return_value=tmp):
+            report_root = Path(tmp) / "reports"
+            with (
+                patch("services.special_strategy_runtime.shared_storage_dir", return_value=tmp),
+                patch("services.special_strategy_runtime.local_report_output_dir", return_value=report_root),
+            ):
                 paths = run_artifact_paths("WC19-1D", "20260421_090000_000001")
 
         run_root = (Path(tmp) / "WC19-1D" / "special_strategy_run_20260421_090000_000001").resolve()
         self.assertEqual(paths["root"], run_root)
         self.assertEqual(paths["params_json"], run_root / "runtime_params.json")
         self.assertEqual(paths["intermediate_workbook"], run_root / "special_strategy.pipeline.xlsx")
-        self.assertEqual(paths["output_report"], run_root / "special_strategy.docx")
+        self.assertEqual(paths["output_report"], report_root / "special_strategy.docx")
         self.assertEqual(paths["report_metadata_json"], run_root / "report_metadata.json")
         self.assertEqual(paths["state_json"], run_root / "runtime_state.json")
 

@@ -57,6 +57,18 @@ FATIGUE_AUDIT_COLUMNS = [
     "ManualBrace",
     "Applied",
 ]
+RULE_OVERRIDE_AUDIT_COLUMNS = [
+    "Stage",
+    "RuleGroup",
+    "Target",
+    "Entity",
+    "KeyA",
+    "KeyB",
+    "BeforeValue",
+    "AfterValue",
+    "Changed",
+    "Remark",
+]
 
 # One-file module map used to keep the converted workflow manageable.
 # Each item points to the primary function(s) that implement the corresponding
@@ -1769,6 +1781,7 @@ def _cfg_to_jsonable(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "policy_loose": _policy_to_plain(cfg.get("policy_loose", {})),
         "design_life": float(cfg.get("design_life", 26.0)),
         "served_years": float(cfg.get("served_years", 1.0)),
+        "rule_overrides": _normalize_rule_overrides(cfg.get("rule_overrides")),
     }
 
 
@@ -1806,6 +1819,7 @@ def load_from_params_json(params_json: str | Path) -> Dict[str, Any]:
         "policy_loose": _policy_from_plain(raw.get("policy_loose", {})),
         "design_life": float(raw.get("design_life", 26.0)),
         "served_years": float(raw.get("served_years", 1.0)),
+        "rule_overrides": _normalize_rule_overrides(raw.get("rule_overrides")),
     }
 
 
@@ -1969,6 +1983,7 @@ def load_from_template(template_xlsm: str | Path) -> Dict[str, Any]:
         "policy_loose": parse_policy(loose),
         "design_life": float(design_life) if design_life is not None else 26.0,
         "served_years": float(served_years) if served_years is not None else 1.0,
+        "rule_overrides": _normalize_rule_overrides({}),
     }
 
 
@@ -2508,6 +2523,327 @@ def build_joint_forecast_vba_wide(
     return pd.DataFrame(rows, columns=out_cols)
 
 
+def _normalize_rule_pattern(value: Any) -> str:
+    text = _safe_str(value).upper()
+    chars = [ch for ch in text if ch == "*" or ch.isdigit() or ("A" <= ch <= "Z")]
+    chars = chars[:4]
+    while len(chars) < 4:
+        chars.append("*")
+    return "".join(chars)
+
+
+def _is_active_rule_pattern(value: Any) -> bool:
+    return _normalize_rule_pattern(value) != "****"
+
+
+def _normalize_member_rule_rows(rows: Any) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    seen: Set[Tuple[str, str]] = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        a = _normalize_rule_pattern(row.get("a"))
+        b = _normalize_rule_pattern(row.get("b"))
+        if not (_is_active_rule_pattern(a) or _is_active_rule_pattern(b)):
+            continue
+        key = tuple(sorted((a, b)))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"a": a, "b": b})
+    return out
+
+
+def _normalize_node_rule_rows(rows: Any) -> List[str]:
+    out: List[str] = []
+    for row in rows or []:
+        pattern = _normalize_rule_pattern(row)
+        if _is_active_rule_pattern(pattern) and pattern not in out:
+            out.append(pattern)
+    return out
+
+
+def _normalize_rule_overrides(raw: Any) -> Dict[str, Any]:
+    payload = raw if isinstance(raw, dict) else {}
+    joint_cls = payload.get("joint_classification") or {}
+    member_cls = payload.get("member_classification") or {}
+    return {
+        "joint_classification": {
+            "leg_joint": _normalize_node_rule_rows(joint_cls.get("leg_joint")),
+            "x_joint": _normalize_node_rule_rows(joint_cls.get("x_joint")),
+        },
+        "member_classification": {
+            "leg": _normalize_member_rule_rows(member_cls.get("leg")),
+            "x_brace": _normalize_member_rule_rows(member_cls.get("x_brace")),
+        },
+        "member_exclusions": _normalize_member_rule_rows(payload.get("member_exclusions")),
+        "joint_exclusions": _normalize_node_rule_rows(payload.get("joint_exclusions")),
+    }
+
+
+def _matches_rule_pattern(value: Any, pattern: Any) -> bool:
+    text = _safe_str(value).upper()
+    pat = _normalize_rule_pattern(pattern)
+    if len(text) != 4 or not _is_active_rule_pattern(pat):
+        return False
+    return all(p == "*" or p == c for c, p in zip(text, pat))
+
+
+def _matches_member_rule(a: Any, b: Any, rule: Dict[str, Any]) -> bool:
+    pa = _normalize_rule_pattern(rule.get("a"))
+    pb = _normalize_rule_pattern(rule.get("b"))
+    if not (_is_active_rule_pattern(pa) or _is_active_rule_pattern(pb)):
+        return False
+    forward = _matches_rule_pattern(a, pa) and _matches_rule_pattern(b, pb)
+    reverse = _matches_rule_pattern(a, pb) and _matches_rule_pattern(b, pa)
+    return forward or reverse
+
+
+def _apply_manual_classification_rules(
+    joints_df: pd.DataFrame,
+    members_df: pd.DataFrame,
+    rule_overrides: Any,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    rules = _normalize_rule_overrides(rule_overrides)
+    joints = joints_df.copy()
+    members = members_df.copy()
+
+    leg_joint_rules = rules["joint_classification"]["leg_joint"]
+    x_joint_rules = rules["joint_classification"]["x_joint"]
+    if not joints.empty and "Joint" in joints.columns:
+        joint_key = joints["Joint"].astype(str).str.strip()
+        for idx, joint in joint_key.items():
+            if any(_matches_rule_pattern(joint, pattern) for pattern in leg_joint_rules):
+                joints.at[idx, "JointType"] = "LegJoint"
+            elif any(_matches_rule_pattern(joint, pattern) for pattern in x_joint_rules):
+                joints.at[idx, "JointType"] = "X Joint"
+
+    leg_member_rules = rules["member_classification"]["leg"]
+    x_member_rules = rules["member_classification"]["x_brace"]
+    if not members.empty and "A" in members.columns and "B" in members.columns:
+        for idx, row in members.iterrows():
+            a = row.get("A")
+            b = row.get("B")
+            if any(_matches_member_rule(a, b, rule) for rule in leg_member_rules):
+                members.at[idx, "MemberType"] = "LEG"
+            elif any(_matches_member_rule(a, b, rule) for rule in x_member_rules):
+                members.at[idx, "MemberType"] = "X-Brace"
+
+    return joints, members
+
+
+def _build_manual_classification_audit(
+    before_joints_df: pd.DataFrame,
+    before_members_df: pd.DataFrame,
+    after_joints_df: pd.DataFrame,
+    after_members_df: pd.DataFrame,
+    rule_overrides: Any,
+) -> pd.DataFrame:
+    rules = _normalize_rule_overrides(rule_overrides)
+    rows: List[Dict[str, Any]] = []
+
+    if not before_joints_df.empty and "Joint" in before_joints_df.columns:
+        after_joint_type = (
+            after_joints_df.set_index(after_joints_df["Joint"].astype(str).str.strip())["JointType"].to_dict()
+            if not after_joints_df.empty and "Joint" in after_joints_df.columns
+            else {}
+        )
+        for _, row in before_joints_df.iterrows():
+            joint = _safe_str(row.get("Joint"))
+            if joint == "":
+                continue
+            rule_group = ""
+            target_type = ""
+            if any(_matches_rule_pattern(joint, pattern) for pattern in rules["joint_classification"]["leg_joint"]):
+                rule_group = "joint_classification.leg_joint"
+                target_type = "LegJoint"
+            elif any(_matches_rule_pattern(joint, pattern) for pattern in rules["joint_classification"]["x_joint"]):
+                rule_group = "joint_classification.x_joint"
+                target_type = "X Joint"
+            if rule_group == "":
+                continue
+            before_type = _safe_str(row.get("JointType"))
+            after_type = _safe_str(after_joint_type.get(joint))
+            rows.append(
+                {
+                    "Stage": "pre_risk_classification",
+                    "RuleGroup": rule_group,
+                    "Target": "Joints",
+                    "Entity": "joint",
+                    "KeyA": joint,
+                    "KeyB": "",
+                    "BeforeValue": before_type,
+                    "AfterValue": after_type,
+                    "Changed": "Y" if before_type != after_type else "N",
+                    "Remark": f"target={target_type}",
+                }
+            )
+
+    if not before_members_df.empty and {"A", "B"}.issubset(before_members_df.columns):
+        after_member_type: Dict[Tuple[str, str], str] = {}
+        if not after_members_df.empty and {"A", "B"}.issubset(after_members_df.columns):
+            for _, row in after_members_df.iterrows():
+                a = _safe_str(row.get("A"))
+                b = _safe_str(row.get("B"))
+                if a and b:
+                    after_member_type[(a, b)] = _safe_str(row.get("MemberType"))
+        for _, row in before_members_df.iterrows():
+            a = _safe_str(row.get("A"))
+            b = _safe_str(row.get("B"))
+            if a == "" or b == "":
+                continue
+            rule_group = ""
+            target_type = ""
+            if any(_matches_member_rule(a, b, rule) for rule in rules["member_classification"]["leg"]):
+                rule_group = "member_classification.leg"
+                target_type = "LEG"
+            elif any(_matches_member_rule(a, b, rule) for rule in rules["member_classification"]["x_brace"]):
+                rule_group = "member_classification.x_brace"
+                target_type = "X-Brace"
+            if rule_group == "":
+                continue
+            before_type = _safe_str(row.get("MemberType"))
+            after_type = _safe_str(after_member_type.get((a, b)))
+            rows.append(
+                {
+                    "Stage": "pre_risk_classification",
+                    "RuleGroup": rule_group,
+                    "Target": "Members",
+                    "Entity": "member",
+                    "KeyA": a,
+                    "KeyB": b,
+                    "BeforeValue": before_type,
+                    "AfterValue": after_type,
+                    "Changed": "Y" if before_type != after_type else "N",
+                    "Remark": f"target={target_type}",
+                }
+            )
+
+    return pd.DataFrame(rows, columns=RULE_OVERRIDE_AUDIT_COLUMNS)
+
+
+def _build_user_exclusion_audit(
+    member_risk_df: pd.DataFrame,
+    forecast_df: pd.DataFrame,
+    rule_overrides: Any,
+) -> pd.DataFrame:
+    rules = _normalize_rule_overrides(rule_overrides)
+    rows: List[Dict[str, Any]] = []
+
+    if not member_risk_df.empty and {"JointA", "JointB"}.issubset(member_risk_df.columns):
+        for _, row in member_risk_df.iterrows():
+            joint_a = _safe_str(row.get("JointA"))
+            joint_b = _safe_str(row.get("JointB"))
+            if not any(_matches_member_rule(joint_a, joint_b, rule) for rule in rules["member_exclusions"]):
+                continue
+            rows.append(
+                {
+                    "Stage": "post_risk_filter",
+                    "RuleGroup": "member_exclusions",
+                    "Target": "MemberRisk",
+                    "Entity": "member",
+                    "KeyA": joint_a,
+                    "KeyB": joint_b,
+                    "BeforeValue": "included",
+                    "AfterValue": "excluded",
+                    "Changed": "Y",
+                    "Remark": "user_rule",
+                }
+            )
+
+    if not forecast_df.empty and "JoitID" in forecast_df.columns:
+        for _, row in forecast_df.iterrows():
+            joint = _safe_str(row.get("JoitID"))
+            if not any(_matches_rule_pattern(joint, rule) for rule in rules["joint_exclusions"]):
+                continue
+            rows.append(
+                {
+                    "Stage": "post_risk_filter",
+                    "RuleGroup": "joint_exclusions",
+                    "Target": "JointForecast",
+                    "Entity": "joint",
+                    "KeyA": joint,
+                    "KeyB": _safe_str(row.get("Brace")),
+                    "BeforeValue": "included",
+                    "AfterValue": "excluded",
+                    "Changed": "Y",
+                    "Remark": "user_rule",
+                }
+            )
+
+    return pd.DataFrame(rows, columns=RULE_OVERRIDE_AUDIT_COLUMNS)
+
+
+def _is_vba_k_three_digits(value: Any) -> bool:
+    return re.fullmatch(r"K\d{3}", _safe_str(value).upper()) is not None
+
+
+def _is_vba_zero_star_l(value: Any) -> bool:
+    text = _safe_str(value).upper()
+    return text.startswith("0") and text.endswith("L")
+
+
+def _should_delete_member_by_vba_rule(joint_a: Any, joint_b: Any) -> bool:
+    a = _safe_str(joint_a).upper()
+    b = _safe_str(joint_b).upper()
+    if a == "":
+        return False
+    if a.startswith("C") or b.startswith("C"):
+        return True
+    if a.startswith("B") and b.startswith("B"):
+        return True
+    if a.startswith("J") or b.startswith("J"):
+        return True
+    if a.startswith("O") or b.startswith("O"):
+        return True
+    if _is_vba_k_three_digits(a) and _is_vba_k_three_digits(b):
+        return True
+    if a.startswith("R") or b.startswith("R"):
+        return True
+    if _is_vba_zero_star_l(a) and _is_vba_zero_star_l(b):
+        return True
+    return False
+
+
+def _should_delete_joint_by_vba_rule(joint_id: Any) -> bool:
+    joint = _safe_str(joint_id).upper()
+    if joint == "":
+        return False
+    if joint.startswith(("C", "B", "J", "O", "R")):
+        return True
+    if _is_vba_k_three_digits(joint):
+        return True
+    return False
+
+
+def _apply_member_delete_rule(df: pd.DataFrame, user_rules: Any = None) -> pd.DataFrame:
+    if df.empty or "JointA" not in df.columns or "JointB" not in df.columns:
+        return df
+    rules = _normalize_rule_overrides(user_rules)["member_exclusions"]
+    keep_mask = [
+        not (
+            _should_delete_member_by_vba_rule(row.get("JointA"), row.get("JointB"))
+            or any(_matches_member_rule(row.get("JointA"), row.get("JointB"), rule) for rule in rules)
+        )
+        for _, row in df.iterrows()
+    ]
+    return df.loc[keep_mask].reset_index(drop=True)
+
+
+def _apply_joint_delete_rule(df: pd.DataFrame, joint_col: str = "JoitID", user_rules: Any = None) -> pd.DataFrame:
+    if df.empty or joint_col not in df.columns:
+        return df
+    rules = _normalize_rule_overrides(user_rules)["joint_exclusions"]
+    keep_mask = [
+        not (
+            _should_delete_joint_by_vba_rule(row.get(joint_col))
+            or any(_matches_rule_pattern(row.get(joint_col), rule) for rule in rules)
+        )
+        for _, row in df.iterrows()
+    ]
+    return df.loc[keep_mask].reset_index(drop=True)
+
+
 # =========================
 # Module 9: 检测策略形成
 # Sheet18 / Sheet19 equivalent outputs
@@ -2955,8 +3291,8 @@ def classify_structure(
     Module 1 continuation: emulate the full VBA structure classification chain.
     1) Sheet1.FindLegMember
     2) Sheet1.Find_X_Joint
-    3) Sheet2.JointTYPE
-    4) Sheet3.Member
+    3) Sheet3.Member
+    4) Sheet2.JointTYPE
 
     Notes:
     - Sheet2/Sheet3 clear-and-rewrite type columns (VBA behavior).
@@ -3217,16 +3553,6 @@ def classify_structure(
                 if not found_next:
                     break
 
-    if apply_sheet2_jointtype:
-        # ===== VBA Sheet2.JointTYPE =====
-        joints["JointType"] = None
-        below = jz < float(wp_z)
-        # DataFrame rows already represent real data rows only.
-        # Do not skip index 0 here; doing so incorrectly drops the first
-        # actual joint (for WC9-7 this wrongly leaves 001L untyped).
-        joints.loc[below & j_key.str.endswith("L"), "JointType"] = "LegJoint"
-        joints.loc[below & j_key.str.endswith("X"), "JointType"] = "X Joint"
-
     if apply_sheet3_membertype:
         # ===== VBA Sheet3.Member =====
         members["MemberType"] = None
@@ -3242,6 +3568,16 @@ def classify_structure(
         excl_b = b_key.str.match(_RE_12L) | b_key.str.match(_RE_13L) | b_key.str.match(_RE_16L)
         members.loc[below_m & b_key.str.endswith("X") & (~excl_a), "MemberType"] = "X-Brace"
         members.loc[below_m & a_key.str.endswith("X") & (~excl_b), "MemberType"] = "X-Brace"
+
+    if apply_sheet2_jointtype:
+        # ===== VBA Sheet2.JointTYPE =====
+        joints["JointType"] = None
+        below = jz < float(wp_z)
+        # DataFrame rows already represent real data rows only.
+        # Do not skip index 0 here; doing so incorrectly drops the first
+        # actual joint (for WC9-7 this wrongly leaves 001L untyped).
+        joints.loc[below & j_key.str.endswith("L"), "JointType"] = "LegJoint"
+        joints.loc[below & j_key.str.endswith("X"), "JointType"] = "X Joint"
 
     return joints, members
 
@@ -3556,7 +3892,7 @@ def write_template_layout_workbook(
 # One-click orchestration for Modules 1-9
 # =========================
 
-def run(
+def prepare_run_state(
     template_xlsm: str | Path,
     model_file: str | Path,
     clplog_file: str | Path | Sequence[str | Path],
@@ -3571,10 +3907,15 @@ def run(
     enable_topology_inference: bool = False,
     apply_sheet2_jointtype: bool = True,
     apply_sheet3_membertype: bool = True,
-) -> None:
+) -> Dict[str, Any]:
     """
-    Execute the full 9-module workflow and write the intermediate workbook.
-    This is the business entry called by sacs_to_report.py.
+    Execute the formal pre-risk stage:
+    1) automatic structure classification
+    2) manual classification corrections
+    3) Modules 6/7/8 risk calculations
+
+    Exclusion rules are intentionally not applied here. They belong to the
+    post-risk filtering stage after Module 8 has produced the risk basis.
     """
     cfg = load_from_params_json(params_json) if params_json else load_from_template(template_xlsm)
     risk_pack: RiskMatrixPack = cfg["risk_pack"]
@@ -3592,6 +3933,17 @@ def run(
         x_angle_deviation=cfg.get("x_angle_deviation"),
         apply_sheet2_jointtype=apply_sheet2_jointtype,
         apply_sheet3_membertype=apply_sheet3_membertype,
+    )
+    rule_overrides = _normalize_rule_overrides(cfg.get("rule_overrides"))
+    joints_before_manual = joints2.copy()
+    members_before_manual = members2.copy()
+    joints2, members2 = _apply_manual_classification_rules(joints2, members2, rule_overrides)
+    rule_override_audit_df = _build_manual_classification_audit(
+        joints_before_manual,
+        members_before_manual,
+        joints2,
+        members2,
+        rule_overrides,
     )
 
     clplog_paths = _resolve_multi_inputs(clplog_file, dir_pattern="clplog*")
@@ -3728,41 +4080,116 @@ def run(
         cfg=cfg,
         rm=rm,
     )
+
+    return {
+        "template_xlsm": str(template_xlsm),
+        "model_file": str(model_file),
+        "manual_fill_workbook": str(manual_fill_workbook) if manual_fill_workbook else "",
+        "seed": int(seed),
+        "cfg": cfg,
+        "rule_overrides": rule_overrides,
+        "joints_df": joints2,
+        "groups_df": groups,
+        "members_df": members2,
+        "sections_df": sections,
+        "clplog_paths": clplog_paths,
+        "ftglst_paths": ftglst_paths,
+        "ftginp_paths": ftginp_paths,
+        "fatigue_selector_audit_df": fatigue_selector_audit_df,
+        "rule_override_audit_df": rule_override_audit_df,
+        "collapse_df": collapse_df,
+        "collapse_summary_df": collapse_summary_df,
+        "fatigue_df": fatigue_df,
+        "member_risk_df": member_risk_df,
+        "joint_risk_df": joint_risk_df,
+        "forecast_long_df": forecast_long_df,
+        "forecast_df": forecast_df,
+    }
+
+
+def finalize_prepared_run_state(
+    prepared_state: Dict[str, Any],
+    out_xlsx: str | Path,
+    *,
+    rule_overrides: Any = None,
+) -> Dict[str, pd.DataFrame]:
+    """
+    Execute the formal post-risk stage:
+    1) apply member/joint exclusion corrections after Module 8
+    2) perform Sheet10 / Sheet12 equivalent filtering
+    3) build Module 9 strategy outputs and write the workbook
+    """
+    cfg = dict(prepared_state["cfg"])
+    final_rules = _normalize_rule_overrides(
+        prepared_state.get("rule_overrides") if rule_overrides is None else rule_overrides
+    )
+    cfg["rule_overrides"] = final_rules
+
+    member_risk_df = prepared_state["member_risk_df"].copy()
+    joint_risk_df = prepared_state["joint_risk_df"].copy()
+    forecast_long_df = prepared_state["forecast_long_df"].copy()
+    forecast_df = prepared_state["forecast_df"].copy()
+    post_rule_audit_df = _build_user_exclusion_audit(member_risk_df, forecast_df, final_rules)
+    rule_override_audit_df = pd.concat(
+        [
+            prepared_state.get(
+                "rule_override_audit_df",
+                pd.DataFrame(columns=RULE_OVERRIDE_AUDIT_COLUMNS),
+            ),
+            post_rule_audit_df,
+        ],
+        ignore_index=True,
+    )
+
+    member_risk_df = _apply_member_delete_rule(member_risk_df, user_rules=final_rules)
+    # VBA flow does not run Sheet11.删除JOINT; keep current joint-risk rows intact.
+    # joint_risk_df = _apply_joint_delete_rule(joint_risk_df)
+    forecast_long_df = _apply_joint_delete_rule(forecast_long_df, user_rules=final_rules)
+    forecast_df = _apply_joint_delete_rule(forecast_df, user_rules=final_rules)
+
     node_plan_df = build_node_plan_vba(
         forecast_wide_df=forecast_df,
         cfg=cfg,
-        seed=seed,
+        seed=int(prepared_state["seed"]),
     )
     member_plan_df = build_member_plan_vba(
         member_risk_df=member_risk_df,
         cfg=cfg,
-        seed=seed,
+        seed=int(prepared_state["seed"]),
     )
+    node_plan_df = _apply_joint_delete_rule(node_plan_df, user_rules=final_rules)
+    member_plan_df = _apply_member_delete_rule(member_plan_df, user_rules=final_rules)
 
     # Main output: write into template-like sheet layout to preserve format.
     write_template_layout_workbook(
-        template_xlsm=template_xlsm,
+        template_xlsm=prepared_state["template_xlsm"],
         out_xlsx=out_xlsx,
-        joints_df=joints2,
-        groups_df=groups,
-        members_df=members2,
-        sections_df=sections,
-        collapse_df=collapse_df,
-        collapse_summary_df=collapse_summary_df,
-        fatigue_df=fatigue_df,
+        joints_df=prepared_state["joints_df"],
+        groups_df=prepared_state["groups_df"],
+        members_df=prepared_state["members_df"],
+        sections_df=prepared_state["sections_df"],
+        collapse_df=prepared_state["collapse_df"],
+        collapse_summary_df=prepared_state["collapse_summary_df"],
+        fatigue_df=prepared_state["fatigue_df"],
         member_risk_df=member_risk_df,
         joint_risk_df=joint_risk_df,
         forecast_wide_df=forecast_df,
         node_plan_df=node_plan_df,
         member_plan_df=member_plan_df,
-        clplog_paths=clplog_paths,
+        clplog_paths=prepared_state["clplog_paths"],
     )
 
     # Supplemental audit sheets for manual verification.
     out_path = Path(out_xlsx)
     keep_vba_out = out_path.suffix.lower() == ".xlsm"
     wb_out = openpyxl.load_workbook(out_path, data_only=False, keep_vba=keep_vba_out)
-    for name in ("InputFiles", "FatigueSelectorAudit", "JointForecastLong(Python)", "节点检验策略(Python)_raw"):
+    for name in (
+        "InputFiles",
+        "FatigueSelectorAudit",
+        "RuleOverrideAudit",
+        "JointForecastLong(Python)",
+        "节点检验策略(Python)_raw",
+    ):
         if name in wb_out.sheetnames:
             wb_out.remove(wb_out[name])
 
@@ -3780,16 +4207,16 @@ def run(
             }
         )
 
-    _append_input_row("model", model_file)
-    for p in clplog_paths:
+    _append_input_row("model", prepared_state["model_file"])
+    for p in prepared_state["clplog_paths"]:
         _append_input_row("clplog", p)
-    for p in ftglst_paths:
+    for p in prepared_state["ftglst_paths"]:
         _append_input_row("ftglst", p)
-    if ftginp_paths:
-        for p in ftginp_paths:
+    if prepared_state["ftginp_paths"]:
+        for p in prepared_state["ftginp_paths"]:
             _append_input_row("ftginp", p)
-    if manual_fill_workbook:
-        mfw = Path(manual_fill_workbook)
+    if prepared_state["manual_fill_workbook"]:
+        mfw = Path(prepared_state["manual_fill_workbook"])
         if mfw.exists():
             _append_input_row("manual_fill_workbook", mfw)
 
@@ -3800,9 +4227,9 @@ def run(
         for j, c in enumerate(input_df.columns, start=1):
             ws_input.cell(i, j).value = rr[c]
 
-    if ftginp_paths:
+    if prepared_state["ftginp_paths"]:
         ws_audit = wb_out.create_sheet("FatigueSelectorAudit")
-        audit_df = fatigue_selector_audit_df.copy()
+        audit_df = prepared_state["fatigue_selector_audit_df"].copy()
         if "ManualBrace" not in audit_df.columns:
             audit_df["ManualBrace"] = ""
         if "Applied" not in audit_df.columns:
@@ -3812,6 +4239,13 @@ def run(
         for i, (_, rr) in enumerate(audit_df.iterrows(), start=2):
             for j, c in enumerate(audit_df.columns, start=1):
                 ws_audit.cell(i, j).value = rr[c]
+
+    ws_rule_audit = wb_out.create_sheet("RuleOverrideAudit")
+    for j, c in enumerate(rule_override_audit_df.columns, start=1):
+        ws_rule_audit.cell(1, j).value = c
+    for i, (_, rr) in enumerate(rule_override_audit_df.iterrows(), start=2):
+        for j, c in enumerate(rule_override_audit_df.columns, start=1):
+            ws_rule_audit.cell(i, j).value = rr[c]
 
     ws_long = wb_out.create_sheet("JointForecastLong(Python)")
     long_df = forecast_long_df.copy()
@@ -3832,6 +4266,54 @@ def run(
     wb_out.save(out_path)
 
     print(f"[OK] Wrote: {out_xlsx}")
+    return {
+        "member_risk_df": member_risk_df,
+        "joint_risk_df": joint_risk_df,
+        "forecast_long_df": forecast_long_df,
+        "forecast_df": forecast_df,
+        "node_plan_df": node_plan_df,
+        "member_plan_df": member_plan_df,
+        "rule_override_audit_df": rule_override_audit_df,
+    }
+
+
+def run(
+    template_xlsm: str | Path,
+    model_file: str | Path,
+    clplog_file: str | Path | Sequence[str | Path],
+    ftglst_file: str | Path | Sequence[str | Path],
+    out_xlsx: str | Path,
+    policy_mode: str = "strict",
+    seed: int = 42,
+    params_json: str | Path | None = None,
+    ftginp_files: Sequence[str | Path] | None = None,
+    manual_fill_workbook: str | Path | None = None,
+    interactive_manual_fill: bool = False,
+    enable_topology_inference: bool = False,
+    apply_sheet2_jointtype: bool = True,
+    apply_sheet3_membertype: bool = True,
+) -> None:
+    """
+    Execute the full workflow in the formal two-stage order and write the workbook.
+    This remains the business entry called by sacs_to_report.py.
+    """
+    prepared_state = prepare_run_state(
+        template_xlsm=template_xlsm,
+        model_file=model_file,
+        clplog_file=clplog_file,
+        ftglst_file=ftglst_file,
+        out_xlsx=out_xlsx,
+        policy_mode=policy_mode,
+        seed=seed,
+        params_json=params_json,
+        ftginp_files=ftginp_files,
+        manual_fill_workbook=manual_fill_workbook,
+        interactive_manual_fill=interactive_manual_fill,
+        enable_topology_inference=enable_topology_inference,
+        apply_sheet2_jointtype=apply_sheet2_jointtype,
+        apply_sheet3_membertype=apply_sheet3_membertype,
+    )
+    finalize_prepared_run_state(prepared_state, out_xlsx)
 
 
 def main() -> None:

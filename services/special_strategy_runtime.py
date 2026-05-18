@@ -34,7 +34,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REPO_SPECIAL_STRATEGY_INPUTS_DIR = REPO_ROOT / "special_strategy_inputs"
 OUTPUT_SPECIAL_STRATEGY_CODE_DIR = REPO_ROOT / "pages" / "output_special_strategy"
 try:
-    from pages.output_special_strategy.inspection_tool import run as run_inspection_pipeline  # noqa: E402
+    from pages.output_special_strategy.inspection_tool import (  # noqa: E402
+        finalize_prepared_run_state as finalize_inspection_pipeline,
+        prepare_run_state as prepare_inspection_pipeline,
+    )
     from pages.output_special_strategy.report_jinja2_generator import (  # noqa: E402
         build_generated_appendix_plan,
         build_appendix_pdf_plan,
@@ -48,7 +51,10 @@ except ImportError:
     if str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR) not in sys.path:
         sys.path.insert(0, str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR))
 
-    from inspection_tool import run as run_inspection_pipeline  # type: ignore  # noqa: E402
+    from inspection_tool import (  # type: ignore  # noqa: E402
+        finalize_prepared_run_state as finalize_inspection_pipeline,
+        prepare_run_state as prepare_inspection_pipeline,
+    )
     from report_jinja2_generator import (  # type: ignore  # noqa: E402
         build_generated_appendix_plan,
         build_appendix_pdf_plan,
@@ -491,6 +497,16 @@ def _load_report_metadata_template() -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _path_from_text_without_network_resolution(value: Any) -> Path:
+    """
+    Keep historical runtime paths usable even when they point at an
+    unauthenticated UNC share. `Path.resolve()` touches the filesystem on
+    Windows and can fail before the caller actually needs to open the file.
+    """
+    text = str(value or "").strip()
+    return Path(text) if text else Path()
+
+
 def _artifact_dir_from_state(state: dict[str, Any] | None) -> Path | None:
     if not isinstance(state, dict):
         return None
@@ -498,13 +514,10 @@ def _artifact_dir_from_state(state: dict[str, Any] | None) -> Path | None:
         text = str(state.get(key) or "").strip()
         if not text:
             continue
-        try:
-            candidate = Path(text).resolve()
-        except Exception:
-            continue
+        candidate = _path_from_text_without_network_resolution(text)
         if key == "artifact_dir":
             return candidate
-        return candidate if candidate.is_dir() else candidate.parent
+        return candidate.parent
     return None
 
 
@@ -668,25 +681,30 @@ def _load_report_metadata_json(
 
 
 def load_runtime_state(facility_code: str) -> dict[str, Any] | None:
+    path = state_path(facility_code)
+    if path.exists():
+        return _read_json_file(path)
+
+    # Only fall back to persisted run history when the current runtime state is
+    # unavailable. "Latest current result" should not be silently replaced by a
+    # historical DB row if the live state file already exists.
     db_state = load_latest_strategy_run(normalize_facility_code(facility_code))
     if db_state:
         return _state_from_run_payload(db_state)
-    path = state_path(facility_code)
-    if not path.exists():
-        return None
-    return _read_json_file(path)
+    return None
 
 
 def _state_from_run_payload(run_payload: dict[str, Any]) -> dict[str, Any]:
+    intermediate_workbook = str(run_payload.get("intermediate_workbook") or "").strip()
     return {
         "db_run_id": run_payload.get("id"),
         "facility_code": run_payload.get("facility_code"),
         "metadata": run_payload.get("metadata_json") or {},
         "params": run_payload.get("params_json") or {},
-        "intermediate_workbook": str(run_payload.get("intermediate_workbook") or ""),
+        "intermediate_workbook": intermediate_workbook,
         "output_report": str(run_payload.get("output_report") or ""),
-        "artifact_dir": str(Path(str(run_payload.get("intermediate_workbook") or "")).resolve().parent)
-        if str(run_payload.get("intermediate_workbook") or "").strip()
+        "artifact_dir": str(_path_from_text_without_network_resolution(intermediate_workbook).parent)
+        if intermediate_workbook
         else "",
         "config_path": str(run_payload.get("config_path") or ""),
         "updated_at": run_payload.get("updated_at").isoformat(timespec="seconds") if run_payload.get("updated_at") else "",
@@ -864,6 +882,7 @@ def merge_runtime_params(facility_code: str, overrides: dict[str, Any] | None = 
         "collapse_b_const",
         "served_years",
         "design_life",
+        "rule_overrides",
     ):
         if key in overrides and overrides[key] not in ("", None):
             params[key] = overrides[key]
@@ -879,9 +898,9 @@ def _context_from_workbook(workbook_path: Path, cfg: dict[str, Any], metadata: d
         metadata,
         row_limits=None,
         strict_vba_algorithms=not bool(cfg.get("non_vba_post_filters", False)),
-        apply_vba_member_delete_rules=True,
-        apply_vba_joint_delete_rules_current=True,
-        apply_vba_joint_delete_rules_future=True,
+        apply_vba_member_delete_rules=False,
+        apply_vba_joint_delete_rules_current=False,
+        apply_vba_joint_delete_rules_future=False,
     )
     return context
 
@@ -988,7 +1007,7 @@ def _appendix_sources_from_config(cfg: dict[str, Any]) -> tuple[str, str, list[s
     return appendix_a_file, appendix_b_file, appendix_c_dirs
 
 
-def run_special_strategy_calculation(
+def prepare_special_strategy_calculation(
     facility_code: str,
     *,
     param_overrides: dict[str, Any] | None = None,
@@ -997,7 +1016,6 @@ def run_special_strategy_calculation(
 ) -> dict[str, Any]:
     code = normalize_facility_code(facility_code)
     cfg = load_base_config(code)
-    latest_paths = runtime_paths(code)
     run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     paths = run_artifact_paths(code, run_stamp)
     params = merge_runtime_params(code, param_overrides)
@@ -1013,7 +1031,7 @@ def run_special_strategy_calculation(
     )
     config_xlsm = Path(str(cfg.get("config_xlsm") or cfg["template_xlsm"])).resolve()
 
-    run_inspection_pipeline(
+    prepared_pipeline = prepare_inspection_pipeline(
         template_xlsm=config_xlsm,
         model_file=Path(str(resolved_inputs["model"])).resolve(),
         clplog_file=[Path(str(x)).resolve() for x in resolved_inputs["clplog"]],
@@ -1029,6 +1047,45 @@ def run_special_strategy_calculation(
     )
 
     config_path = _common_config_path()
+    return {
+        "facility_code": code,
+        "cfg": cfg,
+        "paths": paths,
+        "params": params,
+        "metadata": metadata_payload,
+        "resolved_inputs": resolved_inputs,
+        "config_path": str(config_path),
+        "artifact_stamp": run_stamp,
+        "prepared_pipeline": prepared_pipeline,
+    }
+
+
+def finalize_special_strategy_calculation(
+    prepared_calculation: dict[str, Any],
+    *,
+    rule_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    code = normalize_facility_code(str(prepared_calculation["facility_code"]))
+    cfg = dict(prepared_calculation["cfg"])
+    paths = dict(prepared_calculation["paths"])
+    params = copy.deepcopy(prepared_calculation["params"])
+    metadata_payload = dict(prepared_calculation["metadata"])
+    resolved_inputs = dict(prepared_calculation["resolved_inputs"])
+    config_path = Path(str(prepared_calculation["config_path"]))
+    run_stamp = str(prepared_calculation["artifact_stamp"])
+    prepared_pipeline = prepared_calculation["prepared_pipeline"]
+
+    if rule_overrides is not None:
+        params["rule_overrides"] = rule_overrides
+    _write_json(Path(paths["params_json"]), params)
+
+    finalize_inspection_pipeline(
+        prepared_pipeline,
+        out_xlsx=paths["intermediate_workbook"],
+        rule_overrides=params.get("rule_overrides"),
+    )
+
+    latest_paths = runtime_paths(code)
     state = {
         "facility_code": code,
         "metadata": metadata_payload,
@@ -1088,6 +1145,27 @@ def run_special_strategy_calculation(
     return result_bundle
 
 
+def run_special_strategy_calculation(
+    facility_code: str,
+    *,
+    param_overrides: dict[str, Any] | None = None,
+    input_overrides: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    prepared_calculation = prepare_special_strategy_calculation(
+        facility_code,
+        param_overrides=param_overrides,
+        input_overrides=input_overrides,
+        metadata=metadata,
+    )
+    params = prepared_calculation.get("params") if isinstance(prepared_calculation, dict) else {}
+    initial_rules = params.get("rule_overrides") if isinstance(params, dict) else None
+    return finalize_special_strategy_calculation(
+        prepared_calculation,
+        rule_overrides=initial_rules if isinstance(initial_rules, dict) else None,
+    )
+
+
 def load_result_bundle(facility_code: str, run_id: int | None = None) -> dict[str, Any] | None:
     code = normalize_facility_code(facility_code)
     run_payload = load_strategy_run_by_id(run_id) if run_id else None
@@ -1098,12 +1176,25 @@ def load_result_bundle(facility_code: str, run_id: int | None = None) -> dict[st
         return None
     if run_id and run_payload and normalize_facility_code(str(run_payload.get("facility_code") or "")) != code:
         return None
-    snapshot = load_strategy_result_snapshot_by_run(run_id) if run_id else load_latest_strategy_result_snapshot(code)
+    if run_id:
+        snapshot = load_strategy_result_snapshot_by_run(run_id)
+    else:
+        state_run_id = state.get("db_run_id") if isinstance(state, dict) else None
+        try:
+            snapshot = (
+                load_strategy_result_snapshot_by_run(int(state_run_id))
+                if state_run_id not in (None, "")
+                else None
+            )
+        except Exception:
+            snapshot = None
+        if snapshot is None:
+            snapshot = load_latest_strategy_result_snapshot(code)
     if snapshot and isinstance(snapshot.get("result_json"), dict):
         payload = dict(snapshot["result_json"])
         payload["state"] = payload.get("state") or state
         return payload
-    workbook_path = Path(str(state.get("intermediate_workbook", ""))).resolve()
+    workbook_path = _path_from_text_without_network_resolution(state.get("intermediate_workbook", ""))
     if not workbook_path.exists():
         return None
     cfg = load_base_config(code)
@@ -1143,7 +1234,7 @@ def generate_special_strategy_report(
     state = _state_from_run_payload(run_payload) if run_payload else load_runtime_state(code)
     if not state:
         raise FileNotFoundError(f"No calculated result found for {code}.")
-    workbook_path = Path(str(state["intermediate_workbook"])).resolve()
+    workbook_path = _path_from_text_without_network_resolution(state["intermediate_workbook"])
     if not workbook_path.exists():
         raise FileNotFoundError(f"Intermediate workbook not found: {workbook_path}")
 
@@ -1187,7 +1278,7 @@ def generate_special_strategy_report(
     except Exception:
         state_run_id = None
 
-    artifact_dir = Path(str(state.get("artifact_dir") or workbook_path.parent)).resolve()
+    artifact_dir = _path_from_text_without_network_resolution(state.get("artifact_dir") or workbook_path.parent)
     appendix_generated_plan, appendix_temp_files = build_generated_appendix_plan(
         workbook_path,
         facility_code=code,
