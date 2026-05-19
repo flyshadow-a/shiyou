@@ -484,25 +484,19 @@ class OilfieldWaterLevelPage(BasePage):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(8)
 
-        # 顶部表格+按钮布局（横向布局）
+        # 顶部筛选与操作区
         top_wrap = QWidget()
         top_layout = QHBoxLayout(top_wrap)
-        top_layout.setContentsMargins(10, 10, 10, 0)
-        top_layout.setSpacing(10)
+        top_layout.setContentsMargins(10, 8, 10, 0)
+        top_layout.setSpacing(12)
 
         # ---------- 顶部下拉条 ----------
         self.dropdown_bar = DropdownBar(self._build_top_dropdown_fields(), parent=self)
         self.dropdown_bar.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         self.dropdown_bar.valueChanged.connect(self._on_top_key_changed)
         self._apply_top_cascade()
-        top_layout.addWidget(self.dropdown_bar, 0, Qt.AlignLeft | Qt.AlignTop)
 
-        # “保存”按钮布局设计
-        btn_widget = QWidget()
-        btn_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        btn_col = QVBoxLayout(btn_widget)
-        btn_col.setContentsMargins(0, 0, 0, 0)
-        btn_col.setSpacing(6)
+        top_layout.addWidget(self.dropdown_bar, 0, Qt.AlignLeft | Qt.AlignVCenter)
 
         self.btn_save = QPushButton("保存")
         self.btn_save.setObjectName("TopActionBtn")
@@ -511,10 +505,8 @@ class OilfieldWaterLevelPage(BasePage):
         self.btn_save.setFont(self._songti_small_four_font())
         self.btn_save.clicked.connect(self._on_save)
 
-        btn_col.addWidget(self.btn_save)
-        btn_col.addStretch(1)
-        top_layout.addWidget(btn_widget, 0, Qt.AlignLeft | Qt.AlignTop)
         top_layout.addStretch(1)
+        top_layout.addWidget(self.btn_save, 0, Qt.AlignRight | Qt.AlignVCenter)
 
         self.main_layout.addWidget(top_wrap)
 
@@ -616,7 +608,6 @@ class OilfieldWaterLevelPage(BasePage):
 
         table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
         table.setStyleSheet("""
             QTableWidget {
                 gridline-color: #d9d9d9;
@@ -639,24 +630,8 @@ class OilfieldWaterLevelPage(BasePage):
             total_h += table.rowHeight(r)
         table.setFixedHeight(total_h)
 
-    def _fit_table_width_to_columns(self, table: QTableWidget, extra: int = 140, col_extra: int = 0):
-        """
-        让整个表格宽度 = 所有列宽之和 + extra（并可选给每列再加一点宽度）。
-        - extra: 表格整体额外留白（默认给大一点，避免“太窄”）
-        - col_extra: 可选，每列额外增加的宽度（比如 20/40/60），不需要可设为 0
-        """
-        # 可选：给每列加一点“呼吸空间”
-        if col_extra > 0:
-            for c in range(table.columnCount()):
-                table.setColumnWidth(c, table.columnWidth(c) + col_extra)
-
-        total_w = table.frameWidth() * 2
-        for c in range(table.columnCount()):
-            total_w += table.columnWidth(c)
-        total_w += extra
-
-        table.setFixedWidth(total_w)
-        table.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    def _expand_table_width(self, table: QTableWidget) -> None:
+        table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def _apply_table_width_scheme_a(
             self,
@@ -680,10 +655,7 @@ class OilfieldWaterLevelPage(BasePage):
         for c in range(2, 7):
             header.setSectionResizeMode(c, QHeaderView.Stretch)
 
-        # 给数值列一个最小宽度（可选）
-        for c in range(2, 7):
-            if table.columnWidth(c) < num_min_w:
-                table.setColumnWidth(c, num_min_w)
+        self._expand_table_width(table)
 
     # ----------------- 子页构建 ----------------- #
     def build_water_level_page(self) -> QWidget:
@@ -763,27 +735,20 @@ class OilfieldWaterLevelPage(BasePage):
             self._set_item(table, rr, 1, elem)
             self._set_item(table, rr, 2, val, editable=True)
 
-        # ===== 列宽：按内容收缩 + 适度加宽 =====
+        # ===== 列宽：左侧信息列固定，数值列填满剩余空间 =====
         header = table.horizontalHeader()
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-
-        table.resizeColumnsToContents()
-
-        # 你觉得偏窄：每列加一点“呼吸空间”
-        for c in range(table.columnCount()):
-            table.setColumnWidth(c, table.columnWidth(c) + 60)
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        table.setColumnWidth(0, 190)
+        table.setColumnWidth(1, 220)
 
         # 固定高度（避免滚动条）
         self._fit_table_height(table)
+        self._expand_table_width(table)
 
-        # ✅ 关键：不要再给 table 额外加 140px 空白宽度
-        #    0~18 都可以；想更宽，用“列宽+xx”来变宽，而不是 extra 造空白
-        self._fit_table_width_to_columns(table, extra=0)
-
-        layout.addWidget(table, 0, Qt.AlignTop | Qt.AlignLeft)
+        layout.addWidget(table, 0, Qt.AlignTop)
         return page
 
     def build_wind_param_page(self) -> QWidget:
@@ -797,7 +762,6 @@ class OilfieldWaterLevelPage(BasePage):
 
         frame = QFrame()
         frame.setStyleSheet("QFrame { border: 1px solid #888; }")
-        frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         frame_layout = QVBoxLayout(frame)
@@ -872,18 +836,10 @@ class OilfieldWaterLevelPage(BasePage):
 
         self._fit_table_height(table)
 
-        # ✅ 加这两行：让布局顶对齐（防止上方留空）
         layout.setAlignment(Qt.AlignTop)
         frame_layout.setAlignment(Qt.AlignTop)
 
-        # ✅ 把 addWidget 改成带 AlignTop 的版本
-        layout.setAlignment(Qt.AlignTop)
-        frame_layout.setAlignment(Qt.AlignTop)
-
-        layout.setAlignment(Qt.AlignTop)
-        frame_layout.setAlignment(Qt.AlignTop)
-
-        frame_layout.addWidget(table, 0, Qt.AlignTop)
+        frame_layout.addWidget(table)
         layout.addWidget(frame, 0, Qt.AlignTop)
 
         return page
@@ -899,6 +855,7 @@ class OilfieldWaterLevelPage(BasePage):
 
         frame = QFrame()
         frame.setStyleSheet("QFrame { border: 1px solid #888; }")
+        frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         frame_layout = QVBoxLayout(frame)
         frame_layout.setContentsMargins(0, 0, 0, 0)
         frame_layout.setSpacing(0)
@@ -977,7 +934,7 @@ class OilfieldWaterLevelPage(BasePage):
         layout.setAlignment(Qt.AlignTop)
         frame_layout.setAlignment(Qt.AlignTop)
 
-        frame_layout.addWidget(table, 0, Qt.AlignTop)
+        frame_layout.addWidget(table)
         layout.addWidget(frame, 0, Qt.AlignTop)
 
         return page
@@ -993,6 +950,7 @@ class OilfieldWaterLevelPage(BasePage):
 
         frame = QFrame()
         frame.setStyleSheet("QFrame { border: 1px solid #888; }")
+        frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         frame_layout = QVBoxLayout(frame)
         frame_layout.setContentsMargins(0, 0, 0, 0)
         frame_layout.setSpacing(0)
@@ -1061,7 +1019,7 @@ class OilfieldWaterLevelPage(BasePage):
         layout.setAlignment(Qt.AlignTop)
         frame_layout.setAlignment(Qt.AlignTop)
 
-        frame_layout.addWidget(table, 0, Qt.AlignTop)
+        frame_layout.addWidget(table)
         layout.addWidget(frame, 0, Qt.AlignTop)
 
         return page
@@ -1124,7 +1082,8 @@ class OilfieldWaterLevelPage(BasePage):
 
             replace_water_level_items(profile_id, water_items)
             replace_metric_items("oilfield_wind_param_item", profile_id, wind_items)
-            replace_metric_items("oilfield_wave_param_item", profile_id, wave_items)
+            (replace_metric_items
+             ("oilfield_wave_param_item", profile_id, wave_items))
             replace_metric_items("oilfield_current_param_item", profile_id, current_items)
 
             QMessageBox.information(

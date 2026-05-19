@@ -122,6 +122,48 @@ def _normalize_section_source(source: Mapping[str, Any] | str) -> dict[str, Any]
                 for field in load_information_row_keys:
                     normalized_row[field] = _normalize_numeric_text(row.get(field))
                 normalized_load_information_rows.append(normalized_row)
+        platform_evaluation_table_fields = {
+            "well_slot_rows": (
+                "slot_no",
+                "x",
+                "y",
+                "conductor_od",
+                "conductor_wt",
+                "support_od",
+                "support_wt",
+                "top_load_fz",
+            ),
+            "riser_rows": (
+                "riser_no",
+                "x",
+                "y",
+                "riser_od",
+                "riser_wt",
+                "support_od",
+                "support_wt",
+                "batter_x",
+                "batter_y",
+            ),
+            "topside_weight_rows": (
+                "weight_no",
+                "x",
+                "y",
+                "z",
+                "weight_t",
+            ),
+        }
+        normalized_platform_evaluation_tables: dict[str, list[dict[str, str]]] = {}
+        for table_key, fields in platform_evaluation_table_fields.items():
+            raw_rows = source.get(table_key)
+            normalized_rows = []
+            if isinstance(raw_rows, list):
+                for row in raw_rows:
+                    if not isinstance(row, Mapping):
+                        continue
+                    normalized_rows.append(
+                        {field: _normalize_numeric_text(row.get(field)) for field in fields}
+                    )
+            normalized_platform_evaluation_tables[table_key] = normalized_rows
         normalized_environment_tables: dict[str, list[dict[str, str]]] = {}
         for table_key in environment_table_keys:
             raw_rows = source.get(table_key)
@@ -176,6 +218,7 @@ def _normalize_section_source(source: Mapping[str, Any] | str) -> dict[str, Any]
                 or any(normalized_environment_tables.values())
                 or normalized_load_information_meta
                 or normalized_load_information_rows
+                or any(normalized_platform_evaluation_tables.values())
                 or overall_model_image_path
                 or coordinate_system_image_path
             ):
@@ -187,6 +230,7 @@ def _normalize_section_source(source: Mapping[str, Any] | str) -> dict[str, Any]
                     "coordinate_system_image_path": coordinate_system_image_path,
                     "load_information_meta": normalized_load_information_meta,
                     "load_information_rows": normalized_load_information_rows,
+                    **normalized_platform_evaluation_tables,
                     **normalized_environment_tables,
                 }
 
@@ -199,6 +243,7 @@ def _normalize_section_source(source: Mapping[str, Any] | str) -> dict[str, Any]
             "coordinate_system_image_path": coordinate_system_image_path,
             "load_information_meta": normalized_load_information_meta,
             "load_information_rows": normalized_load_information_rows,
+            **normalized_platform_evaluation_tables,
             **normalized_environment_tables,
         }
 

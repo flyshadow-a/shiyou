@@ -26,10 +26,11 @@ from typing import List, Tuple, Dict, Optional
 
 from PyQt5.QtWidgets import (
     QAction,
+    QAbstractItemView,
     QApplication,
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QComboBox, QLabel,
     QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox,
-    QHeaderView, QToolTip, QFileDialog, QGridLayout, QMenu, QSizePolicy,
+    QHeaderView, QToolTip, QFileDialog, QGridLayout, QMenu, QSizePolicy, QFrame,
     QButtonGroup, QRadioButton, QCheckBox
 )
 from PyQt5.QtCore import Qt, QEvent
@@ -375,34 +376,53 @@ class PlatformLoadInformationPage(BasePage):
 
     # ---------------- UI ----------------
     def _build_ui(self):
+        self.setObjectName("PlatformLoadInfoRoot")
         self.setStyleSheet("""
-            QWidget { background: #e6eef7; }
+            QWidget#PlatformLoadInfoRoot,
+            QWidget#PlatformLoadInfoTopWrap,
+            QWidget#PlatformLoadInfoPageContainer {
+                background: #f3f6fb;
+            }
 
-            /* 顶部按钮（保持原样） */
+            QFrame#LoadInfoTablePanel {
+                background: #ffffff;
+                border: 1px solid #e3e8f0;
+                border-radius: 16px;
+            }
+
             QPushButton#TopActionBtn {
-                background: #f6a24a;
-                border: 1px solid #2f3a4a;
-                border-radius: 3px;
-                padding: 6px 16px;
+                background: #2563eb;
+                color: #ffffff;
+                border: 1px solid #1d4ed8;
+                border-radius: 8px;
+                padding: 7px 18px;
                 font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
                 font-size: 12pt;
                 font-weight: bold;
             }
-            QPushButton#TopActionBtn:hover { background: #ffb86b; }
+            QPushButton#TopActionBtn:hover { background: #1d4ed8; }
+            QPushButton#TopActionBtn:pressed { background: #1e40af; }
 
-            /* 主表 */
             QTableWidget#MainTable {
-                background-color: #ffffff;
-                gridline-color: #d0d0d0;
-                border: 1px solid #2f3a4a;
+                background: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 10px;
+                gridline-color: #edf1f7;
+                alternate-background-color: #fbfdff;
+                selection-background-color: #dbeafe;
+                selection-color: #1d4ed8;
                 font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
-                font-size: 12pt;
+                font-size: 11pt;
+                color: #253044;
             }
             QTableWidget#MainTable::item {
-                border-bottom: 1px solid #d0d0d0;
-                border-right:  1px solid #d0d0d0;
+                padding: 6px;
+                border-color: #edf1f7;
             }
-            QTableWidget::item:selected { background-color: #dbe9ff; color: #000000; }
+            QTableWidget#MainTable::item:selected {
+                background-color: #dbeafe;
+                color: #1d4ed8;
+            }
             QTableWidget::item:focus { outline: none; }
 
         """)
@@ -410,10 +430,12 @@ class PlatformLoadInformationPage(BasePage):
         page_scroll = QScrollArea(self)
         page_scroll.setWidgetResizable(True)
         page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        page_scroll.setFrameShape(QFrame.NoFrame)
         self.main_layout.addWidget(page_scroll, 1)
         self.page_scroll = page_scroll
 
         page_container = QWidget()
+        page_container.setObjectName("PlatformLoadInfoPageContainer")
         page_scroll.setWidget(page_container)
         page_root = QVBoxLayout(page_container)
         page_root.setContentsMargins(0, 0, 0, 0)
@@ -421,6 +443,7 @@ class PlatformLoadInformationPage(BasePage):
 
         # 顶部固定区：表头+下拉（2行） + 右侧按钮
         top_wrap = QWidget()
+        top_wrap.setObjectName("PlatformLoadInfoTopWrap")
         top_layout = QHBoxLayout(top_wrap)
         top_layout.setContentsMargins(10, 10, 10, 0)
         top_layout.setSpacing(10)
@@ -486,25 +509,23 @@ class PlatformLoadInformationPage(BasePage):
 
         page_root.addWidget(top_wrap, 0)
 
-        # 表格区域保留原有滚动方式，同时页面整体可继续向下滚动查看曲线图
-        outer_scroll = QScrollArea(self)
-        outer_scroll.setWidgetResizable(True)
-        outer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 禁用外层水平滚动
-        outer_scroll.setMinimumHeight(520)
-        page_root.addWidget(outer_scroll, 0)
-        self.outer_scroll = outer_scroll
-
-        container = QWidget()
-        outer_scroll.setWidget(container)
-        root = QVBoxLayout(container)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(10)
+        table_panel = QFrame()
+        table_panel.setObjectName("LoadInfoTablePanel")
+        table_panel.setMinimumHeight(520)
+        root = QVBoxLayout(table_panel)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
+        page_root.addWidget(table_panel, 0)
+        self.table_panel = table_panel
 
         self.table = self._build_main_table_skeleton()
         self.table.setObjectName("MainTable")
         self.table.setFont(self._songti_small_four_font())
-        # 只保留外层 table_scroll 的横向滚动条，避免双滚动条
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setAlternatingRowColors(True)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         # 开启右键菜单策略
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -519,15 +540,7 @@ class PlatformLoadInformationPage(BasePage):
         # 点击“上部组块重心”单元格：跳转到分项目计算表并回填
         self.table.cellClicked.connect(self._on_main_cell_clicked)
 
-        # 创建内部滚动区域，用于表格的水平/垂直滚动
-        self.table_scroll = QScrollArea()
-        self.table_scroll.setWidgetResizable(False)  # 不自动调整内部部件大小
-        self.table_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # 临时，后面会动态调整
-        self.table_scroll.setWidget(self.table)
-
-        # 将内部滚动区域添加到主布局，并设置拉伸因子
-        root.addWidget(self.table_scroll, 1)
+        root.addWidget(self.table, 1)
 
         # 底部按钮区：保存、导出，横向居中排列
         bottom_btn_wrap = QWidget()
@@ -761,17 +774,17 @@ class PlatformLoadInformationPage(BasePage):
             "改扩建项目名称",
             "改扩建时间",
             "改扩建内容",
-            "上部组块总\n操作重量\nMT",
-            "上部组块不\n可超越\n重量,MT",
-            "重量变化\nMT",
-            "上部组块\n重心(x,y,z)\nm",
-            "上部组块重心\n不可超越半径\nm",
-            "Fx,KN",
-            "Fy,KN",
-            "Fz,KN",
-            "Mx,KN·m",
-            "My,KN·m",
-            "Mz,KN·m",
+            "上部组块总\n操作重量\n(MT)",
+            "上部组块不\n可超越重量\n(MT)",
+            "重量变化\n(MT)",
+            "上部组块重心\n(x,y,z)\n(m)",
+            "上部组块重心\n不可超越半径\n(m)",
+            "Fx\n(KN)",
+            "Fy\n(KN)",
+            "Fz\n(KN)",
+            "Mx\n(KN·m)",
+            "My\n(KN·m)",
+            "Mz\n(KN·m)",
             "操作工况",
             "极端工况",
             "是否整体\n评估",
@@ -804,10 +817,10 @@ class PlatformLoadInformationPage(BasePage):
         value_span = max(1, total_span - label_span)
 
         table.setSpan(row, start, 1, label_span)
-        table.setItem(row, start, self._mk_item(label, bg=bg, align=Qt.AlignLeft | Qt.AlignVCenter))
+        table.setItem(row, start, self._mk_item(label, bold=True, bg=bg, align=Qt.AlignLeft | Qt.AlignVCenter))
 
         table.setSpan(row, start + label_span, 1, value_span)
-        it_val = self._mk_item(value, bg=bg, align=Qt.AlignCenter)
+        it_val = self._mk_item(value, bold=True, bg=bg, align=Qt.AlignCenter)
         table.setItem(row, start + label_span, it_val)
 
         if not hasattr(self, "_meta_value_items"):
@@ -826,8 +839,10 @@ class PlatformLoadInformationPage(BasePage):
         table.horizontalHeader().setVisible(False)
         # table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
-        bg = QColor("#eef2ff")
-        red = QColor("#cc0000")
+        bg = QColor("#f8fafc")
+        meta_bg = QColor("#eef6ff")
+        load_group_bg = QColor("#fff7ed")
+        safety_group_bg = QColor("#f0fdf4")
 
         table.setRowHeight(0, 26)
         table.setRowHeight(1, 26)
@@ -841,19 +856,19 @@ class PlatformLoadInformationPage(BasePage):
         # 每行 3 块：7 + 6 + 6 = 19
         # row0：所属分公司 / 所属作业单元 / 所属油气田(田)
         self._set_meta_double(table, 0, 0, total_span=7, label_span=3,
-                              label="所属分公司", value=top_defaults.get("分公司", ""), field_key="分公司", bg=bg)
+                              label="所属分公司", value=top_defaults.get("分公司", ""), field_key="分公司", bg=meta_bg)
         self._set_meta_double(table, 0, 7, total_span=6, label_span=2,
-                              label="所属作业单元", value=top_defaults.get("作业公司", ""), field_key="作业公司", bg=bg)
+                              label="所属作业单元", value=top_defaults.get("作业公司", ""), field_key="作业公司", bg=meta_bg)
         self._set_meta_double(table, 0, 13, total_span=6, label_span=2,
-                              label="所属油（气）田", value=top_defaults.get("油气田", ""), field_key="油气田", bg=bg)
+                              label="所属油（气）田", value=top_defaults.get("油气田", ""), field_key="油气田", bg=meta_bg)
 
         # row1：设施名称 / 投产时间 / 设计年限
         self._set_meta_double(table, 1, 0, total_span=7, label_span=3,
-                              label="设施名称", value=top_defaults.get("设施名称", ""), field_key="设施名称", bg=bg)
+                              label="设施名称", value=top_defaults.get("设施名称", ""), field_key="设施名称", bg=meta_bg)
         self._set_meta_double(table, 1, 7, total_span=6, label_span=2,
-                              label="投产时间", value=top_defaults.get("投产时间", ""), field_key="投产时间", bg=bg)
+                              label="投产时间", value=top_defaults.get("投产时间", ""), field_key="投产时间", bg=meta_bg)
         self._set_meta_double(table, 1, 13, total_span=6, label_span=2,
-                              label="设计年限", value=top_defaults.get("设计年限", ""), field_key="设计年限", bg=bg)
+                              label="设计年限", value=top_defaults.get("设计年限", ""), field_key="设计年限", bg=meta_bg)
 
         # ===== 分组表头（row2）=====
         table.setSpan(2, 0, 2, 1)
@@ -866,10 +881,10 @@ class PlatformLoadInformationPage(BasePage):
         # table.setItem(2, 4, self._mk_item("上部组块重控", bold=True, bg=bg))
 
         table.setSpan(2, 9, 1, 6)
-        table.setItem(2, 9, self._mk_item("极端工况最大载荷", bold=True, bg=bg))
+        table.setItem(2, 9, self._mk_item("极端工况最大载荷", bold=True, bg=load_group_bg))
 
         table.setSpan(2, 15, 1, 2)
-        table.setItem(2, 15, self._mk_item("桩基承载力安全系数（最小）", bold=True, bg=bg))
+        table.setItem(2, 15, self._mk_item("桩基承载力安全系数（最小）", bold=True, bg=safety_group_bg))
 
         table.setSpan(2, 17, 2, 1)
         table.setItem(2, 17, self._mk_item("是否整体\n评估", bold=True, bg=bg))
@@ -883,28 +898,27 @@ class PlatformLoadInformationPage(BasePage):
         table.setItem(2, 2, self._mk_item("改扩建时间", bold=True, bg=bg))
         table.setItem(2, 3, self._mk_item("改扩建内容", bold=True, bg=bg))
 
-        table.setItem(2, 4, self._mk_item("上部组块总操作重量,（MT）", bold=True, bg=bg))
-        table.setItem(2, 5, self._mk_item("上部组块不可超越重量,（MT）", bold=True, bg=bg))
-        table.setItem(2, 6, self._mk_item("重量变化,（MT）", bold=True, bg=bg))
-        table.setItem(2, 7, self._mk_item("上部组块重心 x,y,z,\n（m）", bold=True, bg=bg))
-        table.setItem(2, 8, self._mk_item("上部组块重心\n不可超越\n半径,（m）", bold=True, bg=bg))
+        table.setItem(2, 4, self._mk_item("上部组块总操作重量\n(MT)", bold=True, bg=bg))
+        table.setItem(2, 5, self._mk_item("上部组块不可超越重量\n(MT)", bold=True, bg=bg))
+        table.setItem(2, 6, self._mk_item("重量变化\n(MT)", bold=True, bg=bg))
+        table.setItem(2, 7, self._mk_item("上部组块重心\n(x,y,z)\n(m)", bold=True, bg=bg))
+        table.setItem(2, 8, self._mk_item("上部组块重心\n不可超越半径\n(m)", bold=True, bg=bg))
 
-        # 红色字段（严格：Mz 纵向显示）
+        # 结果字段（严格：Mz 纵向显示）
         fx_headers = [
-            ("Fx,（KN）", "Fx,（KN）"),
-            ("Fy,（KN）", "Fy,（KN）"),
-            ("Fz,（KN）", "Fz,（KN）"),
-            ("Mx,（KN·m）", "Mx,（KN·m）"),
-            ("My,（KN·m）", "My,（KN·m）"),
-            ("Mz,（KN·m）", "Mz,（KN·m）"),
+            ("Fx", "Fx\n(KN)"),
+            ("Fy", "Fy\n(KN)"),
+            ("Fz", "Fz\n(KN)"),
+            ("Mx", "Mx\n(KN·m)"),
+            ("My", "My\n(KN·m)"),
+            ("Mz", "Mz\n(KN·m)"),
         ]
         red_cols = list(range(9, 15))
         for (src, shown), c in zip(fx_headers, red_cols):
-            txt = shown.replace(",", "\n") if src != "Mz,（KN·m）" else shown
-            table.setItem(3, c, self._mk_item(txt, bold=True, bg=bg, fg=red))
+            table.setItem(3, c, self._mk_item(shown, bold=True, bg=load_group_bg))
 
-        table.setItem(3, 15, self._mk_item("操作工况", bold=True, bg=bg, fg=red))
-        table.setItem(3, 16, self._mk_item("极端工况", bold=True, bg=bg, fg=red))
+        table.setItem(3, 15, self._mk_item("操作工况", bold=True, bg=safety_group_bg))
+        table.setItem(3, 16, self._mk_item("极端工况", bold=True, bg=safety_group_bg))
 
         # 补齐背景（未被 span 覆盖的单元格）
         for r in range(0, 4):
@@ -1049,6 +1063,8 @@ class PlatformLoadInformationPage(BasePage):
         for row_idx in range(data_start, data_end):
             seq_item = self.table.item(row_idx, 0)
             seq_text = seq_item.text().strip() if seq_item else ""
+            if seq_item is not None:
+                seq_item.setText("")
 
             cb = QCheckBox()
             cb.setCursor(Qt.PointingHandCursor)
@@ -1108,42 +1124,26 @@ class PlatformLoadInformationPage(BasePage):
 
         table = self.table
         col_count = table.columnCount()
-        data_end = self._find_data_end_row()
-        fm = QFontMetrics(table.font())
-
-        min_width = 72
-        max_width = 420
-        padding = 24
+        column_widths = {
+            0: 104, 1: 170, 2: 116, 3: 280, 4: 132, 5: 140, 6: 120,
+            7: 168, 8: 142, 9: 104, 10: 104, 11: 104, 12: 112, 13: 112,
+            14: 112, 15: 118, 16: 118, 17: 112, 18: 168,
+        }
 
         for c in range(col_count):
-            best = min_width
-            for r in range(data_end):
-                # 跳过跨列单元格，避免分组标题/说明区影响单列宽度
-                if table.columnSpan(r, c) > 1:
-                    continue
-                it = table.item(r, c)
-                if it is None:
-                    continue
-                cand = self._text_pixel_width(it.text(), fm) + padding
-                if cand > best:
-                    best = cand
+            table.setColumnWidth(c, column_widths.get(c, 110))
 
-            # 首列包含“单选框 + 序号”控件，给更大最小宽度
-            if c == 0:
-                best = max(best, 110)
-
-            table.setColumnWidth(c, min(max_width, best))
-
-        total_width = table.frameWidth() * 2 + sum(table.columnWidth(c) for c in range(col_count))
-        table.setFixedWidth(total_width + 2)
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        table.setMinimumWidth(0)
+        table.setMaximumWidth(16777215)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
     def _apply_data(self, rows: List[List[str]], inject_demo_tips: bool = False):
         self._loading_data = True
         base_rows = 4
-        bg = QColor("#eef2ff")
-        black = QColor("#000000")
-        red = QColor("#cc0000")
+        bg = QColor("#f8fafc")
+        black = QColor("#111827")
+        row_hint_bg = QColor("#f8fbff")
+        import_bg = QColor("#fff7ed")
 
         explain = [
             "填表说明：",
@@ -1177,7 +1177,7 @@ class PlatformLoadInformationPage(BasePage):
                     rows[1] = (tip1 + [""] * self.table.columnCount())[:self.table.columnCount()]
 
             red_cols = set(range(9, 17))
-            calc_bg = QColor("#d8ffcf")
+            calc_bg = QColor("#f0fdf4")
 
             for i, row in enumerate(rows):
                 rr = base_rows + i
@@ -1188,12 +1188,13 @@ class PlatformLoadInformationPage(BasePage):
                     it = self._mk_item(val, editable=editable)
                     if c == 7:
                         it.setBackground(calc_bg)
-                    if c in red_cols:
+                    elif c in red_cols:
+                        it.setBackground(import_bg)
                         it.setToolTip("双击可手动输入数据；右键点击可读取本行对应的分析结果文件。")
-                    if i in (0, 1) and val:
-                        it.setForeground(red if c in red_cols else black)
-                    elif c in red_cols and val:
-                        it.setForeground(red)
+                    elif i in (0, 1):
+                        it.setBackground(row_hint_bg)
+                    if val:
+                        it.setForeground(black)
                     self.table.setItem(rr, c, it)
 
             start = base_rows + len(rows)
@@ -1209,7 +1210,7 @@ class PlatformLoadInformationPage(BasePage):
                 for c in range(self.table.columnCount()):
                     if self.table.item(r, c) is None and self.table.cellWidget(r, c) is None:
                         editable = (base_rows <= r < data_end) and (c not in (0, 7))
-                        item_bg = calc_bg if c == 7 else bg
+                        item_bg = calc_bg if c == 7 else import_bg if (base_rows <= r < data_end) and (c in red_cols) else bg
                         it = self._mk_item("", bg=item_bg, editable=editable)
                         if (base_rows <= r < data_end) and (c in red_cols):
                             it.setToolTip("双击可手动输入数据；右键点击可读取本行对应的分析结果文件。")
@@ -1224,17 +1225,9 @@ class PlatformLoadInformationPage(BasePage):
 
             self._rebuild_row_checkbox_selectors(data_start, data_end)
 
-            data_n = len(rows)
-            if data_n <= self.MAX_EXPAND_ROWS:
-                self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-                total_height = 0
-                for r in range(total):
-                    total_height += self.table.rowHeight(r)
-                self.table.setFixedHeight(total_height + 2)
-            else:
-                self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-                self.table.setFixedHeight(-1)
-                self.table.setMinimumHeight(300)
+            self.table.setMinimumHeight(0)
+            self.table.setMaximumHeight(16777215)
+            self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
             self._auto_fit_main_table_columns()
         finally:
@@ -1376,7 +1369,6 @@ class PlatformLoadInformationPage(BasePage):
     def _apply_excel_values_to_row(self, row: int, values: Dict[str, object], bg_color: QColor = None):
         keys = ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz', '操作工况', '极端工况']
         cols = [9, 10, 11, 12, 13, 14, 15, 16]
-        red = QColor("#cc0000")
         for k, c in zip(keys, cols):
             v = values.get(k, '')
             it = self.table.item(row, c)
@@ -1384,7 +1376,7 @@ class PlatformLoadInformationPage(BasePage):
                 it = self._mk_item('', editable=True)
                 self.table.setItem(row, c, it)
             it.setText('' if v is None else str(v))
-            if str(v).strip(): it.setForeground(red)
+            it.setForeground(QColor("#111827"))
             if bg_color: it.setBackground(bg_color)
         self._auto_fit_main_table_columns()
         self._refresh_curve_view()
@@ -1419,7 +1411,7 @@ class PlatformLoadInformationPage(BasePage):
         
         # 初始化新行的样式
         cols = self.table.columnCount()
-        calc_bg = QColor("#d8ffcf")
+        calc_bg = QColor("#eef8ef")
         red_cols = set(range(9, 17))
         
         for c in range(cols):
@@ -1474,17 +1466,9 @@ class PlatformLoadInformationPage(BasePage):
         # 2. 重新构建复选框
         self._rebuild_row_checkbox_selectors(base_rows, data_end)
         
-        # 3. 重新计算总高度
-        total_rows = self.table.rowCount()
-        data_n = data_end - base_rows
-        if data_n <= self.MAX_EXPAND_ROWS:
-            self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            total_h = sum(self.table.rowHeight(r) for r in range(total_rows))
-            self.table.setFixedHeight(total_h + 2)
-        else:
-            self.table_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self.table.setFixedHeight(-1)
-            self.table.setMinimumHeight(300)
+        self.table.setMinimumHeight(0)
+        self.table.setMaximumHeight(16777215)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             
         self._auto_fit_main_table_columns()
         self._refresh_curve_view()
@@ -1873,6 +1857,8 @@ class PlatformLoadInformationPage(BasePage):
         self.curve_widget.update_series(code, self._collect_series_for_curve())
 
     def _cell_text(self, row: int, col: int) -> str:
+        if col == 0 and 4 <= row < self._find_data_end_row():
+            return str(row - 4)
         it = self.table.item(row, col)
         return it.text() if it else ""
 
@@ -1902,7 +1888,7 @@ class PlatformLoadInformationPage(BasePage):
         src_row = payload.get("source_row")
         if src_row is None: return
         if "table_data" in payload: self._uppercalc_saved_data[src_row] = payload["table_data"]
-        calc_bg = QColor("#d8ffcf")
+        calc_bg = QColor("#eef8ef")
         wb = payload.get("write_back", {})
         for col, val in wb.items():
             it = self.table.item(src_row, int(col))

@@ -367,7 +367,7 @@ def _replace_paragraph_blocks_at_anchors(
     start_index: int,
     end_index: int,
     blocks: Sequence[Mapping[str, Any]],
-) -> bool:
+) -> list[Paragraph]:
     # 当前专门给 1.1 平台概述使用：每个 block 自带锚点信息。
     # 除了直接匹配“例子：...”段落外，也支持先命中说明段，再替换其后的下一段正文。
     paragraphs = list(document.paragraphs)
@@ -425,6 +425,7 @@ def _replace_paragraph_blocks_at_anchors(
         )
 
     replaced_any = False
+    replaced_paragraphs: list[Paragraph] = []
     for anchor_paragraph, style_paragraph, line, marker_paragraph, keep_anchor_paragraph in anchor_targets:
         if style_paragraph.style is not None:
             anchor_paragraph.style = style_paragraph.style
@@ -434,6 +435,7 @@ def _replace_paragraph_blocks_at_anchors(
             _normalize_raw_block_line_for_paragraph(style_paragraph, line),
             force_black=True,
         )
+        replaced_paragraphs.append(anchor_paragraph)
         if (
             marker_paragraph is not None
             and marker_paragraph is not anchor_paragraph
@@ -442,7 +444,7 @@ def _replace_paragraph_blocks_at_anchors(
             _delete_paragraph(marker_paragraph)
         replaced_any = True
 
-    return replaced_any
+    return replaced_paragraphs if replaced_any else []
 
 
 def _replace_placeholders_in_region(
@@ -1026,6 +1028,7 @@ def _render_chapter_section(
                 start_index=start_index,
                 end_index=end_index,
             )
+            _render_platform_evaluation_detail_tables(document, section)
         if is_basis_data:
             _clear_basis_data_template_prompts(
                 document,
@@ -1048,12 +1051,13 @@ def _render_chapter_section(
 
     # 如果 block 自带锚点信息，则优先按 block 粒度定点替换。
     # 这用于 1.1 节内存在两个“例子：...”段落的情况。
-    if _replace_paragraph_blocks_at_anchors(
+    replaced_paragraphs = _replace_paragraph_blocks_at_anchors(
         document,
         start_index=start_index,
         end_index=end_index,
         blocks=[block for block in blocks if isinstance(block, Mapping)],
-    ):
+    )
+    if replaced_paragraphs:
         if is_platform_overview:
             _clear_platform_overview_template_prompts(
                 document,
@@ -1083,6 +1087,11 @@ def _render_chapter_section(
                 document,
                 start_index=start_index,
                 end_index=end_index,
+            )
+            _render_platform_evaluation_detail_tables(
+                document,
+                section,
+                anchor_paragraph=replaced_paragraphs[0],
             )
         if is_environment_conditions:
             _clear_environment_conditions_template_prompts(
@@ -1131,6 +1140,7 @@ def _render_chapter_section(
                     start_index=start_index,
                     end_index=end_index,
                 )
+                _render_platform_evaluation_detail_tables(document, section)
             if is_environment_conditions:
                 _clear_environment_conditions_template_prompts(
                     document,
@@ -1180,6 +1190,7 @@ def _render_chapter_section(
                 start_index=start_index,
                 end_index=end_index,
             )
+            _render_platform_evaluation_detail_tables(document, section)
         if is_environment_conditions:
             _clear_environment_conditions_template_prompts(
                 document,
@@ -1224,6 +1235,7 @@ def _render_chapter_section(
             start_index=start_index,
             end_index=end_index,
         )
+        _render_platform_evaluation_detail_tables(document, section)
     if is_environment_conditions:
         _clear_environment_conditions_template_prompts(
             document,
@@ -1473,6 +1485,133 @@ def _move_table_after_paragraph(document: DocxDocument, paragraph: Paragraph, ro
     table_element.getparent().remove(table_element)
     paragraph._element.addnext(table_element)
     return table
+
+
+def _move_paragraph_after_block(document: DocxDocument, block_element, text: str, *, copy_from: Paragraph | None = None) -> Paragraph:
+    paragraph = document.add_paragraph()
+    paragraph_element = paragraph._element
+    paragraph_element.getparent().remove(paragraph_element)
+    block_element.addnext(paragraph_element)
+    inserted = Paragraph(paragraph_element, paragraph._parent)
+    if copy_from is not None:
+        if copy_from.style is not None:
+            inserted.style = copy_from.style
+        _clone_paragraph_properties(copy_from, inserted)
+    _replace_paragraph_text(inserted, text)
+    return inserted
+
+
+def _move_table_after_block(document: DocxDocument, block_element, rows: int, cols: int):
+    table = document.add_table(rows=rows, cols=cols)
+    table.style = "Table Grid"
+    table_element = table._tbl
+    table_element.getparent().remove(table_element)
+    block_element.addnext(table_element)
+    return table
+
+
+def _write_platform_evaluation_table_cell(cell, value: str) -> None:
+    write_cell(cell, value)
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    for paragraph in cell.paragraphs:
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        paragraph.paragraph_format.left_indent = Pt(0)
+        paragraph.paragraph_format.right_indent = Pt(0)
+        paragraph.paragraph_format.first_line_indent = Pt(0)
+        paragraph.paragraph_format.space_before = Pt(0)
+        paragraph.paragraph_format.space_after = Pt(0)
+        for run in paragraph.runs:
+            run.font.size = Pt(12)
+            run.bold = False
+
+
+def _build_platform_evaluation_detail_table(
+    document: DocxDocument,
+    *,
+    anchor_element,
+    title: str,
+    headers: Sequence[str],
+    fields: Sequence[str],
+    rows: Sequence[Mapping[str, Any]],
+    title_template: Paragraph,
+):
+    title_paragraph = _move_paragraph_after_block(document, anchor_element, title, copy_from=title_template)
+    for run in title_paragraph.runs:
+        run.bold = False
+
+    table = _move_table_after_block(document, title_paragraph._element, rows=1 + len(rows), cols=len(headers))
+    table.autofit = True
+    for column_index, header in enumerate(headers):
+        _write_platform_evaluation_table_cell(table.cell(0, column_index), header)
+    for row_index, row in enumerate(rows, start=1):
+        for column_index, field in enumerate(fields):
+            _write_platform_evaluation_table_cell(table.cell(row_index, column_index), str(row.get(field, "")))
+    return table
+
+
+def _find_platform_evaluation_conclusion_paragraph(document: DocxDocument, text: str) -> Paragraph | None:
+    normalized_target = _normalize_text(text)
+    if not normalized_target:
+        return None
+    paragraphs = list(document.paragraphs)
+    for paragraph in paragraphs:
+        if _normalize_text(paragraph.text) == normalized_target:
+            return paragraph
+    for paragraph in paragraphs:
+        normalized = _normalize_text(paragraph.text)
+        if normalized.startswith("本次改造新增井槽") and "综合以上结果" in normalized:
+            return paragraph
+    return None
+
+
+def _render_platform_evaluation_detail_tables(
+    document: DocxDocument,
+    section: Mapping[str, Any],
+    *,
+    anchor_paragraph: Paragraph | None = None,
+) -> None:
+    table_definitions = [
+        (
+            "新增井槽信息",
+            ["编号", "X(m)", "Y(m)", "井槽OD(mm)", "井槽WT(mm)", "支撑OD(mm)", "支撑WT(mm)", "Fz(kN)"],
+            ["slot_no", "x", "y", "conductor_od", "conductor_wt", "support_od", "support_wt", "top_load_fz"],
+            section.get("well_slot_rows", []),
+        ),
+        (
+            "新增立管/电缆信息",
+            ["编号", "X(m)", "Y(m)", "立管/电缆OD(mm)", "立管/电缆WT(mm)", "支撑OD(mm)", "支撑WT(mm)", "X方向", "Y方向"],
+            ["riser_no", "x", "y", "riser_od", "riser_wt", "support_od", "support_wt", "batter_x", "batter_y"],
+            section.get("riser_rows", []),
+        ),
+        (
+            "新增组块载荷信息",
+            ["编号", "X(m)", "Y(m)", "Z(m)", "重量(t)"],
+            ["weight_no", "x", "y", "z", "weight_t"],
+            section.get("topside_weight_rows", []),
+        ),
+    ]
+    normalized_table_definitions = []
+    for title, headers, fields, rows in table_definitions:
+        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+            rows = []
+        normalized_table_definitions.append((title, headers, fields, rows))
+
+    conclusion_paragraph = anchor_paragraph or _find_platform_evaluation_conclusion_paragraph(document, str(section.get("text", "")))
+    if conclusion_paragraph is None:
+        return
+
+    anchor_element = conclusion_paragraph._element
+    for title, headers, fields, rows in normalized_table_definitions:
+        table = _build_platform_evaluation_detail_table(
+            document,
+            anchor_element=anchor_element,
+            title=title,
+            headers=headers,
+            fields=fields,
+            rows=rows,
+            title_template=conclusion_paragraph,
+        )
+        anchor_element = table._tbl
 
 
 def _set_load_information_cell_margins(cell, margin_twips: int = 0) -> None:

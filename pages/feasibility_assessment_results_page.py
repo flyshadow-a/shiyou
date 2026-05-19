@@ -1296,6 +1296,9 @@ class FeasibilityAssessmentResultsPage(BasePage):
             "well_slot_count": statistics["well_slot_count"],
             "riser_count": statistics["riser_count"],
             "topside_weight_sum_t": statistics["topside_weight_sum_t"],
+            "well_slot_rows": statistics["well_slot_rows"],
+            "riser_rows": statistics["riser_rows"],
+            "topside_weight_rows": statistics["topside_weight_rows"],
         }
 
     def _build_basis_data_section(self) -> dict:
@@ -1475,12 +1478,16 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return "；".join(f"（{index}）{name}" for index, name in enumerate(file_names, start=1)) + "。"
 
     def _load_platform_evaluation_statistics(self) -> dict:
+        empty_result = {
+            "well_slot_count": 0,
+            "riser_count": 0,
+            "topside_weight_sum_t": 0.0,
+            "well_slot_rows": [],
+            "riser_rows": [],
+            "topside_weight_rows": [],
+        }
         if not self.mysql_url or not self.job_name:
-            return {
-                "well_slot_count": 0,
-                "riser_count": 0,
-                "topside_weight_sum_t": 0.0,
-            }
+            return empty_result
 
         engine = self._get_engine()
         statistics_sql = text(
@@ -1494,17 +1501,60 @@ class FeasibilityAssessmentResultsPage(BasePage):
         try:
             with engine.connect() as conn:
                 row = conn.execute(statistics_sql, {"job_name": self.job_name}).mappings().first() or {}
+                well_slot_rows = [
+                    dict(item)
+                    for item in conn.execute(
+                        text(
+                            """
+                            SELECT slot_no, x, y, conductor_od, conductor_wt,
+                                   support_od, support_wt, top_load_fz
+                            FROM well_slots
+                            WHERE job_name = :job_name
+                            ORDER BY slot_no
+                            """
+                        ),
+                        {"job_name": self.job_name},
+                    ).mappings()
+                ]
+                riser_rows = [
+                    dict(item)
+                    for item in conn.execute(
+                        text(
+                            """
+                            SELECT riser_no, x, y, riser_od, riser_wt,
+                                   support_od, support_wt, batter_x, batter_y
+                            FROM risers
+                            WHERE job_name = :job_name
+                            ORDER BY riser_no
+                            """
+                        ),
+                        {"job_name": self.job_name},
+                    ).mappings()
+                ]
+                topside_weight_rows = [
+                    dict(item)
+                    for item in conn.execute(
+                        text(
+                            """
+                            SELECT weight_no, x, y, z, weight_t
+                            FROM topside_weights
+                            WHERE job_name = :job_name
+                            ORDER BY weight_no
+                            """
+                        ),
+                        {"job_name": self.job_name},
+                    ).mappings()
+                ]
         except Exception:
-            return {
-                "well_slot_count": 0,
-                "riser_count": 0,
-                "topside_weight_sum_t": 0.0,
-            }
+            return empty_result
 
         return {
             "well_slot_count": int(row.get("well_slot_count") or 0),
             "riser_count": int(row.get("riser_count") or 0),
             "topside_weight_sum_t": float(row.get("topside_weight_sum_t") or 0.0),
+            "well_slot_rows": well_slot_rows,
+            "riser_rows": riser_rows,
+            "topside_weight_rows": topside_weight_rows,
         }
 
     def _build_latest_inspection_record_summary(self) -> str:

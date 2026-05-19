@@ -237,11 +237,11 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         coordinate_config = get_coordinate_system_config("WC19-1D")
         report_defaults = get_report_defaults()
 
-        self.assertEqual(Path(r"Y:\special_strategy_images\WC19-1D\latest\platform_strength_page\overall_model\当前"), overall_config["directory"])
+        self.assertEqual(Path(r"Y:\special_strategy_images\WC19-1D\latest\platform_strength_page\overall_model\Current"), overall_config["directory"])
         self.assertEqual("3d.png", overall_config["preferred_file"])
-        self.assertEqual(Path(r"Y:\special_strategy_images\WC19-1D\latest\special_inspection_strategy\elevation_risk"), coordinate_config["directory"])
+        self.assertEqual(Path(r"Y:\special_strategy_images\WC19-1D\latest\feasibility_assessment_results_page\elevation_outline_rebuilt"), coordinate_config["directory"])
         self.assertEqual("XY_-14.png", coordinate_config["xy_file"])
-        self.assertEqual("YZ_左.png", coordinate_config["yz_file"])
+        self.assertEqual("YZ_Left.png", coordinate_config["yz_file"])
         self.assertEqual(Path(r"Y:\shiyou_file_storage\image\WC19-1D\coordinate_system.png"), coordinate_config["output_path"])
         self.assertEqual(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report" / "xxx平台改建可行性评估报告纯净版.docx", report_defaults["template_path"])
         self.assertNotIn("appendix_a_reference_path", report_defaults)
@@ -254,17 +254,17 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            source_dir = root / "special_strategy_images" / "WC19-1D" / "latest" / "special_inspection_strategy" / "elevation_risk"
+            source_dir = root / "special_strategy_images" / "WC19-1D" / "latest" / "feasibility_assessment_results_page" / "elevation_outline_rebuilt"
             source_dir.mkdir(parents=True)
             Image.new("RGB", (20, 10), "white").save(source_dir / "XY_-14.png")
-            Image.new("RGB", (30, 12), "white").save(source_dir / "YZ_左.png")
+            Image.new("RGB", (30, 12), "white").save(source_dir / "YZ_Left.png")
 
             with patch(
                 "pages.feasibility_assessment_results_page.get_coordinate_system_config",
                 return_value={
                     "directory": source_dir,
                     "xy_file": "XY_-14.png",
-                    "yz_file": "YZ_左.png",
+                    "yz_file": "YZ_Left.png",
                     "output_path": root / "shiyou_file_storage" / "image" / "WC19-1D" / "coordinate_system.png",
                 },
             ):
@@ -555,6 +555,28 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         mocked_resolve_sea_file.assert_called_once_with("WC19-1D")
         mocked_extract_depth.assert_called_once_with("platform-sea-file")
         self.assertEqual("海图水深为123.40 m，计算中使用的水位（m）如下所示。", result["blocks"][0]["text"])
+
+    def test_build_platform_evaluation_conclusion_includes_detail_rows(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+
+        with patch.object(
+            page,
+            "_load_platform_evaluation_statistics",
+            return_value={
+                "well_slot_count": 1,
+                "riser_count": 2,
+                "topside_weight_sum_t": 3.5,
+                "well_slot_rows": [{"slot_no": 1, "x": 10}],
+                "riser_rows": [{"riser_no": 2, "batter_y": 0.2}],
+                "topside_weight_rows": [{"weight_no": 3, "weight_t": 4.5}],
+            },
+        ):
+            result = page._build_platform_evaluation_conclusion_section()
+
+        self.assertEqual(1, result["well_slot_count"])
+        self.assertEqual([{"slot_no": 1, "x": 10}], result["well_slot_rows"])
+        self.assertEqual([{"riser_no": 2, "batter_y": 0.2}], result["riser_rows"])
+        self.assertEqual([{"weight_no": 3, "weight_t": 4.5}], result["topside_weight_rows"])
 
 
 if __name__ == "__main__":

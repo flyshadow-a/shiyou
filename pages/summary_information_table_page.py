@@ -10,12 +10,13 @@ from typing import List, Dict, Any
 import pandas as pd
 
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox,
-    QHeaderView, QToolTip, QFileDialog
+    QTableWidget, QTableWidgetItem, QMessageBox,
+    QFileDialog, QFrame,
 )
-from PyQt5.QtCore import Qt, QEvent
-from PyQt5.QtGui import QColor, QFont, QFontMetrics
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor, QFont
 
 from core.app_paths import external_path, first_existing_path
 from pages.hover_tip_table import HoverTipTable
@@ -37,13 +38,28 @@ class SummaryInformationTablePage(BasePage):
     - 示例数据导入：
         * 默认读取 data/summary_information_table_demo.csv
         * 若不存在，会自动生成一份模拟数据（30行）
-    - 行数很多时的展示策略：
-        * 行数 <= 50：表格高度自动扩展（外层 QScrollArea 滚动）
-        * 行数 > 50：表格保持合理高度（表格内部滚动更流畅）
+    - 行数很多时的展示策略：表格自身显示横向/纵向滚动条。
     """
 
     EXCEL_NAME = "platform_total.xls"
     MAX_EXPAND_ROWS = 50
+    COLUMN_WIDTHS = [
+        60,   # 序号
+        130,  # 分公司
+        160,  # 作业公司
+        190,  # 设施名称
+        110,  # 投产时间
+        90,   # 设计年限
+        145,  # 建造总操作重量
+        145,  # 变化总重量
+        95,   # 变化率
+        145,  # 不可超载重量
+        155,  # 重心
+        160,  # 重心不可超载半径
+        130,  # 操作工况安全系数
+        130,  # 极端工况安全系数
+        110,  # 整体评估次数
+    ]
 
     @staticmethod
     def _songti_small_four_font(bold: bool = False) -> QFont:
@@ -60,10 +76,19 @@ class SummaryInformationTablePage(BasePage):
         self.refresh_from_file_summary_page()
 
     def _build_ui(self):
-        # 更贴近示例图：浅蓝灰底、细边框、表头同色
+        # 表格视觉复用“文件管理 > 汇总信息”的白色卡片、浅蓝表头与细网格风格。
+        self.setObjectName("LoadSummaryRoot")
         self.setStyleSheet("""
-            QWidget { background: #e6eef7; }
+            QWidget#LoadSummaryRoot,
+            QWidget#LoadSummaryTopBar {
+                background: #f4f7fb;
+            }
 
+            QFrame#SummaryTablePanel {
+                background: #ffffff;
+                border-radius: 16px;
+                border: 1px solid #dce6f2;
+            }
             /* 顶部按钮风格：参照 platform_load_information_page */
             QPushButton#TopActionBtn {
                 background: #f6a24a;
@@ -77,32 +102,22 @@ class SummaryInformationTablePage(BasePage):
             QPushButton#TopActionBtn:hover { background: #ffb86b; }
 
             QTableWidget {
-                background-color: #ffffff;
-                gridline-color: #d0d0d0;
-                border: 1px solid #2f3a4a;
+                background: #ffffff;
+                border: none;
+                gridline-color: #e5ebf2;
+                alternate-background-color: #f8fbff;
+                selection-background-color: #d6e9ff;
+                selection-color: #102a43;
                 font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
                 font-size: 12pt;
             }
-            QTableWidget::item {
-                border-bottom: 1px solid #d0d0d0;
-                border-right:  1px solid #d0d0d0;
-            }
-            QTableWidget::item:selected { background-color: #dbe9ff; color: #000000; }
+            QTableWidget::item:selected { background-color: #d6e9ff; color: #102a43; }
             QTableWidget::item:focus { outline: none; }
         """)
 
-        # scroll = QScrollArea(self)
-        # scroll.setWidgetResizable(True)
-        # self.main_layout.addWidget(scroll, 1)
-        #
-        # container = QWidget()
-        # scroll.setWidget(container)
-        # root = QVBoxLayout(container)
-        # root.setContentsMargins(10, 10, 10, 10)
-        # root.setSpacing(10)
-
         # 顶部操作条（右上角按钮） - 固定在顶部
         top_bar_wrap = QWidget()
+        top_bar_wrap.setObjectName("LoadSummaryTopBar")
         top_bar = QHBoxLayout(top_bar_wrap)
         top_bar.setContentsMargins(10, 5, 10, 0)
         top_bar.addStretch(1)
@@ -122,27 +137,22 @@ class SummaryInformationTablePage(BasePage):
         top_bar.addWidget(self.btn_export)
         self.main_layout.addWidget(top_bar_wrap, 0)
 
-        # 外层滚动区域（用于整体垂直/水平滚动）
-        outer_scroll = QScrollArea(self)
-        outer_scroll.setWidgetResizable(True)
-        # 保留最外侧横向滚动条
-        outer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.main_layout.addWidget(outer_scroll, 1)
-
-        container = QWidget()
-        outer_scroll.setWidget(container)
-        root = QVBoxLayout(container)
-        root.setContentsMargins(10, 0, 10, 0)
-        root.setSpacing(0)
+        table_panel = QFrame()
+        table_panel.setObjectName("SummaryTablePanel")
+        root = QVBoxLayout(table_panel)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
 
         # 创建表格（表头结构不变）
         self.table = self._build_table_skeleton()
-        # 禁用表格内部滚动条，交给外层 outer_scroll 统一管理
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setAlternatingRowColors(True)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-        # 直接添加到 root，不再使用 table_scroll
         root.addWidget(self.table, 1)
+        self.main_layout.addWidget(table_panel, 1)
 
         # 填表说明 - 固定在底部，不随滚动条移动
         self.note_label = QLabel(
@@ -151,7 +161,7 @@ class SummaryInformationTablePage(BasePage):
             "2、变化量=变化总重/建造总操作重量。\n"
         )
         self.note_label.setWordWrap(True)
-        self.note_label.setStyleSheet("color:#111827; font-size:12pt; padding:10px; background: #e6eef7; border-top: 1px solid #b6c2d6;")
+        self.note_label.setStyleSheet("color:#111827; font-size:12pt; padding:10px; background: #f4f7fb; border-top: 1px solid #d8e3ef;")
         self.note_label.setFont(self._songti_small_four_font())
         self.main_layout.addWidget(self.note_label, 0)
 
@@ -184,12 +194,12 @@ class SummaryInformationTablePage(BasePage):
             "设施名称",
             "投产时间",
             "设计年限",
-            "建造总操作重量,(MT)",
-            "变化总重量,(MT)",
-            "变化率,%",
-            "不可超载重量,(MT)",
-            "重心,m",
-            "重心不可超载半径,(m)",
+            "建造总操作重量\n(MT)",
+            "变化总重量\n(MT)",
+            "变化率\n(%)",
+            "不可超载重量\n(MT)",
+            "重心\n(m)",
+            "重心不可超载半径\n(m)",
             "桩基承载力安全系数(最小)-操作",
             "桩基承载力安全系数(最小)-极端",
             "整体评估次数",
@@ -204,20 +214,16 @@ class SummaryInformationTablePage(BasePage):
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setVisible(False)  # 用表内两行表头模拟合并表头
 
-        # ✅ 列宽自适应窗口：Stretch
-        # header = table.horizontalHeader()
-        # header.setSectionResizeMode(QHeaderView.Stretch)
-
         # 行高：两行表头（接近截图）
-        table.setRowHeight(0, 34)  # 分组表头
-        table.setRowHeight(1, 54)  # 子表头
+        table.setRowHeight(0, 52)  # 分组表头：支持两行长标题完整显示
+        table.setRowHeight(1, 72)  # 子表头：长字段按三行显示，避免截断
 
-        # 表头背景（浅蓝灰）
-        bg_header = QColor("#eef2ff")
-        bg_group = QColor("#eef2ff")
+        # 表头背景复用文件管理汇总页的浅蓝色。
+        bg_header = QColor("#edf4fb")
+        bg_group = QColor("#edf4fb")
 
-        # ---- 纵向合并：0-5 & 15（跨两行表头）----
-        for c in list(range(0, 6)) + [15]:
+        # ---- 纵向合并：0-5（跨两行表头）----
+        for c in range(0, 6):
             table.setSpan(0, c, 2, 1)
             table.setItem(0, c, self._mk_item(self._header_label_for_col(c), bold=True, bg=bg_header))
 
@@ -231,7 +237,7 @@ class SummaryInformationTablePage(BasePage):
 
         # ---- 横向合并：桩基承载力安全系数（最小）（12~13）----
         table.setSpan(0, 12, 1, 2)
-        table.setItem(0, 12, self._mk_item("桩基承载力安全系数（最小）", bold=True, bg=bg_group))
+        table.setItem(0, 12, self._mk_item("桩基承载力\n安全系数（最小）", bold=True, bg=bg_group))
         table.setItem(1, 12, self._mk_item("操作", bold=True, bg=bg_header))
         table.setItem(1, 13, self._mk_item("极端", bold=True, bg=bg_header))
 
@@ -243,6 +249,16 @@ class SummaryInformationTablePage(BasePage):
 
         return table
 
+    def _apply_stable_column_widths(self) -> None:
+        """使用固定语义列宽，避免长内容把单列异常撑宽。"""
+        for c, width in enumerate(self.COLUMN_WIDTHS):
+            if c >= self.table.columnCount():
+                break
+            self.table.setColumnWidth(c, width)
+
+        self.table.setMinimumWidth(0)
+        self.table.setMaximumWidth(16777215)
+
     def _header_label_for_col(self, c: int) -> str:
         # 对应截图中换行表头
         labels = {
@@ -252,12 +268,12 @@ class SummaryInformationTablePage(BasePage):
             3: "设施名称",
             4: "投产时间",
             5: "设计年限",
-            6: "建造总操作\n重量,(MT)",
-            7: "变化总重\n量,(MT·m)",
-            8: "变化率,%",
-            9: "不可超载\n重量,(MT)",
-            10: "重心,m",
-            11: "重心不可超\n载半径,(m)",
+            6: "建造总操作\n重量\n(MT)",
+            7: "变化总重量\n(MT)",
+            8: "变化率\n(%)",
+            9: "不可超载重量\n(MT)",
+            10: "重心\n(m)",
+            11: "重心不可超载\n半径\n(m)",
             14: "整体评估\n次数",
         }
         return labels.get(c, "")
@@ -465,26 +481,10 @@ class SummaryInformationTablePage(BasePage):
         #     self._fit_table_height_reasonable()
         #     self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-        # 总是让表格高度随内容扩展，并由外层 QScrollArea 统一管理滚动条
-        total_height = 0
-        for r in range(total_rows):
-            total_height += self.table.rowHeight(r)
-        self.table.setFixedHeight(total_height + 2)
+        self.table.setMinimumHeight(0)
+        self.table.setMaximumHeight(16777215)
 
-        # 自适应列宽（基于所有单元格内容）
-        self.table.resizeColumnsToContents()
-
-        # ---------- 新增：使“操作”和“极端”两列等宽 ----------
-        col12_width = self.table.columnWidth(12)
-        col13_width = self.table.columnWidth(13)
-        max_width = max(col12_width, col13_width)
-        if max_width > 0:
-            self.table.setColumnWidth(12, max_width)
-            self.table.setColumnWidth(13, max_width)
-
-        # 重新计算总宽度，并设置表格最小宽度
-        total_width = sum(self.table.columnWidth(c) for c in range(self.table.columnCount()))
-        self.table.setMinimumWidth(total_width)
+        self._apply_stable_column_widths()
 
     def _fit_table_height_expand_all(self):
         h = 0

@@ -53,7 +53,7 @@ def get_coordinate_system_config(facility_code: str) -> dict[str, Any]:
     return {
         "directory": directory,
         "xy_file": str(section.get("xy_file", "XY_-14.png")),
-        "yz_file": str(section.get("yz_file", "YZ_宸?png")),
+        "yz_file": str(section.get("yz_file", "YZ_Left.png")),
         "output_path": output_root / facility_code / str(section.get("output_file", "coordinate_system.png")),
     }
 

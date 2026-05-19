@@ -6,14 +6,14 @@
   },
   "analysis_model": {
     "overall_model": {
-      "directory": "{special_strategy_images_root}\\{facility_code}\\latest\\platform_strength_page\\overall_model\\当前",
+      "directory": "{special_strategy_images_root}\\{facility_code}\\latest\\platform_strength_page\\overall_model\\Current",
       "preferred_file": "3d.png",
       "fallback_extensions": [".png", ".jpg", ".jpeg"]
     },
     "coordinate_system": {
-      "directory": "{special_strategy_images_root}\\{facility_code}\\latest\\special_inspection_strategy\\elevation_risk",
+      "directory": "{special_strategy_images_root}\\{facility_code}\\latest\\feasibility_assessment_results_page\\elevation_outline_rebuilt",
       "xy_file": "XY_-14.png",
-      "yz_file": "YZ_左.png",
+      "yz_file": "YZ_Left.png",
       "output_file": "coordinate_system.png"
     }
   }
