@@ -13,7 +13,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from pages.file_management_platforms import default_platform, find_platform
+from core.dropdown_bar import DropdownBar
+from pages.file_management_platforms import (
+    default_platform,
+    find_platform,
+    platform_codes,
+    platform_names,
+    sync_platform_dropdowns,
+)
 from pages.new_special_inspection_page import NewSpecialInspectionPage
 
 
@@ -30,6 +37,10 @@ class SpecialInspectionStrategy(NewSpecialInspectionPage):
         facility_code = self._resolve_initial_facility_code(main_window, parent)
         super().__init__(facility_code=facility_code, parent=parent)
         self.main_window = main_window
+        self.dropdown_bar = DropdownBar(self._build_top_dropdown_fields(), parent=self)
+        self.dropdown_bar.valueChanged.connect(self._on_top_filter_changed)
+        self.main_layout.insertWidget(0, self.dropdown_bar, 0)
+        self._sync_platform_ui()
 
     @staticmethod
     def _normalize_text(value: Any) -> str:
@@ -60,3 +71,57 @@ class SpecialInspectionStrategy(NewSpecialInspectionPage):
                 return find_platform(facility_name=name)["facility_code"]
 
         return default_platform()["facility_code"]
+
+    def _build_top_dropdown_fields(self) -> list[dict[str, Any]]:
+        platform = find_platform(facility_code=self.facility_code)
+        return [
+            {"key": "branch", "label": "分公司", "options": [platform["branch"]], "default": platform["branch"]},
+            {"key": "op_company", "label": "作业公司", "options": [platform["op_company"]], "default": platform["op_company"]},
+            {"key": "oilfield", "label": "油气田", "options": [platform["oilfield"]], "default": platform["oilfield"]},
+            {
+                "key": "facility_code",
+                "label": "设施编码",
+                "options": platform_codes(),
+                "default": platform["facility_code"],
+            },
+            {
+                "key": "facility_name",
+                "label": "设施名称",
+                "options": platform_names(),
+                "default": platform["facility_name"],
+            },
+            {
+                "key": "facility_type",
+                "label": "设施类型",
+                "options": [platform["facility_type"]],
+                "default": platform["facility_type"],
+            },
+            {"key": "category", "label": "分类", "options": [platform["category"]], "default": platform["category"]},
+            {
+                "key": "start_time",
+                "label": "投产时间",
+                "options": [platform["start_time"]],
+                "default": platform["start_time"],
+            },
+            {
+                "key": "design_life",
+                "label": "设计年限",
+                "options": [platform["design_life"]],
+                "default": platform["design_life"],
+            },
+        ]
+
+    def _on_top_filter_changed(self, key: str, value: str) -> None:
+        if key in {"facility_code", "facility_name"}:
+            self._sync_platform_ui(changed_key=key)
+
+    def _sync_platform_ui(self, changed_key: str | None = None) -> None:
+        platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
+        if platform["facility_code"] != self.facility_code:
+            self.reload_for_facility(platform["facility_code"])
+        window = self.window()
+        if hasattr(window, "set_current_platform_name"):
+            window.set_current_platform_name(platform["facility_name"])
+
+    def get_current_platform_name(self) -> str:
+        return self.dropdown_bar.get_value("facility_name")

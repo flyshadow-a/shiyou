@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QWidget,
     QFileDialog, QMessageBox, QProgressDialog, QScrollArea,
     QApplication, QAbstractItemView, QSizePolicy, QDialog, QDialogButtonBox,
-    QTreeWidget, QTreeWidgetItem, QSplitter, QComboBox
+    QTreeWidget, QTreeWidgetItem, QSplitter, QMenu
 )
 from PyQt5.QtCore import QObject, Qt, pyqtSignal, QThread, QTimer
 
@@ -35,7 +35,7 @@ from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectio
 from services.special_strategy_runtime import (
     finalize_special_strategy_calculation,
     load_base_config,
-    load_latest_strategy_params,
+    load_default_params,
     prepare_special_strategy_calculation,
     resolve_current_model_inputs,
     run_special_strategy_calculation,
@@ -358,13 +358,6 @@ class _SpecialStrategyCalculationWorker(QObject):
     failed = pyqtSignal(str)
 
     def __init__(
-<<<<<<< HEAD
-            self,
-            facility_code: str,
-            *,
-            param_overrides: dict[str, Any] | None = None,
-            input_overrides: dict[str, Any] | None = None,
-=======
         self,
         facility_code: str,
         *,
@@ -372,7 +365,6 @@ class _SpecialStrategyCalculationWorker(QObject):
         param_overrides: dict[str, Any] | None = None,
         input_overrides: dict[str, Any] | None = None,
         prepared_calculation: dict[str, Any] | None = None,
->>>>>>> 17efb79 (更新特检策略相关代码)
     ):
         super().__init__()
         self._facility_code = facility_code
@@ -418,6 +410,8 @@ class NewSpecialInspectionPage(BasePage):
     CATEGORY_MODEL = "model"
     CATEGORY_COLLAPSE = "collapse"
     CATEGORY_FATIGUE = "fatigue"
+    RISK_LEVEL_PLACEHOLDER = "▼"
+    WORK_POINT_LABEL_COLUMN_WIDTH = 160
     FILE_TABLE_HEADERS = ["序号", "文件类别", "工况", "文件名", "文件格式", "修改时间", "备注"]
     RISK_LEVEL_OPTIONS = {
         "life_safety_level": {
@@ -488,16 +482,29 @@ class NewSpecialInspectionPage(BasePage):
         total_width = splitter.width()
         if total_width <= 0:
             return
+        left_ratio = 7 / 11
         if total_width < 680:
-            left_width = max(1, int(total_width * 0.58))
+            left_width = max(1, int(total_width * left_ratio))
             splitter.setSizes([left_width, max(1, total_width - left_width)])
             return
         right_min_width = 300
-        left_width = int(total_width * 0.62)
+        left_width = int(total_width * left_ratio)
         left_width = max(360, left_width)
         left_width = min(left_width, max(240, total_width - right_min_width))
         right_width = max(right_min_width, total_width - left_width)
         splitter.setSizes([left_width, right_width])
+
+    def reload_for_facility(self, facility_code: str) -> None:
+        next_code = str(facility_code or "").strip()
+        if not next_code:
+            return
+        self.facility_code = next_code
+        self._risk_updated = False
+        self._latest_run_id = None
+        self._default_params = self._load_default_params()
+        self._rule_overrides = normalize_rule_overrides((self._default_params or {}).get("rule_overrides"))
+        self._apply_default_form_values()
+        self._reload_system_files_from_backend()
 
     def _params_json_path(self) -> Path | None:
         candidates = [
@@ -511,7 +518,7 @@ class NewSpecialInspectionPage(BasePage):
 
     def _load_default_params(self) -> dict:
         try:
-            return load_latest_strategy_params(self.facility_code)
+            return load_default_params(self.facility_code)
         except Exception:
             path = self._params_json_path()
             if not path or not path.exists():
@@ -564,6 +571,9 @@ class NewSpecialInspectionPage(BasePage):
         points = list(self._default_params.get("work_points") or [])
         if not points:
             points = self._fallback_work_point_pairs(leg_count)
+        points = points[:leg_count]
+        while len(points) < leg_count:
+            points.append(("", ""))
         rows: list[tuple[int, str, str]] = []
         for idx, pair in enumerate(points, start=1):
             x, y = pair if isinstance(pair, (list, tuple)) and len(pair) >= 2 else ("", "")
@@ -651,17 +661,58 @@ class NewSpecialInspectionPage(BasePage):
     def _risk_level_description(cls, key: str, value: str) -> str:
         return str(cls.RISK_LEVEL_OPTIONS.get(key, {}).get(value, ""))
 
-    def _create_risk_level_combo(self, row: int, key: str, value: str) -> QComboBox:
-        options = self.RISK_LEVEL_OPTIONS[key]
-        combo = QComboBox(self.risk_param_table)
-        combo.setObjectName("RiskLevelAlertCombo" if key == "global_level_tag" else "RiskLevelCombo")
-        combo.addItems(list(options.keys()))
-        current = value if value in options else next(iter(options))
-        combo.setCurrentText(current)
-        combo.currentTextChanged.connect(
-            lambda text, row_idx=row, spec_key=key: self._on_risk_level_changed(row_idx, spec_key, text)
-        )
-        return combo
+    def _risk_level_cell_text(self, value: str) -> str:
+        value_text = str(value or "").strip()
+        if not value_text:
+            return self.RISK_LEVEL_PLACEHOLDER
+        return f"{value_text}  {self.RISK_LEVEL_PLACEHOLDER}"
+
+    @staticmethod
+    def _risk_level_menu_qss() -> str:
+        return """
+            QMenu {
+                background-color: #ffffff;
+                color: #1d2b3a;
+                border: 1px solid #cfd8e3;
+                padding: 4px 0;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+                background-color: transparent;
+                color: #1d2b3a;
+            }
+            QMenu::item:selected {
+                background-color: #dbe9ff;
+                color: #1d2b3a;
+            }
+        """
+
+    def _select_risk_level(self, row: int, key: str, value: str) -> None:
+        item = self.risk_param_table.item(row, 1)
+        if item is not None:
+            item.setText(self._risk_level_cell_text(value))
+            item.setData(Qt.UserRole, value)
+        self._on_risk_level_changed(row, key, value)
+
+    def _on_risk_param_cell_clicked(self, row: int, column: int) -> None:
+        if column != 1 or not (0 <= row < len(getattr(self, "_risk_param_specs", []))):
+            return
+        key = str(self._risk_param_specs[row].get("key", "")).strip()
+        if key not in self.RISK_LEVEL_OPTIONS:
+            return
+
+        menu = QMenu(self.risk_param_table)
+        menu.setStyleSheet(self._risk_level_menu_qss())
+        for option in self.RISK_LEVEL_OPTIONS[key]:
+            menu.addAction(option)
+
+        item = self.risk_param_table.item(row, column)
+        if item is None:
+            return
+        rect = self.risk_param_table.visualItemRect(item)
+        action = menu.exec_(self.risk_param_table.viewport().mapToGlobal(rect.bottomLeft()))
+        if action is not None:
+            self._select_risk_level(row, key, action.text())
 
     def _on_risk_level_changed(self, row: int, key: str, value: str) -> None:
         description = self._risk_level_description(key, value)
@@ -671,9 +722,50 @@ class NewSpecialInspectionPage(BasePage):
         item = self.risk_param_table.item(row, 2)
         if item is not None:
             item.setText(description)
-            self.risk_param_table.resizeRowToContents(row)
-            self.risk_param_table.setRowHeight(row, max(self.risk_param_table.rowHeight(row), 42 if row < 2 else 34))
-            self._fit_table_height(self.risk_param_table)
+            self._resize_risk_param_row(row)
+
+    def _resize_risk_param_row(self, row: int) -> None:
+        table = self.risk_param_table
+        table.resizeRowToContents(row)
+        table.setRowHeight(row, max(table.rowHeight(row), 38))
+        self._fit_table_height_from_current_rows(table)
+
+    def _apply_default_form_values(self) -> None:
+        if hasattr(self, "model_param_table"):
+            params = self._default_model_param_rows()
+            self.model_param_table.blockSignals(True)
+            try:
+                for row, (_, value) in enumerate(params):
+                    item = self.model_param_table.item(row, 1)
+                    if item is not None:
+                        item.setText(value)
+            finally:
+                self.model_param_table.blockSignals(False)
+
+        if hasattr(self, "coord_table"):
+            self._reset_coord_table_rows(self._default_work_points())
+
+        if hasattr(self, "risk_param_table"):
+            self._risk_param_specs = self._default_risk_specs()
+            for row, spec in enumerate(self._risk_param_specs):
+                key = str(spec.get("key", "")).strip()
+                if key in self.RISK_LEVEL_OPTIONS:
+                    spec["value"] = ""
+                    spec["description"] = ""
+                label_item = self.risk_param_table.item(row, 0)
+                value_item = self.risk_param_table.item(row, 1)
+                desc_item = self.risk_param_table.item(row, 2)
+                if label_item is not None:
+                    label_item.setText(str(spec["label"]))
+                if value_item is not None:
+                    value_item.setText(
+                        self._risk_level_cell_text("") if key in self.RISK_LEVEL_OPTIONS else str(spec["value"])
+                    )
+                    value_item.setData(Qt.UserRole, "" if key in self.RISK_LEVEL_OPTIONS else None)
+                if desc_item is not None:
+                    desc_item.setText(str(spec["description"]))
+                self.risk_param_table.setRowHeight(row, 38)
+            self._fit_table_height_from_current_rows(self.risk_param_table)
 
     def _build_ui(self):
         # 整页浅蓝灰背景
@@ -686,14 +778,16 @@ class NewSpecialInspectionPage(BasePage):
                 background: #e6eef7;
                 border: 1px solid #c7d2e3;
             }
-            QLabel#SectionTitle {
-                font-weight: bold;
-                color: #2b2b2b;
-                font-size: 12pt;
+            QFrame#InnerPanel {
+                background: #ffffff;
+                border: 1px solid #cfdae8;
+                border-radius: 6px;
             }
+            QLabel#SectionTitle,
             QLabel#RedSectionTitle {
+                background: transparent;
                 font-weight: bold;
-                color: #d10000;
+                color: #1f3b57;
                 font-size: 12pt;
             }
             QPushButton#ActionBtn {
@@ -721,16 +815,26 @@ class NewSpecialInspectionPage(BasePage):
 
             QTableWidget {
                 background: #ffffff;
+                alternate-background-color: #fbfdff;
                 gridline-color: #d0d0d0;
                 border: 1px solid #d0d0d0;
                 font-size: 12pt;
             }
+            QTableWidget::item {
+                border-bottom: 1px solid #e6edf5;
+                border-right: 1px solid #e6edf5;
+                padding: 3px 6px;
+            }
+            QTableWidget::item:selected {
+                background: #dbeafe;
+                color: #111827;
+            }
             QHeaderView::section {
-                background: #f3f6fb;
-                color: #000000;
-                border: 1px solid #e6e6e6;
+                background: #edf4fb;
+                color: #1f3b57;
+                border: 1px solid #d9e4f0;
                 padding: 6px 6px;
-                font-weight: normal;
+                font-weight: bold;
                 font-size: 12pt;
             }
             QLineEdit {
@@ -738,47 +842,6 @@ class NewSpecialInspectionPage(BasePage):
                 border: 1px solid #c7d2e3;
                 padding: 4px 6px;
                 font-size: 12pt;
-            }
-            QLabel#ModelInfoSubTitle {
-                color: #1f3b57;
-                font-size: 12pt;
-                font-weight: bold;
-            }
-            QLabel#ModelInfoHint {
-                color: #5b6775;
-                font-size: 11pt;
-            }
-            QPushButton#ModelInfoMiniBtn {
-                background: #ffffff;
-                color: #1b2a3a;
-                border: 1px solid #b9c6d6;
-                border-radius: 4px;
-                min-height: 30px;
-                padding: 0 12px;
-                font-size: 12pt;
-            }
-            QPushButton#ModelInfoMiniBtn:hover {
-                background: #d9e6f5;
-            }
-            QComboBox#RiskLevelCombo,
-            QComboBox#RiskLevelAlertCombo {
-                border: 0px;
-                padding: 2px 8px;
-                min-height: 28px;
-                font-size: 12pt;
-            }
-            QComboBox#RiskLevelCombo {
-                background: #ffffff;
-                color: #000000;
-            }
-            QComboBox#RiskLevelAlertCombo {
-                background: #ff0000;
-                color: #ffffff;
-            }
-            QComboBox#RiskLevelCombo::drop-down,
-            QComboBox#RiskLevelAlertCombo::drop-down {
-                width: 22px;
-                border: 0px;
             }
         """)
 
@@ -815,8 +878,8 @@ class NewSpecialInspectionPage(BasePage):
         self._content_splitter.setHandleWidth(6)
         self._content_splitter.addWidget(left_scroll)
         self._content_splitter.addWidget(right)
-        self._content_splitter.setStretchFactor(0, 3)
-        self._content_splitter.setStretchFactor(1, 2)
+        self._content_splitter.setStretchFactor(0, 7)
+        self._content_splitter.setStretchFactor(1, 4)
         self._content_splitter.setCollapsible(0, False)
         self._content_splitter.setCollapsible(1, False)
         self._content_splitter.splitterMoved.connect(lambda *_: self._adjust_files_table_widths())
@@ -829,6 +892,7 @@ class NewSpecialInspectionPage(BasePage):
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.left_panel = panel
 
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
@@ -846,18 +910,15 @@ class NewSpecialInspectionPage(BasePage):
     # ---------------- 上半：结构模型信息 ----------------
     def _build_model_info_block(self) -> QFrame:
         block = QFrame()
-        block.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        block.setObjectName("InnerPanel")
+        block.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         block_lay = QVBoxLayout(block)
-        block_lay.setContentsMargins(0, 0, 0, 0)
-        block_lay.setSpacing(8)
+        block_lay.setContentsMargins(12, 10, 12, 12)
+        block_lay.setSpacing(10)
 
         title = QLabel("结构模型信息")
         title.setObjectName("SectionTitle")
         block_lay.addWidget(title)
-
-        param_title = QLabel("模型参数")
-        param_title.setObjectName("ModelInfoSubTitle")
-        block_lay.addWidget(param_title)
 
         # 参数表（两列：项目/值，默认从平台参数读取，值列可编辑）
         params = self._default_model_param_rows()
@@ -883,39 +944,19 @@ class NewSpecialInspectionPage(BasePage):
             | QAbstractItemView.EditKeyPressed
         )
         param_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        param_table.itemChanged.connect(self._on_model_param_item_changed)
 
         block_lay.addWidget(param_table)
-
-        coord_head = QHBoxLayout()
-        coord_head.setContentsMargins(0, 2, 0, 0)
-        coord_head.setSpacing(8)
-
-        coord_title = QLabel("腿柱工作点坐标")
-        coord_title.setObjectName("ModelInfoSubTitle")
-        coord_head.addWidget(coord_title)
-        coord_head.addStretch(1)
-
-        btn_add_coord = QPushButton("新增一行")
-        btn_add_coord.setObjectName("ModelInfoMiniBtn")
-        btn_add_coord.clicked.connect(self._append_coord_row)
-        coord_head.addWidget(btn_add_coord)
-
-        btn_del_coord = QPushButton("删除选中行")
-        btn_del_coord.setObjectName("ModelInfoMiniBtn")
-        btn_del_coord.clicked.connect(self._remove_selected_coord_rows)
-        coord_head.addWidget(btn_del_coord)
-        block_lay.addLayout(coord_head)
-
-        coord_hint = QLabel("按实际腿柱数量维护坐标行，X/Y 坐标需成对填写。")
-        coord_hint.setObjectName("ModelInfoHint")
-        block_lay.addWidget(coord_hint)
 
         # 坐标表（默认从平台参数读取，X/Y 可编辑）
         coords = self._default_work_points()
         self.coord_table = QTableWidget(max(len(coords), 1), 3)
         coord_table = self.coord_table
-        coord_table.setHorizontalHeaderLabels(["序号", "X坐标（m）", "Y坐标（m）"])
-        coord_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        coord_table.setHorizontalHeaderLabels(["腿柱工作点坐标", "X坐标（m）", "Y坐标（m）"])
+        coord_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        coord_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        coord_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        coord_table.setColumnWidth(0, self.WORK_POINT_LABEL_COLUMN_WIDTH)
         coord_table.verticalHeader().setVisible(False)
 
         for r, (idx, x, y) in enumerate(coords):
@@ -926,7 +967,7 @@ class NewSpecialInspectionPage(BasePage):
                     it.setFlags(it.flags() & ~Qt.ItemIsEditable)
                 coord_table.setItem(r, c, it)
 
-        self._lock_table_with_scroll(coord_table, row_height=34, visible_rows=min(max(len(coords), 4), 8))
+        self._lock_table_full_display(coord_table, row_height=34, show_header=True)
         coord_table.setEditTriggers(
             QAbstractItemView.DoubleClicked
             | QAbstractItemView.SelectedClicked
@@ -934,21 +975,10 @@ class NewSpecialInspectionPage(BasePage):
         )
         coord_table.setSelectionMode(QAbstractItemView.SingleSelection)
         coord_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self._sync_leg_count_from_coord_rows()
 
         block_lay.addWidget(coord_table)
-        block.setMinimumHeight(block.sizeHint().height())
+        self.model_info_block = block
         return block
-
-    def _coord_visible_rows(self) -> int:
-        return min(max(self.coord_table.rowCount(), 4), 8)
-
-    def _refresh_coord_table_layout(self) -> None:
-        self._lock_table_with_scroll(
-            self.coord_table,
-            row_height=34,
-            visible_rows=self._coord_visible_rows(),
-        )
 
     def _renumber_coord_rows(self) -> None:
         for row in range(self.coord_table.rowCount()):
@@ -960,43 +990,94 @@ class NewSpecialInspectionPage(BasePage):
             item.setTextAlignment(Qt.AlignCenter)
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
 
-    def _sync_leg_count_from_coord_rows(self) -> None:
-        if not hasattr(self, "model_param_table") or self.model_param_table.rowCount() < 4:
-            return
+    def _on_model_param_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.row() == 3 and item.column() == 1:
+            self._sync_coord_rows_to_leg_count()
+
+    def _coord_target_leg_count(self) -> int | None:
         item = self.model_param_table.item(3, 1)
-        if item is not None:
-            item.setText(str(self.coord_table.rowCount()))
+        if item is None:
+            return None
+        try:
+            count = int(float((item.text() or "").strip()))
+        except (TypeError, ValueError):
+            return None
+        return max(count, 1)
 
-    def _append_coord_row(self) -> None:
-        row = self.coord_table.rowCount()
-        self.coord_table.insertRow(row)
-        for col in range(3):
-            item = QTableWidgetItem("" if col else str(row + 1))
-            item.setTextAlignment(Qt.AlignCenter)
-            if col == 0:
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.coord_table.setItem(row, col, item)
-        self.coord_table.selectRow(row)
+    def _sync_coord_rows_to_leg_count(self) -> None:
+        target = self._coord_target_leg_count()
+        if target is None:
+            return
+        leg_item = self.model_param_table.item(3, 1)
+        if leg_item is not None and leg_item.text().strip() != str(target):
+            self.model_param_table.blockSignals(True)
+            try:
+                leg_item.setText(str(target))
+            finally:
+                self.model_param_table.blockSignals(False)
+
+        current = self.coord_table.rowCount()
+        if current < target:
+            for row in range(current, target):
+                self.coord_table.insertRow(row)
+                for col in range(3):
+                    item = QTableWidgetItem("" if col else str(row + 1))
+                    item.setTextAlignment(Qt.AlignCenter)
+                    if col == 0:
+                        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    self.coord_table.setItem(row, col, item)
+        elif current > target:
+            for row in range(current - 1, target - 1, -1):
+                self.coord_table.removeRow(row)
+
         self._renumber_coord_rows()
-        self._sync_leg_count_from_coord_rows()
-        self._refresh_coord_table_layout()
-
-    def _remove_selected_coord_rows(self) -> None:
-        selected_rows = sorted(
-            {index.row() for index in self.coord_table.selectionModel().selectedRows()},
-            reverse=True,
+        self._lock_table_full_display(self.coord_table, row_height=34, show_header=True)
+        self.coord_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
         )
-        if not selected_rows:
-            QMessageBox.information(self, "提示", "请先选中要删除的坐标行。")
-            return
-        if self.coord_table.rowCount() - len(selected_rows) < 1:
-            QMessageBox.information(self, "提示", "工作点坐标表至少保留一行。")
-            return
-        for row in selected_rows:
-            self.coord_table.removeRow(row)
+        self.coord_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.coord_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._refresh_model_info_layout()
+
+    def _reset_coord_table_rows(self, rows: list[tuple[int, str, str]]) -> None:
+        self.coord_table.setRowCount(max(len(rows), 1))
+        for row, (idx, x, y) in enumerate(rows):
+            for col, value in enumerate([idx, x, y]):
+                item = self.coord_table.item(row, col)
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.coord_table.setItem(row, col, item)
+                item.setText(str(value))
+                item.setTextAlignment(Qt.AlignCenter)
+                if col == 0:
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         self._renumber_coord_rows()
-        self._sync_leg_count_from_coord_rows()
-        self._refresh_coord_table_layout()
+        self._lock_table_full_display(self.coord_table, row_height=34, show_header=True)
+        self.coord_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
+        )
+        self.coord_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.coord_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._refresh_model_info_layout()
+
+    def _refresh_model_info_layout(self) -> None:
+        block = getattr(self, "model_info_block", None)
+        if block is None:
+            return
+        layout = block.layout()
+        if layout is not None:
+            layout.activate()
+        block.updateGeometry()
+        panel = getattr(self, "left_panel", None)
+        if panel is not None:
+            panel_layout = panel.layout()
+            if panel_layout is not None:
+                panel_layout.activate()
+            panel.updateGeometry()
 
     # # ---------------- 上半：模型文件（新增） ----------------
     def _build_model_files_block(self) -> QFrame:
@@ -1014,10 +1095,11 @@ class NewSpecialInspectionPage(BasePage):
     # # ---------------- 上半：倒塌分析结果文件 ----------------
     def _build_analysis_files_block(self) -> QFrame:
         block = QFrame()
+        block.setObjectName("InnerPanel")
         block.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         block_lay = QVBoxLayout(block)
-        block_lay.setContentsMargins(0, 0, 0, 0)
+        block_lay.setContentsMargins(12, 10, 12, 12)
         block_lay.setSpacing(0)
 
         self.files_table = _NoWheelFileTable(0, len(self.FILE_TABLE_HEADERS))
@@ -1051,7 +1133,7 @@ class NewSpecialInspectionPage(BasePage):
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(6, QHeaderView.Interactive)
 
-        table.setColumnWidth(0, 52)
+        table.setColumnWidth(0, self.WORK_POINT_LABEL_COLUMN_WIDTH)
 
     def _adjust_files_table_widths(self) -> None:
         if not hasattr(self, "files_table") or self.files_table is None:
@@ -1061,7 +1143,7 @@ class NewSpecialInspectionPage(BasePage):
         if table.viewport().width() <= 0:
             return
 
-        table.setColumnWidth(0, 52)
+        table.setColumnWidth(0, self.WORK_POINT_LABEL_COLUMN_WIDTH)
 
         # 先只让固定列按内容收缩
         for c in [1, 2, 4, 5]:
@@ -1083,8 +1165,9 @@ class NewSpecialInspectionPage(BasePage):
     # ---------------- 下半：风险等级参数（新增） ----------------
     def _build_risk_level_settings_block(self) -> QFrame:
         block = QFrame()
+        block.setObjectName("InnerPanel")
         v = QVBoxLayout(block)
-        v.setContentsMargins(0, 8, 0, 0)
+        v.setContentsMargins(12, 10, 12, 12)
         v.setSpacing(10)
         block.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -1107,10 +1190,8 @@ class NewSpecialInspectionPage(BasePage):
         for r, spec in enumerate(rows):
             key = str(spec.get("key", "")).strip()
             if key in self.RISK_LEVEL_OPTIONS:
-                spec["value"] = str(spec.get("value") or "")
-                if spec["value"] not in self.RISK_LEVEL_OPTIONS[key]:
-                    spec["value"] = next(iter(self.RISK_LEVEL_OPTIONS[key]))
-                spec["description"] = self._risk_level_description(key, spec["value"])
+                spec["value"] = ""
+                spec["description"] = ""
 
             it0 = QTableWidgetItem(str(spec["label"]))
             it1 = QTableWidgetItem(str(spec["value"]))
@@ -1132,7 +1213,10 @@ class NewSpecialInspectionPage(BasePage):
             table.setItem(r, 2, it2)
 
             if key in self.RISK_LEVEL_OPTIONS:
-                table.setCellWidget(r, 1, self._create_risk_level_combo(r, key, spec["value"]))
+                it1.setText(self._risk_level_cell_text(""))
+                it1.setData(Qt.UserRole, "")
+                it1.setFlags(it1.flags() & ~Qt.ItemIsEditable)
+                it1.setToolTip("点击选择")
 
         table.setEditTriggers(
             QAbstractItemView.DoubleClicked
@@ -1140,11 +1224,10 @@ class NewSpecialInspectionPage(BasePage):
             | QAbstractItemView.EditKeyPressed
         )
         table.setSelectionMode(QAbstractItemView.SingleSelection)
-        table.resizeRowsToContents()
+        table.cellClicked.connect(self._on_risk_param_cell_clicked)
         for r in range(table.rowCount()):
-            min_height = 42 if r < 2 else 34
-            table.setRowHeight(r, max(table.rowHeight(r), min_height))
-        self._fit_table_height(table)
+            table.setRowHeight(r, 38)
+        self._fit_table_height_from_current_rows(table)
         table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         v.addWidget(table, 1)
 
@@ -1270,19 +1353,12 @@ class NewSpecialInspectionPage(BasePage):
             QTimer.singleShot(0, self._begin_post_risk_rule_stage)
 
     def _start_risk_calculation_worker(
-<<<<<<< HEAD
-            self,
-            *,
-            param_overrides: dict[str, Any] | None = None,
-            input_overrides: dict[str, Any] | None = None,
-=======
         self,
         *,
         stage: str = "run",
         param_overrides: dict[str, Any] | None = None,
         input_overrides: dict[str, Any] | None = None,
         prepared_calculation: dict[str, Any] | None = None,
->>>>>>> 17efb79 (更新特检策略相关代码)
     ) -> None:
         self._set_risk_running(True)
 
@@ -1708,10 +1784,11 @@ class NewSpecialInspectionPage(BasePage):
 
     def _collect_runtime_overrides(self) -> dict:
         def get_text(table: QTableWidget, row: int, col: int) -> str:
-            widget = table.cellWidget(row, col)
-            if isinstance(widget, QComboBox):
-                return widget.currentText().strip()
             item = table.item(row, col)
+            if item is not None:
+                user_value = item.data(Qt.UserRole)
+                if user_value is not None:
+                    return str(user_value).strip()
             return item.text().strip() if item is not None else ""
 
         def parse_number(text: str, *, integer: bool = False):
@@ -1756,7 +1833,6 @@ class NewSpecialInspectionPage(BasePage):
             work_points.append([x_val, y_val])
         if work_points:
             overrides["work_points"] = work_points
-            overrides["no_legs"] = len(work_points)
 
         overrides["rule_overrides"] = normalize_rule_overrides(self._rule_overrides)
 
@@ -2497,12 +2573,26 @@ class NewSpecialInspectionPage(BasePage):
 
         table.setFixedHeight(max(total, 42))
 
+    def _fit_table_height_from_current_rows(self, table: QTableWidget):
+        table.doItemsLayout()
+        table.updateGeometry()
+
+        total = table.frameWidth() * 2 + 2
+        if table.horizontalHeader().isVisible():
+            total += table.horizontalHeader().height()
+        for row in range(table.rowCount()):
+            total += table.rowHeight(row)
+        if table.horizontalScrollBar().isVisible():
+            total += table.horizontalScrollBar().height()
+        table.setFixedHeight(max(total, 42))
+
     def _lock_table_full_display(self, table: QTableWidget, row_height: int = 34, show_header: bool = True):
         table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setSelectionMode(QAbstractItemView.NoSelection)
+        table.setAlternatingRowColors(True)
         table.horizontalHeader().setVisible(show_header)
         if show_header:
             header_height = max(36, table.horizontalHeader().fontMetrics().height() + 16)
@@ -2510,28 +2600,7 @@ class NewSpecialInspectionPage(BasePage):
         final_row_height = max(row_height, table.fontMetrics().height() + 16)
         for r in range(table.rowCount()):
             table.setRowHeight(r, final_row_height)
-        self._fit_table_height(table)
-
-    def _lock_table_with_scroll(self, table: QTableWidget, row_height: int = 34, visible_rows: int = 4):
-        table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setSelectionMode(QAbstractItemView.NoSelection)
-        table.horizontalHeader().setVisible(True)
-        header_height = max(36, table.horizontalHeader().fontMetrics().height() + 16)
-        table.horizontalHeader().setMinimumHeight(max(header_height, table.horizontalHeader().minimumHeight()))
-
-        final_row_height = max(row_height, table.fontMetrics().height() + 16)
-        for r in range(table.rowCount()):
-            table.setRowHeight(r, final_row_height)
-
-        table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        visible = max(1, min(visible_rows, table.rowCount()))
-        total = table.frameWidth() * 2 + 2
-        total += table.horizontalHeader().height()
-        total += visible * final_row_height
-        table.setFixedHeight(max(total, 120))
+        self._fit_table_height_from_current_rows(table)
 
     def _reload_system_files_from_backend(self):
         self.model_files = self._db_fetch_file_records(self.CATEGORY_MODEL)
@@ -2924,8 +2993,7 @@ class NewSpecialInspectionPage(BasePage):
     def _create_title_row_widget(self, title_text: str, buttons_info: list) -> QWidget:
         """创建一个内嵌于表格标题行的自定义 Widget，包含标题文字和对应按钮"""
         w = QWidget()
-        # 背景色与之前的标题行保持一致
-        w.setStyleSheet("background-color: #e9edf5;")
+        w.setStyleSheet("background-color: #ffffff;")
         lay = QHBoxLayout(w)
         lay.setContentsMargins(10, 2, 10, 2)
         lay.setSpacing(8)

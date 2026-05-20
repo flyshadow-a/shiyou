@@ -2536,21 +2536,38 @@ def _is_active_rule_pattern(value: Any) -> bool:
     return _normalize_rule_pattern(value) != "****"
 
 
+def _normalize_member_relation(value: Any) -> str:
+    text = _safe_str(value).lower()
+    if text == "or":
+        return "Or"
+    if text == "not":
+        return "Not"
+    return "And"
+
+
+def _member_rule_key(a: str, relation: str, b: str) -> Tuple[str, str, str]:
+    if relation == "And":
+        left, right = sorted((a, b))
+        return left, relation, right
+    return a, relation, b
+
+
 def _normalize_member_rule_rows(rows: Any) -> List[Dict[str, str]]:
     out: List[Dict[str, str]] = []
-    seen: Set[Tuple[str, str]] = set()
+    seen: Set[Tuple[str, str, str]] = set()
     for row in rows or []:
         if not isinstance(row, dict):
             continue
         a = _normalize_rule_pattern(row.get("a"))
         b = _normalize_rule_pattern(row.get("b"))
+        relation = _normalize_member_relation(row.get("relation"))
         if not (_is_active_rule_pattern(a) or _is_active_rule_pattern(b)):
             continue
-        key = tuple(sorted((a, b)))
+        key = _member_rule_key(a, relation, b)
         if key in seen:
             continue
         seen.add(key)
-        out.append({"a": a, "b": b})
+        out.append({"a": a, "relation": relation, "b": b})
     return out
 
 
@@ -2594,9 +2611,38 @@ def _matches_member_rule(a: Any, b: Any, rule: Dict[str, Any]) -> bool:
     pb = _normalize_rule_pattern(rule.get("b"))
     if not (_is_active_rule_pattern(pa) or _is_active_rule_pattern(pb)):
         return False
-    forward = _matches_rule_pattern(a, pa) and _matches_rule_pattern(b, pb)
-    reverse = _matches_rule_pattern(a, pb) and _matches_rule_pattern(b, pa)
-    return forward or reverse
+    return _matches_member_rule_oriented(a, b, rule) or _matches_member_rule_oriented(b, a, rule)
+
+
+def _matches_member_rule_oriented(a: Any, b: Any, rule: Dict[str, Any]) -> bool:
+    pa = _normalize_rule_pattern(rule.get("a"))
+    pb = _normalize_rule_pattern(rule.get("b"))
+    relation = _normalize_member_relation(rule.get("relation"))
+    if relation == "Or":
+        return _matches_rule_pattern(a, pa) or _matches_rule_pattern(b, pb)
+    if relation == "Not":
+        return _matches_rule_pattern(a, pa) and not _matches_rule_pattern(b, pb)
+    return _matches_rule_pattern(a, pa) and _matches_rule_pattern(b, pb)
+
+
+def _matches_member_rules(a: Any, b: Any, rules: Sequence[Dict[str, Any]]) -> bool:
+    grouped_not_rules: Dict[str, List[str]] = {}
+    for rule in rules:
+        pa = _normalize_rule_pattern(rule.get("a"))
+        pb = _normalize_rule_pattern(rule.get("b"))
+        relation = _normalize_member_relation(rule.get("relation"))
+        if not (_is_active_rule_pattern(pa) or _is_active_rule_pattern(pb)):
+            continue
+        if relation == "Not":
+            grouped_not_rules.setdefault(pa, []).append(pb)
+        elif _matches_member_rule(a, b, rule):
+            return True
+
+    for pa, pb_list in grouped_not_rules.items():
+        for left, right in ((a, b), (b, a)):
+            if _matches_rule_pattern(left, pa) and not any(_matches_rule_pattern(right, pb) for pb in pb_list):
+                return True
+    return False
 
 
 def _apply_manual_classification_rules(
@@ -2624,9 +2670,9 @@ def _apply_manual_classification_rules(
         for idx, row in members.iterrows():
             a = row.get("A")
             b = row.get("B")
-            if any(_matches_member_rule(a, b, rule) for rule in leg_member_rules):
+            if _matches_member_rules(a, b, leg_member_rules):
                 members.at[idx, "MemberType"] = "LEG"
-            elif any(_matches_member_rule(a, b, rule) for rule in x_member_rules):
+            elif _matches_member_rules(a, b, x_member_rules):
                 members.at[idx, "MemberType"] = "X-Brace"
 
     return joints, members
@@ -2694,10 +2740,10 @@ def _build_manual_classification_audit(
                 continue
             rule_group = ""
             target_type = ""
-            if any(_matches_member_rule(a, b, rule) for rule in rules["member_classification"]["leg"]):
+            if _matches_member_rules(a, b, rules["member_classification"]["leg"]):
                 rule_group = "member_classification.leg"
                 target_type = "LEG"
-            elif any(_matches_member_rule(a, b, rule) for rule in rules["member_classification"]["x_brace"]):
+            elif _matches_member_rules(a, b, rules["member_classification"]["x_brace"]):
                 rule_group = "member_classification.x_brace"
                 target_type = "X-Brace"
             if rule_group == "":
@@ -2734,7 +2780,7 @@ def _build_user_exclusion_audit(
         for _, row in member_risk_df.iterrows():
             joint_a = _safe_str(row.get("JointA"))
             joint_b = _safe_str(row.get("JointB"))
-            if not any(_matches_member_rule(joint_a, joint_b, rule) for rule in rules["member_exclusions"]):
+            if not _matches_member_rules(joint_a, joint_b, rules["member_exclusions"]):
                 continue
             rows.append(
                 {
@@ -2823,7 +2869,7 @@ def _apply_member_delete_rule(df: pd.DataFrame, user_rules: Any = None) -> pd.Da
     keep_mask = [
         not (
             _should_delete_member_by_vba_rule(row.get("JointA"), row.get("JointB"))
-            or any(_matches_member_rule(row.get("JointA"), row.get("JointB"), rule) for rule in rules)
+            or _matches_member_rules(row.get("JointA"), row.get("JointB"), rules)
         )
         for _, row in df.iterrows()
     ]

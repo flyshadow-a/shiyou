@@ -6,12 +6,14 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -26,6 +28,7 @@ RULE_MODE_JOINT_EXCLUSION = "joint_exclusion"
 
 _PATTERN_LENGTH = 4
 _ALLOWED_PATTERN_CHARS = set("*0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+_MEMBER_RELATIONS = ("And", "Or", "Not")
 
 
 def normalize_code_pattern(value: Any) -> str:
@@ -49,14 +52,65 @@ def code_matches_pattern(code: Any, pattern: Any) -> bool:
     return all(p == "*" or p == c for c, p in zip(code_text, pattern_text))
 
 
+def normalize_member_relation(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text == "or":
+        return "Or"
+    if text == "not":
+        return "Not"
+    return "And"
+
+
+def _member_rule_key(a_pattern: str, relation: str, b_pattern: str) -> tuple[str, str, str]:
+    if relation == "And":
+        left, right = sorted((a_pattern, b_pattern))
+        return left, relation, right
+    return a_pattern, relation, b_pattern
+
+
+def _member_rule_matches_oriented(joint_a: Any, joint_b: Any, pattern: dict[str, Any]) -> bool:
+    a_pattern = normalize_code_pattern(pattern.get("a"))
+    b_pattern = normalize_code_pattern(pattern.get("b"))
+    relation = normalize_member_relation(pattern.get("relation"))
+    if relation == "Or":
+        return code_matches_pattern(joint_a, a_pattern) or code_matches_pattern(joint_b, b_pattern)
+    if relation == "Not":
+        return code_matches_pattern(joint_a, a_pattern) and not code_matches_pattern(joint_b, b_pattern)
+    return code_matches_pattern(joint_a, a_pattern) and code_matches_pattern(joint_b, b_pattern)
+
+
 def member_matches_pattern(joint_a: Any, joint_b: Any, pattern: dict[str, Any]) -> bool:
     a_pattern = normalize_code_pattern(pattern.get("a"))
     b_pattern = normalize_code_pattern(pattern.get("b"))
     if not (is_active_code_pattern(a_pattern) or is_active_code_pattern(b_pattern)):
         return False
-    forward = code_matches_pattern(joint_a, a_pattern) and code_matches_pattern(joint_b, b_pattern)
-    reverse = code_matches_pattern(joint_a, b_pattern) and code_matches_pattern(joint_b, a_pattern)
-    return forward or reverse
+    return _member_rule_matches_oriented(joint_a, joint_b, pattern) or _member_rule_matches_oriented(
+        joint_b,
+        joint_a,
+        pattern,
+    )
+
+
+def member_matches_patterns(joint_a: Any, joint_b: Any, patterns: Iterable[dict[str, Any]]) -> bool:
+    grouped_not_rules: dict[str, list[str]] = {}
+    for pattern in patterns:
+        relation = normalize_member_relation(pattern.get("relation"))
+        a_pattern = normalize_code_pattern(pattern.get("a"))
+        b_pattern = normalize_code_pattern(pattern.get("b"))
+        if not (is_active_code_pattern(a_pattern) or is_active_code_pattern(b_pattern)):
+            continue
+        if relation == "Not":
+            grouped_not_rules.setdefault(a_pattern, []).append(b_pattern)
+        elif member_matches_pattern(joint_a, joint_b, pattern):
+            return True
+
+    for a_pattern, b_patterns in grouped_not_rules.items():
+        for left, right in ((joint_a, joint_b), (joint_b, joint_a)):
+            if code_matches_pattern(left, a_pattern) and not any(
+                code_matches_pattern(right, b_pattern) for b_pattern in b_patterns
+            ):
+                return True
+    return False
 
 
 def normalize_rule_overrides(raw: Any) -> dict[str, Any]:
@@ -72,19 +126,20 @@ def normalize_rule_overrides(raw: Any) -> dict[str, Any]:
 
     def _member_patterns(items: Any) -> list[dict[str, str]]:
         out: list[dict[str, str]] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str, str]] = set()
         for item in items or []:
             if not isinstance(item, dict):
                 continue
             a_pattern = normalize_code_pattern(item.get("a"))
             b_pattern = normalize_code_pattern(item.get("b"))
+            relation = normalize_member_relation(item.get("relation"))
             if not (is_active_code_pattern(a_pattern) or is_active_code_pattern(b_pattern)):
                 continue
-            key = tuple(sorted((a_pattern, b_pattern)))
+            key = _member_rule_key(a_pattern, relation, b_pattern)
             if key in seen:
                 continue
             seen.add(key)
-            out.append({"a": a_pattern, "b": b_pattern})
+            out.append({"a": a_pattern, "relation": relation, "b": b_pattern})
         return out
 
     joint_cls_raw = payload.get("joint_classification") or {}
@@ -154,39 +209,60 @@ class SpecialStrategyRuleDialog(QDialog):
         self.setObjectName("SpecialStrategyRuleDialog")
         self.setModal(True)
         self.setStyleSheet(self._dialog_style())
-        self.resize(760, 690 if mode == RULE_MODE_MEMBER_CLASSIFICATION else 500)
+        self._base_dialog_width = 760
+        self._base_dialog_height = 690 if mode == RULE_MODE_MEMBER_CLASSIFICATION else 500
+        self._dialog_height_limit = self._base_dialog_height + 5 * 40
+        self.setMaximumHeight(self._dialog_height_limit)
+        self.resize(self._base_dialog_width, self._base_dialog_height)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(14)
 
-        title = QLabel(str(meta["title"]), self)
-        title.setObjectName("RuleDialogTitle")
-        root.addWidget(title)
+        self._scroll_area = QScrollArea(self)
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setFrameShape(QFrame.NoFrame)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll_area.setObjectName("RuleDialogScrollArea")
 
-        hint = QLabel(str(meta["hint"]), self)
+        self._scroll_content = QWidget(self._scroll_area)
+        self._scroll_content.setObjectName("RuleDialogScrollContent")
+        content_layout = QVBoxLayout(self._scroll_content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
+
+        title = self._new_plain_label(str(meta["title"]), self, "RuleDialogTitle")
+        content_layout.addWidget(title)
+
+        hint = self._new_plain_label(str(meta["hint"]), self, "RuleDialogHint")
         hint.setWordWrap(True)
-        hint.setObjectName("RuleDialogHint")
-        root.addWidget(hint)
+        content_layout.addWidget(hint)
 
         if mode == RULE_MODE_JOINT_CLASSIFICATION:
-            self._build_joint_classification_ui(root)
+            self._build_joint_classification_ui(content_layout)
         elif mode == RULE_MODE_MEMBER_CLASSIFICATION:
-            self._build_member_classification_ui(root)
+            self._build_member_classification_ui(content_layout)
         elif mode == RULE_MODE_MEMBER_EXCLUSION:
-            self._build_member_exclusion_ui(root)
+            self._build_member_exclusion_ui(content_layout)
         else:
-            self._build_joint_exclusion_ui(root)
+            self._build_joint_exclusion_ui(content_layout)
 
-        self.preview_label = QLabel(self)
+        self.preview_label = self._new_plain_label(parent=self, object_name="RulePreviewLabel")
         self.preview_label.setWordWrap(True)
-        self.preview_label.setObjectName("RulePreviewLabel")
-        root.addWidget(self.preview_label)
+        content_layout.addWidget(self.preview_label)
 
-        note = QLabel("输入说明：支持字母、数字和 *；规则优先级为 剔除规则 > 人工分类修正 > VBA 自动分类 > Other。", self)
+        note = self._new_plain_label(
+            "输入说明：支持字母、数字和 *；规则优先级为 剔除规则 > 人工分类修正 > VBA 自动分类 > Other。",
+            self,
+            "RuleDialogNote",
+        )
         note.setWordWrap(True)
-        note.setObjectName("RuleDialogNote")
-        root.addWidget(note)
+        content_layout.addWidget(note)
+        content_layout.addStretch(1)
+
+        self._scroll_area.setWidget(self._scroll_content)
+        root.addWidget(self._scroll_area, 1)
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
@@ -211,6 +287,15 @@ class SpecialStrategyRuleDialog(QDialog):
             QDialog#SpecialStrategyRuleDialog {
                 background-color: #f6f8fb;
             }
+            QScrollArea#RuleDialogScrollArea,
+            QWidget#RuleDialogScrollContent {
+                background-color: transparent;
+                border: none;
+            }
+            QLabel {
+                background-color: transparent;
+                border: none;
+            }
             QLabel#RuleDialogTitle {
                 color: #172033;
                 font-size: 18pt;
@@ -228,10 +313,9 @@ class SpecialStrategyRuleDialog(QDialog):
             }
             QLabel#RulePreviewLabel {
                 color: #0f172a;
-                background-color: #edf5ff;
-                border: 1px solid #cfe3fb;
-                border-radius: 8px;
-                padding: 9px 12px;
+                background: transparent;
+                border: none;
+                padding: 0;
                 font-size: 11pt;
             }
             QLabel#RuleDialogNote {
@@ -281,7 +365,40 @@ class SpecialStrategyRuleDialog(QDialog):
             QPushButton#RuleSecondaryButton:hover {
                 background-color: #edf6ff;
             }
+            QComboBox#RuleRelationCombo {
+                min-height: 30px;
+                padding: 2px 8px;
+                color: #1f2937;
+                background-color: #ffffff;
+                border: 1px solid #c7d7e8;
+                border-radius: 5px;
+                font-size: 11pt;
+            }
+            QComboBox#RuleRelationCombo::drop-down {
+                width: 22px;
+                border: none;
+            }
+            QComboBox#RuleRelationCombo QAbstractItemView {
+                background-color: #ffffff;
+                selection-background-color: #dbe9ff;
+                selection-color: #1d2b3a;
+                outline: 0;
+            }
         """
+
+    def _new_plain_label(
+        self,
+        text: str = "",
+        parent: QWidget | None = None,
+        object_name: str = "",
+    ) -> QLabel:
+        label = QLabel(text, parent)
+        if object_name:
+            label.setObjectName(object_name)
+        label.setAutoFillBackground(False)
+        label.setAttribute(Qt.WA_StyledBackground, False)
+        label.setStyleSheet("background: transparent; border: none;")
+        return label
 
     def _table_style(self) -> str:
         return """
@@ -301,6 +418,7 @@ class SpecialStrategyRuleDialog(QDialog):
 
     def _new_pattern_table(self, columns: int, row_count: int) -> QTableWidget:
         table = QTableWidget(row_count, columns, self)
+        table.setProperty("initialRowCount", row_count)
         table.setEditTriggers(
             QAbstractItemView.DoubleClicked
             | QAbstractItemView.SelectedClicked
@@ -320,7 +438,6 @@ class SpecialStrategyRuleDialog(QDialog):
         item = QTableWidgetItem(text)
         item.setTextAlignment(Qt.AlignCenter)
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-        item.setBackground(QColor("#eef5fc"))
         item.setForeground(QColor("#1f2937"))
         font = item.font()
         font.setBold(True)
@@ -332,12 +449,42 @@ class SpecialStrategyRuleDialog(QDialog):
         item.setTextAlignment(Qt.AlignCenter)
         return item
 
+    def _new_relation_combo(self, relation: str = "And") -> QComboBox:
+        combo = QComboBox(self)
+        combo.setObjectName("RuleRelationCombo")
+        combo.addItems(_MEMBER_RELATIONS)
+        combo.setCurrentText(normalize_member_relation(relation))
+        combo.currentTextChanged.connect(lambda _text: self._refresh_preview())
+        return combo
+
+    def _set_member_relation(self, table: QTableWidget, row: int, relation: str) -> None:
+        table.setCellWidget(row, 4, self._new_relation_combo(relation))
+
+    def _row_relation(self, table: QTableWidget, row: int) -> str:
+        widget = table.cellWidget(row, 4)
+        if isinstance(widget, QComboBox):
+            return normalize_member_relation(widget.currentText())
+        item = table.item(row, 4)
+        return normalize_member_relation(item.text() if item is not None else "And")
+
     def _fit_table_height(self, table: QTableWidget) -> None:
         row_height = table.verticalHeader().defaultSectionSize()
         table.setFixedHeight(table.rowCount() * row_height + 4)
+        self._expand_dialog_until_scroll_threshold(table)
+
+    def _expand_dialog_until_scroll_threshold(self, table: QTableWidget) -> None:
+        if not hasattr(self, "_scroll_content") or not hasattr(self, "confirm_button"):
+            return
+        self._scroll_content.updateGeometry()
+        row_height = table.verticalHeader().defaultSectionSize()
+        initial_rows = int(table.property("initialRowCount") or table.rowCount())
+        added_rows = max(0, table.rowCount() - initial_rows)
+        target_height = min(self._dialog_height_limit, self._base_dialog_height + min(added_rows, 5) * row_height)
+        if self.height() < target_height:
+            self.resize(self.width(), target_height)
 
     def _set_preview_color(self, color: str) -> None:
-        self.preview_label.setStyleSheet(f"color: {color};")
+        self.preview_label.setStyleSheet(f"color: {color}; background: transparent; border: none;")
 
     def _set_pattern_row(self, table: QTableWidget, row: int, start_col: int, pattern: str) -> None:
         normalized = normalize_code_pattern(pattern)
@@ -347,8 +494,9 @@ class SpecialStrategyRuleDialog(QDialog):
     def _append_empty_member_row(self, table: QTableWidget) -> None:
         row = table.rowCount()
         table.insertRow(row)
-        for col in range(8):
+        for col in [0, 1, 2, 3, 5, 6, 7, 8]:
             table.setItem(row, col, self._editable_item("*"))
+        self._set_member_relation(table, row, "And")
         self._fit_table_height(table)
         self._refresh_preview()
 
@@ -362,7 +510,8 @@ class SpecialStrategyRuleDialog(QDialog):
 
     def _add_row_button(self, text: str, callback) -> QPushButton:
         button = QPushButton(text, self)
-        button.clicked.connect(callback)
+        # QPushButton.clicked emits a bool; add-row callbacks are intentionally argument-free.
+        button.clicked.connect(lambda _checked=False: callback())
         button.setObjectName("RuleAddButton")
         return button
 
@@ -377,8 +526,7 @@ class SpecialStrategyRuleDialog(QDialog):
             header_row = QHBoxLayout()
             header_row.setContentsMargins(0, 0, 0, 0)
             if title:
-                title_label = QLabel(title, frame)
-                title_label.setObjectName("RuleSectionTitle")
+                title_label = self._new_plain_label(title, frame, "RuleSectionTitle")
                 header_row.addWidget(title_label)
             header_row.addStretch(1)
             if add_callback is not None:
@@ -415,15 +563,18 @@ class SpecialStrategyRuleDialog(QDialog):
         attr_name: str,
     ) -> None:
         data_rows = max(3, len(patterns))
-        table = self._new_pattern_table(8, data_rows + 1)
+        table = self._new_pattern_table(9, data_rows + 1)
         table.setSpan(0, 0, 1, 4)
-        table.setSpan(0, 4, 1, 4)
+        table.setSpan(0, 5, 1, 4)
         table.setItem(0, 0, self._readonly_item("节点A编号"))
-        table.setItem(0, 4, self._readonly_item("节点B编号"))
+        table.setItem(0, 4, self._readonly_item("关系"))
+        table.setItem(0, 5, self._readonly_item("节点B编号"))
+        table.setColumnWidth(4, 82)
         for idx in range(data_rows):
-            pattern = patterns[idx] if idx < len(patterns) else {"a": "****", "b": "****"}
+            pattern = patterns[idx] if idx < len(patterns) else {"a": "****", "relation": "And", "b": "****"}
             self._set_pattern_row(table, idx + 1, 0, str(pattern.get("a", "****")))
-            self._set_pattern_row(table, idx + 1, 4, str(pattern.get("b", "****")))
+            self._set_member_relation(table, idx + 1, str(pattern.get("relation", "And")))
+            self._set_pattern_row(table, idx + 1, 5, str(pattern.get("b", "****")))
         setattr(self, attr_name, table)
         frame, layout = self._new_section(
             title,
@@ -503,17 +654,18 @@ class SpecialStrategyRuleDialog(QDialog):
 
     def _collect_member_table_rules(self, table: QTableWidget) -> list[dict[str, str]]:
         rules: list[dict[str, str]] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str, str]] = set()
         for row in range(1, table.rowCount()):
             a_pattern = self._row_pattern(table, row, 0)
-            b_pattern = self._row_pattern(table, row, 4)
+            relation = self._row_relation(table, row)
+            b_pattern = self._row_pattern(table, row, 5)
             if not (is_active_code_pattern(a_pattern) or is_active_code_pattern(b_pattern)):
                 continue
-            key = tuple(sorted((a_pattern, b_pattern)))
+            key = _member_rule_key(a_pattern, relation, b_pattern)
             if key in seen:
                 continue
             seen.add(key)
-            rules.append({"a": a_pattern, "b": b_pattern})
+            rules.append({"a": a_pattern, "relation": relation, "b": b_pattern})
         return rules
 
     def _collect_joint_exclusion_rules(self) -> list[str]:
@@ -555,7 +707,7 @@ class SpecialStrategyRuleDialog(QDialog):
         pattern_list = list(patterns)
         out: set[tuple[str, str]] = set()
         for joint_a, joint_b in self._member_pairs:
-            if any(member_matches_pattern(joint_a, joint_b, pattern) for pattern in pattern_list):
+            if member_matches_patterns(joint_a, joint_b, pattern_list):
                 out.add(tuple(sorted((joint_a, joint_b))))
         return out
 
