@@ -42,6 +42,7 @@ from PyQt5.QtGui import QDesktopServices
 from sqlalchemy import create_engine, text
 
 from core.base_page import BasePage
+from core.message_boxes import ask_yes_no
 
 from pages.feasibility_assessment_results_page import FeasibilityAssessmentResultsPage
 from pages.sacs_create_model_service import create_new_model_files
@@ -72,7 +73,7 @@ class FeasibilityAssessmentPage(BasePage):
     """
     WC19-1DPPA平台强度/改造可行性评估（feasibility_assessment_page）
     """
-    CONNECT_OPTIONS = ["焊接", "无连接", "导向连接"]
+    CONNECT_OPTIONS = ["焊接", "无连接", "导向连接", "no"]
     LEGACY_ELEVATIONS1 = [36, 31, 27, 23, 18, 7, -12, -34, -58, -83, -109]
     LEGACY_ELEVATIONS2 = [7, -12, -34, -58, -83, -109, -122.4]
 
@@ -286,6 +287,7 @@ class FeasibilityAssessmentPage(BasePage):
             combo.setCurrentText(default)
         else:
             combo.setCurrentIndex(-1)  # 不默认选中任何项
+        combo.setProperty("previousText", combo.currentText() or "")
 
         combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         combo.setMinimumContentsLength(6)
@@ -325,8 +327,87 @@ class FeasibilityAssessmentPage(BasePage):
         cell_lay.addWidget(combo)
         cell_lay.addWidget(arrow_btn)
         arrow_btn.clicked.connect(combo.showPopup)
+        combo.currentTextChanged.connect(
+            lambda text, t=table, r=row, c=col: self._on_connection_combo_changed(t, r, c, text)
+        )
         combo.destroyed.connect(lambda *_args, c=combo: self._cleanup_hover_combo(c))
         table.setCellWidget(row, col, cell_wrap)
+        if self._column_has_no_connection(table, col, exclude_row=row):
+            self._syncing_no_connection_column = True
+            try:
+                combo.setCurrentText("no")
+                combo.setProperty("previousText", "no")
+            finally:
+                self._syncing_no_connection_column = False
+
+    def _on_connection_combo_changed(self, table: QTableWidget, row: int, col: int, text_value: str) -> None:
+        if getattr(self, "_syncing_no_connection_column", False):
+            return
+        if not self._is_connection_column(table, col):
+            return
+        combo = self._combo_at(table, row, col)
+        if combo is None:
+            return
+        previous_text = str(combo.property("previousText") or "")
+        if text_value == previous_text:
+            return
+
+        if text_value != "no":
+            if previous_text == "no":
+                self._clear_connection_column(table, col)
+            else:
+                combo.setProperty("previousText", text_value)
+            return
+
+        elevation_text = self._cell_text(table, 1, col)
+        if not ask_yes_no(
+            self,
+            "确认排除高程",
+            f"确定将高程 {elevation_text} 排除吗？\n确认后该高程列所有连接形式将统一设为 no。",
+        ):
+            self._syncing_no_connection_column = True
+            try:
+                combo.setCurrentText(previous_text)
+            finally:
+                self._syncing_no_connection_column = False
+            return
+
+        self._syncing_no_connection_column = True
+        try:
+            for data_row in range(2, table.rowCount()):
+                row_combo = self._combo_at(table, data_row, col)
+                if row_combo is not None:
+                    row_combo.setCurrentText(text_value)
+                    row_combo.setProperty("previousText", text_value)
+        finally:
+            self._syncing_no_connection_column = False
+
+    def _clear_connection_column(self, table: QTableWidget, col: int) -> None:
+        self._syncing_no_connection_column = True
+        try:
+            for data_row in range(2, table.rowCount()):
+                row_combo = self._combo_at(table, data_row, col)
+                if row_combo is not None:
+                    row_combo.setCurrentIndex(-1)
+                    row_combo.setProperty("previousText", "")
+        finally:
+            self._syncing_no_connection_column = False
+
+    def _is_connection_column(self, table: QTableWidget, col: int) -> bool:
+        if table is getattr(self, "tbl1", None):
+            return col >= 8
+        if table is getattr(self, "tbl2", None):
+            return col >= 9
+        return False
+
+    def _column_has_no_connection(self, table: QTableWidget, col: int, exclude_row: Optional[int] = None) -> bool:
+        for data_row in range(2, table.rowCount()):
+            if exclude_row is not None and data_row == exclude_row:
+                continue
+            combo = self._combo_at(table, data_row, col)
+            if combo is not None and (combo.currentText() or "").strip() == "no":
+                return True
+        return False
 
     def _cleanup_hover_combo(self, combo: QComboBox):
         self._combo_hover_meta.pop(combo, None)
@@ -732,9 +813,9 @@ class FeasibilityAssessmentPage(BasePage):
                     max_w = max(max_w, cell_width + padding)
 
                 # 处理QComboBox
-                w = table.cellWidget(r, c)
-                if isinstance(w, QComboBox):
-                    txt = w.currentText() or ""
+                combo = self._combo_at(table, r, c)
+                if combo is not None:
+                    txt = combo.currentText() or ""
                     combo_width = fm.horizontalAdvance(txt) + padding + 24
                     max_w = max(max_w, combo_width)
 
@@ -1356,8 +1437,7 @@ class FeasibilityAssessmentPage(BasePage):
                 row_vals = []
                 for c in range(table.columnCount()):
                     if with_combo_cols and c >= combo_start_col:
-                        w = table.cellWidget(r, c)
-                        row_vals.append(w.currentText() if isinstance(w, QComboBox) else "")
+                        row_vals.append(self._combo_text(table, r, c))
                     else:
                         it = table.item(r, c)
                         row_vals.append((it.text() if it else "").replace(",", " "))
@@ -1476,8 +1556,7 @@ class FeasibilityAssessmentPage(BasePage):
             row_vals = []
             for c in range(table.columnCount()):
                 if with_combo_cols and c >= combo_start_col:
-                    w = table.cellWidget(r, c)
-                    row_vals.append(w.currentText() if isinstance(w, QComboBox) else "")
+                    row_vals.append(self._combo_text(table, r, c))
                 else:
                     it = table.item(r, c)
                     row_vals.append(it.text() if it else "")
@@ -2389,12 +2468,18 @@ class FeasibilityAssessmentPage(BasePage):
         return (it.text() if it else "").strip()
 
     def _combo_text(self, table: QTableWidget, row: int, col: int) -> str:
+        combo = self._combo_at(table, row, col)
+        if combo is not None:
+            return (combo.currentText() or "").strip()
+        return ""
+
+    def _combo_at(self, table: QTableWidget, row: int, col: int) -> Optional[QComboBox]:
         w = table.cellWidget(row, col)
         if isinstance(w, QWidget):
             combo = w.findChild(QComboBox)
             if combo is not None:
-                return (combo.currentText() or "").strip()
-        return ""
+                return combo
+        return None
 
     def _to_float(self, text_value: str):
         txt = (text_value or "").strip()
@@ -2469,7 +2554,7 @@ class FeasibilityAssessmentPage(BasePage):
 
             for col, z in level_headers:
                 connection_type = self._combo_text(self.tbl1, r, col)
-                if not connection_type:
+                if not connection_type or connection_type == "no":
                     continue
                 conn_rows.append({
                     "job_name": self.job_name,
@@ -2544,7 +2629,7 @@ class FeasibilityAssessmentPage(BasePage):
 
             for col, z in level_headers:
                 connection_type = self._combo_text(self.tbl2, r, col)
-                if not connection_type:
+                if not connection_type or connection_type == "no":
                     continue
                 conn_rows.append({
                     "job_name": self.job_name,

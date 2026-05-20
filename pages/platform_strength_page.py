@@ -1188,19 +1188,16 @@ class PlatformStrengthPage(BasePage):
 
         self._set_center_item(self.tbl_layers, 0, 0, "Z(m)", editable=False)
         self._set_center_item(self.tbl_layers, 1, 0, "节点数量", editable=False)
-        self._set_center_item(self.tbl_layers, 2, 0, "是否水平层", editable=False)
-
         # 清空旧数据
         for c in range(1, col_count):
-            for r in range(3):
-                self._set_center_item(self.tbl_layers, r, c, "", editable=(r != 2))
+            for r in range(2):
+                self._set_center_item(self.tbl_layers, r, c, "")
 
         # 回填动态结果
         for i, (z, occ, selected) in enumerate(levels, start=1):
             z_text = f"{z:.3f}".rstrip("0").rstrip(".")
             self._set_center_item(self.tbl_layers, 0, i, z_text)
             self._set_center_item(self.tbl_layers, 1, i, str(occ))
-            self._set_center_item(self.tbl_layers, 2, i, "✓" if selected else "×", editable=False)
 
         # ===== 自适应列宽：少列铺满，多列滚动 =====
         self.tbl_layers.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
@@ -1854,19 +1851,16 @@ class PlatformStrengthPage(BasePage):
         lab_layers.setStyleSheet("color: #1d2b3a;")
         box_layout.addWidget(lab_layers, 0)
 
-        self.tbl_layers = QTableWidget(3, 1, box)
+        self.tbl_layers = QTableWidget(2, 1, box)
         self.tbl_layers.setFocusPolicy(Qt.NoFocus)
         self._init_table_common(self.tbl_layers, show_vertical_header=False)
         self.tbl_layers.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self._set_center_item(self.tbl_layers, 0, 0, "Z(m)", editable=False)
         self._set_center_item(self.tbl_layers, 1, 0, "节点数量", editable=False)
-        self._set_center_item(self.tbl_layers, 2, 0, "是否水平层", editable=False)
 
-        for r in range(3):
+        for r in range(2):
             self.tbl_layers.setRowHeight(r, 30)
-
-        self.tbl_layers.cellClicked.connect(self._on_layers_cell_clicked)
 
         # 关键：允许横向滚动
         self.tbl_layers.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -1876,7 +1870,7 @@ class PlatformStrengthPage(BasePage):
         self.tbl_layers.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
 
         # 高度要给滚动条留空间
-        self.tbl_layers.setFixedHeight(140)
+        self.tbl_layers.setFixedHeight(110)
 
         box_layout.addWidget(self.tbl_layers, 1)
 
@@ -1894,18 +1888,6 @@ class PlatformStrengthPage(BasePage):
         box.setFixedHeight(total_h)
         box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         return box
-
-    def _on_layers_cell_clicked(self, row: int, col: int):
-        if row != 2 or col < 1:
-            return
-        it = self.tbl_layers.item(row, col)
-        if it is None:
-            it = QTableWidgetItem("")
-            it.setTextAlignment(Qt.AlignCenter)
-            it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            self.tbl_layers.setItem(row, col, it)
-        it.setText("×" if (it.text() or "").strip() == "✓" else "✓")
-        self.tbl_layers.clearSelection()
 
     def _init_table_common(self, table: QTableWidget, show_vertical_header: bool):
         table.setFont(self._songti_small_four_font())

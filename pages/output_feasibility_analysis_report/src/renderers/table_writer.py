@@ -11,6 +11,29 @@ from docx.table import Table
 NON_BREAKING_HYPHEN = "\u2011"
 
 
+def _format_chapter4_table_number(value: Any) -> str:
+    if isinstance(value, str):
+        text = value.strip().replace(NON_BREAKING_HYPHEN, "-").replace(",", "")
+    else:
+        text = str(value).strip()
+
+    if not text:
+        return ""
+
+    try:
+        number = float(text)
+    except ValueError:
+        return str(value)
+
+    if abs(number) >= 10000:
+        return f"{number:.0f}"
+    return f"{number:.2f}"
+
+
+def _write_chapter4_number_cell(cell, value: Any) -> None:
+    write_cell(cell, _protect_negative_number(_format_chapter4_table_number(value)))
+
+
 def _normalize_cell_text(text: str) -> str:
     return " ".join(text.replace("\n", " ").split())
 
@@ -68,7 +91,7 @@ def write_analysis_summary_table(table: Table, items: Sequence[Mapping[str, Any]
         row = table.rows[row_index]
         write_cell(row.cells[0], str(item.get("check_item", "")))
         write_cell(row.cells[1], str(item.get("position", "")))
-        write_cell(row.cells[2], str(item.get("value", "")))
+        _write_chapter4_number_cell(row.cells[2], item.get("value", ""))
         write_cell(row.cells[3], str(item.get("case", "")))
         write_cell(row.cells[4], str(item.get("is_pass", "")))
 
@@ -124,15 +147,15 @@ def write_pile_capacity_table(table: Table, items: Sequence[Mapping[str, Any]]) 
     for row_index, item in enumerate(items, start=start_row_index):
         row = table.rows[row_index]
         write_cell(row.cells[0], str(item.get("pile_head_id", "")))
-        write_cell(row.cells[1], str(item.get("compression_capacity_kn", "")))
-        write_cell(row.cells[2], str(item.get("tension_capacity_kn", "")))
-        write_cell(row.cells[3], str(item.get("pile_weight_kn", "")))
+        _write_chapter4_number_cell(row.cells[1], item.get("compression_capacity_kn", ""))
+        _write_chapter4_number_cell(row.cells[2], item.get("tension_capacity_kn", ""))
+        _write_chapter4_number_cell(row.cells[3], item.get("pile_weight_kn", ""))
         write_cell(row.cells[4], str(item.get("compression_case", "")))
-        write_cell(row.cells[5], str(item.get("compression_load_kn", "")))
+        _write_chapter4_number_cell(row.cells[5], item.get("compression_load_kn", ""))
         write_cell(row.cells[6], str(item.get("tension_case", "")))
-        write_cell(row.cells[7], str(item.get("tension_load_kn", "")))
-        write_cell(row.cells[8], str(item.get("compression_sf", "")))
-        write_cell(row.cells[9], str(item.get("tension_sf", "")))
+        _write_chapter4_number_cell(row.cells[7], item.get("tension_load_kn", ""))
+        _write_chapter4_number_cell(row.cells[8], item.get("compression_sf", ""))
+        _write_chapter4_number_cell(row.cells[9], item.get("tension_sf", ""))
 
     trim_table_row_count(table, required_rows)
 
@@ -159,14 +182,14 @@ def write_basic_case_loads_table(table: Table, items: Sequence[Mapping[str, Any]
     for row_index, item in enumerate(items, start=start_row_index):
         row = table.rows[row_index]
         write_cell(row.cells[0], str(item.get("label", "")))
-        write_cell(row.cells[1], _protect_negative_number(str(item.get("fx", ""))))
-        write_cell(row.cells[2], _protect_negative_number(str(item.get("fy", ""))))
-        write_cell(row.cells[3], _protect_negative_number(str(item.get("fz", ""))))
-        write_cell(row.cells[4], _protect_negative_number(str(item.get("mx", ""))))
-        write_cell(row.cells[5], _protect_negative_number(str(item.get("my", ""))))
-        write_cell(row.cells[6], _protect_negative_number(str(item.get("mz", ""))))
-        write_cell(row.cells[7], _protect_negative_number(str(item.get("dead_load", ""))))
-        write_cell(row.cells[8], _protect_negative_number(str(item.get("buoyancy", ""))))
+        _write_chapter4_number_cell(row.cells[1], item.get("fx", ""))
+        _write_chapter4_number_cell(row.cells[2], item.get("fy", ""))
+        _write_chapter4_number_cell(row.cells[3], item.get("fz", ""))
+        _write_chapter4_number_cell(row.cells[4], item.get("mx", ""))
+        _write_chapter4_number_cell(row.cells[5], item.get("my", ""))
+        _write_chapter4_number_cell(row.cells[6], item.get("mz", ""))
+        _write_chapter4_number_cell(row.cells[7], item.get("dead_load", ""))
+        _write_chapter4_number_cell(row.cells[8], item.get("buoyancy", ""))
 
     trim_table_row_count(table, required_rows)
 
@@ -195,12 +218,12 @@ def write_combo_case_loads_table(table: Table, items: Sequence[Mapping[str, Any]
         row = table.rows[row_index]
         write_cell(row.cells[0], str(item.get("case", "")))
         write_cell(row.cells[1], str(item.get("label", "")))
-        write_cell(row.cells[2], _protect_negative_number(str(item.get("fx", ""))))
-        write_cell(row.cells[3], _protect_negative_number(str(item.get("fy", ""))))
-        write_cell(row.cells[4], _protect_negative_number(str(item.get("fz", ""))))
-        write_cell(row.cells[5], _protect_negative_number(str(item.get("mx", ""))))
-        write_cell(row.cells[6], _protect_negative_number(str(item.get("my", ""))))
-        write_cell(row.cells[7], _protect_negative_number(str(item.get("mz", ""))))
+        _write_chapter4_number_cell(row.cells[2], item.get("fx", ""))
+        _write_chapter4_number_cell(row.cells[3], item.get("fy", ""))
+        _write_chapter4_number_cell(row.cells[4], item.get("fz", ""))
+        _write_chapter4_number_cell(row.cells[5], item.get("mx", ""))
+        _write_chapter4_number_cell(row.cells[6], item.get("my", ""))
+        _write_chapter4_number_cell(row.cells[7], item.get("mz", ""))
 
     trim_table_row_count(table, required_rows)
 

@@ -15,7 +15,6 @@
 # 说明：本文件不依赖其它页面模块，直接可被 nav_config 引用。
 
 import os
-import csv
 import ctypes
 import random
 import re
@@ -31,7 +30,7 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QComboBox, QLabel,
     QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox,
     QHeaderView, QToolTip, QFileDialog, QGridLayout, QMenu, QSizePolicy, QFrame,
-    QButtonGroup, QRadioButton, QCheckBox
+    QButtonGroup, QRadioButton, QCheckBox,
 )
 from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtGui import QColor, QFont, QFontMetrics
@@ -48,7 +47,7 @@ from services.inspection_business_db_adapter import (
     replace_platform_load_information_items,
 )
 
-# 上部组块分项目计算表页面（点击重量/重心单元格跳转编辑）
+# 上部组块分项目计算表页面（右键重量/重心单元格跳转编辑）
 try:
     from upper_block_subproject_calculation_table_page import UpperBlockSubprojectCalculationTablePage
 except Exception:
@@ -288,8 +287,7 @@ class PlatformWeightCenterCurveWidget(QWidget):
 class PlatformLoadInformationPage(BasePage):
     """平台载荷信息页面（严格表格结构 + 顶部/所属信息联动 + 结果文件读取 + 曲线页面）。"""
     MAX_EXPAND_ROWS = 55  # 与 summary_information_table_page 保持一致
-    DEMO_MAIN_CSV = "platform_load_information_demo_strict.csv"
-    DEMO_RESULT_CSV = "platform_load_result_demo.csv"
+    DATA_START_ROW = 2
 
     TOP_KEY_ORDER: List[str] = [
         "branch", "op_company", "oilfield", "facility_code", "facility_name",
@@ -386,8 +384,32 @@ class PlatformLoadInformationPage(BasePage):
 
             QFrame#LoadInfoTablePanel {
                 background: #ffffff;
-                border: 1px solid #e3e8f0;
-                border-radius: 16px;
+                border: 1px solid #dbe5f3;
+                border-radius: 18px;
+            }
+
+            QFrame#MetaInfoPanel {
+                background: #f8fbff;
+                border: 1px solid #e0e8f4;
+                border-radius: 12px;
+            }
+
+            QLabel.MetaName {
+                background: #edf4ff;
+                color: #24476f;
+                border: 1px solid #d8e5f5;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-weight: bold;
+            }
+
+            QLabel.MetaValue {
+                background: #ffffff;
+                color: #253044;
+                border: 1px solid #dfe7f1;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-weight: bold;
             }
 
             QPushButton#TopActionBtn {
@@ -405,25 +427,69 @@ class PlatformLoadInformationPage(BasePage):
 
             QTableWidget#MainTable {
                 background: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 10px;
-                gridline-color: #edf1f7;
+                border: 1px solid #dce6f2;
+                border-radius: 12px;
+                gridline-color: #e8eef7;
                 alternate-background-color: #fbfdff;
-                selection-background-color: #dbeafe;
-                selection-color: #1d4ed8;
+                selection-background-color: #dcecff;
+                selection-color: #1d3557;
                 font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
-                font-size: 11pt;
+                font-size: 12pt;
                 color: #253044;
             }
             QTableWidget#MainTable::item {
                 padding: 6px;
-                border-color: #edf1f7;
+                border-color: #e8eef7;
             }
             QTableWidget#MainTable::item:selected {
-                background-color: #dbeafe;
-                color: #1d4ed8;
+                background-color: #dcecff;
+                color: #1d3557;
             }
             QTableWidget::item:focus { outline: none; }
+
+            QWidget#RowSelectorCell {
+                background: transparent;
+            }
+            QLabel#RowSeqLabel {
+                color: #344054;
+                background: transparent;
+            }
+            QCheckBox::indicator {
+                width: 15px;
+                height: 15px;
+                border-radius: 4px;
+                border: 1px solid #9fb2cc;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:hover {
+                border: 1px solid #2563eb;
+                background: #eff6ff;
+            }
+            QCheckBox::indicator:checked {
+                border: 1px solid #2563eb;
+                background: #2563eb;
+            }
+            QScrollBar:horizontal, QScrollBar:vertical {
+                background: #f5f8fc;
+                border: none;
+                margin: 0px;
+            }
+            QScrollBar:horizontal { height: 12px; }
+            QScrollBar:vertical { width: 12px; }
+            QScrollBar::handle:horizontal, QScrollBar::handle:vertical {
+                background: #c5d3e6;
+                border-radius: 6px;
+                min-width: 28px;
+                min-height: 28px;
+            }
+            QScrollBar::handle:horizontal:hover, QScrollBar::handle:vertical:hover {
+                background: #93acd0;
+            }
+            QScrollBar::add-line, QScrollBar::sub-line,
+            QScrollBar::add-page, QScrollBar::sub-page {
+                background: transparent;
+                border: none;
+            }
 
         """)
 
@@ -513,10 +579,12 @@ class PlatformLoadInformationPage(BasePage):
         table_panel.setObjectName("LoadInfoTablePanel")
         table_panel.setMinimumHeight(520)
         root = QVBoxLayout(table_panel)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(18, 18, 18, 16)
+        root.setSpacing(14)
         page_root.addWidget(table_panel, 0)
         self.table_panel = table_panel
+
+        root.addWidget(self._build_meta_info_panel(), 0)
 
         self.table = self._build_main_table_skeleton()
         self.table.setObjectName("MainTable")
@@ -536,9 +604,6 @@ class PlatformLoadInformationPage(BasePage):
 
         # 主表允许编辑（但我们会用 item flags 精细控制哪些格可编辑）
         self.table.setEditTriggers(QTableWidget.DoubleClicked | QTableWidget.SelectedClicked | QTableWidget.EditKeyPressed)
-
-        # 点击“上部组块重心”单元格：跳转到分项目计算表并回填
-        self.table.cellClicked.connect(self._on_main_cell_clicked)
 
         root.addWidget(self.table, 1)
 
@@ -626,6 +691,51 @@ class PlatformLoadInformationPage(BasePage):
         if it is None:
             return
         it.setText(txt)
+
+    def _build_meta_info_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("MetaInfoPanel")
+        grid = QGridLayout(panel)
+        grid.setContentsMargins(10, 10, 10, 10)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+
+        self._meta_value_items = {}
+        defaults = self._current_top_defaults()
+        rows = [
+            [
+                ("所属分公司", defaults.get("分公司", ""), "分公司"),
+                ("所属作业单元", defaults.get("作业公司", ""), "作业公司"),
+                ("所属油（气）田", defaults.get("油气田", ""), "油气田"),
+            ],
+            [
+                ("设施名称", defaults.get("设施名称", ""), "设施名称"),
+                ("投产时间", defaults.get("投产时间", ""), "投产时间"),
+                ("设计年限", defaults.get("设计年限", ""), "设计年限"),
+            ],
+        ]
+
+        for r, row in enumerate(rows):
+            for group, (name, value, field_key) in enumerate(row):
+                name_label = QLabel(name)
+                name_label.setProperty("class", "MetaName")
+                name_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                name_label.setFont(self._songti_small_four_font(bold=True))
+                value_label = QLabel(value)
+                value_label.setProperty("class", "MetaValue")
+                value_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                value_label.setFont(self._songti_small_four_font(bold=True))
+                value_label.setWordWrap(True)
+
+                base_col = group * 2
+                grid.addWidget(name_label, r, base_col)
+                grid.addWidget(value_label, r, base_col + 1)
+                self._meta_value_items[field_key] = value_label
+
+        for col in range(6):
+            grid.setColumnStretch(col, 1 if col % 2 == 0 else 3)
+
+        return panel
 
     def _normalize_top_value(self, value: object) -> str:
         txt = "" if value is None else str(value).strip()
@@ -809,70 +919,40 @@ class PlatformLoadInformationPage(BasePage):
             it.setBackground(bg)
         return it
 
-    def _set_meta_double(self, table: HoverTipTable, row: int, start: int,
-                         total_span: int, label_span: int,
-                         label: str, value: str, field_key: str,
-                         bg: QColor):
-        """所属信息：label + value（两段合并），value item 记录下来供顶部联动。"""
-        value_span = max(1, total_span - label_span)
-
-        table.setSpan(row, start, 1, label_span)
-        table.setItem(row, start, self._mk_item(label, bold=True, bg=bg, align=Qt.AlignLeft | Qt.AlignVCenter))
-
-        table.setSpan(row, start + label_span, 1, value_span)
-        it_val = self._mk_item(value, bold=True, bg=bg, align=Qt.AlignCenter)
-        table.setItem(row, start + label_span, it_val)
-
-        if not hasattr(self, "_meta_value_items"):
-            self._meta_value_items = {}
-        self._meta_value_items[field_key] = it_val
+    def _set_header_widget(
+        self,
+        table: HoverTipTable,
+        row: int,
+        col: int,
+        text: str,
+        *,
+        bg: str = "#f6f7f9",
+        align: Qt.AlignmentFlag = Qt.AlignCenter,
+        bold: bool = False,
+    ) -> QTableWidgetItem:
+        item = self._mk_item(text, bold=bold, bg=QColor(bg), align=align)
+        item.setForeground(QColor("#183b66"))
+        table.setItem(row, col, item)
+        return item
 
     def _build_main_table_skeleton(self) -> HoverTipTable:
         cols = self._columns()
         col_count = len(cols)
 
-        # 行：0-1 所属信息，2-3 表头
-        base_rows = 4
+        # 行：0-1 表头；所属信息已拆到表格上方的表单头。
+        base_rows = self.DATA_START_ROW
         table = HoverTipTable(base_rows, col_count)
         table.setFont(self._songti_small_four_font())
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setVisible(False)
         # table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
-        bg = QColor("#f8fafc")
-        meta_bg = QColor("#eef6ff")
-        load_group_bg = QColor("#fff7ed")
-        safety_group_bg = QColor("#f0fdf4")
-
-        table.setRowHeight(0, 26)
-        table.setRowHeight(1, 26)
-        table.setRowHeight(2, 30)
-        table.setRowHeight(3, 60)
-
-        # 顶部默认值（来自当前下拉）
-        top_defaults = self._current_top_defaults()
-
-        # ===== 所属信息两行（无绿色提示）=====
-        # 每行 3 块：7 + 6 + 6 = 19
-        # row0：所属分公司 / 所属作业单元 / 所属油气田(田)
-        self._set_meta_double(table, 0, 0, total_span=7, label_span=3,
-                              label="所属分公司", value=top_defaults.get("分公司", ""), field_key="分公司", bg=meta_bg)
-        self._set_meta_double(table, 0, 7, total_span=6, label_span=2,
-                              label="所属作业单元", value=top_defaults.get("作业公司", ""), field_key="作业公司", bg=meta_bg)
-        self._set_meta_double(table, 0, 13, total_span=6, label_span=2,
-                              label="所属油（气）田", value=top_defaults.get("油气田", ""), field_key="油气田", bg=meta_bg)
-
-        # row1：设施名称 / 投产时间 / 设计年限
-        self._set_meta_double(table, 1, 0, total_span=7, label_span=3,
-                              label="设施名称", value=top_defaults.get("设施名称", ""), field_key="设施名称", bg=meta_bg)
-        self._set_meta_double(table, 1, 7, total_span=6, label_span=2,
-                              label="投产时间", value=top_defaults.get("投产时间", ""), field_key="投产时间", bg=meta_bg)
-        self._set_meta_double(table, 1, 13, total_span=6, label_span=2,
-                              label="设计年限", value=top_defaults.get("设计年限", ""), field_key="设计年限", bg=meta_bg)
+        table.setRowHeight(0, 36)
+        table.setRowHeight(1, 68)
 
         # ===== 分组表头（row2）=====
-        table.setSpan(2, 0, 2, 1)
-        table.setItem(2, 0, self._mk_item("序号", bold=True, bg=bg))
+        table.setSpan(0, 0, 2, 1)
+        self._set_header_widget(table, 0, 0, "序号", bg="#dbeafe")
 
         # table.setSpan(2, 1, 1, 3)
         # table.setItem(2, 1, self._mk_item("改扩建", bold=True, bg=bg))
@@ -880,29 +960,29 @@ class PlatformLoadInformationPage(BasePage):
         # table.setSpan(2, 4, 1, 5)
         # table.setItem(2, 4, self._mk_item("上部组块重控", bold=True, bg=bg))
 
-        table.setSpan(2, 9, 1, 6)
-        table.setItem(2, 9, self._mk_item("极端工况最大载荷", bold=True, bg=load_group_bg))
+        table.setSpan(0, 9, 1, 6)
+        self._set_header_widget(table, 0, 9, "极端工况最大载荷", bg="#fed7aa")
 
-        table.setSpan(2, 15, 1, 2)
-        table.setItem(2, 15, self._mk_item("桩基承载力安全系数（最小）", bold=True, bg=safety_group_bg))
+        table.setSpan(0, 15, 1, 2)
+        self._set_header_widget(table, 0, 15, "桩基承载力安全系数（最小）", bg="#bbf7d0")
 
-        table.setSpan(2, 17, 2, 1)
-        table.setItem(2, 17, self._mk_item("是否整体\n评估", bold=True, bg=bg))
-        table.setSpan(2, 18, 2, 1)
-        table.setItem(2, 18, self._mk_item("评估机构", bold=True, bg=bg))
+        table.setSpan(0, 17, 2, 1)
+        self._set_header_widget(table, 0, 17, "是否整体\n评估", bg="#dbeafe")
+        table.setSpan(0, 18, 2, 1)
+        self._set_header_widget(table, 0, 18, "评估机构", bg="#dbeafe")
 
         # ===== 子表头（row3）=====
         for i in range(1,9):
-            table.setSpan(2, i, 2, 1)
-        table.setItem(2, 1, self._mk_item("改扩建项目名称", bold=True, bg=bg))
-        table.setItem(2, 2, self._mk_item("改扩建时间", bold=True, bg=bg))
-        table.setItem(2, 3, self._mk_item("改扩建内容", bold=True, bg=bg))
+            table.setSpan(0, i, 2, 1)
+        self._set_header_widget(table, 0, 1, "改扩建项目名称", bg="#dbeafe")
+        self._set_header_widget(table, 0, 2, "改扩建时间", bg="#dbeafe")
+        self._set_header_widget(table, 0, 3, "改扩建内容", bg="#dbeafe")
 
-        table.setItem(2, 4, self._mk_item("上部组块总操作重量\n(MT)", bold=True, bg=bg))
-        table.setItem(2, 5, self._mk_item("上部组块不可超越重量\n(MT)", bold=True, bg=bg))
-        table.setItem(2, 6, self._mk_item("重量变化\n(MT)", bold=True, bg=bg))
-        table.setItem(2, 7, self._mk_item("上部组块重心\n(x,y,z)\n(m)", bold=True, bg=bg))
-        table.setItem(2, 8, self._mk_item("上部组块重心\n不可超越半径\n(m)", bold=True, bg=bg))
+        self._set_header_widget(table, 0, 4, "上部组块总操作重量\n(MT)", bg="#dbeafe")
+        self._set_header_widget(table, 0, 5, "上部组块不可超越重量\n(MT)", bg="#dbeafe")
+        self._set_header_widget(table, 0, 6, "重量变化\n(MT)", bg="#dbeafe")
+        self._set_header_widget(table, 0, 7, "上部组块重心\n(x,y,z)\n(m)", bg="#bbf7d0")
+        self._set_header_widget(table, 0, 8, "上部组块重心\n不可超越半径\n(m)", bg="#dbeafe")
 
         # 结果字段（严格：Mz 纵向显示）
         fx_headers = [
@@ -915,44 +995,23 @@ class PlatformLoadInformationPage(BasePage):
         ]
         red_cols = list(range(9, 15))
         for (src, shown), c in zip(fx_headers, red_cols):
-            table.setItem(3, c, self._mk_item(shown, bold=True, bg=load_group_bg))
+            self._set_header_widget(table, 1, c, shown, bg="#ffedd5")
 
-        table.setItem(3, 15, self._mk_item("操作工况", bold=True, bg=safety_group_bg))
-        table.setItem(3, 16, self._mk_item("极端工况", bold=True, bg=safety_group_bg))
+        self._set_header_widget(table, 1, 15, "操作工况", bg="#dcfce7")
+        self._set_header_widget(table, 1, 16, "极端工况", bg="#dcfce7")
 
         # 补齐背景（未被 span 覆盖的单元格）
-        for r in range(0, 4):
+        for r in range(base_rows):
             for c in range(col_count):
                 if table.item(r, c) is None and table.cellWidget(r, c) is None:
-                    table.setItem(r, c, self._mk_item("", bg=bg))
+                    self._set_header_widget(table, r, c, "", bg="#f6f9fd")
         return table
 
     # ---------------- 数据加载 ----------------
-    def load_from_csv(self, csv_path: str):
-        if not os.path.exists(csv_path):
-            QMessageBox.warning(self, "提示", f"未找到数据文件：{csv_path}")
-            return
-
-        cols = self._columns()
-        rows: List[List[str]] = []
-        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.reader(f)
-            all_rows = list(reader)
-
-        if not all_rows:
-            return
-
-        start_idx = 0
-        if all_rows[0] and "序号" in all_rows[0][0]:
-            start_idx = 1
-
-        for r in all_rows[start_idx:]:
-            if not r:
-                continue
-            r = (r + [""] * len(cols))[:len(cols)]
-            rows.append([str(x) for x in r])
-
-        self._apply_data(rows, inject_demo_tips=True)
+    def _blank_table_row(self) -> List[str]:
+        row = [""] * len(self._columns())
+        row[0] = "0"
+        return row
 
     def _db_rows_to_table_rows(self, rows: List[Dict[str, object]]) -> List[List[str]]:
         table_rows: List[List[str]] = []
@@ -997,7 +1056,7 @@ class PlatformLoadInformationPage(BasePage):
 
     def _collect_table_rows_for_db(self) -> List[Dict[str, str]]:
         rows: List[Dict[str, str]] = []
-        for sort_order, row in enumerate(range(4, self._find_data_end_row()), start=1):
+        for sort_order, row in enumerate(range(self.DATA_START_ROW, self._find_data_end_row()), start=1):
             rows.append(
                 {
                     "seq_no": self._cell_text(row, 0).strip() or str(sort_order - 1),
@@ -1035,12 +1094,12 @@ class PlatformLoadInformationPage(BasePage):
         try:
             rows = load_platform_load_information_items(facility_code)
             if rows:
-                self._apply_data(self._db_rows_to_table_rows(rows), inject_demo_tips=False)
+                self._apply_data(self._db_rows_to_table_rows(rows))
             else:
-                self.load_from_csv(os.path.join(self.data_dir, self.DEMO_MAIN_CSV))
+                self._apply_data([self._blank_table_row()])
         except Exception as exc:
             QMessageBox.warning(self, "读取失败", f"读取平台载荷信息数据库数据失败：\n{exc}")
-            self.load_from_csv(os.path.join(self.data_dir, self.DEMO_MAIN_CSV))
+            self._apply_data([self._blank_table_row()])
         finally:
             self._switching_platform = False
 
@@ -1072,14 +1131,17 @@ class PlatformLoadInformationPage(BasePage):
             self._row_checkboxes[row_idx] = cb
 
             holder = QWidget(self.table)
+            holder.setObjectName("RowSelectorCell")
             lay = QHBoxLayout(holder)
-            lay.setContentsMargins(8, 0, 8, 0)
-            lay.setSpacing(8)
+            lay.setContentsMargins(10, 0, 8, 0)
+            lay.setSpacing(7)
             lay.addWidget(cb, 0, Qt.AlignCenter)
 
             seq_lab = QLabel(seq_text)
+            seq_lab.setObjectName("RowSeqLabel")
             seq_lab.setAlignment(Qt.AlignCenter)
             seq_lab.setFont(self._songti_small_four_font())
+            seq_lab.setMinimumWidth(22)
             lay.addWidget(seq_lab, 0, Qt.AlignCenter)
             lay.addStretch(1)
 
@@ -1092,7 +1154,7 @@ class PlatformLoadInformationPage(BasePage):
 
         row = item.row()
         col = item.column()
-        base_rows = 4
+        base_rows = self.DATA_START_ROW
         data_end = self._find_data_end_row()
 
         # 仅处理数据区的红色字段列：9..16
@@ -1137,12 +1199,12 @@ class PlatformLoadInformationPage(BasePage):
         table.setMaximumWidth(16777215)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-    def _apply_data(self, rows: List[List[str]], inject_demo_tips: bool = False):
+    def _apply_data(self, rows: List[List[str]]):
         self._loading_data = True
-        base_rows = 4
+        base_rows = self.DATA_START_ROW
         bg = QColor("#f8fafc")
         black = QColor("#111827")
-        row_hint_bg = QColor("#f8fbff")
+        row_hint_bg = QColor("#f6faff")
         import_bg = QColor("#fff7ed")
 
         explain = [
@@ -1162,29 +1224,15 @@ class PlatformLoadInformationPage(BasePage):
             for rr in range(base_rows, base_rows + len(rows)):
                 self.table.setRowHeight(rr, 44)
 
-            # 仅演示 CSV 注入示例提示行；数据库真实数据不应被覆盖
-            if inject_demo_tips and rows:
-                tip0 = ["0", "原设计", "用户设置", "\\",
-                        "", "", "0", "", "",
-                        "", "", "", "", "", "",
-                        "\\", "\\", "\\", "\\"]
-                tip1 = ["1", "（预定义名称？）", "用户设置", "用户输入",
-                        "用户输入", "用户输入", "用户输入", "用户输入", "用户输入",
-                        "用户输入", "用户输入", "用户输入", "用户输入", "用户输入", "用户输入",
-                        "用户输入", "用户输入", "\\", "\\"]
-                rows[0] = (tip0 + [""] * self.table.columnCount())[:self.table.columnCount()]
-                if len(rows) > 1:
-                    rows[1] = (tip1 + [""] * self.table.columnCount())[:self.table.columnCount()]
-
             red_cols = set(range(9, 17))
-            calc_bg = QColor("#f0fdf4")
+            calc_bg = QColor("#eef8ef")
 
             for i, row in enumerate(rows):
                 rr = base_rows + i
                 for c, val in enumerate(row):
                     if c == 6:
                         val = self._format_weight_delta_text(val)
-                    editable = (c not in (0, 7))
+                    editable = (c != 0)
                     it = self._mk_item(val, editable=editable)
                     if c == 7:
                         it.setBackground(calc_bg)
@@ -1202,14 +1250,14 @@ class PlatformLoadInformationPage(BasePage):
                 rr = start + k
                 self.table.setRowHeight(rr, 24 if k else 28)
                 self.table.setSpan(rr, 0, 1, self.table.columnCount())
-                it = self._mk_item(line, bold=(k == 0), bg=bg, align=Qt.AlignLeft | Qt.AlignVCenter, editable=False)
+                it = self._mk_item(line, bg=bg, align=Qt.AlignLeft | Qt.AlignVCenter, editable=False)
                 self.table.setItem(rr, 0, it)
 
             data_end = start
             for r in range(0, self.table.rowCount()):
                 for c in range(self.table.columnCount()):
                     if self.table.item(r, c) is None and self.table.cellWidget(r, c) is None:
-                        editable = (base_rows <= r < data_end) and (c not in (0, 7))
+                        editable = (base_rows <= r < data_end) and (c != 0)
                         item_bg = calc_bg if c == 7 else import_bg if (base_rows <= r < data_end) and (c in red_cols) else bg
                         it = self._mk_item("", bg=item_bg, editable=editable)
                         if (base_rows <= r < data_end) and (c in red_cols):
@@ -1238,7 +1286,7 @@ class PlatformLoadInformationPage(BasePage):
 
     def _on_table_context_menu(self, pos):
         """表格右键菜单逻辑：首列支持行操作，红色列支持读取结果文件。"""
-        base_rows = 4
+        base_rows = self.DATA_START_ROW
         data_end = self._find_data_end_row()
         row = self.table.rowAt(pos.y())
         col = self.table.columnAt(pos.x())
@@ -1247,6 +1295,14 @@ class PlatformLoadInformationPage(BasePage):
 
         if col == 0:
             self._show_row_context_menu(row, pos)
+            return
+
+        if col == 7:
+            menu = QMenu(self.table)
+            menu.setStyleSheet(self._menu_qss())
+            action = menu.addAction("打开上部组块分项目计算表")
+            action.triggered.connect(lambda: self._open_upper_block_subproject_page(src_row=row))
+            menu.exec_(self.table.viewport().mapToGlobal(pos))
             return
 
         # 红色字段列：9..16 (Fx~Mz, 操作工况, 极端工况)
@@ -1290,7 +1346,7 @@ class PlatformLoadInformationPage(BasePage):
 
     def _on_import_result(self, target_row: int = None):
         """读取结果文件（psilst.factor）：由用户选择本地文件并回填该行红色字段。"""
-        base_rows = 4
+        base_rows = self.DATA_START_ROW
         data_end = self._find_data_end_row()
         row = target_row if target_row is not None else self.table.currentRow()
         if row < base_rows or row >= data_end:
@@ -1334,7 +1390,7 @@ class PlatformLoadInformationPage(BasePage):
 
     def _apply_red_fields_editability(self):
         red_cols = list(range(9, 17))
-        base_rows, data_end = 4, self._find_data_end_row()
+        base_rows, data_end = self.DATA_START_ROW, self._find_data_end_row()
         for r in range(base_rows, data_end):
             for c in red_cols:
                 it = self.table.item(r, c)
@@ -1358,7 +1414,7 @@ class PlatformLoadInformationPage(BasePage):
         if self.red_field_mode != 'excel': return
         if not self.result_excel_path: return
         row = self.table.currentRow()
-        if row < 4 or row >= self._find_data_end_row(): return
+        if row < self.DATA_START_ROW or row >= self._find_data_end_row(): return
         try:
             values = self._read_result_excel_generic(self.result_excel_path)
             if values:
@@ -1401,10 +1457,18 @@ class PlatformLoadInformationPage(BasePage):
         fv = self._to_float(value)
         return f"{fv:.6f}".rstrip("0").rstrip(".") if fv is not None else (str(value) if value else "")
 
+    def _fmt_result_load(self, value: object) -> str:
+        fv = self._to_float(value)
+        return f"{fv:.0f}" if fv is not None else (str(value) if value else "")
+
+    def _fmt_result_safety(self, value: object) -> str:
+        fv = self._to_float(value)
+        return f"{fv:.2f}" if fv is not None else (str(value) if value else "")
+
     # ---------------- 表格行操作（新增/删除） ----------------
     def _insert_row_at(self, row: int):
         """在数据区指定位置新增一行。"""
-        base_rows = 4
+        base_rows = self.DATA_START_ROW
         data_end = self._find_data_end_row()
         insert_row = max(base_rows, min(row, data_end))
         self.table.insertRow(insert_row)
@@ -1415,8 +1479,7 @@ class PlatformLoadInformationPage(BasePage):
         red_cols = set(range(9, 17))
         
         for c in range(cols):
-            # 第0列是序号/单选，第7列是跳转重心，这两个不可直接编辑
-            editable = (c not in (0, 7))
+            editable = (c != 0)
             bg = calc_bg if c == 7 else QColor("white")
             it = self._mk_item("", bg=bg, editable=editable)
             if c in red_cols:
@@ -1427,7 +1490,7 @@ class PlatformLoadInformationPage(BasePage):
 
     def _delete_checked_rows(self, rows: Optional[List[int]] = None):
         """删除已勾选的数据行。"""
-        base_rows = 4
+        base_rows = self.DATA_START_ROW
         data_end = self._find_data_end_row()
         target_rows = sorted(rows if rows is not None else self._checked_data_rows())
 
@@ -1454,7 +1517,7 @@ class PlatformLoadInformationPage(BasePage):
 
     def _refresh_table_layout_and_seq(self):
         """统一刷新序号、单选框、行高及表格总高度。"""
-        base_rows = 4
+        base_rows = self.DATA_START_ROW
         data_end = self._find_data_end_row()
         
         # 1. 重新设置序号（连续编号）
@@ -1487,15 +1550,15 @@ class PlatformLoadInformationPage(BasePage):
         loads = {}
         for key in ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]:
             m = re.search(rf"(?i)\b{key}\b.*?\b({self._num_pat})\b", text)
-            if m: loads[key] = self._fmt_float(m.group(1))
+            if m: loads[key] = self._fmt_result_load(m.group(1))
         return loads
 
     def _extract_safety_from_text(self, text: str) -> Dict[str, str]:
         out = {}
         m_op = re.search(rf"(?im)操作工况.*?({self._num_pat})", text)
-        if m_op: out["操作工况"] = self._fmt_float(m_op.group(1))
+        if m_op: out["操作工况"] = self._fmt_result_safety(m_op.group(1))
         m_ex = re.search(rf"(?im)极端工况.*?({self._num_pat})", text)
-        if m_ex: out["极端工况"] = self._fmt_float(m_ex.group(1))
+        if m_ex: out["极端工况"] = self._fmt_result_safety(m_ex.group(1))
         return out
 
     def _parse_combined_load_cases_from_lines(self, lines: List[str]) -> List[Dict[str, object]]:
@@ -1636,7 +1699,7 @@ class PlatformLoadInformationPage(BasePage):
                     best_abs = abs_value
                     best_row = row
             if best_row is not None:
-                out[out_key] = self._fmt_float(best_row.get(field_key))
+                out[out_key] = self._fmt_result_load(best_row.get(field_key))
         return out
 
     def _extract_vba_style_max_loads(self, text: str) -> Dict[str, str]:
@@ -1784,9 +1847,9 @@ class PlatformLoadInformationPage(BasePage):
 
         out: Dict[str, str] = {}
         if minima["Operation"] is not None:
-            out["操作工况"] = self._fmt_float(minima["Operation"])
+            out["操作工况"] = self._fmt_result_safety(minima["Operation"])
         if minima["Extreme"] is not None:
-            out["极端工况"] = self._fmt_float(minima["Extreme"])
+            out["极端工况"] = self._fmt_result_safety(minima["Extreme"])
         return out
 
     def _extract_vba_style_result_values(self, text: str) -> Dict[str, str]:
@@ -1830,7 +1893,7 @@ class PlatformLoadInformationPage(BasePage):
         return res
 
     def _collect_series_for_curve(self) -> Dict[str, List[float]]:
-        base_rows, data_end = 4, self._find_data_end_row()
+        base_rows, data_end = self.DATA_START_ROW, self._find_data_end_row()
         idxs, weight, cgx, cgy, fx, fy, fz, mx, my, mz = [], [], [], [], [], [], [], [], [], []
         for r in range(base_rows, data_end):
             seq = self._cell_text(r, 0).strip()
@@ -1857,14 +1920,10 @@ class PlatformLoadInformationPage(BasePage):
         self.curve_widget.update_series(code, self._collect_series_for_curve())
 
     def _cell_text(self, row: int, col: int) -> str:
-        if col == 0 and 4 <= row < self._find_data_end_row():
-            return str(row - 4)
+        if col == 0 and self.DATA_START_ROW <= row < self._find_data_end_row():
+            return str(row - self.DATA_START_ROW)
         it = self.table.item(row, col)
         return it.text() if it else ""
-
-    def _on_main_cell_clicked(self, row: int, col: int):
-        if 4 <= row < self._find_data_end_row() and col == 7:
-            self._open_upper_block_subproject_page(src_row=row)
 
     def _open_upper_block_subproject_page(self, src_row: int):
         mw = self.window()
@@ -1893,7 +1952,7 @@ class PlatformLoadInformationPage(BasePage):
         for col, val in wb.items():
             it = self.table.item(src_row, int(col))
             if not it:
-                it = self._mk_item("", editable=(int(col)!=7))
+                it = self._mk_item("", editable=(int(col) != 0))
                 self.table.setItem(src_row, int(col), it)
             it.setText(str(val))
             if int(col) == 7: it.setBackground(calc_bg)
@@ -1935,7 +1994,7 @@ class PlatformLoadInformationPage(BasePage):
 
         header = self._columns()
         rows = []
-        for r in range(4, self._find_data_end_row()):
+        for r in range(self.DATA_START_ROW, self._find_data_end_row()):
             row = [self._cell_text(r, c) for c in range(self.table.columnCount())]
             if any(str(value or "").strip() for value in row):
                 rows.append(row)

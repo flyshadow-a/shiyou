@@ -18,6 +18,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from openpyxl import Workbook
+
 
 
 from PyQt5.QtCore import QObject, QProcess, Qt, QThread, QTimer, QRectF, pyqtSignal
@@ -292,7 +294,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
     INDEX_BG = QColor("#e9eef5")
     DETAIL_HEADERS = {
         "构件": ["序号", "构件名称", "最大UC值", "对应工况", "是否满足"],
-        "节点冲剪": ["序号", "节点名称", "最大UC值", "对应工况", "是否满足"],
+        "节点冲剪": ["序号", "节点名称", "Load UC", "Strength UC", "对应工况", "是否满足"],
         "桩应力": ["序号", "桩头ID", "距离桩头(m)", "最大UC值", "对应工况", "是否满足"],
         "操作工况桩基承载力": ["序号", "构件名称", "最大（最小） UC值", "对应工况", "是否满足"],
         "极端工况桩基承载力": ["序号", "构件名称", "最大（最小） UC值", "对应工况", "是否满足"],
@@ -499,6 +501,36 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 txt = it.text().replace("\n", " ")
                 max_w = max(max_w, fm.horizontalAdvance(txt) + padding)
             table.setColumnWidth(c, max_w)
+
+    def _narrow_detail_index_column(self, table: QTableWidget, index_width: int = 76) -> None:
+        cols = table.columnCount()
+        if cols <= 1:
+            return
+        old_width = table.columnWidth(0)
+        if old_width <= index_width:
+            table.setColumnWidth(0, index_width)
+            return
+
+        extra_width = old_width - index_width
+        table.setColumnWidth(0, index_width)
+        add_each = extra_width // (cols - 1)
+        remainder = extra_width % (cols - 1)
+        for c in range(1, cols):
+            table.setColumnWidth(c, table.columnWidth(c) + add_each + (1 if c - 1 < remainder else 0))
+
+    def _sync_pile_capacity_head_column_width(self) -> None:
+        if not hasattr(self, "detail_tables"):
+            return
+        pile_stress_table = self.detail_tables.get("桩应力")
+        if pile_stress_table is None or pile_stress_table.columnCount() < 2:
+            return
+        target_width = pile_stress_table.columnWidth(1)
+        if target_width <= 0:
+            return
+        for tab_name in ("操作工况桩基承载力", "极端工况桩基承载力"):
+            table = self.detail_tables.get(tab_name)
+            if table is not None and table.columnCount() > 0:
+                table.setColumnWidth(0, target_width)
 
     # ---------------- 上方 快速评估汇总信息表 ----------------
     def _build_summary_table(self) -> QWidget:
@@ -731,6 +763,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             tbl.setColumnWidth(c, max(100, ideal_width + 30))
 
         header.setStretchLastSection(True)
+        self._narrow_detail_index_column(tbl)
         # ====================================
 
         tbl.setRowHeight(0, 34)
@@ -862,15 +895,27 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _format_result_number(self, value, digits: int = 3) -> str:
         try:
-            return f"{float(value):.{digits}f}".rstrip("0").rstrip(".")
+            number = float(value)
         except (TypeError, ValueError):
             return "" if value is None else str(value)
+        if abs(number) >= 10000:
+            return f"{number:.0f}"
+        return f"{number:.2f}"
+
+    def _format_analysis_table_value(self, value) -> str:
+        return self._format_result_number(value)
 
     def _is_pass_text_for_uc(self, value) -> str:
         try:
             return "满足" if float(value) < 1.0 else "不满足"
         except (TypeError, ValueError):
             return "无数据"
+
+    def _sort_key_float_desc(self, row: dict, key: str) -> float:
+        try:
+            return float(row.get(key))
+        except (TypeError, ValueError):
+            return float("-inf")
 
     def _fill_summary_table_from_analysis(self, analysis_summary: dict) -> None:
         rows = list((analysis_summary or {}).get("items", []))
@@ -879,7 +924,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 break
             self._set_cell(self.tbl_summary, index, 0, str(item.get("check_item", "")), bg=self.HDR_BG, bold=False, align_center=False, editable=False)
             self._set_cell(self.tbl_summary, index, 1, str(item.get("position", "")), editable=False)
-            self._set_cell(self.tbl_summary, index, 2, str(item.get("value", "")), editable=False)
+            self._set_cell(self.tbl_summary, index, 2, self._format_analysis_table_value(item.get("value", "")), editable=False)
             self._set_cell(self.tbl_summary, index, 3, str(item.get("case", "")), editable=False)
             self._set_cell(self.tbl_summary, index, 4, str(item.get("is_pass", "")), editable=False)
 
@@ -894,6 +939,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 editable = False
                 align_center = column_index != 1
                 self._set_cell(table, row_index, column_index, value, bg=bg, editable=editable, align_center=align_center)
+        self._narrow_detail_index_column(table)
 
     def _fill_standard_detail_table(self, tab_name: str, rows: List[List[str]]) -> None:
         table = self.detail_tables.get(tab_name)
@@ -919,11 +965,26 @@ class FeasibilityAssessmentResultsPage(BasePage):
             "compression_sf",
             "tension_sf",
         ]
+        numeric_keys = {
+            "compression_capacity_kn",
+            "tension_capacity_kn",
+            "pile_weight_kn",
+            "compression_load_kn",
+            "tension_load_kn",
+            "compression_sf",
+            "tension_sf",
+        }
         for row_index, item in enumerate(display_rows, start=header_rows):
             table.setRowHeight(row_index, 32)
             for column_index, key in enumerate(keys):
                 bg = self.INDEX_BG if column_index == 0 else None
-                self._set_cell(table, row_index, column_index, str(item.get(key, "")), bg=bg, editable=False)
+                value = item.get(key, "")
+                if key in numeric_keys:
+                    value = self._format_analysis_table_value(value)
+                else:
+                    value = str(value)
+                self._set_cell(table, row_index, column_index, value, bg=bg, editable=False)
+        self._sync_pile_capacity_head_column_width()
 
     def _fill_pile_capacity_detail_table(self, tab_name: str, rows: List[dict]) -> None:
         table = self.detail_tables.get(tab_name)
@@ -935,7 +996,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _fill_detail_tables_from_analysis(self, results: dict) -> None:
         member_rows = []
-        for index, row in enumerate(results.get("member_group_summary", {}).get("rows", []), start=1):
+        member_source_rows = sorted(
+            results.get("member_group_summary", {}).get("rows", []),
+            key=lambda row: self._sort_key_float_desc(row, "unity_check"),
+            reverse=True,
+        )
+        for index, row in enumerate(member_source_rows, start=1):
             uc = row.get("unity_check")
             member_rows.append([
                 str(index),
@@ -947,19 +1013,32 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._fill_standard_detail_table("构件", member_rows)
 
         joint_rows = []
-        for index, row in enumerate(results.get("joint_can_summary", {}).get("rows", []), start=1):
-            uc = row.get("design_load_uc")
+        joint_source_rows = sorted(
+            results.get("joint_can_summary", {}).get("rows", []),
+            key=lambda row: self._sort_key_float_desc(row, "design_strn_uc"),
+            reverse=True,
+        )
+        for index, row in enumerate(joint_source_rows, start=1):
+            load_uc = row.get("design_load_uc")
+            strength_uc = row.get("design_strn_uc")
+            pass_value = strength_uc if strength_uc not in (None, "") else load_uc
             joint_rows.append([
                 str(index),
                 str(row.get("joint", "")),
-                self._format_result_number(uc, 3),
+                self._format_result_number(load_uc, 3),
+                self._format_result_number(strength_uc, 3),
                 str(row.get("load_case", "")),
-                self._is_pass_text_for_uc(uc),
+                self._is_pass_text_for_uc(pass_value),
             ])
         self._fill_standard_detail_table("节点冲剪", joint_rows)
 
         pile_rows = []
-        for index, row in enumerate(results.get("pile_group_summary", {}).get("rows", []), start=1):
+        pile_source_rows = sorted(
+            results.get("pile_group_summary", {}).get("rows", []),
+            key=lambda row: self._sort_key_float_desc(row, "maximum_unity_check"),
+            reverse=True,
+        )
+        for index, row in enumerate(pile_source_rows, start=1):
             uc = row.get("maximum_unity_check")
             pile_rows.append([
                 str(index),
@@ -974,6 +1053,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         pile_axial = results.get("pile_axial_capacity_summary", {})
         self._fill_pile_capacity_detail_table("操作工况桩基承载力", list(pile_axial.get("operation_table_rows", [])))
         self._fill_pile_capacity_detail_table("极端工况桩基承载力", list(pile_axial.get("extreme_table_rows", [])))
+        self._sync_pile_capacity_head_column_width()
 
     def start_analysis_results_loading(self) -> None:
         if self._analysis_thread is not None and self._analysis_thread.isRunning():
@@ -1075,6 +1155,15 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self.btn_generate_report = btn
 
         lay.addWidget(btn, 0, Qt.AlignLeft)
+
+        download_btn = QPushButton("文件下载")
+        download_btn.setFixedHeight(50)
+        download_btn.setMinimumWidth(160)
+        download_btn.setStyleSheet(btn.styleSheet())
+        download_btn.clicked.connect(self._on_download_tables)
+        self.btn_download_tables = download_btn
+        lay.addWidget(download_btn, 0, Qt.AlignLeft)
+
         lay.addStretch(1)
         return wrap
 
@@ -1197,6 +1286,140 @@ class FeasibilityAssessmentResultsPage(BasePage):
             if reply != QMessageBox.Yes:
                 return ""
         return str(output_path)
+
+    def _select_tables_output_path(self, output_filename: str) -> str:
+        save_dir = QFileDialog.getExistingDirectory(self, "选择文件保存目录", "")
+        if not save_dir:
+            return ""
+
+        normalized_name = str(output_filename or "").strip() or f"{self.facility_code}_快速评估结果.xlsx"
+        output_path = (Path(save_dir) / normalized_name).with_suffix(".xlsx")
+        if output_path.exists():
+            reply = QMessageBox.question(
+                self,
+                "文件已存在",
+                f"目标目录已存在同名文件：\n{output_path}\n\n是否替换？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return ""
+        return str(output_path)
+
+    def _table_matrix_for_export(self, table: QTableWidget) -> List[List[str]]:
+        rows: List[List[str]] = []
+        for r in range(table.rowCount()):
+            values: List[str] = []
+            for c in range(table.columnCount()):
+                item = table.item(r, c)
+                values.append(item.text() if item is not None else "")
+            if any(value.strip() for value in values):
+                rows.append(values)
+        return rows
+
+    def _write_table_sheet(self, workbook: Workbook, title: str, table: QTableWidget) -> None:
+        safe_title = re.sub(r"[\\/*?:\[\]]", "_", title)[:31] or "Sheet"
+        if workbook.worksheets and workbook.active.title == "Sheet" and not workbook.active.max_row > 1:
+            sheet = workbook.active
+            sheet.title = safe_title
+        else:
+            sheet = workbook.create_sheet(safe_title)
+
+        for row in self._table_matrix_for_export(table):
+            sheet.append(row)
+
+        for column_cells in sheet.columns:
+            width = 10
+            for cell in column_cells:
+                width = max(width, min(42, len(str(cell.value or "")) + 2))
+            sheet.column_dimensions[column_cells[0].column_letter].width = width
+
+    def _write_rows_sheet(self, workbook: Workbook, title: str, rows: List[List[str]]) -> None:
+        safe_title = re.sub(r"[\\/*?:\[\]]", "_", title)[:31] or "Sheet"
+        sheet = workbook.create_sheet(safe_title)
+        for row in rows:
+            sheet.append([str(value) for value in row])
+        for column_cells in sheet.columns:
+            width = 10
+            for cell in column_cells:
+                width = max(width, min(42, len(str(cell.value or "")) + 2))
+            sheet.column_dimensions[column_cells[0].column_letter].width = width
+
+    def _detail_rows_for_export(self, tab_name: str) -> List[List[str]]:
+        table = self.detail_tables.get(tab_name)
+        if table is None:
+            return []
+
+        header_rows = int(table.property("header_rows") or 2)
+        rows: List[List[str]] = []
+        for r in range(header_rows):
+            values = []
+            for c in range(table.columnCount()):
+                item = table.item(r, c)
+                values.append(item.text() if item is not None else "")
+            if any(value.strip() for value in values):
+                rows.append(values)
+
+        stored_rows = self._detail_table_rows.get(tab_name)
+        if stored_rows is None:
+            return rows + self._table_matrix_for_export(table)[header_rows:]
+
+        if tab_name in {"操作工况桩基承载力", "极端工况桩基承载力"}:
+            keys = [
+                "pile_head_id",
+                "compression_capacity_kn",
+                "tension_capacity_kn",
+                "pile_weight_kn",
+                "compression_case",
+                "compression_load_kn",
+                "tension_case",
+                "tension_load_kn",
+                "compression_sf",
+                "tension_sf",
+            ]
+            numeric_keys = {
+                "compression_capacity_kn",
+                "tension_capacity_kn",
+                "pile_weight_kn",
+                "compression_load_kn",
+                "tension_load_kn",
+                "compression_sf",
+                "tension_sf",
+            }
+            for item in stored_rows:
+                row = []
+                for key in keys:
+                    value = item.get(key, "") if isinstance(item, dict) else ""
+                    if key in numeric_keys:
+                        value = self._format_analysis_table_value(value)
+                    row.append(str(value))
+                rows.append(row)
+            return rows
+
+        rows.extend([list(row) for row in stored_rows])
+        return rows
+
+    def _export_result_tables_to_xlsx(self, output_path: str) -> None:
+        workbook = Workbook()
+        self._write_table_sheet(workbook, "快速评估汇总信息", self.tbl_summary)
+        for tab_name in ["构件", "节点冲剪", "桩应力", "操作工况桩基承载力", "极端工况桩基承载力"]:
+            self._write_rows_sheet(workbook, tab_name, self._detail_rows_for_export(tab_name))
+        workbook.save(output_path)
+
+    def _on_download_tables(self) -> None:
+        output_path = self._select_tables_output_path(f"{self.facility_code}_快速评估结果.xlsx")
+        if not output_path:
+            return
+        try:
+            self._export_result_tables_to_xlsx(output_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "文件下载失败", f"保存快速评估结果表格失败：\n{exc}")
+            return
+
+        opened = self._open_report_output_directory(output_path)
+        QMessageBox.information(self, "下载成功", f"快速评估结果表格已保存：\n{output_path}")
+        if not opened:
+            QMessageBox.warning(self, "打开目录失败", "文件已保存，但未能自动打开并选中生成文件。")
 
     def _build_analysis_model_section(self) -> dict:
         section = {

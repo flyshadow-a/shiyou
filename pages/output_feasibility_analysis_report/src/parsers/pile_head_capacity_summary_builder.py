@@ -33,7 +33,7 @@ class PileHeadConditionRow(TypedDict):
     compression_sf: float | None
     tension_case: str
     tension_load_kn: float | None
-    tension_sf: float | None
+    tension_sf: float | str | None
 
 
 class PileAxialCapacityControlSummary(TypedDict):
@@ -83,9 +83,11 @@ def _match_condition(
     return None
 
 
-def _format_number(value: float | None) -> str:
+def _format_number(value: float | str | None) -> str:
     if value is None:
         return ""
+    if isinstance(value, str):
+        return value
     return f"{value:.3f}".rstrip("0").rstrip(".")
 
 
@@ -235,17 +237,15 @@ def build_pile_head_capacity_summary(
         )
         axial_force_kn = float(row.get("axial_force_kn", 0.0))
 
-        if axial_force_kn < 0:
-            compression_load_kn = abs(axial_force_kn)
-            current = record["compression_load_kn"]
-            if current is None or compression_load_kn > current:
-                record["compression_load_kn"] = compression_load_kn
-                record["compression_case"] = load_case
-        elif axial_force_kn > 0:
-            current = record["tension_load_kn"]
-            if current is None or axial_force_kn > current:
-                record["tension_load_kn"] = axial_force_kn
-                record["tension_case"] = load_case
+        current_compression = record["compression_load_kn"]
+        if current_compression is None or axial_force_kn < current_compression:
+            record["compression_load_kn"] = axial_force_kn
+            record["compression_case"] = load_case
+
+        current_tension = record["tension_load_kn"]
+        if current_tension is None or axial_force_kn > current_tension:
+            record["tension_load_kn"] = axial_force_kn
+            record["tension_case"] = load_case
 
     condition_rows: dict[ConditionType, list[PileHeadConditionRow]] = {
         "operation": [],
@@ -265,15 +265,17 @@ def build_pile_head_capacity_summary(
 
             compression_sf = None
             if compression_load_kn is not None:
+                compression_load_kn = abs(compression_load_kn)
                 denominator = compression_load_kn + pile_weight_kn
                 if denominator > 0:
                     compression_sf = compression_capacity_kn / denominator
 
-            tension_sf = None
+            tension_sf: float | str | None = None
             if tension_load_kn is not None:
-                denominator = tension_load_kn - pile_weight_kn
-                if denominator > 0:
-                    tension_sf = tension_capacity_kn / denominator
+                if tension_load_kn < 0:
+                    tension_sf = "-"
+                else:
+                    tension_sf = tension_capacity_kn / (tension_load_kn - pile_weight_kn)
 
             condition_rows[condition_type].append(
                 {
@@ -304,7 +306,7 @@ def build_pile_head_capacity_summary(
         pass_threshold=operation_pass_threshold,
     )
     operation_tension = _build_control_summary(
-        min((row for row in operation_rows if row["tension_sf"] is not None), key=lambda row: row["tension_sf"], default=None),
+        min((row for row in operation_rows if isinstance(row["tension_sf"], float)), key=lambda row: row["tension_sf"], default=None),
         key="pile_tens_op",
         check_item="操作工况桩基抗拔",
         condition_type="operation",
@@ -320,7 +322,7 @@ def build_pile_head_capacity_summary(
         pass_threshold=extreme_pass_threshold,
     )
     extreme_tension = _build_control_summary(
-        min((row for row in extreme_rows if row["tension_sf"] is not None), key=lambda row: row["tension_sf"], default=None),
+        min((row for row in extreme_rows if isinstance(row["tension_sf"], float)), key=lambda row: row["tension_sf"], default=None),
         key="pile_tens_ext",
         check_item="极端工况桩基抗拔",
         condition_type="extreme",
