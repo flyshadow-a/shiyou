@@ -160,8 +160,10 @@ class FeasibilityAssessmentPage(BasePage):
         self._input_data_saved = False
         self._input_data_locked = False
         self._model_created_in_session = False
-        # 记录“创建新模型”时用户选择的导出目录。后续计算完成导出结果时，默认打开该目录。
+        # 记录“导出文件”按钮上次选择的目录。
         self._model_user_export_dir = ""
+        # 记录最近一次计算对象：original / rebuild。用于控制导出内容，避免原模型计算后误导出旧 M1。
+        self._last_analysis_mode = ""
 
         self._build_ui()
         self._refresh_runtime_paths_from_disk()
@@ -1278,6 +1280,7 @@ class FeasibilityAssessmentPage(BasePage):
         lay.addStretch(1)
         return wrap
 
+    # ---------------- 保存按钮：导出当前表格数据 ----------------
     def _confirm_save_locked(self, data_name: str) -> bool:
         """
         保存前二次确认：
@@ -1474,13 +1477,13 @@ class FeasibilityAssessmentPage(BasePage):
                 mysql_url=self.mysql_url,
                 job_name=self.job_name,
                 overwrite_job=True,
-                generate_bat=True,  # 创建模型时同步复制 RUNX/PSIINP/JCNINP 并生成 bat
-                user_export_dir="",  # 不再在创建时让用户选择导出目录
+                generate_bat=True,      # 创建模型时同步复制 RUNX/PSIINP/JCNINP 并生成 bat
+                user_export_dir="",     # 创建阶段不再让用户选择导出目录；统一由“导出文件”按钮处理
             )
 
             export_info = result.get("export", {}) or {}
 
-            self.current_model_dir = export_info.get("model_dir", "").strip() or self.model_files_root
+            self.current_model_dir = export_info.get("model_dir", "").strip() or get_job_runtime_dir(self.job_name)
             self.current_runx_file = export_info.get("runx_file", "").strip()
             if not self.current_runx_file:
                 self.current_runx_file = self._find_first_existing_file(
@@ -1523,7 +1526,7 @@ class FeasibilityAssessmentPage(BasePage):
                 msg_lines.append(f"BAT文件：{self.current_bat_file}")
 
             msg_lines.append("")
-            msg_lines.append("如需把 M1 文件和计算结果文件保存到指定目录，请点击底部“导出文件”。")
+            msg_lines.append("需要导出 M1 文件和计算结果时，请点击底部“导出文件”。")
 
             QMessageBox.information(self, "创建完成", "\n".join(msg_lines))
 
@@ -1632,96 +1635,29 @@ class FeasibilityAssessmentPage(BasePage):
         )
 
     def _archive_analysis_result_file(self, result_file: str, *, analysis_mode: str, runtime_bundle: dict) -> str:
-        """把 SACS 计算结果文件归档到对应业务位置。
+        """把 SACS 计算结果文件按业务规则归档。
 
         规则：
-        - 原模型计算结果：归档到【模型文件 / 当前模型 / 静力 / 结果 / 自动计算 / 原模型】；
-        - 改造后计算结果：归档到最新历史改造项目下，和该项目的 sacinp.M1 / seainp.M1 放在一起。
-
-        这样用户在“历史改造文件”中选中某个改造项目时，可以直接看到：
-        1) 模型文件 sacinp.M1；
-        2) 海况文件 seainp.M1；
-        3) 本项目对应的计算结果文件。
+        1. 原模型计算结果：保存到“模型文件 -> 当前模型 -> 静力 -> 结果 -> 自动计算 -> 原模型”；
+        2. 改造后/新模型计算结果：不写入“模型文件”或“历史改造文件”，只保留在运行目录；
+           用户需要时通过底部“导出文件”按钮手动选择路径导出。
         """
         result_file = os.path.normpath(str(result_file or "").strip())
         if not result_file or not os.path.isfile(result_file):
             return ""
 
-        mode_label = "原模型" if analysis_mode == "original" else "改造后模型"
+        if analysis_mode != "original":
+            # 新模型结果不自动归档，避免污染图二“模型文件”页面。
+            return ""
+
+        mode_label = "原模型"
         source_label = str(runtime_bundle.get("project_name") or runtime_bundle.get("source") or "").strip()
 
         try:
-            from services.file_db_adapter import (
-                append_docman_file,
-                load_docman_record_list,
-                replace_docman_list_file,
-                resolve_storage_path,
-                upload_file,
-            )
+            from services.file_db_adapter import resolve_storage_path, upload_file
         except Exception:
             return ""
 
-        # 改造后模型：结果文件保存到对应历史改造项目下。
-        if analysis_mode != "original":
-            project_id = runtime_bundle.get("project_id")
-            try:
-                project_id_int = int(project_id or 0)
-            except Exception:
-                project_id_int = 0
-
-            if project_id_int > 0:
-                path_segments = ["历史改造信息", f"project_{project_id_int}"]
-                remark = (
-                    f"{source_label or '历史改造项目'} 对应的结构强度/改造可行性评估计算结果；"
-                    f"计算对象：{mode_label}"
-                )
-
-                try:
-                    # 同一个历史改造项目重复计算时，优先覆盖该项目下已有的计算结果文件，
-                    # 避免每次计算都新增一条重复的 psilst.factor。
-                    existing_records = load_docman_record_list(
-                        path_segments,
-                        facility_code=self.job_name,
-                    )
-                    target_record = None
-                    for rec in existing_records or []:
-                        category = str(rec.get("category") or "").strip()
-                        filename = str(rec.get("filename") or "").strip().lower()
-                        remark_text = str(rec.get("remark") or "").strip()
-                        if (
-                            "计算结果" in category
-                            or "静力分析结果" in category
-                            or filename.startswith("psilst")
-                            or "计算结果" in remark_text
-                        ):
-                            target_record = rec
-                            break
-
-                    if target_record and target_record.get("logical_path"):
-                        record = replace_docman_list_file(
-                            result_file,
-                            logical_path=str(target_record.get("logical_path") or ""),
-                            record_id=int(target_record.get("record_id") or 0) if target_record.get("record_id") else None,
-                            category="计算结果文件",
-                            work_condition=mode_label,
-                            remark=remark,
-                            facility_code=self.job_name,
-                        )
-                    else:
-                        record = append_docman_file(
-                            result_file,
-                            path_segments=path_segments,
-                            category="计算结果文件",
-                            work_condition=mode_label,
-                            remark=remark,
-                            facility_code=self.job_name,
-                        )
-                    return resolve_storage_path(record) or result_file
-                except Exception as exc:
-                    print("[FeasibilityAssessmentPage] archive rebuild analysis result failed:", exc)
-                    return ""
-
-        # 原模型计算结果，或者找不到 project_id 的兜底情况：仍保存到模型文件页。
         logical_path = f"{self.job_name}/当前模型/静力/结果/自动计算/{mode_label}"
         remark = (
             f"结构强度/改造可行性评估计算结果；计算对象：{mode_label}；"
@@ -1745,7 +1681,7 @@ class FeasibilityAssessmentPage(BasePage):
             return ""
 
     def _copy_analysis_outputs_to_user_dir(self, *, result_file: str, work_dir: str, user_export_dir: str) -> list[str]:
-        """兼容旧调用：只把计算结果文件导出到用户选择目录，不再导出日志。"""
+        """兼容旧调用：只把计算结果文件复制到用户选择目录，不导出日志。"""
         export_dir = os.path.normpath(str(user_export_dir or "").strip())
         if not export_dir:
             return []
@@ -1776,10 +1712,11 @@ class FeasibilityAssessmentPage(BasePage):
 
     def _collect_generated_export_files(self) -> list[str]:
         """
-        只收集用户手动导出的核心文件：
-        1. 新生成的 M1 模型文件：sacinp.M1
-        2. 新生成的 M1 海况文件：seainp.M1
-        3. 计算结果文件：psilst.factor / psilst.lst / psilst.lis / psilst
+        收集“导出文件”按钮需要复制的文件。
+
+        业务规则：
+        - 新模型/改造后计算：导出 sacinp.M1、seainp.M1 和本次 psilst 结果文件；
+        - 原模型计算：结果已自动保存到模型文件页面，这里最多只导出当前结果文件，不混入旧 M1。
         """
         self._refresh_runtime_paths_from_disk()
 
@@ -1787,8 +1724,13 @@ class FeasibilityAssessmentPage(BasePage):
         work_dir = os.path.normpath(work_dir) if work_dir else ""
 
         candidates: list[str] = []
+        last_mode = str(getattr(self, "_last_analysis_mode", "") or "").strip()
 
-        if work_dir:
+        should_export_m1 = (
+            bool(getattr(self, "_model_created_in_session", False))
+            or last_mode == "rebuild"
+        )
+        if work_dir and should_export_m1:
             candidates.append(os.path.join(work_dir, "sacinp.M1"))
             candidates.append(os.path.join(work_dir, "seainp.M1"))
 
@@ -1811,10 +1753,7 @@ class FeasibilityAssessmentPage(BasePage):
         return existing_files
 
     def _copy_generated_files_to_user_dir(self, user_export_dir: str) -> list[str]:
-        """
-        把当前已生成的 M1 文件和计算结果文件复制到用户选择目录。
-        注意：这里只导出 sacinp.M1 / seainp.M1 / psilst 结果文件，不导出日志。
-        """
+        """把当前已生成的 M1 文件和计算结果文件复制到用户选择目录。"""
         export_dir = os.path.normpath(str(user_export_dir or "").strip())
         if not export_dir:
             return []
@@ -1834,7 +1773,7 @@ class FeasibilityAssessmentPage(BasePage):
         return copied
 
     def _on_export_generated_files(self):
-        """新增按钮：用户手动选择目录后，只导出 M1 文件和计算结果文件。"""
+        """用户手动选择目录后，导出 M1 文件和计算结果文件。"""
         try:
             files = self._collect_generated_export_files()
             if not files:
@@ -1842,7 +1781,8 @@ class FeasibilityAssessmentPage(BasePage):
                     self,
                     "无可导出文件",
                     "当前还没有找到可导出的 M1 文件或计算结果文件。\n\n"
-                    "请先点击“创建新模型”生成 M1 文件，或点击“计算分析”生成结果文件。"
+                    "如果需要导出新模型文件，请先点击“保存数据”->“创建新模型”；\n"
+                    "如果需要导出计算结果，请先点击“计算分析”。"
                 )
                 return
 
@@ -2168,6 +2108,7 @@ class FeasibilityAssessmentPage(BasePage):
     def _on_run_analysis(self):
         try:
             analysis_mode = "original" if self._should_calculate_original_model() else "rebuild"
+            self._last_analysis_mode = analysis_mode
 
             # 每次计算前都重新准备当前计算模型。
             # - 三张表为空、未保存、未创建新模型：计算原始上传模型；
@@ -2298,6 +2239,8 @@ class FeasibilityAssessmentPage(BasePage):
                         )
                         return
 
+                    self._last_analysis_mode = analysis_mode
+
                     archived_path = self._archive_analysis_result_file(
                         self.current_result_file,
                         analysis_mode=analysis_mode,
@@ -2306,9 +2249,18 @@ class FeasibilityAssessmentPage(BasePage):
 
                     mode_text = "原模型" if analysis_mode == "original" else "本次创建的新模型"
                     msg = f"计算完成。\n计算对象：{mode_text}\n结果文件：{self.current_result_file}"
-                    if archived_path:
-                        msg += f"\n服务器归档：{archived_path}"
-                    msg += "\n\n如需把 M1 文件和计算结果文件保存到指定目录，请点击底部“导出文件”。"
+
+                    if analysis_mode == "original":
+                        if archived_path:
+                            msg += f"\n服务器归档：{archived_path}"
+                        else:
+                            msg += "\n\n注意：原模型结果应自动保存到“模型文件/当前模型/静力/结果”位置，但本次归档失败，请检查文件服务配置。"
+                    else:
+                        msg += (
+                            "\n\n本次为新模型/改造后模型计算结果，系统不会自动保存到“模型文件”页面。"
+                            "\n如需保存 M1 文件和计算结果，请点击底部“导出文件”并选择目录。"
+                        )
+
                     QMessageBox.information(self, "提示", msg)
 
                 self._wait_for_fresh_result_file(
