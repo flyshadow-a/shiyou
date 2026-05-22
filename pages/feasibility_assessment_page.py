@@ -2028,11 +2028,13 @@ class FeasibilityAssessmentPage(BasePage):
         return None
 
     def _analysis_output_has_error(self, work_dir: str, result_file: str) -> str:
-        """从退出码/日志/结果尾部识别明显错误。只做强错误判断，避免误杀正常结果。"""
-        exit_code = self._read_analysis_exit_code(work_dir)
-        if exit_code is not None and exit_code != 0:
-            return f"ExitCode={exit_code}"
+        """从日志/结果尾部识别真正的强错误。
 
+        注意：不再把 SACS/AnalysisEngine 的非 0 ExitCode 单独作为失败条件。
+        实测部分 SACS 运行会在已经生成可解析 psilst.factor 的情况下返回 41，
+        如果只按 ExitCode 判断，会误报“计算失败”，导致原模型和新模型都无法进入结果页。
+        因此这里只检查日志/结果中的强错误文本。ExitCode 只在完成提示里作为提醒显示。
+        """
         paths = [
             os.path.join(work_dir, "analysis_stdout.log"),
             os.path.join(work_dir, "analysis_stderr.log"),
@@ -2043,7 +2045,6 @@ class FeasibilityAssessmentPage(BasePage):
         low = joined.lower()
         strong_error_tokens = [
             "*** error in sacs execution ***",
-            "please check output listing files",
             "fatal error",
             "severe error",
             "cannot open",
@@ -2057,6 +2058,18 @@ class FeasibilityAssessmentPage(BasePage):
         for token in strong_error_tokens:
             if token in low:
                 return token
+        return ""
+
+    def _analysis_exit_code_warning(self, work_dir: str, process_exit_code: int | None = None) -> str:
+        """读取 SACS 退出码。非 0 只作为提醒，不阻止结果归档/查看。"""
+        exit_code = self._read_analysis_exit_code(work_dir)
+        if exit_code is None and process_exit_code not in (None, 0):
+            try:
+                exit_code = int(process_exit_code)
+            except Exception:
+                exit_code = None
+        if exit_code is not None and exit_code != 0:
+            return f"SACS 返回 ExitCode={exit_code}，但已生成结果文件；如结果页异常，请再检查 psilst.factor / analysis_summary.log。"
         return ""
 
     def _analysis_runx_has_done_marker(self, work_dir: str) -> bool:
@@ -2256,12 +2269,12 @@ class FeasibilityAssessmentPage(BasePage):
 
             def on_finished(exit_code, exit_status):
                 self.analysis_process = None
+                process_exit_code = int(exit_code or 0)
 
-                if exit_code != 0:
-                    self.btn_run.setEnabled(True)
-                    self.btn_run.setText("计算分析")
-                    QMessageBox.critical(self, "提示", f"计算失败，退出码：{exit_code}\n请查看计算目录下的 analysis_stdout.log / analysis_stderr.log。")
-                    return
+                # 不再因为外层进程返回非 0 就立刻判失败。
+                # SACS 有时会返回 41，但 psilst.factor 已经正常生成；后面继续等待并检查结果文件。
+                if process_exit_code != 0:
+                    print(f"[FeasibilityAssessmentPage] SACS process finished with ExitCode={process_exit_code}, continue checking result file...")
 
                 self.btn_run.setText("等待结果写入...")
 
@@ -2308,6 +2321,9 @@ class FeasibilityAssessmentPage(BasePage):
                     msg = f"计算完成。\n计算对象：{mode_text}\n结果文件：{self.current_result_file}"
                     if archived_path:
                         msg += f"\n服务器归档：{archived_path}"
+                    exit_warning = self._analysis_exit_code_warning(work_dir, process_exit_code)
+                    if exit_warning:
+                        msg += f"\n\n注意：{exit_warning}"
                     msg += "\n\n如需把 M1 文件和计算结果文件保存到指定目录，请点击底部“导出文件”。"
                     QMessageBox.information(self, "提示", msg)
 
