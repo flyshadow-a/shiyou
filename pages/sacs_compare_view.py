@@ -613,21 +613,38 @@ class SacsComparePanel(QFrame):
         self.compare_view.bind_sliders(self.slider_h, self.slider_v)
 
     def _build_custom_legend(self) -> QWidget:
+        """
+        模型对比图例。
+
+        放大 Original Structure / Added Structure 图例，避免右侧模型窗口中看不清。
+        """
         w = QWidget(self)
+        w.setMinimumHeight(34)
+
         lay = QHBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(12)
+        lay.setContentsMargins(0, 2, 4, 2)
+        lay.setSpacing(22)
 
         def make_item(color: str, text: str) -> QWidget:
             item = QWidget(w)
             item_lay = QHBoxLayout(item)
             item_lay.setContentsMargins(0, 0, 0, 0)
-            item_lay.setSpacing(4)
+            item_lay.setSpacing(8)
 
             dot = QLabel("●")
-            dot.setStyleSheet(f"color:{color}; font-size:14px;")
+            dot.setFixedWidth(24)
+            dot.setAlignment(Qt.AlignCenter)
+            dot.setStyleSheet(f"color:{color}; font-size:22px; font-weight:bold;")
+
             lab = QLabel(text)
-            lab.setStyleSheet("color:#4a5b70; font-size:12px;")
+            lab.setStyleSheet("""
+                QLabel {
+                    color: #26384d;
+                    font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                    font-size: 12pt;
+                    font-weight: bold;
+                }
+            """)
 
             item_lay.addWidget(dot, 0)
             item_lay.addWidget(lab, 0)

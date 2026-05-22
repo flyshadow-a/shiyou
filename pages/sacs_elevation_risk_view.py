@@ -782,11 +782,11 @@ class SacsElevationRiskView(QGraphicsView):
         if not self._history_overlay_legend:
             return
 
-        x0 = 16.0
-        y0 = 14.0
-        dot_size = 11.0
-        title_font = QFont("Microsoft YaHei UI", 11, QFont.Bold)
-        item_font = QFont("Microsoft YaHei UI", 10)
+        x0 = 18.0
+        y0 = 16.0
+        dot_size = 16.0
+        title_font = QFont("Microsoft YaHei UI", 14, QFont.Bold)
+        item_font = QFont("Microsoft YaHei UI", 12, QFont.Bold)
         title_text = "历史检测点"
 
         legend_texts = []
@@ -800,12 +800,12 @@ class SacsElevationRiskView(QGraphicsView):
             legend_texts.append((entry, text))
             max_chars = max(max_chars, len(text))
 
-        panel_w = max(150.0, 18.0 + max_chars * 11.0)
-        panel_h = 34.0 + max(1, len(legend_texts)) * 22.0
+        panel_w = max(210.0, 28.0 + max_chars * 15.0)
+        panel_h = 46.0 + max(1, len(legend_texts)) * 32.0
         bg = self._scene.addRect(
-            QRectF(x0 - 8.0, y0 - 8.0, panel_w, panel_h),
-            QPen(QColor("#b9c6d6"), 0.8),
-            QBrush(QColor(255, 255, 255, 235)),
+            QRectF(x0 - 10.0, y0 - 10.0, panel_w, panel_h),
+            QPen(QColor("#8fa1b7"), 1.2),
+            QBrush(QColor(255, 255, 255, 242)),
         )
         bg.setZValue(198)
 
@@ -816,12 +816,12 @@ class SacsElevationRiskView(QGraphicsView):
         title.setZValue(200)
         self._scene.addItem(title)
 
-        y = y0 + 24.0
+        y = y0 + 32.0
         for entry, text in legend_texts:
             color = self._history_color(entry.get("round_color"))
             dot = self._scene.addEllipse(
-                QRectF(x0, y + 3.0, dot_size, dot_size),
-                QPen(color, 1.2),
+                QRectF(x0, y + 4.0, dot_size, dot_size),
+                QPen(color, 1.4),
                 QBrush(color),
             )
             dot.setZValue(200)
@@ -829,10 +829,10 @@ class SacsElevationRiskView(QGraphicsView):
             item = QGraphicsSimpleTextItem(text)
             item.setBrush(QBrush(QColor("#203040")))
             item.setFont(item_font)
-            item.setPos(x0 + dot_size + 9.0, y - 1.0)
+            item.setPos(x0 + dot_size + 12.0, y - 1.0)
             item.setZValue(200)
             self._scene.addItem(item)
-            y += 22.0
+            y += 32.0
 
     def _draw_history_overlay(self):
         if not self._history_overlay_enabled:

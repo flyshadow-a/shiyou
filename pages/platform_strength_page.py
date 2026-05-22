@@ -59,6 +59,8 @@ from services.special_strategy_image_service import build_strategy_image_path, s
 
 from collections import Counter
 
+from sqlalchemy import create_engine, text
+
 from pages.sacs_storage_service import (
     get_job_runtime_dir,
 )
@@ -485,6 +487,11 @@ class PlatformStrengthPage(BasePage):
         self._default_pile_items: List[Dict] = []
         self._default_marine_items: List[Dict] = []
 
+        # 水平层高程改为数据库驱动：主页面只显示数据库中保存的高程；
+        # 节点数量限制只在“水平层高程-更新到数据库”弹窗中使用。
+        self._horizontal_level_threshold = 40
+        self._horizontal_levels: List[Tuple[float, int, bool]] = []
+
         # 三维总图：打开结构强度页后自动保存；避免重复/过期导出。
         self._overall_export_seq = 0
         self._last_saved_overall_image_key = ""
@@ -833,10 +840,14 @@ class PlatformStrengthPage(BasePage):
             self._apply_splash_items(load_platform_strength_splash_items(profile_id, facility_code))
             self._apply_pile_items(load_platform_strength_pile_items(profile_id, facility_code))
             self._apply_marine_items(load_platform_strength_marine_items(profile_id, facility_code))
+            self._load_structure_model_info_from_db(profile_id, facility_code)
+            self._load_horizontal_levels_from_db(profile_id, facility_code)
         except Exception:
             self._apply_splash_items([])
             self._apply_pile_items([])
             self._apply_marine_items([])
+            self._horizontal_levels = []
+            self._refresh_layers_table()
 
     def _save_strength_env_tables(self) -> tuple[int, int, int]:
         branch = self._get_top_value("branch")
@@ -890,12 +901,22 @@ class PlatformStrengthPage(BasePage):
         replace_platform_strength_splash_items(profile_id, facility_code, splash_items)
         replace_platform_strength_pile_items(profile_id, facility_code, pile_items)
         replace_platform_strength_marine_items(profile_id, facility_code, marine_items)
+        try:
+            self._save_structure_model_info_to_db()
+        except Exception as exc:
+            print("[PlatformStrengthPage] save structure model info with env tables failed:", exc)
         return len(splash_items), len(pile_items), len(marine_items)
 
     def _get_level_threshold(self) -> int:
-        if not hasattr(self, "edt_node_limit"):
+        """当前用于模型导入/立面划分的水平层阈值。
+
+        主页面不再直接编辑“水平层高程节点数量限制”；
+        该值由水平层高程弹窗保存到数据库后同步到这里。
+        """
+        try:
+            return int(getattr(self, "_horizontal_level_threshold", 40) or 40)
+        except Exception:
             return 40
-        return self._safe_int(self.edt_node_limit.text(), 40)
 
     def _get_workpoint_value(self) -> float:
         if not hasattr(self, "edt_workpoint"):
@@ -904,6 +925,395 @@ class PlatformStrengthPage(BasePage):
 
     def _get_mysql_url(self) -> str:
         return get_mysql_url()
+
+    def _get_strength_profile_context(self, *, create_if_missing: bool = False) -> tuple[int, str]:
+        branch = self._get_top_value("branch")
+        op_company = self._get_top_value("op_company")
+        oilfield = self._get_top_value("oilfield")
+        facility_code = self._get_top_value("facility_code")
+
+        if not (branch and op_company and oilfield):
+            raise ValueError("缺少分公司/作业公司/油气田信息，无法更新数据库。")
+        if not facility_code:
+            raise ValueError("缺少设施编码，无法更新数据库。")
+
+        profile_id = get_env_profile_id(
+            branch=branch,
+            op_company=op_company,
+            oilfield=oilfield,
+            create_if_missing=create_if_missing,
+        )
+        if not profile_id:
+            raise ValueError("未能创建或获取环境主表记录。")
+        return int(profile_id), facility_code
+
+    def _get_db_engine(self):
+        mysql_url = self._get_mysql_url()
+        if not mysql_url:
+            raise ValueError("MYSQL_URL 未配置，无法更新数据库。")
+        return create_engine(mysql_url, future=True, pool_pre_ping=True)
+
+    def _ensure_strength_custom_tables(self, conn) -> None:
+        """创建本页面新增的结构模型信息与水平层高程表。"""
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS platform_strength_structure_model_info (
+                profile_id BIGINT NOT NULL,
+                facility_code VARCHAR(128) NOT NULL,
+                mud_level_m DOUBLE NULL,
+                workpoint_m DOUBLE NULL,
+                level_threshold INT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (profile_id, facility_code)
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS platform_strength_horizontal_level_items (
+                profile_id BIGINT NOT NULL,
+                facility_code VARCHAR(128) NOT NULL,
+                sort_order INT NOT NULL,
+                z_m DOUBLE NULL,
+                node_count INT NULL,
+                selected TINYINT DEFAULT 1,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (profile_id, facility_code, sort_order)
+            )
+        """))
+
+    def _safe_db_float(self, value) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    def _load_structure_model_info_from_db(self, profile_id: int | None = None, facility_code: str | None = None) -> None:
+        try:
+            if profile_id is None or facility_code is None:
+                profile_id, facility_code = self._get_strength_profile_context(create_if_missing=False)
+            engine = self._get_db_engine()
+            with engine.begin() as conn:
+                self._ensure_strength_custom_tables(conn)
+                row = conn.execute(text("""
+                    SELECT mud_level_m, workpoint_m, level_threshold
+                    FROM platform_strength_structure_model_info
+                    WHERE profile_id=:profile_id AND facility_code=:facility_code
+                    LIMIT 1
+                """), {"profile_id": profile_id, "facility_code": facility_code}).mappings().first()
+            if not row:
+                return
+            if hasattr(self, "edt_mud_level") and row.get("mud_level_m") not in (None, ""):
+                self.edt_mud_level.setText(self._format_optional_number(row.get("mud_level_m")))
+            if hasattr(self, "edt_workpoint") and row.get("workpoint_m") not in (None, ""):
+                self.edt_workpoint.setText(self._format_optional_number(row.get("workpoint_m")))
+            if row.get("level_threshold") not in (None, ""):
+                try:
+                    self._horizontal_level_threshold = int(float(row.get("level_threshold")))
+                except Exception:
+                    self._horizontal_level_threshold = 40
+        except Exception as exc:
+            print("[PlatformStrengthPage] load structure model info failed:", exc)
+
+    def _save_structure_model_info_to_db(self) -> None:
+        profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
+        mud_level = self._parse_optional_float(self.edt_mud_level.text() if hasattr(self, "edt_mud_level") else "")
+        workpoint = self._parse_optional_float(self.edt_workpoint.text() if hasattr(self, "edt_workpoint") else "")
+        threshold = self._get_level_threshold()
+        engine = self._get_db_engine()
+        with engine.begin() as conn:
+            self._ensure_strength_custom_tables(conn)
+            conn.execute(text("""
+                DELETE FROM platform_strength_structure_model_info
+                WHERE profile_id=:profile_id AND facility_code=:facility_code
+            """), {"profile_id": profile_id, "facility_code": facility_code})
+            conn.execute(text("""
+                INSERT INTO platform_strength_structure_model_info
+                    (profile_id, facility_code, mud_level_m, workpoint_m, level_threshold)
+                VALUES
+                    (:profile_id, :facility_code, :mud_level_m, :workpoint_m, :level_threshold)
+            """), {
+                "profile_id": profile_id,
+                "facility_code": facility_code,
+                "mud_level_m": mud_level,
+                "workpoint_m": workpoint,
+                "level_threshold": threshold,
+            })
+
+    def _load_horizontal_levels_from_db(self, profile_id: int | None = None, facility_code: str | None = None) -> List[Tuple[float, int, bool]]:
+        levels: List[Tuple[float, int, bool]] = []
+        try:
+            if profile_id is None or facility_code is None:
+                profile_id, facility_code = self._get_strength_profile_context(create_if_missing=False)
+            engine = self._get_db_engine()
+            with engine.begin() as conn:
+                self._ensure_strength_custom_tables(conn)
+                rows = conn.execute(text("""
+                    SELECT z_m, node_count, selected
+                    FROM platform_strength_horizontal_level_items
+                    WHERE profile_id=:profile_id AND facility_code=:facility_code
+                    ORDER BY sort_order ASC
+                """), {"profile_id": profile_id, "facility_code": facility_code}).mappings().all()
+            for row in rows:
+                z = self._safe_db_float(row.get("z_m"))
+                if z is None:
+                    continue
+                try:
+                    occ = int(row.get("node_count") or 0)
+                except Exception:
+                    occ = 0
+                selected = bool(row.get("selected") if row.get("selected") is not None else 1)
+                levels.append((z, occ, selected))
+        except Exception as exc:
+            print("[PlatformStrengthPage] load horizontal levels failed:", exc)
+        self._horizontal_levels = levels
+        self._refresh_layers_table()
+        return levels
+
+    def _save_horizontal_levels_to_db(self, levels: List[Tuple[float, int, bool]], threshold: int) -> None:
+        profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
+        self._horizontal_level_threshold = int(threshold or 40)
+        engine = self._get_db_engine()
+        with engine.begin() as conn:
+            self._ensure_strength_custom_tables(conn)
+            conn.execute(text("""
+                DELETE FROM platform_strength_horizontal_level_items
+                WHERE profile_id=:profile_id AND facility_code=:facility_code
+            """), {"profile_id": profile_id, "facility_code": facility_code})
+            for idx, (z, occ, selected) in enumerate(levels, start=1):
+                conn.execute(text("""
+                    INSERT INTO platform_strength_horizontal_level_items
+                        (profile_id, facility_code, sort_order, z_m, node_count, selected)
+                    VALUES
+                        (:profile_id, :facility_code, :sort_order, :z_m, :node_count, :selected)
+                """), {
+                    "profile_id": profile_id,
+                    "facility_code": facility_code,
+                    "sort_order": idx,
+                    "z_m": float(z),
+                    "node_count": int(occ or 0),
+                    "selected": 1 if selected else 0,
+                })
+            # 同步保存阈值，后续导入模型/立面划分仍能使用同一个阈值。
+            conn.execute(text("""
+                DELETE FROM platform_strength_structure_model_info
+                WHERE profile_id=:profile_id AND facility_code=:facility_code
+            """), {"profile_id": profile_id, "facility_code": facility_code})
+            conn.execute(text("""
+                INSERT INTO platform_strength_structure_model_info
+                    (profile_id, facility_code, mud_level_m, workpoint_m, level_threshold)
+                VALUES
+                    (:profile_id, :facility_code, :mud_level_m, :workpoint_m, :level_threshold)
+            """), {
+                "profile_id": profile_id,
+                "facility_code": facility_code,
+                "mud_level_m": self._parse_optional_float(self.edt_mud_level.text() if hasattr(self, "edt_mud_level") else ""),
+                "workpoint_m": self._parse_optional_float(self.edt_workpoint.text() if hasattr(self, "edt_workpoint") else ""),
+                "level_threshold": self._horizontal_level_threshold,
+            })
+        self._horizontal_levels = list(levels)
+        self._refresh_layers_table()
+
+    def _on_update_structure_model_info_to_db(self) -> None:
+        try:
+            self._save_structure_model_info_to_db()
+            QMessageBox.information(self, "更新完成", "结构模型信息已更新到数据库。")
+        except Exception as exc:
+            QMessageBox.critical(self, "更新失败", f"结构模型信息更新到数据库失败：\n{exc}")
+
+    def _on_update_splash_table_to_db(self) -> None:
+        try:
+            self._save_splash_table_to_db()
+            QMessageBox.information(self, "更新完成", "飞溅区腐蚀余量已更新到数据库。")
+        except Exception as exc:
+            QMessageBox.critical(self, "更新失败", f"飞溅区腐蚀余量更新到数据库失败：\n{exc}")
+
+    def _on_update_pile_table_to_db(self) -> None:
+        try:
+            self._save_pile_table_to_db()
+            QMessageBox.information(self, "更新完成", "桩基信息已更新到数据库。")
+        except Exception as exc:
+            QMessageBox.critical(self, "更新失败", f"桩基信息更新到数据库失败：\n{exc}")
+
+    def _on_update_marine_table_to_db(self) -> None:
+        try:
+            self._save_marine_table_to_db()
+            QMessageBox.information(self, "更新完成", "海生物信息已更新到数据库。")
+        except Exception as exc:
+            QMessageBox.critical(self, "更新失败", f"海生物信息更新到数据库失败：\n{exc}")
+
+    def _save_splash_table_to_db(self) -> None:
+        profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
+        items = [{
+            "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 0)),
+            "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 1)),
+            "corrosion_allowance_mm_per_y": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 2)),
+            "sort_order": 1,
+        }]
+        replace_platform_strength_splash_items(profile_id, facility_code, items)
+
+    def _save_pile_table_to_db(self) -> None:
+        profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
+        items = [{
+            "scour_depth_m": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 0)),
+            "compressive_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 1)),
+            "uplift_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 2)),
+            "submerged_weight_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 3)),
+            "sort_order": 1,
+        }]
+        replace_platform_strength_pile_items(profile_id, facility_code, items)
+
+    def _save_marine_table_to_db(self) -> None:
+        profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
+        density_text = self._table_text(self.tbl_marine, 4, 3)
+        density_value = self._parse_optional_float(density_text)
+        items = []
+        for i in range(9):
+            col = 3 + i
+            items.append({
+                "layer_no": i + 1,
+                "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 1, col)),
+                "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 2, col)),
+                "thickness_mm": self._parse_optional_float(self._table_text(self.tbl_marine, 3, col)),
+                "density_t_per_m3": density_value,
+                "sort_order": i + 1,
+            })
+        replace_platform_strength_marine_items(profile_id, facility_code, items)
+
+    def _on_update_horizontal_levels_to_db(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("更新水平层高程")
+        dialog.resize(860, 360)
+
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(8)
+        lbl = QLabel("水平层高程节点数量限制：")
+        lbl.setFont(self._songti_small_four_font(bold=True))
+        edit_threshold = QLineEdit(str(self._get_level_threshold()))
+        edit_threshold.setFont(self._songti_small_four_font())
+        edit_threshold.setFixedWidth(120)
+        btn_auto = QPushButton("自动更新水平高程")
+        btn_auto.setFont(self._songti_small_four_font(bold=True))
+        btn_add = QPushButton("新增高程列")
+        btn_add.setFont(self._songti_small_four_font(bold=True))
+        btn_del = QPushButton("删除最后一列")
+        btn_del.setFont(self._songti_small_four_font(bold=True))
+        top.addWidget(lbl, 0)
+        top.addWidget(edit_threshold, 0)
+        top.addSpacing(10)
+        top.addWidget(btn_auto, 0)
+        top.addWidget(btn_add, 0)
+        top.addWidget(btn_del, 0)
+        top.addStretch(1)
+        root.addLayout(top)
+
+        hint = QLabel("说明：先输入节点数量限制并点击“自动更新水平高程”，系统会根据模型节点自动筛选；随后可直接编辑 Z(m)，最后保存到数据库。")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#52677a; font-size:10pt;")
+        root.addWidget(hint, 0)
+
+        edit_table = QTableWidget(1, 1, dialog)
+        edit_table.setHorizontalHeaderLabels(["编号"])
+        self._init_table_common(edit_table, show_vertical_header=False)
+        edit_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        edit_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        edit_table.setRowHeight(0, 34)
+        self._set_center_item(edit_table, 0, 0, "Z(m)", editable=False)
+        root.addWidget(edit_table, 1)
+
+        def fill_table(levels: List[Tuple[float, int, bool]]):
+            col_count = max(1, len(levels) + 1)
+            edit_table.setColumnCount(col_count)
+            edit_table.setHorizontalHeaderLabels(["编号"] + [str(i) for i in range(1, col_count)])
+            self._set_center_item(edit_table, 0, 0, "Z(m)", editable=False)
+            for i, (z, _occ, _selected) in enumerate(levels, start=1):
+                z_text = f"{float(z):.3f}".rstrip("0").rstrip(".")
+                self._set_center_item(edit_table, 0, i, z_text, editable=True)
+            edit_table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
+            edit_table.setColumnWidth(0, 96)
+            for c in range(1, col_count):
+                edit_table.setColumnWidth(c, 88)
+
+        current_levels = list(getattr(self, "_horizontal_levels", []) or [])
+        if current_levels:
+            fill_table(current_levels)
+        else:
+            fill_table([])
+
+        auto_node_counts: dict[float, int] = {round(float(z), 3): int(occ or 0) for z, occ, _ in current_levels}
+
+        def auto_update():
+            nonlocal auto_node_counts
+            threshold = self._safe_int(edit_threshold.text(), 40)
+            edit_threshold.setText(str(threshold))
+            levels = self._compute_horizontal_levels_by_threshold(threshold)
+            auto_node_counts = {round(float(z), 3): int(occ or 0) for z, occ, _ in levels}
+            fill_table(levels)
+
+        def add_column():
+            c = edit_table.columnCount()
+            edit_table.insertColumn(c)
+            edit_table.setHorizontalHeaderItem(c, QTableWidgetItem(str(c)))
+            self._set_center_item(edit_table, 0, c, "", editable=True)
+            edit_table.setColumnWidth(c, 88)
+
+        def delete_last_column():
+            if edit_table.columnCount() <= 1:
+                return
+            edit_table.removeColumn(edit_table.columnCount() - 1)
+
+        btn_auto.clicked.connect(auto_update)
+        btn_add.clicked.connect(add_column)
+        btn_del.clicked.connect(delete_last_column)
+
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        btn_save = QPushButton("保存到数据库")
+        btn_cancel = QPushButton("取消")
+        for btn in (btn_save, btn_cancel):
+            btn.setFont(self._songti_small_four_font(bold=True))
+            btn.setMinimumWidth(120)
+            btn.setMinimumHeight(34)
+        bottom.addWidget(btn_save)
+        bottom.addWidget(btn_cancel)
+        root.addLayout(bottom)
+
+        def save_dialog():
+            levels: List[Tuple[float, int, bool]] = []
+            seen = set()
+            for c in range(1, edit_table.columnCount()):
+                item = edit_table.item(0, c)
+                raw = (item.text() if item else "").strip()
+                if not raw:
+                    continue
+                try:
+                    z = float(raw)
+                except Exception:
+                    QMessageBox.warning(dialog, "格式错误", f"第 {c} 列 Z(m) 不是有效数字：{raw}")
+                    return
+                key = round(z, 3)
+                if key in seen:
+                    continue
+                seen.add(key)
+                levels.append((z, auto_node_counts.get(key, 0), True))
+
+            levels.sort(key=lambda x: x[0], reverse=True)
+            threshold = self._safe_int(edit_threshold.text(), 40)
+            try:
+                self._save_horizontal_levels_to_db(levels, threshold)
+            except Exception as exc:
+                QMessageBox.critical(dialog, "保存失败", f"水平层高程保存到数据库失败：\n{exc}")
+                return
+            QMessageBox.information(dialog, "保存完成", "水平层高程已保存到数据库。")
+            dialog.accept()
+
+        btn_save.clicked.connect(save_dialog)
+        btn_cancel.clicked.connect(dialog.reject)
+        dialog.exec_()
 
     @staticmethod
     def _db_row_time(row: Dict[str, Any]) -> float:
@@ -1148,17 +1558,13 @@ class PlatformStrengthPage(BasePage):
 
         return job_name
 
-    def _compute_horizontal_levels(self) -> List[Tuple[float, int, bool]]:
-        """
-        返回 [(z, occurrence, selected), ...]
-        """
+    def _compute_horizontal_levels_by_threshold(self, threshold: int) -> List[Tuple[float, int, bool]]:
+        """根据模型节点和阈值自动计算水平层高程。"""
         nodes = getattr(self.inp_view, "_nodes", {}) if hasattr(self, "inp_view") else {}
         if not nodes:
             return []
 
-        threshold = self._get_level_threshold()
-
-        # 为了避免浮点微小误差，把 Z 统一到 3 位小数
+        threshold = int(threshold or 40)
         counter = Counter()
         for coord in nodes.values():
             if coord is None or len(coord) < 3:
@@ -1169,55 +1575,67 @@ class PlatformStrengthPage(BasePage):
             z_key = round(float(z), 3)
             counter[z_key] += 1
 
-        # 这里保持和你前面 VBA/Python 思路一致：节点数大于阈值才算水平层
         levels = [(z, occ, True) for z, occ in counter.items() if occ > threshold]
         levels.sort(key=lambda x: x[0], reverse=True)
         return levels
+
+    def _compute_horizontal_levels(self) -> List[Tuple[float, int, bool]]:
+        """返回当前页面显示的水平层高程。
+
+        主页面的水平层高程来自数据库，不再由主页面的节点数量限制实时驱动。
+        """
+        levels = list(getattr(self, "_horizontal_levels", []) or [])
+        if levels:
+            return levels
+
+        # 兜底：如果内存状态丢失，从当前表格读取一遍。
+        out: List[Tuple[float, int, bool]] = []
+        if hasattr(self, "tbl_layers"):
+            for c in range(1, self.tbl_layers.columnCount()):
+                item = self.tbl_layers.item(0, c)
+                raw = (item.text() if item else "").strip()
+                if not raw:
+                    continue
+                try:
+                    out.append((float(raw), 0, True))
+                except Exception:
+                    continue
+        out.sort(key=lambda x: x[0], reverse=True)
+        self._horizontal_levels = out
+        return out
 
     def _refresh_layers_table(self):
         if not hasattr(self, "tbl_layers"):
             return
 
-        levels = self._compute_horizontal_levels()
-
-        col_count = max(1, len(levels) + 1)  # 第0列是行标题
+        levels = list(getattr(self, "_horizontal_levels", []) or [])
+        col_count = max(1, len(levels) + 1)
         self.tbl_layers.setColumnCount(col_count)
 
         headers = ["编号"] + [str(i) for i in range(1, col_count)]
         self.tbl_layers.setHorizontalHeaderLabels(headers)
 
         self._set_center_item(self.tbl_layers, 0, 0, "Z(m)", editable=False)
-        self._set_center_item(self.tbl_layers, 1, 0, "节点数量", editable=False)
-        # 清空旧数据
         for c in range(1, col_count):
-            for r in range(2):
-                self._set_center_item(self.tbl_layers, r, c, "")
+            self._set_center_item(self.tbl_layers, 0, c, "")
 
-        # 回填动态结果
-        for i, (z, occ, selected) in enumerate(levels, start=1):
-            z_text = f"{z:.3f}".rstrip("0").rstrip(".")
-            self._set_center_item(self.tbl_layers, 0, i, z_text)
-            self._set_center_item(self.tbl_layers, 1, i, str(occ))
+        for i, (z, _occ, _selected) in enumerate(levels, start=1):
+            z_text = f"{float(z):.3f}".rstrip("0").rstrip(".")
+            self._set_center_item(self.tbl_layers, 0, i, z_text, editable=False)
 
-        # ===== 自适应列宽：少列铺满，多列滚动 =====
         self.tbl_layers.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
-
-        first_col_width = 95  # 左侧标题列
-        base_data_width = 78  # 之前你想保留的列宽感觉
+        first_col_width = 95
+        base_data_width = 78
         self.tbl_layers.setColumnWidth(0, first_col_width)
 
         data_cols = col_count - 1
         if data_cols > 0:
-            # 当前表格可用宽度
             available_width = self.tbl_layers.viewport().width() - first_col_width - 4
-
-            # 如果按“基础宽度”能放下，就把多余空间均分给每一列，减少空白
             if data_cols * base_data_width <= available_width and available_width > 0:
                 auto_width = max(base_data_width, available_width // data_cols)
                 for c in range(1, col_count):
                     self.tbl_layers.setColumnWidth(c, auto_width)
             else:
-                # 放不下时，恢复基础宽度，交给横向滚动条
                 for c in range(1, col_count):
                     self.tbl_layers.setColumnWidth(c, base_data_width)
 
@@ -1272,9 +1690,6 @@ class PlatformStrengthPage(BasePage):
 
         right = self._build_inp_view_panel()
         center_layout.addWidget(right, 4)
-
-        if hasattr(self, "edt_node_limit"):
-            self.edt_node_limit.editingFinished.connect(self._refresh_layers_table)
 
         if hasattr(self, "edt_workpoint"):
             self.edt_workpoint.editingFinished.connect(self._autoload_inp_to_view)
@@ -1418,20 +1833,30 @@ class PlatformStrengthPage(BasePage):
 
     def _build_custom_legend(self) -> QWidget:
         w = QWidget(self)
+        w.setMinimumHeight(34)
         lay = QHBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(14)
+        lay.setContentsMargins(0, 2, 4, 2)
+        lay.setSpacing(20)
 
         def make_item(color: str, text: str) -> QWidget:
             item = QWidget(w)
             item_lay = QHBoxLayout(item)
             item_lay.setContentsMargins(0, 0, 0, 0)
-            item_lay.setSpacing(4)
+            item_lay.setSpacing(8)
 
             dot = QLabel("●")
-            dot.setStyleSheet(f"color:{color}; font-size:14px;")
+            dot.setFixedWidth(24)
+            dot.setAlignment(Qt.AlignCenter)
+            dot.setStyleSheet(f"color:{color}; font-size:22px; font-weight:bold;")
             lab = QLabel(text)
-            lab.setStyleSheet("color:#4a5b70; font-size:12px;")
+            lab.setStyleSheet("""
+                QLabel {
+                    color: #26384d;
+                    font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                    font-size: 12pt;
+                    font-weight: bold;
+                }
+            """)
 
             item_lay.addWidget(dot, 0)
             item_lay.addWidget(lab, 0)
@@ -1782,8 +2207,41 @@ class PlatformStrengthPage(BasePage):
             self._refresh_layers_table()
 
     # ---------------- 左侧表格 ----------------
+    def _make_update_db_button(self, text_value: str = "更新到数据库") -> QPushButton:
+        btn = QPushButton(text_value)
+        btn.setFont(self._songti_small_four_font(bold=True))
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setMinimumHeight(30)
+        btn.setMinimumWidth(126)
+        btn.setStyleSheet("""
+            QPushButton {
+                background: #168bd0;
+                color: #ffffff;
+                border: 1px solid #0b5f92;
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 11pt;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #22a3ee; }
+            QPushButton:pressed { background: #0d6ca5; }
+        """)
+        return btn
+
+    def _make_update_button_row(self, callback) -> QWidget:
+        row = QWidget(self)
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        lay.addStretch(1)
+        btn = self._make_update_db_button()
+        btn.clicked.connect(callback)
+        lay.addWidget(btn, 0)
+        return row
+
     def _build_structure_model_kv_table(self) -> QTableWidget:
-        tbl = QTableWidget(3, 3)
+        tbl = QTableWidget(2, 3)
         tbl.setFocusPolicy(Qt.NoFocus)
         self._init_table_common(tbl, show_vertical_header=False)
 
@@ -1796,30 +2254,24 @@ class PlatformStrengthPage(BasePage):
         tbl.setColumnWidth(2, 70)
 
         self._set_center_item(tbl, 0, 0, "泥面高程", editable=False)
-        self.edt_mud_level = QLineEdit("") # 初始为空，由模型加载后回填
+        self.edt_mud_level = QLineEdit("")  # 初始为空，由模型加载后回填或数据库读取
         self.edt_mud_level.setFont(self._songti_small_four_font())
         tbl.setCellWidget(0, 1, self.edt_mud_level)
         self._set_center_item(tbl, 0, 2, "m", editable=False)
 
-        self._set_center_item(tbl, 1, 0, "水平层高程节点数量限制", editable=False)
-        self.edt_node_limit = QLineEdit("40") # 默认值 40
-        self.edt_node_limit.setFont(self._songti_small_four_font())
-        tbl.setCellWidget(1, 1, self.edt_node_limit)
-        self._set_center_item(tbl, 1, 2, "", editable=False)
-
-        self._set_center_item(tbl, 2, 0, "工作平面高程Workpoint", editable=False)
-        self.edt_workpoint = QLineEdit("") # 用户输入，初始为空
+        self._set_center_item(tbl, 1, 0, "工作平面高程Workpoint", editable=False)
+        self.edt_workpoint = QLineEdit("")  # 用户输入，初始为空
         self.edt_workpoint.setFont(self._songti_small_four_font())
-        tbl.setCellWidget(2, 1, self.edt_workpoint)
-        self._set_center_item(tbl, 2, 2, "m", editable=False)
+        tbl.setCellWidget(1, 1, self.edt_workpoint)
+        self._set_center_item(tbl, 1, 2, "m", editable=False)
 
-        for r in range(3):
+        for r in range(2):
             tbl.setRowHeight(r, 30)
 
         tbl.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        tbl.setFixedHeight(96)
+        tbl.setFixedHeight(66)
         return tbl
 
     def _build_structure_model_box(self) -> QGroupBox:
@@ -1844,46 +2296,47 @@ class PlatformStrengthPage(BasePage):
         box_layout.setSpacing(6)
 
         kv_tbl = self._build_structure_model_kv_table()
+        box_layout.addWidget(self._make_update_button_row(self._on_update_structure_model_info_to_db), 0)
         box_layout.addWidget(kv_tbl, 0)
 
+        layer_row = QWidget(box)
+        layer_lay = QHBoxLayout(layer_row)
+        layer_lay.setContentsMargins(0, 0, 0, 0)
+        layer_lay.setSpacing(6)
         lab_layers = QLabel("水平层高程")
         lab_layers.setFont(self._songti_small_four_font(bold=True))
         lab_layers.setStyleSheet("color: #1d2b3a;")
-        box_layout.addWidget(lab_layers, 0)
+        btn_update_layers = self._make_update_db_button()
+        btn_update_layers.clicked.connect(self._on_update_horizontal_levels_to_db)
+        layer_lay.addWidget(lab_layers, 0)
+        layer_lay.addStretch(1)
+        layer_lay.addWidget(btn_update_layers, 0)
+        box_layout.addWidget(layer_row, 0)
 
-        self.tbl_layers = QTableWidget(2, 1, box)
+        self.tbl_layers = QTableWidget(1, 1, box)
         self.tbl_layers.setFocusPolicy(Qt.NoFocus)
         self._init_table_common(self.tbl_layers, show_vertical_header=False)
         self.tbl_layers.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self._set_center_item(self.tbl_layers, 0, 0, "Z(m)", editable=False)
-        self._set_center_item(self.tbl_layers, 1, 0, "节点数量", editable=False)
+        self.tbl_layers.setRowHeight(0, 30)
 
-        for r in range(2):
-            self.tbl_layers.setRowHeight(r, 30)
-
-        # 关键：允许横向滚动
         self.tbl_layers.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.tbl_layers.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
         self.tbl_layers.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.tbl_layers.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
-
-        # 高度要给滚动条留空间
-        self.tbl_layers.setFixedHeight(110)
+        self.tbl_layers.setFixedHeight(82)
 
         box_layout.addWidget(self.tbl_layers, 1)
 
         margins = box_layout.contentsMargins()
-        layer_tbl_h = self.tbl_layers.height()
-
         total_h = (
-                margins.top() + margins.bottom()
-                + kv_tbl.height()
-                + lab_layers.sizeHint().height()
-                + layer_tbl_h
-                + box_layout.spacing() * 2
-                + 18
+            margins.top() + margins.bottom()
+            + 32 + kv_tbl.height()
+            + layer_row.sizeHint().height()
+            + self.tbl_layers.height()
+            + box_layout.spacing() * 3
+            + 18
         )
         box.setFixedHeight(total_h)
         box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -1952,6 +2405,7 @@ class PlatformStrengthPage(BasePage):
         splash_box.setStyleSheet(section_title_qss)
         splash_layout = QVBoxLayout(splash_box)
         splash_layout.setContentsMargins(8, 8, 8, 8)
+        splash_layout.addWidget(self._make_update_button_row(self._on_update_splash_table_to_db), 0)
 
         tbl_splash = QTableWidget(1, 3, splash_box)
         self.tbl_splash = tbl_splash
@@ -1973,7 +2427,7 @@ class PlatformStrengthPage(BasePage):
         splash_layout.addWidget(tbl_splash, 1)
 
         splash_margins = splash_layout.contentsMargins()
-        splash_box_h = splash_margins.top() + splash_margins.bottom() + splash_tbl_h + 18
+        splash_box_h = splash_margins.top() + splash_margins.bottom() + splash_tbl_h + 38 + 18
         splash_box.setMinimumHeight(splash_box_h)
         splash_box.setMaximumHeight(splash_box_h)
         splash_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -1983,6 +2437,7 @@ class PlatformStrengthPage(BasePage):
         pile_box.setStyleSheet(section_title_qss)
         pile_layout = QVBoxLayout(pile_box)
         pile_layout.setContentsMargins(8, 8, 8, 8)
+        pile_layout.addWidget(self._make_update_button_row(self._on_update_pile_table_to_db), 0)
 
         tbl_pile = QTableWidget(1, 4, pile_box)
         self.tbl_pile = tbl_pile
@@ -2004,7 +2459,7 @@ class PlatformStrengthPage(BasePage):
         pile_layout.addWidget(tbl_pile, 1)
 
         pile_margins = pile_layout.contentsMargins()
-        pile_box_h = pile_margins.top() + pile_margins.bottom() + pile_tbl_h + 18
+        pile_box_h = pile_margins.top() + pile_margins.bottom() + pile_tbl_h + 38 + 18
         pile_box.setMinimumHeight(pile_box_h)
         pile_box.setMaximumHeight(pile_box_h)
         pile_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -2014,6 +2469,7 @@ class PlatformStrengthPage(BasePage):
         marine_box.setStyleSheet(section_title_qss)
         marine_layout = QVBoxLayout(marine_box)
         marine_layout.setContentsMargins(8, 8, 8, 8)
+        marine_layout.addWidget(self._make_update_button_row(self._on_update_marine_table_to_db), 0)
 
         tbl_marine = QTableWidget(5, 12, marine_box)
         self.tbl_marine = tbl_marine
@@ -2068,7 +2524,7 @@ class PlatformStrengthPage(BasePage):
 
         marine_layout.addWidget(tbl_marine, 1)
         marine_margins = marine_layout.contentsMargins()
-        marine_box_h = marine_margins.top() + marine_margins.bottom() + marine_tbl_h + 12
+        marine_box_h = marine_margins.top() + marine_margins.bottom() + marine_tbl_h + 38 + 12
         marine_box.setMinimumHeight(marine_box_h)
         marine_box.setMaximumHeight(marine_box_h)
         marine_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)

@@ -510,25 +510,37 @@ class SpecialInspectionModelPreviewPanel(QFrame):
         dlg.exec_()
 
     def _build_legend_item(self, text: str, color: str) -> QWidget:
+        """
+        模型预览图例项。
+
+        原图例点 10x10、文字 9pt，页面缩放后偏小；这里统一放大。
+        """
         w = QWidget(self)
         w.setStyleSheet("QWidget{border:none; background:transparent;}")
 
         lay = QHBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(4)
+        lay.setSpacing(8)
 
         dot = QLabel()
-        dot.setFixedSize(10, 10)
+        dot.setFixedSize(18, 18)
         dot.setStyleSheet(f"""
             QLabel {{
                 background: {color};
-                border: 1px solid #7f8c99;
-                border-radius: 5px;
+                border: 1px solid #5f6f80;
+                border-radius: 9px;
             }}
         """)
 
         lab = QLabel(text)
-        lab.setStyleSheet("color:#4f5f6f; font-size:9pt;")
+        lab.setStyleSheet("""
+            QLabel {
+                color: #26384d;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+                font-weight: bold;
+            }
+        """)
 
         lay.addWidget(dot, 0)
         lay.addWidget(lab, 0)
