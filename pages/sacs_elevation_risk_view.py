@@ -180,16 +180,20 @@ class SacsElevationRiskView(QGraphicsView):
         self._history_overlay_items = []
         self._history_overlay_legend = []
 
-        # ===== 检验等级标注显示策略（避免图面过密）=====
-        # II：只改变颜色，不显示文字牌；III/IV：显示文字牌。
+        # ===== 检验等级叠加显示策略 =====
+        # 是否显示每个等级由页面显式控制；默认保持旧行为，显示 II/III/IV。
+        self._inspection_visible_levels = {"II", "III", "IV"}
+        self._show_inspection_level_ii = True
+
+        # 保留原有字段，兼容其它调用；当前新的结果页不再依赖这些文字牌级别集合。
         self._member_badge_levels = {"III", "IV"}
         self._node_badge_levels = {"III", "IV"}
 
         # 文字牌抽稀距离，避免同一区域密集堆叠。
         self._badge_min_gap = {
-            "II": 46.0,
-            "III": 34.0,
-            "IV": 24.0,
+            "II": 62.0,
+            "III": 52.0,
+            "IV": 42.0,
         }
         self._placed_badge_centers = []
 
@@ -929,6 +933,92 @@ class SacsElevationRiskView(QGraphicsView):
             return str(seg.get("joint_a") or "").strip(), str(seg.get("joint_b") or "").strip()
         return "", ""
 
+    def set_visible_inspection_levels(self, levels) -> None:
+        """设置当前立面图需要显示的检验等级。"""
+        normalized = set()
+        for level in levels or []:
+            text = str(level or "").strip().upper()
+            if text in ("II", "III", "IV"):
+                normalized.add(text)
+        if not normalized:
+            normalized = {"III", "IV"}
+        self._inspection_visible_levels = normalized
+        self._show_inspection_level_ii = "II" in normalized
+        if self.nodes and self.members:
+            self._render_row_elevation()
+
+    def set_show_level_ii(self, show: bool) -> None:
+        show = bool(show)
+        self._show_inspection_level_ii = show
+        levels = {"III", "IV"}
+        if show:
+            levels.add("II")
+        self.set_visible_inspection_levels(levels)
+
+    def visible_inspection_levels(self) -> set[str]:
+        return set(self._inspection_visible_levels or set())
+
+    def _display_inspection_level(self, level: str) -> bool:
+        return str(level or "").strip().upper() in (self._inspection_visible_levels or set())
+
+    def _member_label_tooltip(self, key: str, level: str) -> str:
+        return self._badge_tooltip_for_member(key, level)
+
+    def _node_label_tooltip(self, joint_id: str, level: str) -> str:
+        return self._badge_tooltip_for_node(joint_id, level)
+
+    def _rect_overlaps_reserved_labels(self, rect: QRectF, margin: float = 3.0) -> bool:
+        test_rect = rect.adjusted(-margin, -margin, margin, margin)
+        for old_rect in self._placed_label_rects:
+            if test_rect.intersects(old_rect):
+                return True
+        return False
+
+    def _reserve_label_rect(self, rect: QRectF) -> None:
+        self._placed_label_rects.append(rect)
+
+    def _pick_first_free_rect(self, base_x: float, base_y: float, width: float, height: float, candidates: list[tuple[float, float]], margin: float = 3.0):
+        for dx, dy in candidates:
+            rect = QRectF(base_x + dx, base_y + dy, width, height)
+            if not self._rect_overlaps_reserved_labels(rect, margin=margin):
+                self._reserve_label_rect(rect)
+                return rect
+        return QRectF()
+
+    def _arrow_label_candidates(self, ux: float, uy: float) -> list[tuple[float, float]]:
+        nx = -uy
+        ny = ux
+        return [
+            (nx * 14 - 12, ny * 14 - 8),
+            (-nx * 14 - 12, -ny * 14 - 8),
+            (nx * 22 - 12, ny * 22 - 8),
+            (-nx * 22 - 12, -ny * 22 - 8),
+            (nx * 8 - 12, ny * 8 - 8),
+            (-nx * 8 - 12, -ny * 8 - 8),
+        ]
+
+    def _member_label_candidates(self, p1, p2) -> list[tuple[float, float]]:
+        try:
+            x1, y1 = float(p1[0]), float(p1[1])
+            x2, y2 = float(p2[0]), float(p2[1])
+        except Exception:
+            return [(10, -16), (10, 6), (-22, -16), (-22, 6)]
+        vx = x2 - x1
+        vy = y2 - y1
+        dist = (vx * vx + vy * vy) ** 0.5
+        if dist < 1e-6:
+            return [(10, -16), (10, 6), (-22, -16), (-22, 6)]
+        nx = -vy / dist
+        ny = vx / dist
+        return [
+            (nx * 16 - 12, ny * 16 - 8),
+            (-nx * 16 - 12, -ny * 16 - 8),
+            (nx * 24 - 12, ny * 24 - 8),
+            (-nx * 24 - 12, -ny * 24 - 8),
+            (nx * 10 - 12, ny * 10 - 8),
+            (-nx * 10 - 12, -ny * 10 - 8),
+        ]
+
     def _badge_tooltip_for_member(self, key: str, level: str) -> str:
         rows = self._member_items_by_key.get(key, []) or []
         if rows:
@@ -1019,12 +1109,9 @@ class SacsElevationRiskView(QGraphicsView):
         color: QColor,
         tooltip: str = "",
         z_value: float = 58.0,
+        level_text: str = "",
     ) -> None:
-        """绘制从 Brace 方向指向风险节点的短箭头。
-
-        注意：这里只新增“方向指向”，不改变原来的节点圆点、等级牌和 tooltip。
-        箭头采用靠近目标节点的一段短线，避免整条线覆盖结构轮廓。
-        """
+        """绘制从 Brace 方向指向风险节点的短箭头，并把等级标在箭头上。"""
         try:
             sx, sy = float(source_pt[0]), float(source_pt[1])
             tx, ty = float(target_pt[0]), float(target_pt[1])
@@ -1040,15 +1127,14 @@ class SacsElevationRiskView(QGraphicsView):
         ux = vx / dist
         uy = vy / dist
 
-        # 靠近目标节点绘制短箭头，既能表示“从哪边来”，又不遮挡原图。
-        arrow_len = max(20.0, min(46.0, dist * 0.55))
+        arrow_len = max(16.0, min(32.0, dist * 0.42))
         end_gap = 5.5
         x2 = tx - ux * end_gap
         y2 = ty - uy * end_gap
         x1 = tx - ux * (arrow_len + end_gap)
         y1 = ty - uy * (arrow_len + end_gap)
 
-        pen = QPen(color, 1.7)
+        pen = QPen(color, 1.6)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         line = RiskMemberItem(x1, y1, x2, y2, tooltip=tooltip)
@@ -1056,9 +1142,8 @@ class SacsElevationRiskView(QGraphicsView):
         line.setZValue(z_value)
         self._scene.addItem(line)
 
-        # 箭头头部：以线段方向为轴，构造一个小三角。
-        head_len = 8.0
-        head_w = 4.8
+        head_len = 7.0
+        head_w = 4.2
         bx = x2 - ux * head_len
         by = y2 - uy * head_len
         nx = -uy
@@ -1076,12 +1161,93 @@ class SacsElevationRiskView(QGraphicsView):
         head.setZValue(z_value + 0.5)
         head.setToolTip(str(tooltip or ""))
 
+        level_text = str(level_text or "").strip()
+        if level_text:
+            self._draw_arrow_level_label(
+                (x1 + x2) / 2.0,
+                (y1 + y2) / 2.0,
+                level_text,
+                color,
+                tooltip=tooltip,
+                z_value=z_value + 0.8,
+                ux=ux,
+                uy=uy,
+            )
+
+    def _draw_arrow_level_label(self, x: float, y: float, level_text: str, color: QColor, *, tooltip: str = "", z_value: float = 59.0, ux: float = 1.0, uy: float = 0.0) -> None:
+        text_item = QGraphicsSimpleTextItem(str(level_text or ""))
+        text_item.setFont(QFont("Arial", 8, QFont.Bold))
+        br = text_item.boundingRect()
+
+        rect = self._pick_first_free_rect(
+            x,
+            y,
+            br.width() + 10,
+            br.height() + 6,
+            self._arrow_label_candidates(ux, uy),
+            margin=4.0,
+        )
+        if rect.isNull() or rect.width() <= 0:
+            return
+
+        bg = self._scene.addRect(
+            rect,
+            QPen(color, 1.0),
+            QBrush(QColor(255, 255, 255, 238)),
+        )
+        bg.setZValue(z_value)
+        bg.setToolTip(str(tooltip or ""))
+
+        text_item.setBrush(QBrush(color))
+        text_item.setPos(rect.x() + 5, rect.y() + 3)
+        text_item.setZValue(z_value + 0.1)
+        text_item.setToolTip(str(tooltip or ""))
+        self._scene.addItem(text_item)
+
+    def _draw_member_level_inline_label(self, x: float, y: float, level: str, color: QColor, *, tooltip: str = "", p1=None, p2=None) -> None:
+        if not self._can_place_badge(x, y, level):
+            return
+
+        text_item = QGraphicsSimpleTextItem(str(level or ""))
+        text_item.setFont(QFont("Arial", 9, QFont.Bold))
+        br = text_item.boundingRect()
+        rect = self._pick_first_free_rect(
+            x,
+            y,
+            br.width() + 12,
+            br.height() + 6,
+            self._member_label_candidates(p1, p2),
+            margin=4.0,
+        )
+        if rect.isNull() or rect.width() <= 0:
+            return
+
+        bg = self._scene.addRect(
+            rect,
+            QPen(color, 1.0),
+            QBrush(QColor(255, 255, 255, 238)),
+        )
+        bg.setZValue(49)
+        bg.setToolTip(str(tooltip or ""))
+
+        text_item.setBrush(QBrush(color))
+        text_item.setPos(rect.x() + 6, rect.y() + 3)
+        text_item.setZValue(50)
+        text_item.setToolTip(str(tooltip or ""))
+        self._scene.addItem(text_item)
+
     def _draw_node_direction_arrows(self, joint_id: str, target_pt, fallback_level: str, fallback_tooltip: str) -> None:
         """为节点检验标注增加 Brace -> Joint 的方向箭头。
 
-        - 保留原来的等级牌和鼠标悬浮提示；
-        - 不额外显示节点号；
-        - 若一个节点对应多个 Brace，则最多绘制 3 个方向箭头，避免图面过密。
+        业务含义：
+        - 节点检验等级与 “brace -> joint” 来源关系有关；
+        - 同一个 joint 可能由不同 brace 接入，且不同 brace 对应的检验等级可能不同；
+        - 因此这里必须保留所有不同 brace 来源的箭头，不能只保留一条代表性箭头。
+
+        显示策略：
+        - 仅过滤当前页面允许显示的等级（默认 III/IV，点击按钮后包含 II）；
+        - 对完全重复的 brace-level 做去重；
+        - 每条箭头仍然绘制，等级文字如果空间太密，会自动跳过文字但保留箭头和 tooltip。
         """
         joint_id = str(joint_id or "").strip()
         if not joint_id:
@@ -1091,34 +1257,66 @@ class SacsElevationRiskView(QGraphicsView):
         if not rows:
             return
 
-        drawn_braces = set()
+        seen_keys = set()
         draw_count = 0
+
         for row in rows:
             brace = str(row.get("brace") or "").strip()
-            if not brace or brace in drawn_braces:
-                continue
-
-            source_pt = self._find_brace_scene_point(joint_id, brace)
-            if source_pt is None:
+            if not brace:
                 continue
 
             level = str(row.get("inspect_level") or fallback_level or "").strip().upper()
             if level not in ("II", "III", "IV"):
                 level = str(fallback_level or "").strip().upper()
-            color = self._inspection_color(level)
+            if level not in ("II", "III", "IV"):
+                continue
+            if not self._display_inspection_level(level):
+                continue
 
-            tooltip = fallback_tooltip or self._badge_tooltip_for_node(joint_id, level)
+            dedup_key = (brace, level)
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+
+            source_pt = self._find_brace_scene_point(joint_id, brace)
+            if source_pt is None:
+                continue
+
+            color = self._inspection_color(level)
+            tooltip = self._badge_tooltip_for_node(joint_id, level)
+
+            # 多个 brace 指向同一个 joint 时，给箭头做很小的法向偏移，
+            # 避免箭头线完全盖在一起；偏移不改变“从 brace 指向 joint”的业务方向。
+            offset_source_pt = source_pt
+            offset_target_pt = target_pt
+            try:
+                sx, sy = float(source_pt[0]), float(source_pt[1])
+                tx, ty = float(target_pt[0]), float(target_pt[1])
+                vx = tx - sx
+                vy = ty - sy
+                dist = (vx * vx + vy * vy) ** 0.5
+                if dist > 1e-6 and draw_count > 0:
+                    nx = -vy / dist
+                    ny = vx / dist
+                    # 0, +4, -4, +8, -8 ... 的轻微错位序列
+                    step = (draw_count + 1) // 2
+                    sign = 1 if draw_count % 2 == 1 else -1
+                    offset = sign * min(10.0, 4.0 * step)
+                    offset_source_pt = (sx + nx * offset, sy + ny * offset)
+                    offset_target_pt = (tx + nx * offset, ty + ny * offset)
+            except Exception:
+                offset_source_pt = source_pt
+                offset_target_pt = target_pt
+
             self._draw_direction_arrow(
-                source_pt,
-                target_pt,
+                offset_source_pt,
+                offset_target_pt,
                 color=color,
                 tooltip=tooltip,
                 z_value=57.0,
+                level_text=level,
             )
-            drawn_braces.add(brace)
             draw_count += 1
-            if draw_count >= 3:
-                break
 
     def _draw_inspection_overlay(self):
         if not self._inspection_overlay_enabled:
@@ -1127,7 +1325,7 @@ class SacsElevationRiskView(QGraphicsView):
         self._placed_label_rects = []
         self._placed_badge_centers = []
 
-        # ---------- 构件：II/III/IV 全量着色，只有 III/IV 显示文字牌 ----------
+        # ---------- 构件：仅显示当前配置中允许的等级；等级直接加粗并标在构件附近 ----------
         drawn_member_keys = set()
 
         for seg in self._visible_projected_members:
@@ -1138,7 +1336,7 @@ class SacsElevationRiskView(QGraphicsView):
                 continue
 
             level = str(self._member_inspect_level_map.get(key, "")).strip().upper()
-            if level not in ("II", "III", "IV"):
+            if level not in ("II", "III", "IV") or not self._display_inspection_level(level):
                 continue
 
             drawn_member_keys.add(key)
@@ -1149,23 +1347,20 @@ class SacsElevationRiskView(QGraphicsView):
             tooltip = self._badge_tooltip_for_member(key, level)
 
             line = RiskMemberItem(p1[0], p1[1], p2[0], p2[1], tooltip=tooltip)
-            pen_width = 1.4 if level == "II" else (2.0 if level == "III" else 2.6)
+            pen_width = 2.2 if level == "II" else (2.8 if level == "III" else 3.4)
             line.setPen(QPen(color, pen_width))
             line.setZValue(40)
             self._scene.addItem(line)
 
-            # II 只改变颜色，不画文字牌；III/IV 才画文字牌。
-            if level in self._member_badge_levels:
-                mx = (p1[0] + p2[0]) / 2.0
-                my = (p1[1] + p2[1]) / 2.0
-                if self._can_place_badge(mx, my, level):
-                    self._draw_level_badge_no_overlap(mx, my, level, color)
+            mx = (p1[0] + p2[0]) / 2.0
+            my = (p1[1] + p2[1]) / 2.0
+            self._draw_member_level_inline_label(mx, my, level, color, tooltip=tooltip, p1=p1, p2=p2)
 
-        # ---------- 节点：II/III/IV 全量着色，只有 III/IV 显示文字牌 ----------
+        # ---------- 节点：仅显示当前配置中允许的等级；等级标在箭头上 ----------
         for joint_id, scene_pt in self._visible_projected_nodes.items():
             joint_id = str(joint_id).strip()
             level = str(self._node_inspect_level_map.get(joint_id, "")).strip().upper()
-            if level not in ("II", "III", "IV"):
+            if level not in ("II", "III", "IV") or not self._display_inspection_level(level):
                 continue
 
             color = self._inspection_color(level)
@@ -1173,8 +1368,6 @@ class SacsElevationRiskView(QGraphicsView):
             r = 2.8 if level == "II" else (3.4 if level == "III" else 4.0)
             tooltip = self._badge_tooltip_for_node(joint_id, level)
 
-            # 新增：在原有节点等级标注基础上，增加 Brace 方向指向箭头。
-            # 不改变原来的等级牌、节点圆点和鼠标悬浮信息。
             self._draw_node_direction_arrows(joint_id, (x, y), level, tooltip)
 
             dot = RiskNodeItem(QRectF(x - r, y - r, 2 * r, 2 * r), tooltip=tooltip)
@@ -1182,11 +1375,6 @@ class SacsElevationRiskView(QGraphicsView):
             dot.setBrush(QBrush(color))
             dot.setZValue(60)
             self._scene.addItem(dot)
-
-            # II 只改变颜色，不画文字牌；III/IV 才画文字牌。
-            if level in self._node_badge_levels:
-                if self._can_place_badge(x, y, level):
-                    self._draw_level_badge_no_overlap(x, y, level, color)
 
     def _draw_level_badge_no_overlap(self, x: float, y: float, level: str, color: QColor):
         text_item = QGraphicsSimpleTextItem(level)
@@ -2888,6 +3076,8 @@ class SacsElevationRiskView(QGraphicsView):
         target._node_brace_inspect_level_map = dict(self._node_brace_inspect_level_map or {})
         target._member_items_by_key = dict(self._member_items_by_key or {})
         target._node_items_by_joint = dict(self._node_items_by_joint or {})
+        target._inspection_visible_levels = set(self._inspection_visible_levels or set())
+        target._show_inspection_level_ii = bool(self._show_inspection_level_ii)
 
         target._history_overlay_enabled = bool(self._history_overlay_enabled)
         target._history_overlay_items = list(self._history_overlay_items or [])

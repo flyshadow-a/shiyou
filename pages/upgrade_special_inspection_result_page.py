@@ -165,6 +165,20 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
         self._refresh_elevation_view()
 
+    def _apply_elevation_level_visibility(self):
+        if hasattr(self, "btn_toggle_level_ii") and self.btn_toggle_level_ii is not None:
+            self.btn_toggle_level_ii.setText("隐藏二级" if self._show_level_ii_in_view else "显示二级")
+        if hasattr(self, "elevation_view") and self.elevation_view is not None:
+            try:
+                if hasattr(self.elevation_view, "set_show_level_ii"):
+                    self.elevation_view.set_show_level_ii(bool(self._show_level_ii_in_view))
+            except Exception as exc:
+                print("[UpgradeSpecialInspectionResultPage] apply level-II visibility failed:", exc)
+
+    def _on_toggle_level_ii(self):
+        self._show_level_ii_in_view = not bool(getattr(self, "_show_level_ii_in_view", False))
+        self._apply_elevation_level_visibility()
+
     def __init__(self, facility_code: str, parent=None, run_id: int | None = None):
         self.facility_code = facility_code
         self.run_id = run_id
@@ -176,6 +190,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._overlay_bundle = {}
         self._result_bundle = {}
         self._batch_exported_keys = set()
+        self._show_level_ii_in_view = False
 
         super().__init__("", parent)
 
@@ -596,6 +611,25 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         top_row.addSpacing(12)
         top_row.addWidget(lbl_year, 0)
         top_row.addWidget(self.year_combo, 0)
+        top_row.addSpacing(12)
+
+        self.btn_toggle_level_ii = QPushButton("显示二级")
+        self.btn_toggle_level_ii.setFixedSize(92, 30)
+        self.btn_toggle_level_ii.setCursor(Qt.PointingHandCursor)
+        self.btn_toggle_level_ii.setStyleSheet("""
+            QPushButton {
+                background: #ffffff;
+                color: #1d2b3a;
+                border: 1px solid #b9c6d6;
+                border-radius: 3px;
+                font-size: 10pt;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #f1f6fb; }
+        """)
+        self.btn_toggle_level_ii.clicked.connect(self._on_toggle_level_ii)
+        top_row.addWidget(self.btn_toggle_level_ii, 0)
+
         top_row.addStretch(1)
 
         self.btn_elevation_fullscreen = QPushButton("全屏")
@@ -624,7 +658,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         outer.addWidget(self.elevation_hint_label, 0)
 
         # ===== 图像区域：和特检策略页保持同样的结构 =====
-        VIEW_SIZE = 540
+        VIEW_SIZE = 620
 
         self.elevation_view = SacsElevationRiskView(frame)
         self.elevation_view.set_info_label(self.elevation_hint_label)
@@ -705,6 +739,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self.slider_v.valueChanged.connect(
             lambda v: self.elevation_view.pan_view(self.slider_h.value(), v)
         )
+
+        self._apply_elevation_level_visibility()
 
         v.addWidget(frame, 1)
 
@@ -997,16 +1033,9 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 self.elevation_view._draw_message("当前没有可用的特检结果")
                 return
 
-            # 入口区别：
-            # 1. run_id is None：来自“特检策略”主页右上角查看结果，查看历史最新结果，优先读服务器缓存图；
-            # 2. run_id != None：来自“新增特检策略”更新风险等级后的查看结果，必须实时绘制，不能读旧缓存。
-            if self._is_history_latest_entry():
-                if self._try_load_cached_risk_image():
-                    return
-                # 没有缓存时才回退实时绘制，避免页面空白。
-                busy = self._show_realtime_draw_busy_dialog()
-            else:
-                busy = self._show_realtime_draw_busy_dialog()
+            # 当前页面需要支持“默认只看 III/IV，按钮切换是否显示 II”的交互能力，
+            # 因此这里统一实时绘制，不再直接显示旧缓存图片。
+            busy = self._show_realtime_draw_busy_dialog()
 
             try:
                 QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -1025,6 +1054,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 # 再叠加检验等级
                 if hasattr(self.elevation_view, "set_inspection_overlay"):
                     self.elevation_view.set_inspection_overlay(self._overlay_bundle)
+                self._apply_elevation_level_visibility()
 
                 # 页面浏览阶段不再导出/上传检验等级图；报告图片统一在“生成特检策略报告”时处理。
 
@@ -1128,6 +1158,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             # 使用独立的离屏视图导出，不影响用户当前正在看的 self.elevation_view。
             self._export_view = SacsElevationRiskView()
             self._export_view.resize(900, 900)
+            if hasattr(self._export_view, "set_show_level_ii"):
+                self._export_view.set_show_level_ii(bool(self._show_level_ii_in_view))
 
             self._export_view.clear_inspection_overlay()
             self._export_view.load_for_facility(
@@ -1203,6 +1235,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             )
             if hasattr(self._export_view, "set_inspection_overlay"):
                 self._export_view.set_inspection_overlay(overlay)
+            if hasattr(self._export_view, "set_show_level_ii"):
+                self._export_view.set_show_level_ii(bool(self._show_level_ii_in_view))
             QApplication.processEvents()
 
             image_path = build_strategy_image_path(

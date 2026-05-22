@@ -1258,11 +1258,13 @@ class FeasibilityAssessmentPage(BasePage):
         self.btn_save_data = mk("保存数据")
         self.btn_create = mk("创建新模型")
         self.btn_run = mk("计算分析")
+        self.btn_export = mk("导出文件")
         self.btn_view = mk("查看结果")
 
         self.btn_save_data.clicked.connect(self._on_save_all_input_data)
         self.btn_create.clicked.connect(self._on_create_model)
         self.btn_run.clicked.connect(self._on_run_analysis)
+        self.btn_export.clicked.connect(self._on_export_generated_files)
         self.btn_view.clicked.connect(self._on_view_result)
 
         # 创建新模型按钮保持可点击；如果用户尚未保存数据，点击时再给出提示。
@@ -1271,11 +1273,11 @@ class FeasibilityAssessmentPage(BasePage):
         lay.addWidget(self.btn_save_data, 0)
         lay.addWidget(self.btn_create, 0)
         lay.addWidget(self.btn_run, 0)
+        lay.addWidget(self.btn_export, 0)
         lay.addWidget(self.btn_view, 0)
         lay.addStretch(1)
         return wrap
 
-    # ---------------- 保存按钮：导出当前表格数据 ----------------
     def _confirm_save_locked(self, data_name: str) -> bool:
         """
         保存前二次确认：
@@ -1468,26 +1470,15 @@ class FeasibilityAssessmentPage(BasePage):
             if not getattr(self, "mysql_url", "").strip():
                 raise ValueError("MYSQL_URL 未配置，无法创建新模型")
 
-            user_export_dir = QFileDialog.getExistingDirectory(
-                self,
-                "选择新模型文件导出目录",
-                "",
-                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
-            )
-            if not user_export_dir:
-                return
-            self._model_user_export_dir = os.path.normpath(str(user_export_dir or ""))
-
             result = create_new_model_files(
                 mysql_url=self.mysql_url,
                 job_name=self.job_name,
                 overwrite_job=True,
                 generate_bat=True,  # 创建模型时同步复制 RUNX/PSIINP/JCNINP 并生成 bat
-                user_export_dir=user_export_dir,
+                user_export_dir="",  # 不再在创建时让用户选择导出目录
             )
 
-            export_info = result.get("export", {})
-            user_export = result.get("user_export", {})
+            export_info = result.get("export", {}) or {}
 
             self.current_model_dir = export_info.get("model_dir", "").strip() or self.model_files_root
             self.current_runx_file = export_info.get("runx_file", "").strip()
@@ -1503,6 +1494,9 @@ class FeasibilityAssessmentPage(BasePage):
 
             new_model_file = export_info.get("new_model_file", "").strip()
             new_sea_file = export_info.get("new_sea_file", "").strip()
+
+            self._model_created_in_session = True
+            self._refresh_runtime_paths_from_disk()
 
             msg_lines = ["创建新模型完成。"]
             msg_lines.append("")
@@ -1528,21 +1522,9 @@ class FeasibilityAssessmentPage(BasePage):
             if self.current_bat_file:
                 msg_lines.append(f"BAT文件：{self.current_bat_file}")
 
-            copied_files = list(user_export.get("copied_files") or [])
-            export_dir = str(user_export.get("export_dir") or user_export_dir).strip()
-
             msg_lines.append("")
-            msg_lines.append("【用户选择的导出目录】")
-            msg_lines.append(export_dir or "未导出")
+            msg_lines.append("如需把 M1 文件和计算结果文件保存到指定目录，请点击底部“导出文件”。")
 
-            if copied_files:
-                msg_lines.append("已导出文件：")
-                for path in copied_files:
-                    msg_lines.append(f" - {path}")
-            else:
-                msg_lines.append("没有可导出的文件。")
-
-            self._model_created_in_session = True
             QMessageBox.information(self, "创建完成", "\n".join(msg_lines))
 
         except Exception as e:
@@ -1763,13 +1745,7 @@ class FeasibilityAssessmentPage(BasePage):
             return ""
 
     def _copy_analysis_outputs_to_user_dir(self, *, result_file: str, work_dir: str, user_export_dir: str) -> list[str]:
-        """把本次计算结果额外导出到用户选择的目录。
-
-        只影响用户导出的副本，不改变系统内部计算目录，也不影响服务器归档。
-        默认导出：
-        - 本次结果文件，例如 psilst.factor；
-        - 计算日志/状态文件，便于用户排查计算问题。
-        """
+        """兼容旧调用：只把计算结果文件导出到用户选择目录，不再导出日志。"""
         export_dir = os.path.normpath(str(user_export_dir or "").strip())
         if not export_dir:
             return []
@@ -1779,16 +1755,10 @@ class FeasibilityAssessmentPage(BasePage):
         main_result = os.path.normpath(str(result_file or "").strip())
         if main_result:
             candidates.append(main_result)
-
-        runtime_dir = os.path.normpath(str(work_dir or "").strip())
-        for name in [
-            "analysis_summary.log",
-            "analysis_stdout.log",
-            "analysis_stderr.log",
-            "analysis_exitcode.txt",
-        ]:
-            if runtime_dir:
-                candidates.append(os.path.join(runtime_dir, name))
+        elif work_dir:
+            found = find_result_file(os.path.normpath(str(work_dir or "").strip()))
+            if found:
+                candidates.append(found)
 
         copied: list[str] = []
         seen = set()
@@ -1803,6 +1773,119 @@ class FeasibilityAssessmentPage(BasePage):
                 shutil.copy2(src, dst)
             copied.append(dst)
         return copied
+
+    def _collect_generated_export_files(self) -> list[str]:
+        """
+        只收集用户手动导出的核心文件：
+        1. 新生成的 M1 模型文件：sacinp.M1
+        2. 新生成的 M1 海况文件：seainp.M1
+        3. 计算结果文件：psilst.factor / psilst.lst / psilst.lis / psilst
+        """
+        self._refresh_runtime_paths_from_disk()
+
+        work_dir = getattr(self, "current_model_dir", "").strip() or get_job_runtime_dir(self.job_name)
+        work_dir = os.path.normpath(work_dir) if work_dir else ""
+
+        candidates: list[str] = []
+
+        if work_dir:
+            candidates.append(os.path.join(work_dir, "sacinp.M1"))
+            candidates.append(os.path.join(work_dir, "seainp.M1"))
+
+        result_file = getattr(self, "current_result_file", "").strip()
+        if not result_file and work_dir:
+            result_file = find_result_file(work_dir)
+        if result_file:
+            candidates.append(result_file)
+
+        existing_files: list[str] = []
+        seen = set()
+        for path in candidates:
+            path = os.path.normpath(str(path or "").strip())
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            if os.path.isfile(path):
+                existing_files.append(path)
+
+        return existing_files
+
+    def _copy_generated_files_to_user_dir(self, user_export_dir: str) -> list[str]:
+        """
+        把当前已生成的 M1 文件和计算结果文件复制到用户选择目录。
+        注意：这里只导出 sacinp.M1 / seainp.M1 / psilst 结果文件，不导出日志。
+        """
+        export_dir = os.path.normpath(str(user_export_dir or "").strip())
+        if not export_dir:
+            return []
+
+        os.makedirs(export_dir, exist_ok=True)
+
+        copied: list[str] = []
+        for src in self._collect_generated_export_files():
+            dst = os.path.join(export_dir, os.path.basename(src))
+            dst = os.path.normpath(dst)
+
+            if os.path.normcase(src) != os.path.normcase(dst):
+                shutil.copy2(src, dst)
+
+            copied.append(dst)
+
+        return copied
+
+    def _on_export_generated_files(self):
+        """新增按钮：用户手动选择目录后，只导出 M1 文件和计算结果文件。"""
+        try:
+            files = self._collect_generated_export_files()
+            if not files:
+                QMessageBox.warning(
+                    self,
+                    "无可导出文件",
+                    "当前还没有找到可导出的 M1 文件或计算结果文件。\n\n"
+                    "请先点击“创建新模型”生成 M1 文件，或点击“计算分析”生成结果文件。"
+                )
+                return
+
+            default_dir = getattr(self, "_model_user_export_dir", "") or os.path.expanduser("~")
+            user_export_dir = QFileDialog.getExistingDirectory(
+                self,
+                "选择 M1 文件和结果文件导出目录",
+                default_dir,
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
+            )
+            if not user_export_dir:
+                return
+
+            self._model_user_export_dir = os.path.normpath(str(user_export_dir or ""))
+            copied_files = self._copy_generated_files_to_user_dir(user_export_dir)
+
+            if not copied_files:
+                QMessageBox.warning(
+                    self,
+                    "导出失败",
+                    "没有成功复制任何文件，请检查目标目录权限。"
+                )
+                return
+
+            msg_lines = [
+                "导出完成。",
+                "",
+                "【导出目录】",
+                os.path.normpath(user_export_dir),
+                "",
+                "【已导出文件】",
+            ]
+            for path in copied_files:
+                msg_lines.append(f" - {path}")
+
+            QMessageBox.information(self, "导出完成", "\n".join(msg_lines))
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "导出失败",
+                f"导出 M1 文件和结果文件失败：\n{e}"
+            )
 
     def _rewrite_runx_for_current_analysis(self, runx_path: str, *, analysis_mode: str, runtime_bundle: dict) -> str:
         """根据当前计算对象修正 RUNX 中的模型/海况文件名。"""
@@ -2221,43 +2304,11 @@ class FeasibilityAssessmentPage(BasePage):
                         runtime_bundle=runtime_bundle,
                     )
 
-                    default_export_dir = getattr(self, "_model_user_export_dir", "") or work_dir
-                    user_result_export_dir = QFileDialog.getExistingDirectory(
-                        self,
-                        "选择计算结果导出目录",
-                        default_export_dir,
-                        QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
-                    )
-                    exported_result_files = []
-                    if user_result_export_dir:
-                        try:
-                            exported_result_files = self._copy_analysis_outputs_to_user_dir(
-                                result_file=self.current_result_file,
-                                work_dir=work_dir,
-                                user_export_dir=user_result_export_dir,
-                            )
-                        except Exception as exc:
-                            QMessageBox.warning(
-                                self,
-                                "导出失败",
-                                f"计算已完成，但计算结果导出失败：\n{exc}\n\n原始结果文件：\n{self.current_result_file}",
-                            )
-                            return
-
                     mode_text = "原模型" if analysis_mode == "original" else "本次创建的新模型"
                     msg = f"计算完成。\n计算对象：{mode_text}\n结果文件：{self.current_result_file}"
                     if archived_path:
                         msg += f"\n服务器归档：{archived_path}"
-                    if user_result_export_dir:
-                        msg += f"\n\n用户导出目录：{user_result_export_dir}"
-                        if exported_result_files:
-                            msg += "\n已导出文件："
-                            for path in exported_result_files:
-                                msg += f"\n - {path}"
-                        else:
-                            msg += "\n未找到可导出的计算结果文件。"
-                    else:
-                        msg += "\n\n用户取消了计算结果导出，结果仍保留在计算目录中。"
+                    msg += "\n\n如需把 M1 文件和计算结果文件保存到指定目录，请点击底部“导出文件”。"
                     QMessageBox.information(self, "提示", msg)
 
                 self._wait_for_fresh_result_file(
