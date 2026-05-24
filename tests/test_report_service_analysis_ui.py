@@ -21,7 +21,7 @@ class ReportServiceAnalysisUiTests(unittest.TestCase):
             factor_path = Path(tmp_dir) / "psilst.factor"
             factor_path.write_text("fake factor", encoding="utf-8")
 
-            with patch("src.report_service.read_lines", return_value=["line"]), patch(
+            with patch("src.report_service.read_ui_analysis_lines", return_value=["line"]), patch(
                 "src.report_service.parse_member_group_summary",
                 return_value={"rows": ["member-row"]},
             ), patch(

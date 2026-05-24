@@ -68,21 +68,44 @@ class FileMetadataService:
     def _ensure_schema(self) -> None:
         Base.metadata.create_all(self.engine)
         inspector = inspect(self.engine)
-        if not inspector.has_table("file_records"):
-            return
-
-        columns = {str(col.get("name") or "") for col in inspector.get_columns("file_records")}
         statements: list[str] = []
-        if "storage_rel_path" not in columns:
-            statements.append("ALTER TABLE file_records ADD COLUMN storage_rel_path VARCHAR(500) NULL AFTER storage_path")
-        if "category_name" not in columns:
-            statements.append("ALTER TABLE file_records ADD COLUMN category_name VARCHAR(255) NULL AFTER updated_at")
-        if "work_condition" not in columns:
-            statements.append("ALTER TABLE file_records ADD COLUMN work_condition VARCHAR(255) NULL AFTER category_name")
+        if inspector.has_table("file_records"):
+            columns = {str(col.get("name") or "") for col in inspector.get_columns("file_records")}
+            if "storage_rel_path" not in columns:
+                statements.append("ALTER TABLE file_records ADD COLUMN storage_rel_path VARCHAR(500) NULL AFTER storage_path")
+            if "category_name" not in columns:
+                statements.append("ALTER TABLE file_records ADD COLUMN category_name VARCHAR(255) NULL AFTER updated_at")
+            if "work_condition" not in columns:
+                statements.append("ALTER TABLE file_records ADD COLUMN work_condition VARCHAR(255) NULL AFTER category_name")
 
         if statements:
             with self.engine.begin() as conn:
                 for sql in statements:
+                    conn.exec_driver_sql(sql)
+
+        if not inspector.has_table("platform_load_information_items"):
+            return
+
+        load_columns = {str(col.get("name") or "") for col in inspector.get_columns("platform_load_information_items")}
+        load_statements: list[str] = []
+        if "dry_weight_mt" not in load_columns:
+            load_statements.append("ALTER TABLE platform_load_information_items ADD COLUMN dry_weight_mt VARCHAR(100) NULL AFTER rebuild_content")
+        if "dry_center_xyz" not in load_columns:
+            load_statements.append("ALTER TABLE platform_load_information_items ADD COLUMN dry_center_xyz VARCHAR(255) NULL AFTER weight_delta_mt")
+        for name, after in [
+            ("op_fx_kn", "center_radius_m"),
+            ("op_fy_kn", "op_fx_kn"),
+            ("op_fz_kn", "op_fy_kn"),
+            ("op_mx_kn_m", "op_fz_kn"),
+            ("op_my_kn_m", "op_mx_kn_m"),
+            ("op_mz_kn_m", "op_my_kn_m"),
+        ]:
+            if name not in load_columns:
+                load_statements.append(f"ALTER TABLE platform_load_information_items ADD COLUMN {name} VARCHAR(100) NULL AFTER {after}")
+
+        if load_statements:
+            with self.engine.begin() as conn:
+                for sql in load_statements:
                     conn.exec_driver_sql(sql)
 
     def seed_file_types(self) -> None:
@@ -497,11 +520,19 @@ class FileMetadataService:
                     project_name=(item.get("project_name") or "").strip() or None,
                     rebuild_time=(item.get("rebuild_time") or "").strip() or None,
                     rebuild_content=(item.get("rebuild_content") or "").strip() or None,
+                    dry_weight_mt=(item.get("dry_weight_mt") or "").strip() or None,
                     total_weight_mt=(item.get("total_weight_mt") or "").strip() or None,
                     weight_limit_mt=(item.get("weight_limit_mt") or "").strip() or None,
                     weight_delta_mt=(item.get("weight_delta_mt") or "").strip() or None,
+                    dry_center_xyz=(item.get("dry_center_xyz") or "").strip() or None,
                     center_xyz=(item.get("center_xyz") or "").strip() or None,
                     center_radius_m=(item.get("center_radius_m") or "").strip() or None,
+                    op_fx_kn=(item.get("op_fx_kn") or "").strip() or None,
+                    op_fy_kn=(item.get("op_fy_kn") or "").strip() or None,
+                    op_fz_kn=(item.get("op_fz_kn") or "").strip() or None,
+                    op_mx_kn_m=(item.get("op_mx_kn_m") or "").strip() or None,
+                    op_my_kn_m=(item.get("op_my_kn_m") or "").strip() or None,
+                    op_mz_kn_m=(item.get("op_mz_kn_m") or "").strip() or None,
                     fx_kn=(item.get("fx_kn") or "").strip() or None,
                     fy_kn=(item.get("fy_kn") or "").strip() or None,
                     fz_kn=(item.get("fz_kn") or "").strip() or None,
@@ -862,11 +893,19 @@ class FileMetadataService:
             "project_name": row.project_name,
             "rebuild_time": row.rebuild_time,
             "rebuild_content": row.rebuild_content,
+            "dry_weight_mt": row.dry_weight_mt,
             "total_weight_mt": row.total_weight_mt,
             "weight_limit_mt": row.weight_limit_mt,
             "weight_delta_mt": row.weight_delta_mt,
+            "dry_center_xyz": row.dry_center_xyz,
             "center_xyz": row.center_xyz,
             "center_radius_m": row.center_radius_m,
+            "op_fx_kn": row.op_fx_kn,
+            "op_fy_kn": row.op_fy_kn,
+            "op_fz_kn": row.op_fz_kn,
+            "op_mx_kn_m": row.op_mx_kn_m,
+            "op_my_kn_m": row.op_my_kn_m,
+            "op_mz_kn_m": row.op_mz_kn_m,
             "fx_kn": row.fx_kn,
             "fy_kn": row.fy_kn,
             "fz_kn": row.fz_kn,

@@ -365,8 +365,8 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
             "source_col": self.source_col,
             "table_data": self.get_table_data(), # 必须导出明细数据
             "write_back": {
-                4: op_w,
-                7: f"{op_x},{op_y},{op_z}",
+                5: op_w,
+                9: f"{op_x},{op_y},{op_z}",
             }
         }
         self.saved.emit(payload)

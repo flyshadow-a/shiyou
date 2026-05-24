@@ -353,6 +353,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self.btn_generate_report = None
 
         self._build_ui()
+        self._show_analysis_status_in_tables("正在解析数据...")
         self.start_analysis_results_loading()
         QTimer.singleShot(0, self.reload_model_view)
 
@@ -531,6 +532,24 @@ class FeasibilityAssessmentResultsPage(BasePage):
             table = self.detail_tables.get(tab_name)
             if table is not None and table.columnCount() > 0:
                 table.setColumnWidth(0, target_width)
+
+    def _show_analysis_status_in_tables(self, message: str) -> None:
+        if hasattr(self, "tbl_summary"):
+            for r in range(2, self.tbl_summary.rowCount()):
+                for c in range(1, self.tbl_summary.columnCount()):
+                    self._set_cell(self.tbl_summary, r, c, "", editable=False)
+            if self.tbl_summary.rowCount() > 2 and self.tbl_summary.columnCount() > 1:
+                self._set_cell(self.tbl_summary, 2, 1, message, editable=False, align_center=False)
+
+        if not hasattr(self, "detail_tables"):
+            return
+        for table in self.detail_tables.values():
+            header_rows = int(table.property("header_rows") or 2)
+            table.setRowCount(header_rows + 1)
+            table.setRowHeight(header_rows, 32)
+            for c in range(table.columnCount()):
+                text = message if c == 0 else ""
+                self._set_cell(table, header_rows, c, text, editable=False, align_center=False)
 
     # ---------------- 上方 快速评估汇总信息表 ----------------
     def _build_summary_table(self) -> QWidget:
@@ -1091,6 +1110,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _on_analysis_results_failed(self, message: str) -> None:
         self._analysis_results = {}
+        self._show_analysis_status_in_tables(f"解析数据失败：{message}")
 
     def _on_analysis_thread_finished(self) -> None:
         self._analysis_thread = None

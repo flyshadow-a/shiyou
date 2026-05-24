@@ -884,11 +884,19 @@ class PlatformLoadInformationPage(BasePage):
             "改扩建项目名称",
             "改扩建时间",
             "改扩建内容",
+            "上部组块\n干重量\n(MT)",
             "上部组块总\n操作重量\n(MT)",
             "上部组块不\n可超越重量\n(MT)",
             "重量变化\n(MT)",
-            "上部组块重心\n(x,y,z)\n(m)",
+            "上部组块\n干重心\n(x,y,z)\n(m)",
+            "上部组块\n操作重心\n(x,y,z)\n(m)",
             "上部组块重心\n不可超越半径\n(m)",
+            "Fx\n(KN)",
+            "Fy\n(KN)",
+            "Fz\n(KN)",
+            "Mx\n(KN·m)",
+            "My\n(KN·m)",
+            "Mz\n(KN·m)",
             "Fx\n(KN)",
             "Fy\n(KN)",
             "Fz\n(KN)",
@@ -935,6 +943,17 @@ class PlatformLoadInformationPage(BasePage):
         table.setItem(row, col, item)
         return item
 
+    def _red_data_columns(self) -> set[int]:
+        return {4, 8, *range(11, 17), 23, 24}
+
+    def _result_import_columns(self) -> List[int]:
+        return list(range(11, 25))
+
+    def _red_column_tooltip(self, col: int) -> str:
+        if col in self._result_import_columns():
+            return "双击可手动输入数据；右键点击可读取本行对应的分析结果文件。"
+        return "双击可手动输入数据。"
+
     def _build_main_table_skeleton(self) -> HoverTipTable:
         cols = self._columns()
         col_count = len(cols)
@@ -960,29 +979,34 @@ class PlatformLoadInformationPage(BasePage):
         # table.setSpan(2, 4, 1, 5)
         # table.setItem(2, 4, self._mk_item("上部组块重控", bold=True, bg=bg))
 
-        table.setSpan(0, 9, 1, 6)
-        self._set_header_widget(table, 0, 9, "极端工况最大载荷", bg="#fed7aa")
+        table.setSpan(0, 11, 1, 6)
+        self._set_header_widget(table, 0, 11, "操作工况最大载荷", bg="#ffedd5")
 
-        table.setSpan(0, 15, 1, 2)
-        self._set_header_widget(table, 0, 15, "桩基承载力安全系数（最小）", bg="#bbf7d0")
+        table.setSpan(0, 17, 1, 6)
+        self._set_header_widget(table, 0, 17, "极端工况最大载荷", bg="#fed7aa")
 
-        table.setSpan(0, 17, 2, 1)
-        self._set_header_widget(table, 0, 17, "是否整体\n评估", bg="#dbeafe")
-        table.setSpan(0, 18, 2, 1)
-        self._set_header_widget(table, 0, 18, "评估机构", bg="#dbeafe")
+        table.setSpan(0, 23, 1, 2)
+        self._set_header_widget(table, 0, 23, "桩基承载力安全系数（最小）", bg="#bbf7d0")
+
+        table.setSpan(0, 25, 2, 1)
+        self._set_header_widget(table, 0, 25, "是否整体\n评估", bg="#dbeafe")
+        table.setSpan(0, 26, 2, 1)
+        self._set_header_widget(table, 0, 26, "评估机构", bg="#dbeafe")
 
         # ===== 子表头（row3）=====
-        for i in range(1,9):
+        for i in range(1,11):
             table.setSpan(0, i, 2, 1)
         self._set_header_widget(table, 0, 1, "改扩建项目名称", bg="#dbeafe")
         self._set_header_widget(table, 0, 2, "改扩建时间", bg="#dbeafe")
         self._set_header_widget(table, 0, 3, "改扩建内容", bg="#dbeafe")
 
-        self._set_header_widget(table, 0, 4, "上部组块总操作重量\n(MT)", bg="#dbeafe")
-        self._set_header_widget(table, 0, 5, "上部组块不可超越重量\n(MT)", bg="#dbeafe")
-        self._set_header_widget(table, 0, 6, "重量变化\n(MT)", bg="#dbeafe")
-        self._set_header_widget(table, 0, 7, "上部组块重心\n(x,y,z)\n(m)", bg="#bbf7d0")
-        self._set_header_widget(table, 0, 8, "上部组块重心\n不可超越半径\n(m)", bg="#dbeafe")
+        self._set_header_widget(table, 0, 4, "上部组块干重量\n(MT)", bg="#ffedd5")
+        self._set_header_widget(table, 0, 5, "上部组块总操作重量\n(MT)", bg="#dbeafe")
+        self._set_header_widget(table, 0, 6, "上部组块不可超越重量\n(MT)", bg="#dbeafe")
+        self._set_header_widget(table, 0, 7, "重量变化\n(MT)", bg="#dbeafe")
+        self._set_header_widget(table, 0, 8, "上部组块干重心\n(x,y,z)\n(m)", bg="#ffedd5")
+        self._set_header_widget(table, 0, 9, "上部组块操作重心\n(x,y,z)\n(m)", bg="#bbf7d0")
+        self._set_header_widget(table, 0, 10, "上部组块重心\n不可超越半径\n(m)", bg="#dbeafe")
 
         # 结果字段（严格：Mz 纵向显示）
         fx_headers = [
@@ -993,12 +1017,14 @@ class PlatformLoadInformationPage(BasePage):
             ("My", "My\n(KN·m)"),
             ("Mz", "Mz\n(KN·m)"),
         ]
-        red_cols = list(range(9, 15))
-        for (src, shown), c in zip(fx_headers, red_cols):
+        for (src, shown), c in zip(fx_headers, range(11, 17)):
             self._set_header_widget(table, 1, c, shown, bg="#ffedd5")
 
-        self._set_header_widget(table, 1, 15, "操作工况", bg="#dcfce7")
-        self._set_header_widget(table, 1, 16, "极端工况", bg="#dcfce7")
+        for (src, shown), c in zip(fx_headers, range(17, 23)):
+            self._set_header_widget(table, 1, c, shown, bg="#fed7aa")
+
+        self._set_header_widget(table, 1, 23, "操作工况", bg="#dcfce7")
+        self._set_header_widget(table, 1, 24, "极端工况", bg="#dcfce7")
 
         # 补齐背景（未被 span 覆盖的单元格）
         for r in range(base_rows):
@@ -1021,11 +1047,19 @@ class PlatformLoadInformationPage(BasePage):
                 str(row.get("project_name") or ""),
                 str(row.get("rebuild_time") or ""),
                 str(row.get("rebuild_content") or ""),
+                str(row.get("dry_weight_mt") or ""),
                 str(row.get("total_weight_mt") or ""),
                 str(row.get("weight_limit_mt") or ""),
                 str(row.get("weight_delta_mt") or ""),
+                str(row.get("dry_center_xyz") or ""),
                 str(row.get("center_xyz") or ""),
                 str(row.get("center_radius_m") or ""),
+                str(row.get("op_fx_kn") or ""),
+                str(row.get("op_fy_kn") or ""),
+                str(row.get("op_fz_kn") or ""),
+                str(row.get("op_mx_kn_m") or ""),
+                str(row.get("op_my_kn_m") or ""),
+                str(row.get("op_mz_kn_m") or ""),
                 str(row.get("fx_kn") or ""),
                 str(row.get("fy_kn") or ""),
                 str(row.get("fz_kn") or ""),
@@ -1063,21 +1097,29 @@ class PlatformLoadInformationPage(BasePage):
                     "project_name": self._cell_text(row, 1).strip(),
                     "rebuild_time": self._cell_text(row, 2).strip(),
                     "rebuild_content": self._cell_text(row, 3).strip(),
-                    "total_weight_mt": self._cell_text(row, 4).strip(),
-                    "weight_limit_mt": self._cell_text(row, 5).strip(),
-                    "weight_delta_mt": self._cell_text(row, 6).strip(),
-                    "center_xyz": self._cell_text(row, 7).strip(),
-                    "center_radius_m": self._cell_text(row, 8).strip(),
-                    "fx_kn": self._cell_text(row, 9).strip(),
-                    "fy_kn": self._cell_text(row, 10).strip(),
-                    "fz_kn": self._cell_text(row, 11).strip(),
-                    "mx_kn_m": self._cell_text(row, 12).strip(),
-                    "my_kn_m": self._cell_text(row, 13).strip(),
-                    "mz_kn_m": self._cell_text(row, 14).strip(),
-                    "safety_op": self._cell_text(row, 15).strip(),
-                    "safety_extreme": self._cell_text(row, 16).strip(),
-                    "overall_assessment": self._cell_text(row, 17).strip(),
-                    "assessment_org": self._cell_text(row, 18).strip(),
+                    "dry_weight_mt": self._cell_text(row, 4).strip(),
+                    "total_weight_mt": self._cell_text(row, 5).strip(),
+                    "weight_limit_mt": self._cell_text(row, 6).strip(),
+                    "weight_delta_mt": self._cell_text(row, 7).strip(),
+                    "dry_center_xyz": self._cell_text(row, 8).strip(),
+                    "center_xyz": self._cell_text(row, 9).strip(),
+                    "center_radius_m": self._cell_text(row, 10).strip(),
+                    "op_fx_kn": self._cell_text(row, 11).strip(),
+                    "op_fy_kn": self._cell_text(row, 12).strip(),
+                    "op_fz_kn": self._cell_text(row, 13).strip(),
+                    "op_mx_kn_m": self._cell_text(row, 14).strip(),
+                    "op_my_kn_m": self._cell_text(row, 15).strip(),
+                    "op_mz_kn_m": self._cell_text(row, 16).strip(),
+                    "fx_kn": self._cell_text(row, 17).strip(),
+                    "fy_kn": self._cell_text(row, 18).strip(),
+                    "fz_kn": self._cell_text(row, 19).strip(),
+                    "mx_kn_m": self._cell_text(row, 20).strip(),
+                    "my_kn_m": self._cell_text(row, 21).strip(),
+                    "mz_kn_m": self._cell_text(row, 22).strip(),
+                    "safety_op": self._cell_text(row, 23).strip(),
+                    "safety_extreme": self._cell_text(row, 24).strip(),
+                    "overall_assessment": self._cell_text(row, 25).strip(),
+                    "assessment_org": self._cell_text(row, 26).strip(),
                     "sort_order": str(sort_order),
                 }
             )
@@ -1157,15 +1199,15 @@ class PlatformLoadInformationPage(BasePage):
         base_rows = self.DATA_START_ROW
         data_end = self._find_data_end_row()
 
-        # 仅处理数据区的红色字段列：9..16
-        if (base_rows <= row < data_end) and (9 <= col <= 16):
+        # 仅处理数据区的红色字段列：干重量/干重心/操作载荷/桩基安全系数。
+        if (base_rows <= row < data_end) and col in self._red_data_columns():
             # 如果当前背景色是淡蓝色（导入态），手动改动后应切回白色
             if item.background().color() == QColor("#e1f5fe"):
                 self.table.blockSignals(True)
                 item.setBackground(QColor("white"))
                 self.table.blockSignals(False)
 
-        if (base_rows <= row < data_end) and col == 6:
+        if (base_rows <= row < data_end) and col == 7:
             formatted = self._format_weight_delta_text(item.text())
             if formatted != item.text():
                 self.table.blockSignals(True)
@@ -1187,9 +1229,10 @@ class PlatformLoadInformationPage(BasePage):
         table = self.table
         col_count = table.columnCount()
         column_widths = {
-            0: 104, 1: 170, 2: 116, 3: 280, 4: 132, 5: 140, 6: 120,
-            7: 168, 8: 142, 9: 104, 10: 104, 11: 104, 12: 112, 13: 112,
-            14: 112, 15: 118, 16: 118, 17: 112, 18: 168,
+            0: 104, 1: 170, 2: 116, 3: 280, 4: 132, 5: 144, 6: 142,
+            7: 120, 8: 168, 9: 168, 10: 142, 11: 104, 12: 104, 13: 104,
+            14: 112, 15: 112, 16: 112, 17: 104, 18: 104, 19: 104, 20: 112,
+            21: 112, 22: 112, 23: 118, 24: 118, 25: 112, 26: 168,
         }
 
         for c in range(col_count):
@@ -1224,21 +1267,21 @@ class PlatformLoadInformationPage(BasePage):
             for rr in range(base_rows, base_rows + len(rows)):
                 self.table.setRowHeight(rr, 44)
 
-            red_cols = set(range(9, 17))
+            red_cols = self._red_data_columns()
             calc_bg = QColor("#eef8ef")
 
             for i, row in enumerate(rows):
                 rr = base_rows + i
                 for c, val in enumerate(row):
-                    if c == 6:
+                    if c == 7:
                         val = self._format_weight_delta_text(val)
                     editable = (c != 0)
                     it = self._mk_item(val, editable=editable)
-                    if c == 7:
+                    if c == 9:
                         it.setBackground(calc_bg)
                     elif c in red_cols:
                         it.setBackground(import_bg)
-                        it.setToolTip("双击可手动输入数据；右键点击可读取本行对应的分析结果文件。")
+                        it.setToolTip(self._red_column_tooltip(c))
                     elif i in (0, 1):
                         it.setBackground(row_hint_bg)
                     if val:
@@ -1258,10 +1301,10 @@ class PlatformLoadInformationPage(BasePage):
                 for c in range(self.table.columnCount()):
                     if self.table.item(r, c) is None and self.table.cellWidget(r, c) is None:
                         editable = (base_rows <= r < data_end) and (c != 0)
-                        item_bg = calc_bg if c == 7 else import_bg if (base_rows <= r < data_end) and (c in red_cols) else bg
+                        item_bg = calc_bg if c == 9 else import_bg if (base_rows <= r < data_end) and (c in red_cols) else bg
                         it = self._mk_item("", bg=item_bg, editable=editable)
                         if (base_rows <= r < data_end) and (c in red_cols):
-                            it.setToolTip("双击可手动输入数据；右键点击可读取本行对应的分析结果文件。")
+                            it.setToolTip(self._red_column_tooltip(c))
                         self.table.setItem(r, c, it)
 
             data_start = base_rows
@@ -1297,7 +1340,7 @@ class PlatformLoadInformationPage(BasePage):
             self._show_row_context_menu(row, pos)
             return
 
-        if col == 7:
+        if col == 9:
             menu = QMenu(self.table)
             menu.setStyleSheet(self._menu_qss())
             action = menu.addAction("打开上部组块分项目计算表")
@@ -1305,8 +1348,8 @@ class PlatformLoadInformationPage(BasePage):
             menu.exec_(self.table.viewport().mapToGlobal(pos))
             return
 
-        # 红色字段列：9..16 (Fx~Mz, 操作工况, 极端工况)
-        if 9 <= col <= 16:
+        # 结果文件回填列：操作工况载荷 + 桩基安全系数。
+        if col in self._result_import_columns():
             menu = QMenu(self.table)
             menu.setStyleSheet(self._menu_qss())
             action = menu.addAction("读取该行关联的结果文件 (psilst.factor)")
@@ -1371,7 +1414,11 @@ class PlatformLoadInformationPage(BasePage):
         try:
             QApplication.setOverrideCursor(Qt.WaitCursor)
             values = self._get_cached_result_factor_values(path)
-            keys = ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz', '操作工况', '极端工况']
+            keys = [
+                'op_Fx', 'op_Fy', 'op_Fz', 'op_Mx', 'op_My', 'op_Mz',
+                'ext_Fx', 'ext_Fy', 'ext_Fz', 'ext_Mx', 'ext_My', 'ext_Mz',
+                '操作工况', '极端工况',
+            ]
             if not any(str(values.get(k, '')).strip() for k in keys):
                 QMessageBox.warning(self, "读取失败", "在 psilst.factor 文件中未解析到有效字段。")
                 return
@@ -1389,7 +1436,7 @@ class PlatformLoadInformationPage(BasePage):
         self._apply_red_fields_editability()
 
     def _apply_red_fields_editability(self):
-        red_cols = list(range(9, 17))
+        red_cols = self._result_import_columns()
         base_rows, data_end = self.DATA_START_ROW, self._find_data_end_row()
         for r in range(base_rows, data_end):
             for c in red_cols:
@@ -1423,10 +1470,15 @@ class PlatformLoadInformationPage(BasePage):
         except Exception as e: QMessageBox.warning(self, '导入失败', str(e))
 
     def _apply_excel_values_to_row(self, row: int, values: Dict[str, object], bg_color: QColor = None):
-        keys = ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz', '操作工况', '极端工况']
-        cols = [9, 10, 11, 12, 13, 14, 15, 16]
+        keys = [
+            'op_Fx', 'op_Fy', 'op_Fz', 'op_Mx', 'op_My', 'op_Mz',
+            'ext_Fx', 'ext_Fy', 'ext_Fz', 'ext_Mx', 'ext_My', 'ext_Mz',
+            '操作工况', '极端工况',
+        ]
+        cols = self._result_import_columns()
         for k, c in zip(keys, cols):
-            v = values.get(k, '')
+            legacy_key = k[3:] if k.startswith(("op_", "ext_")) else k
+            v = values.get(k, values.get(legacy_key, ''))
             it = self.table.item(row, c)
             if not it:
                 it = self._mk_item('', editable=True)
@@ -1476,14 +1528,14 @@ class PlatformLoadInformationPage(BasePage):
         # 初始化新行的样式
         cols = self.table.columnCount()
         calc_bg = QColor("#eef8ef")
-        red_cols = set(range(9, 17))
+        red_cols = self._red_data_columns()
         
         for c in range(cols):
             editable = (c != 0)
-            bg = calc_bg if c == 7 else QColor("white")
+            bg = calc_bg if c == 9 else QColor("white")
             it = self._mk_item("", bg=bg, editable=editable)
             if c in red_cols:
-                it.setToolTip("双击可手动输入数据；右键点击可读取本行对应的分析结果文件。")
+                it.setToolTip(self._red_column_tooltip(c))
             self.table.setItem(insert_row, c, it)
             
         self._refresh_table_layout_and_seq()
@@ -1702,6 +1754,9 @@ class PlatformLoadInformationPage(BasePage):
                 out[out_key] = self._fmt_result_load(best_row.get(field_key))
         return out
 
+    def _prefixed_loads(self, loads: Dict[str, str], prefix: str) -> Dict[str, str]:
+        return {f"{prefix}_{key}": value for key, value in loads.items() if str(value or "").strip()}
+
     def _extract_vba_style_max_loads(self, text: str) -> Dict[str, str]:
         lines = text.splitlines()
         load_rows = self._parse_combined_load_summary_from_lines(lines)
@@ -1862,12 +1917,16 @@ class PlatformLoadInformationPage(BasePage):
             for row in load_rows:
                 row["case_type"] = case_types.get(str(row.get("load_case") or ""), "")
 
-            # 当前页面 9~14 列表头为“极端工况最大载荷”，优先取 Extreme。
+            operation_loads = self._pick_max_abs_loads_by_type(load_rows, "Operation")
+            if operation_loads:
+                result.update(self._prefixed_loads(operation_loads, "op"))
+
             extreme_loads = self._pick_max_abs_loads_by_type(load_rows, "Extreme")
             if extreme_loads:
-                result.update(extreme_loads)
-            else:
-                result.update(self._pick_max_abs_loads_by_type(load_rows, "Operation"))
+                result.update(self._prefixed_loads(extreme_loads, "ext"))
+
+            # 兼容旧的单组载荷键；优先保留极端工况，找不到时退回操作工况。
+            result.update(extreme_loads or operation_loads)
 
         result.update(self._compute_vba_style_min_pile_safety(text))
         return result
@@ -1887,7 +1946,7 @@ class PlatformLoadInformationPage(BasePage):
     def _read_result_factor_generic(self, path: str) -> Dict[str, object]:
         text = self._read_text_file_with_fallback(path)
         res = self._extract_vba_style_result_values(text)
-        if not any(str(res.get(k, '')).strip() for k in ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz', '操作工况', '极端工况']):
+        if not any(str(res.get(k, '')).strip() for k in ['op_Fx', 'op_Fy', 'op_Fz', 'op_Mx', 'op_My', 'op_Mz', 'ext_Fx', 'ext_Fy', 'ext_Fz', 'ext_Mx', 'ext_My', 'ext_Mz', 'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz', '操作工况', '极端工况']):
             res.update(self._extract_loads_from_text(text))
             res.update(self._extract_safety_from_text(text))
         return res
@@ -1899,16 +1958,16 @@ class PlatformLoadInformationPage(BasePage):
             seq = self._cell_text(r, 0).strip()
             if not seq.isdigit(): continue
             idxs.append(len(idxs))
-            weight.append(self._to_float(self._cell_text(r, 4)) or 0.0)
-            xyz = self._cell_text(r, 7).split(",")
+            weight.append(self._to_float(self._cell_text(r, 5)) or 0.0)
+            xyz = self._cell_text(r, 9).split(",")
             cgx.append(self._to_float(xyz[0]) if len(xyz)>0 else 0.0)
             cgy.append(self._to_float(xyz[1]) if len(xyz)>1 else 0.0)
-            fx.append(self._to_float(self._cell_text(r, 9)) or 0.0)
-            fy.append(self._to_float(self._cell_text(r, 10)) or 0.0)
-            fz.append(self._to_float(self._cell_text(r, 11)) or 0.0)
-            mx.append(self._to_float(self._cell_text(r, 12)) or 0.0)
-            my.append(self._to_float(self._cell_text(r, 13)) or 0.0)
-            mz.append(self._to_float(self._cell_text(r, 14)) or 0.0)
+            fx.append(self._to_float(self._cell_text(r, 17)) or 0.0)
+            fy.append(self._to_float(self._cell_text(r, 18)) or 0.0)
+            fz.append(self._to_float(self._cell_text(r, 19)) or 0.0)
+            mx.append(self._to_float(self._cell_text(r, 20)) or 0.0)
+            my.append(self._to_float(self._cell_text(r, 21)) or 0.0)
+            mz.append(self._to_float(self._cell_text(r, 22)) or 0.0)
         return {"idx": idxs, "weight": weight, "cgx": cgx, "cgy": cgy, "fx": fx, "fy": fy, "fz": fz, "mx": mx, "my": my, "mz": mz}
 
     def _refresh_curve_view(self):
@@ -1955,7 +2014,7 @@ class PlatformLoadInformationPage(BasePage):
                 it = self._mk_item("", editable=(int(col) != 0))
                 self.table.setItem(src_row, int(col), it)
             it.setText(str(val))
-            if int(col) == 7: it.setBackground(calc_bg)
+            if int(col) == 9: it.setBackground(calc_bg)
         self._auto_fit_main_table_columns()
         self._refresh_curve_view()
 

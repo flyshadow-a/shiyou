@@ -27,7 +27,7 @@ from src.parsers.pile_head_capacity_summary_builder import build_pile_head_capac
 from src.parsers.pile_head_force_parser import parse_pile_head_forces
 from src.parsers.pile_group_summary_builder import build_pile_group_summary
 from src.parsers.pile_group_summary_parser import parse_pile_group_summary
-from src.parsers.psilst_reader import read_lines
+from src.parsers.psilst_reader import read_lines, read_ui_analysis_lines
 from src.path_config_loader import get_report_defaults
 from src.parsers.summary_builder import build_analysis_summary
 from src.pdf_converter import convert_docx_to_pdf
@@ -159,7 +159,7 @@ def build_analysis_results_for_ui(factor_path: str) -> dict[str, Any]:
             f"无法读取文件: {factor_file} (exists={factor_file.exists()}, absolute={factor_file.resolve(strict=False)})"
         )
 
-    lines = read_lines(factor_path)
+    lines = read_ui_analysis_lines(factor_path)
 
     member_group_summary = parse_member_group_summary(lines)
     member_summary = build_member_summary(member_group_summary)
