@@ -39,6 +39,7 @@ try:
         prepare_run_state as prepare_inspection_pipeline,
     )
     from pages.output_special_strategy.report_jinja2_generator import (  # noqa: E402
+        build_context,
         build_generated_appendix_plan,
         build_appendix_pdf_plan,
         build_appendix_sections,
@@ -56,6 +57,7 @@ except ImportError:
         prepare_run_state as prepare_inspection_pipeline,
     )
     from report_jinja2_generator import (  # type: ignore  # noqa: E402
+        build_context,
         build_generated_appendix_plan,
         build_appendix_pdf_plan,
         build_appendix_sections,
@@ -980,6 +982,220 @@ def _load_detail_rows(workbook_path: Path) -> dict[str, list[dict[str, str]]]:
     return {"member": member_rows, "node": node_rows}
 
 
+def _to_report_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if value != value:
+            return ""
+    except Exception:
+        pass
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _iter_dataframe_records(df: Any):
+    if df is None:
+        return
+    if getattr(df, "empty", False):
+        return
+    if hasattr(df, "iterrows"):
+        for _, row in df.iterrows():
+            yield row
+
+
+def _field(row: Any, name: str) -> str:
+    try:
+        return _to_report_text(row.get(name))
+    except Exception:
+        return ""
+
+
+def _member_risk_records_from_df(df: Any) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for row in _iter_dataframe_records(df):
+        rows.append(
+            {
+                "joint_a": _field(row, "JointA"),
+                "joint_b": _field(row, "JointB"),
+                "member_type": _field(row, "MemberType"),
+                "consequence_level": _field(row, "ConsequenceLevel"),
+                "a": _field(row, "A"),
+                "b": _field(row, "B"),
+                "rm": _field(row, "Rm"),
+                "vr": _field(row, "VR"),
+                "pf": _field(row, "Pf"),
+                "collapse_prob_level": _field(row, "CollapsePossLevel"),
+                "member_risk_level": _field(row, "RiskGrade"),
+            }
+        )
+    return rows
+
+
+def _member_strategy_records_from_df(df: Any) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for row in _iter_dataframe_records(df):
+        rows.append(
+            {
+                "joint_a": _field(row, "JointA"),
+                "joint_b": _field(row, "JointB"),
+                "member_type": _field(row, "MemberType"),
+                "consequence_level": _field(row, "ConsequenceLevel"),
+                "member_risk_level": _field(row, "RiskGrade"),
+                "inspect_level": _field(row, "InspectLevel"),
+                "time_node": _field(row, "TimeNode") or TIME_CURRENT,
+            }
+        )
+    return rows
+
+
+def _node_risk_records_from_df(df: Any) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for row in _iter_dataframe_records(df):
+        rows.append(
+            {
+                "joint_id": _field(row, "JoitID"),
+                "brace": _field(row, "Brace"),
+                "joint_type": _field(row, "JointType"),
+                "consequence_level": _field(row, "ConsequenceLevel"),
+                "a": _field(row, "A"),
+                "b": _field(row, "B"),
+                "rm": _field(row, "Rm"),
+                "vr": _field(row, "VR"),
+                "pf": _field(row, "Pf_collapse"),
+                "collapse_prob_level": _field(row, "CollapsePossLevel"),
+                "damage": _field(row, "D"),
+                "c_delta": _field(row, "c_delta"),
+                "c_a": _field(row, "c_a"),
+                "c_b": _field(row, "c_b"),
+                "m": _field(row, "m"),
+                "ctf": _field(row, "CTf"),
+                "beta": _field(row, "beta_fatigue"),
+                "pf_fatigue": _field(row, "Pf_fatigue"),
+                "fatigue_prob_level": _field(row, "FatiguePossLevel"),
+                "combined_prob_level": _field(row, "PossLevel"),
+                "node_risk_level": _field(row, "RiskGrade"),
+            }
+        )
+    return rows
+
+
+def _node_strategy_records_from_df(df: Any) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for row in _iter_dataframe_records(df):
+        rows.append(
+            {
+                "joint_id": _field(row, "JoitID"),
+                "brace": _field(row, "Brace"),
+                "joint_type": _field(row, "JointType"),
+                "consequence_level": _field(row, "ConsequenceLevel"),
+                "collapse_prob_level": _field(row, "CollapsePossLevel"),
+                "damage": _field(row, "D"),
+                "c_delta": _field(row, "c_delta"),
+                "c_a": _field(row, "c_a"),
+                "c_b": _field(row, "c_b"),
+                "m": _field(row, "m"),
+                "ctf": _field(row, "CTf"),
+                "beta": _field(row, "beta"),
+                "pf": _field(row, "Pf"),
+                "fatigue_prob_level": _field(row, "FatiguePossLevel"),
+                "combined_prob_level": _field(row, "PossLevel"),
+                "node_risk_level": _field(row, "RiskGrade"),
+                "inspect_level": _field(row, "InspectLevel"),
+                "time_node": _field(row, "TimeNode") or TIME_CURRENT,
+            }
+        )
+    return rows
+
+
+def _detail_rows_from_pipeline_records(
+    *,
+    member_risk_rows: list[dict[str, str]],
+    node_risk_rows: list[dict[str, str]],
+    node_strategy_rows: list[dict[str, str]],
+) -> dict[str, list[dict[str, str]]]:
+    current_node_risk: dict[tuple[str, str], str] = {}
+    for row in node_strategy_rows:
+        if _to_report_text(row.get("time_node")) not in ("", TIME_CURRENT):
+            continue
+        key = (_to_report_text(row.get("joint_id")), _to_report_text(row.get("brace")))
+        current_node_risk[key] = _to_report_text(row.get("node_risk_level"))
+
+    member_detail_rows: list[dict[str, str]] = []
+    for row in member_risk_rows:
+        member_detail_rows.append(
+            {
+                "joint_a": _to_report_text(row.get("joint_a")),
+                "joint_b": _to_report_text(row.get("joint_b")),
+                "member_type": _to_report_text(row.get("member_type")),
+                "consequence_level": _to_report_text(row.get("consequence_level")),
+                "a": _to_report_text(row.get("a")),
+                "b": _to_report_text(row.get("b")),
+                "rm": _to_report_text(row.get("rm")),
+                "vr": _to_report_text(row.get("vr")),
+                "pf": _to_report_text(row.get("pf")),
+                "collapse_prob_level": _to_report_text(row.get("collapse_prob_level")),
+                "risk_level": _to_report_text(row.get("member_risk_level")),
+            }
+        )
+
+    node_detail_rows: list[dict[str, str]] = []
+    for row in node_risk_rows:
+        key = (_to_report_text(row.get("joint_id")), _to_report_text(row.get("brace")))
+        node_detail_rows.append(
+            {
+                "joint_a": key[0],
+                "joint_b": key[1],
+                "weld_type": _to_report_text(row.get("joint_type")),
+                "consequence_level": _to_report_text(row.get("consequence_level")),
+                "a": _to_report_text(row.get("a")),
+                "b": _to_report_text(row.get("b")),
+                "rm": _to_report_text(row.get("rm")),
+                "vr": _to_report_text(row.get("vr")),
+                "pf": _to_report_text(row.get("pf")),
+                "collapse_prob_level": _to_report_text(row.get("collapse_prob_level")),
+                "risk_level": current_node_risk.get(key) or _to_report_text(row.get("node_risk_level")),
+            }
+        )
+
+    return {"member": member_detail_rows, "node": node_detail_rows}
+
+
+def _build_result_bundle_from_pipeline_outputs(
+    *,
+    final_outputs: dict[str, Any],
+    metadata: dict[str, Any],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    member_risk_rows = _member_risk_records_from_df(final_outputs.get("member_risk_df"))
+    member_strategy_rows = _member_strategy_records_from_df(final_outputs.get("member_plan_df"))
+    node_risk_rows = _node_risk_records_from_df(final_outputs.get("joint_risk_df"))
+    node_strategy_rows = _node_strategy_records_from_df(final_outputs.get("node_plan_df"))
+    context = build_context(
+        node_risk_rows,
+        node_strategy_rows,
+        member_risk_rows,
+        member_strategy_rows,
+        metadata,
+        row_limits=None,
+        apply_vba_member_delete_rules=False,
+        apply_vba_joint_delete_rules_current=False,
+        apply_vba_joint_delete_rules_future=False,
+    )
+    detail_rows = _detail_rows_from_pipeline_records(
+        member_risk_rows=member_risk_rows,
+        node_risk_rows=node_risk_rows,
+        node_strategy_rows=node_strategy_rows,
+    )
+    return {
+        "state": state,
+        "context": context,
+        "member_risk_rows_full": detail_rows["member"],
+        "node_risk_rows_full": detail_rows["node"],
+    }
+
+
 def _build_result_bundle_from_workbook(
     *,
     facility_code: str,
@@ -996,6 +1212,51 @@ def _build_result_bundle_from_workbook(
         "member_risk_rows_full": detail_rows["member"],
         "node_risk_rows_full": detail_rows["node"],
     }
+
+
+def _state_db_run_id(state: dict[str, Any]) -> int | None:
+    try:
+        return int(state.get("db_run_id")) if state.get("db_run_id") not in (None, "") else None
+    except Exception:
+        return None
+
+
+def _merge_metadata_into_cached_context(
+    context: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    payload = dict(context)
+    metadata_payload = dict(metadata or {})
+    payload["report_metadata"] = metadata_payload
+    for key, value in metadata_payload.items():
+        if value in ("", None):
+            continue
+        if key in ("platform_name", "report_date") or key not in payload:
+            payload[str(key)] = value
+    return payload
+
+
+def _context_from_result_snapshot(
+    *,
+    facility_code: str,
+    run_id: int | None,
+    state: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    code = normalize_facility_code(facility_code)
+    target_run_id = run_id or _state_db_run_id(state)
+    snapshot = None
+    if target_run_id is not None:
+        snapshot = load_strategy_result_snapshot_by_run(target_run_id)
+    if snapshot is None and run_id is None:
+        snapshot = load_latest_strategy_result_snapshot(code)
+    if not snapshot or not isinstance(snapshot.get("result_json"), dict):
+        return None
+    payload = snapshot["result_json"]
+    context = payload.get("context")
+    if not isinstance(context, dict) or not context:
+        return None
+    return _merge_metadata_into_cached_context(context, metadata)
 
 
 def _appendix_sources_from_config(cfg: dict[str, Any]) -> tuple[str, str, list[str]]:
@@ -1066,7 +1327,6 @@ def finalize_special_strategy_calculation(
     rule_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     code = normalize_facility_code(str(prepared_calculation["facility_code"]))
-    cfg = dict(prepared_calculation["cfg"])
     paths = dict(prepared_calculation["paths"])
     params = copy.deepcopy(prepared_calculation["params"])
     metadata_payload = dict(prepared_calculation["metadata"])
@@ -1079,7 +1339,7 @@ def finalize_special_strategy_calculation(
         params["rule_overrides"] = rule_overrides
     _write_json(Path(paths["params_json"]), params)
 
-    finalize_inspection_pipeline(
+    final_outputs = finalize_inspection_pipeline(
         prepared_pipeline,
         out_xlsx=paths["intermediate_workbook"],
         rule_overrides=params.get("rule_overrides"),
@@ -1109,10 +1369,10 @@ def finalize_special_strategy_calculation(
         status="completed",
     )
     state["db_run_id"] = run_id
-    result_bundle = _build_result_bundle_from_workbook(
-        facility_code=code,
-        workbook_path=paths["intermediate_workbook"],
-        cfg=cfg,
+    # Excel is kept as an export artifact; result pages and snapshots use the
+    # in-memory pipeline outputs instead of reopening the workbook.
+    result_bundle = _build_result_bundle_from_pipeline_outputs(
+        final_outputs=final_outputs,
         metadata=metadata_payload,
         state=state,
     )
@@ -1258,7 +1518,17 @@ def generate_special_strategy_report(
     )
     metadata_payload.update(prepared_report_metadata)
 
-    context = _context_from_workbook(workbook_path, cfg, metadata_payload)
+    state_run_id = _state_db_run_id(state)
+    # Prefer the saved calculation snapshot for report data. The workbook is
+    # only a fallback for legacy runs and for generated appendix exports below.
+    context = _context_from_result_snapshot(
+        facility_code=code,
+        run_id=state_run_id or run_id,
+        state=state,
+        metadata=metadata_payload,
+    )
+    if context is None:
+        context = _context_from_workbook(workbook_path, cfg, metadata_payload)
     appendix_a_file, appendix_b_file, appendix_c_dirs = _appendix_sources_from_config(cfg)
     context["appendix_sections"] = build_appendix_sections(
         appendix_a_file=appendix_a_file,
@@ -1271,12 +1541,6 @@ def generate_special_strategy_report(
         appendix_c_dirs=appendix_c_dirs,
     )
     context["include_word_plan_detail_tables"] = bool(cfg.get("include_word_plan_detail_tables", False))
-
-    state_run_id = None
-    try:
-        state_run_id = int(state.get("db_run_id")) if state.get("db_run_id") not in (None, "") else None
-    except Exception:
-        state_run_id = None
 
     artifact_dir = _path_from_text_without_network_resolution(state.get("artifact_dir") or workbook_path.parent)
     appendix_generated_plan, appendix_temp_files = build_generated_appendix_plan(

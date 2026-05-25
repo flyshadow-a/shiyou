@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QApplication, QAbstractItemView, QSizePolicy, QDialog, QDialogButtonBox,
     QTreeWidget, QTreeWidgetItem, QSplitter, QMenu
 )
-from PyQt5.QtCore import QObject, Qt, pyqtSignal, QThread, QTimer
+from PyQt5.QtCore import QObject, QPoint, Qt, pyqtSignal, QThread, QTimer
 
 from core.app_paths import external_path, external_root, first_existing_path
 from core.base_page import BasePage
@@ -710,7 +710,11 @@ class NewSpecialInspectionPage(BasePage):
         if item is None:
             return
         rect = self.risk_param_table.visualItemRect(item)
-        action = menu.exec_(self.risk_param_table.viewport().mapToGlobal(rect.bottomLeft()))
+        menu_width = menu.sizeHint().width()
+        # Align the menu's right edge with the value cell's right edge, where the arrow is drawn.
+        local_x = max(0, rect.right() - menu_width + 1)
+        local_y = rect.bottom() + 1
+        action = menu.exec_(self.risk_param_table.viewport().mapToGlobal(QPoint(local_x, local_y)))
         if action is not None:
             self._select_risk_level(row, key, action.text())
 
