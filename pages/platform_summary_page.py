@@ -7,11 +7,10 @@ import re
 import shutil
 from typing import List, Optional
 
-from PyQt5.QtCore import QEvent, QTimer, Qt
+from PyQt5.QtCore import QEvent, QPoint, QTimer, Qt
 from PyQt5.QtGui import QColor, QPixmap, QResizeEvent
 from PyQt5.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -19,6 +18,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -153,6 +153,9 @@ PLATFORM_FIELD_ALIASES: dict[str, List[str]] = {
 class PlatformDetailDialog(QDialog):
     """单个平台详情弹窗。"""
 
+    DROPDOWN_PLACEHOLDER = "▼"
+    YES_NO_OPTIONS = ("是", "否")
+
     def __init__(self, values: dict[str, str] | None = None, parent=None, *, is_new: bool = False):
         super().__init__(parent)
         self.values = dict(values or {})
@@ -194,24 +197,6 @@ class PlatformDetailDialog(QDialog):
             }
             QTableWidget::item {
                 padding: 2px 6px;
-            }
-            QComboBox {
-                border: none;
-                background: #ffffff;
-                padding: 2px 24px 2px 6px;
-            }
-            QComboBox::drop-down {
-                width: 22px;
-                border: none;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                width: 0;
-                height: 0;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 7px solid #000000;
-                margin-right: 7px;
             }
             QPushButton {
                 min-height: 32px;
@@ -276,15 +261,19 @@ class PlatformDetailDialog(QDialog):
 
                 value = str(self.values.get(field, "") or "")
                 if field.startswith("是否"):
-                    combo = QComboBox()
-                    combo.addItems(["", "是", "否"])
-                    combo.setCurrentText(value if value in ("是", "否") else "")
-                    self.table.setCellWidget(row, value_col, combo)
+                    value_item = QTableWidgetItem(self._dropdown_cell_text(value))
+                    value_item.setData(Qt.UserRole, value if value in self.YES_NO_OPTIONS else "")
+                    value_item.setTextAlignment(Qt.AlignCenter)
+                    value_item.setToolTip("点击选择")
+                    value_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                    self.table.setItem(row, value_col, value_item)
                 else:
                     value_item = QTableWidgetItem(value)
                     value_item.setTextAlignment(Qt.AlignCenter)
                     value_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
                     self.table.setItem(row, value_col, value_item)
+
+        self.table.cellClicked.connect(self._on_detail_table_cell_clicked)
 
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.button(QDialogButtonBox.Ok).setText("保存")
@@ -305,13 +294,75 @@ class PlatformDetailDialog(QDialog):
         for row, row_fields in enumerate(PLATFORM_DETAIL_FIELD_ROWS):
             for pair_idx, field in enumerate(row_fields):
                 value_col = pair_idx * 2 + 1
-                widget = self.table.cellWidget(row, value_col)
-                if isinstance(widget, QComboBox):
-                    values[field] = widget.currentText().strip()
-                    continue
                 item = self.table.item(row, value_col)
+                if field.startswith("是否"):
+                    values[field] = str(item.data(Qt.UserRole) or "").strip() if item is not None else ""
+                    continue
                 values[field] = item.text().strip() if item is not None else ""
         return values
+
+    def _dropdown_cell_text(self, value: str) -> str:
+        value_text = str(value or "").strip()
+        if not value_text:
+            return self.DROPDOWN_PLACEHOLDER
+        return f"{value_text}  {self.DROPDOWN_PLACEHOLDER}"
+
+    @staticmethod
+    def _dropdown_menu_qss() -> str:
+        return """
+            QMenu {
+                background-color: #ffffff;
+                color: #1d2b3a;
+                border: 1px solid #cfd8e3;
+                padding: 4px 0;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+                background-color: transparent;
+                color: #1d2b3a;
+            }
+            QMenu::item:selected {
+                background-color: #dbe9ff;
+                color: #1d2b3a;
+            }
+        """
+
+    def _on_detail_table_cell_clicked(self, row: int, column: int) -> None:
+        if self.table is None or column % 2 == 0:
+            return
+        field_idx = column // 2
+        if not (0 <= row < len(PLATFORM_DETAIL_FIELD_ROWS)):
+            return
+        row_fields = PLATFORM_DETAIL_FIELD_ROWS[row]
+        if not (0 <= field_idx < len(row_fields)):
+            return
+        if not row_fields[field_idx].startswith("是否"):
+            return
+        self._open_yes_no_menu(row, column)
+
+    def _open_yes_no_menu(self, row: int, column: int) -> None:
+        if self.table is None:
+            return
+        item = self.table.item(row, column)
+        if item is None:
+            return
+
+        menu = QMenu(self.table)
+        menu.setStyleSheet(self._dropdown_menu_qss())
+        for option in self.YES_NO_OPTIONS:
+            menu.addAction(option)
+
+        rect = self.table.visualItemRect(item)
+        menu_width = menu.sizeHint().width()
+        local_x = max(0, rect.right() - menu_width + 1)
+        local_y = rect.bottom() + 1
+        action = menu.exec_(self.table.viewport().mapToGlobal(QPoint(local_x, local_y)))
+        if action is None:
+            return
+
+        value = action.text().strip()
+        item.setText(self._dropdown_cell_text(value))
+        item.setData(Qt.UserRole, value)
 
 
 class PlatformSummaryPage(BasePage):

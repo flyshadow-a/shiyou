@@ -1343,6 +1343,7 @@ def finalize_special_strategy_calculation(
         prepared_pipeline,
         out_xlsx=paths["intermediate_workbook"],
         rule_overrides=params.get("rule_overrides"),
+        write_excel=False,
     )
 
     latest_paths = runtime_paths(code)
@@ -1369,8 +1370,8 @@ def finalize_special_strategy_calculation(
         status="completed",
     )
     state["db_run_id"] = run_id
-    # Excel is kept as an export artifact; result pages and snapshots use the
-    # in-memory pipeline outputs instead of reopening the workbook.
+    # Excel generation is disabled in the normal calculation path. Result
+    # pages and reports use the in-memory pipeline outputs persisted below.
     result_bundle = _build_result_bundle_from_pipeline_outputs(
         final_outputs=final_outputs,
         metadata=metadata_payload,
@@ -1494,9 +1495,8 @@ def generate_special_strategy_report(
     state = _state_from_run_payload(run_payload) if run_payload else load_runtime_state(code)
     if not state:
         raise FileNotFoundError(f"No calculated result found for {code}.")
-    workbook_path = _path_from_text_without_network_resolution(state["intermediate_workbook"])
-    if not workbook_path.exists():
-        raise FileNotFoundError(f"Intermediate workbook not found: {workbook_path}")
+    workbook_path = _path_from_text_without_network_resolution(state.get("intermediate_workbook", ""))
+    workbook_available = bool(str(state.get("intermediate_workbook", "")).strip()) and workbook_path.exists()
 
     cfg = load_base_config(code)
     prepared_report_metadata = _prepare_runtime_report_metadata(
@@ -1528,6 +1528,11 @@ def generate_special_strategy_report(
         metadata=metadata_payload,
     )
     if context is None:
+        if not workbook_available:
+            raise FileNotFoundError(
+                f"No saved calculation snapshot found for {code}; "
+                f"legacy workbook fallback is also unavailable: {workbook_path}"
+            )
         context = _context_from_workbook(workbook_path, cfg, metadata_payload)
     appendix_a_file, appendix_b_file, appendix_c_dirs = _appendix_sources_from_config(cfg)
     context["appendix_sections"] = build_appendix_sections(
@@ -1542,13 +1547,18 @@ def generate_special_strategy_report(
     )
     context["include_word_plan_detail_tables"] = bool(cfg.get("include_word_plan_detail_tables", False))
 
-    artifact_dir = _path_from_text_without_network_resolution(state.get("artifact_dir") or workbook_path.parent)
-    appendix_generated_plan, appendix_temp_files = build_generated_appendix_plan(
-        workbook_path,
-        facility_code=code,
-        run_id=state_run_id or run_id,
-        scratch_dir=artifact_dir / "generated_appendices",
+    artifact_dir = _path_from_text_without_network_resolution(
+        state.get("artifact_dir") or (str(workbook_path.parent) if workbook_path else "")
     )
+    appendix_generated_plan = []
+    appendix_temp_files: list[Path] = []
+    if workbook_available:
+        appendix_generated_plan, appendix_temp_files = build_generated_appendix_plan(
+            workbook_path,
+            facility_code=code,
+            run_id=state_run_id or run_id,
+            scratch_dir=artifact_dir / "generated_appendices",
+        )
     context["appendix_generated_plan"] = appendix_generated_plan
 
     paths = runtime_paths(code)
