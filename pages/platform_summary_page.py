@@ -7,8 +7,8 @@ import re
 import shutil
 from typing import List, Optional
 
-from PyQt5.QtCore import QEvent, QTimer, Qt
-from PyQt5.QtGui import QPixmap, QResizeEvent
+from PyQt5.QtCore import QEvent, QPoint, QTimer, Qt
+from PyQt5.QtGui import QColor, QPixmap, QResizeEvent
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -43,170 +44,330 @@ except ImportError:
     pd = None
 
 
-class PlatformBatchAddDialog(QDialog):
-    """批量新增平台弹窗。"""
+PLATFORM_DETAIL_FIELD_ROWS: List[tuple[str, str, str, str]] = [
+    ("分公司", "设计气处理能力", "是否有生活楼", "上部组块工作甲板尺寸长×宽(m×m)"),
+    ("作业公司", "设计水处理能力", "生活楼层数", "上部组块下下甲板尺寸长×宽(m×m)"),
+    ("油气田", "导管架腿数", "上部组块生活楼吊装重量(t)", "飞机甲板承重能力(t)"),
+    ("设施编码", "水深", "生活楼尺寸长×宽×高(m×m×m)", "飞机甲板尺寸(m×m)"),
+    ("设施名称", "井槽数量", "主体最大尺度(m3)", "最大储油能力(m3)"),
+    ("设施类型", "桩数量", "系泊能力(t)", "柴油存储能力(m3)"),
+    ("分类", "供电形式", "设计抗风能力", "供热能力(KW)"),
+    ("投产时间", "最大供电容量", "导管架自重(t)", "淡水存储量(m3)"),
+    ("设计年限", "设计注水压力", "设计最大桩基承载力(t)", "压缩空气设计供应能力(Sm3/h)"),
+    ("服役到期时间", "钻修机", "上部组块安装重量(t)", "消防水设计供应能力(m3/h)"),
+    ("设施原值", "地理信息编码", "生活楼吊重(t)", "海水设计供应能力(m3/h)"),
+    ("经度", "单体区域编码", "组块层数(层)", "设计注入水处理能力(m3/d)"),
+    ("纬度", "导管架工作点间距(m)", "上部组块操作重量(t)", "上部组块结构用钢量(t)"),
+    ("生产厂家", "导管架水平层层数(层)", "上部组块上层甲板尺寸长×宽(m×m)", "第三方发证机构"),
+    ("型号", "主桩桩径(mm)", "上部组块中层甲板尺寸长×宽(m×m)", "所属阶段名称"),
+    ("设计油处理能力", "生活楼床位数(定员)(人)", "上部组块下层甲板尺寸长×宽(m×m)", "备注"),
+]
 
-    def __init__(self, columns: List[str], parent=None, initial_rows: int = 5):
+PLATFORM_DETAIL_FIELDS: List[str] = [
+    field
+    for row_fields in PLATFORM_DETAIL_FIELD_ROWS
+    for field in row_fields
+]
+
+PLATFORM_SUMMARY_COLUMNS: List[str] = [
+    "分公司",
+    "作业公司",
+    "油气田",
+    "设施编码",
+    "设施名称",
+    "设施类型",
+    "分类",
+    "投产时间",
+    "设计年限",
+    "服役到期时间",
+    "设施原值",
+    "经度",
+    "纬度",
+    "生产厂家",
+    "型号",
+    "设计油处理能力",
+    "设计气处理能力",
+    "设计水处理能力",
+    "导管架腿数",
+    "水深",
+    "井槽数量",
+    "桩数量",
+    "供电形式",
+    "最大供电容量",
+    "设计注水压力",
+    "钻修机",
+    "地理信息编码",
+    "单体区域编码",
+    "导管架工作点间距(m)",
+    "导管架水平层层数(层)",
+    "主桩桩径(mm)",
+    "生活楼床位数(定员)(人)",
+    "是否有生活楼",
+    "生活楼层数",
+    "上部组块生活楼吊装重量(t)",
+    "生活楼尺寸长×宽×高(m×m×m)",
+    "主体最大尺度(m3)",
+    "系泊能力(t)",
+    "设计抗风能力",
+    "导管架自重(t)",
+    "设计最大桩基承载力(t)",
+    "上部组块安装重量(t)",
+    "生活楼吊重(t)",
+    "组块层数(层)",
+    "上部组块操作重量(t)",
+    "上部组块上层甲板尺寸长×宽(m×m)",
+    "上部组块中层甲板尺寸长×宽(m×m)",
+    "上部组块下层甲板尺寸长×宽(m×m)",
+    "上部组块工作甲板尺寸长×宽(m×m)",
+    "上部组块下下甲板尺寸长×宽(m×m)",
+    "飞机甲板承重能力(t)",
+    "飞机甲板尺寸(m×m)",
+    "最大储油能力(m3)",
+    "柴油存储能力(m3)",
+    "供热能力(KW)",
+    "淡水存储量(m3)",
+    "压缩空气设计供应能力(Sm3/h)",
+    "消防水设计供应能力(m3/h)",
+    "海水设计供应能力(m3/h)",
+    "设计注入水处理能力(m3/d)",
+    "上部组块结构用钢量(t)",
+    "第三方发证机构",
+    "所属阶段名称",
+    "备注",
+]
+
+PLATFORM_FIELD_ALIASES: dict[str, List[str]] = {
+    "设施编码": ["设施编码", "设施编号", "平台编码", "平台编号", "编码"],
+    "设施名称": ["设施名称", "平台名称"],
+    "分公司": ["分公司", "所属分公司"],
+    "作业公司": ["作业公司", "所属作业单元", "所属作业公司", "作业单元", "作业单位"],
+    "油气田": ["油气田", "所属油（气）田", "所属油气田", "油田"],
+    "设施类型": ["设施类型", "平台类型"],
+    "分类": ["分类", "平台分类"],
+    "投产时间": ["投产时间", "投产日期", "投产年月"],
+    "设计年限": ["设计年限", "设计寿命"],
+    "上部组块下下甲板尺寸长×宽(m×m)": ["上部组块下甲板尺寸长×宽(m×m)"],
+}
+
+
+class PlatformDetailDialog(QDialog):
+    """单个平台详情弹窗。"""
+
+    DROPDOWN_PLACEHOLDER = "▼"
+    YES_NO_OPTIONS = ("是", "否")
+
+    def __init__(self, values: dict[str, str] | None = None, parent=None, *, is_new: bool = False):
         super().__init__(parent)
-        self.columns = columns
-        self.initial_rows = max(1, initial_rows)
+        self.values = dict(values or {})
+        self.is_new = is_new
         self.table: QTableWidget | None = None
         self._build_ui()
 
     def _build_ui(self):
-        self.setWindowTitle("新增平台")
-        self.resize(1500, 820)
+        self.setWindowTitle("新增平台" if self.is_new else "平台详情")
+        self.resize(1520, 760)
         self.setModal(True)
-
         self.setStyleSheet(
             """
             QDialog {
-                background: #f5f8fc;
+                background: #eef3f8;
             }
-            QFrame#DialogCard {
+            QFrame#DetailCard {
                 background: #ffffff;
-                border: 1px solid #d9e4f0;
-                border-radius: 14px;
-            }
-            QLabel#DialogTitle {
-                color: #1f3b57;
-                font-size: 18px;
-                font-weight: bold;
-            }
-            QLabel#DialogHint {
-                color: #5f7185;
-                font-size: 12px;
-            }
-            QPushButton {
-                min-height: 32px;
-                padding: 6px 14px;
+                border: 1px solid #cfd8e3;
                 border-radius: 6px;
-                border: 1px solid #c9d5e2;
-                background: #ffffff;
             }
-            QPushButton:hover {
-                background: #eef5ff;
+            QLabel#DetailTitle {
+                color: #172b3a;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            QLabel#SectionTitle {
+                color: #172b3a;
+                font-size: 14px;
+                font-weight: 700;
+                padding: 6px 0;
             }
             QTableWidget {
                 background: #ffffff;
-                border: 1px solid #d9e4f0;
-                gridline-color: #e4ebf3;
-                selection-background-color: #d9ebff;
-                selection-color: #102a43;
+                border: 1px solid #222222;
+                gridline-color: #222222;
+                selection-background-color: #dbe9ff;
+                selection-color: #111111;
             }
-            QHeaderView::section {
-                background: #edf4fb;
-                color: #23415f;
-                padding: 6px 8px;
-                border: none;
-                border-right: 1px solid #d9e4f0;
-                border-bottom: 1px solid #d9e4f0;
-                font-weight: bold;
+            QTableWidget::item {
+                padding: 2px 6px;
+            }
+            QPushButton {
+                min-height: 32px;
+                min-width: 96px;
+                padding: 5px 16px;
+                border-radius: 4px;
+                border: 1px solid #b9c8d8;
+                background: #ffffff;
+            }
+            QPushButton:hover {
+                background: #edf5ff;
             }
             """
         )
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
 
         card = QFrame()
-        card.setObjectName("DialogCard")
+        card.setObjectName("DetailCard")
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(16, 16, 16, 16)
-        card_layout.setSpacing(12)
+        card_layout.setContentsMargins(14, 12, 14, 14)
+        card_layout.setSpacing(8)
 
-        title = QLabel("批量新增平台")
-        title.setObjectName("DialogTitle")
-        hint = QLabel("每列对应一个字段。可直接录入多行，空行不会写入主表。")
-        hint.setObjectName("DialogHint")
+        title = QLabel("平台所有信息")
+        title.setObjectName("DetailTitle")
+        section_title = QLabel("基本信息")
+        section_title.setObjectName("SectionTitle")
 
-        top_bar = QHBoxLayout()
-        top_bar.setContentsMargins(0, 0, 0, 0)
-        top_bar.setSpacing(8)
-
-        btn_add = QPushButton("新增一行")
-        btn_delete = QPushButton("删除选中行")
-        btn_add.clicked.connect(self._append_empty_row)
-        btn_delete.clicked.connect(self._remove_selected_rows)
-
-        top_bar.addWidget(btn_add)
-        top_bar.addWidget(btn_delete)
-        top_bar.addStretch()
-
-        self.table = QTableWidget(self.initial_rows, len(self.columns))
-        self.table.setHorizontalHeaderLabels(self.columns)
-        self.table.verticalHeader().setVisible(True)
-        self.table.verticalHeader().setDefaultSectionSize(30)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table = QTableWidget(len(PLATFORM_DETAIL_FIELD_ROWS), 8)
+        self.table.horizontalHeader().setVisible(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(True)
+        self.table.setAlternatingRowColors(False)
+        self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.setEditTriggers(
             QAbstractItemView.DoubleClicked
             | QAbstractItemView.SelectedClicked
             | QAbstractItemView.EditKeyPressed
             | QAbstractItemView.AnyKeyPressed
         )
-        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.verticalHeader().setDefaultSectionSize(30)
 
-        for col in range(len(self.columns)):
-            self.table.setColumnWidth(col, 150)
+        for col in range(8):
+            if col % 2 == 0:
+                self.table.setColumnWidth(col, 210)
+            else:
+                self.table.setColumnWidth(col, 135)
+
+        for row, row_fields in enumerate(PLATFORM_DETAIL_FIELD_ROWS):
+            self.table.setRowHeight(row, 30)
+            for pair_idx, field in enumerate(row_fields):
+                label_col = pair_idx * 2
+                value_col = label_col + 1
+                label_item = QTableWidgetItem(field)
+                label_item.setTextAlignment(Qt.AlignCenter)
+                label_item.setFlags(Qt.ItemIsEnabled)
+                label_item.setBackground(QColor("#e7ebf3"))
+                self.table.setItem(row, label_col, label_item)
+
+                value = str(self.values.get(field, "") or "")
+                if field.startswith("是否"):
+                    value_item = QTableWidgetItem(self._dropdown_cell_text(value))
+                    value_item.setData(Qt.UserRole, value if value in self.YES_NO_OPTIONS else "")
+                    value_item.setTextAlignment(Qt.AlignCenter)
+                    value_item.setToolTip("点击选择")
+                    value_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                    self.table.setItem(row, value_col, value_item)
+                else:
+                    value_item = QTableWidgetItem(value)
+                    value_item.setTextAlignment(Qt.AlignCenter)
+                    value_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
+                    self.table.setItem(row, value_col, value_item)
+
+        self.table.cellClicked.connect(self._on_detail_table_cell_clicked)
 
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.button(QDialogButtonBox.Ok).setText("写入主表")
+        button_box.button(QDialogButtonBox.Ok).setText("保存")
         button_box.button(QDialogButtonBox.Cancel).setText("取消")
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
 
         card_layout.addWidget(title)
-        card_layout.addWidget(hint)
-        card_layout.addLayout(top_bar)
+        card_layout.addWidget(section_title)
         card_layout.addWidget(self.table, 1)
         card_layout.addWidget(button_box)
-
         root.addWidget(card)
 
-    def _append_empty_row(self):
+    def get_values(self) -> dict[str, str]:
+        if self.table is None:
+            return {}
+        values: dict[str, str] = {}
+        for row, row_fields in enumerate(PLATFORM_DETAIL_FIELD_ROWS):
+            for pair_idx, field in enumerate(row_fields):
+                value_col = pair_idx * 2 + 1
+                item = self.table.item(row, value_col)
+                if field.startswith("是否"):
+                    values[field] = str(item.data(Qt.UserRole) or "").strip() if item is not None else ""
+                    continue
+                values[field] = item.text().strip() if item is not None else ""
+        return values
+
+    def _dropdown_cell_text(self, value: str) -> str:
+        value_text = str(value or "").strip()
+        if not value_text:
+            return self.DROPDOWN_PLACEHOLDER
+        return f"{value_text}  {self.DROPDOWN_PLACEHOLDER}"
+
+    @staticmethod
+    def _dropdown_menu_qss() -> str:
+        return """
+            QMenu {
+                background-color: #ffffff;
+                color: #1d2b3a;
+                border: 1px solid #cfd8e3;
+                padding: 4px 0;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+                background-color: transparent;
+                color: #1d2b3a;
+            }
+            QMenu::item:selected {
+                background-color: #dbe9ff;
+                color: #1d2b3a;
+            }
+        """
+
+    def _on_detail_table_cell_clicked(self, row: int, column: int) -> None:
+        if self.table is None or column % 2 == 0:
+            return
+        field_idx = column // 2
+        if not (0 <= row < len(PLATFORM_DETAIL_FIELD_ROWS)):
+            return
+        row_fields = PLATFORM_DETAIL_FIELD_ROWS[row]
+        if not (0 <= field_idx < len(row_fields)):
+            return
+        if not row_fields[field_idx].startswith("是否"):
+            return
+        self._open_yes_no_menu(row, column)
+
+    def _open_yes_no_menu(self, row: int, column: int) -> None:
         if self.table is None:
             return
-        self.table.insertRow(self.table.rowCount())
-
-    def _remove_selected_rows(self):
-        if self.table is None:
+        item = self.table.item(row, column)
+        if item is None:
             return
-        selected = self.table.selectionModel().selectedRows()
-        if not selected:
+
+        menu = QMenu(self.table)
+        menu.setStyleSheet(self._dropdown_menu_qss())
+        for option in self.YES_NO_OPTIONS:
+            menu.addAction(option)
+
+        rect = self.table.visualItemRect(item)
+        menu_width = menu.sizeHint().width()
+        local_x = max(0, rect.right() - menu_width + 1)
+        local_y = rect.bottom() + 1
+        action = menu.exec_(self.table.viewport().mapToGlobal(QPoint(local_x, local_y)))
+        if action is None:
             return
-        for index in sorted((it.row() for it in selected), reverse=True):
-            self.table.removeRow(index)
-        if self.table.rowCount() == 0:
-            self.table.insertRow(0)
 
-    def get_rows(self) -> List[List[str]]:
-        if self.table is None:
-            return []
-
-        rows: List[List[str]] = []
-        for row in range(self.table.rowCount()):
-            values: List[str] = []
-            has_content = False
-            for col in range(self.table.columnCount()):
-                item = self.table.item(row, col)
-                text = item.text().strip() if item is not None else ""
-                if text:
-                    has_content = True
-                values.append(text)
-            if has_content:
-                rows.append(values)
-        return rows
+        value = action.text().strip()
+        item.setText(self._dropdown_cell_text(value))
+        item.setData(Qt.UserRole, value)
 
 
 class PlatformSummaryPage(BasePage):
     """平台汇总信息页面。"""
-    DEFAULT_HEADER_ROW = 1
+    DEFAULT_HEADER_ROW = 0
 
     def __init__(self, parent: QWidget = None):
         super().__init__("平台汇总信息", parent)
@@ -223,15 +384,7 @@ class PlatformSummaryPage(BasePage):
         self.map_label: QLabel | None = None
         self._summary_refresh_timer: QTimer | None = None
 
-        self.columns = [
-            "分公司",
-            "作业公司",
-            "油气田",
-            "设施编码",
-            "设施名称",
-            "投产时间",
-            "设计年限",
-        ]
+        self.columns = list(PLATFORM_SUMMARY_COLUMNS)
 
         self._build_ui()
         self._load_profiles_from_database()
@@ -286,6 +439,11 @@ class PlatformSummaryPage(BasePage):
             QLabel#MapLabel {
                 background: transparent;
             }
+            QLabel#TableHint {
+                color: #5c6f84;
+                background: transparent;
+                padding: 0 2px 4px 2px;
+            }
             QTableWidget {
                 background: #ffffff;
                 border: none;
@@ -331,6 +489,10 @@ class PlatformSummaryPage(BasePage):
         table_layout.setContentsMargins(12, 12, 12, 12)
         table_layout.setSpacing(10)
 
+        table_hint = QLabel("双击任意平台行查看/编辑平台全部信息；新增平台会打开同样的详情窗口。")
+        table_hint.setObjectName("TableHint")
+        table_layout.addWidget(table_hint)
+
         self.table = QTableWidget(0, len(self.columns))
         self.table.setHorizontalHeaderLabels(self.columns)
         self.table.verticalHeader().setVisible(False)
@@ -343,6 +505,7 @@ class PlatformSummaryPage(BasePage):
             | QAbstractItemView.EditKeyPressed
         )
         self.table.itemChanged.connect(self._on_table_item_changed)
+        self.table.cellDoubleClicked.connect(self.open_detail_dialog_for_row)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         table_layout.addWidget(self.table, 1)
@@ -438,6 +601,7 @@ class PlatformSummaryPage(BasePage):
         root_layout.setStretch(1, 3)
 
         self.main_layout.addWidget(root)
+        self._update_table_columns()
 
     def eventFilter(self, obj, event):
         if obj is self.map_frame and event.type() == QEvent.Resize:
@@ -481,7 +645,22 @@ class PlatformSummaryPage(BasePage):
         df = pd.read_excel(file_path, header=self.DEFAULT_HEADER_ROW, engine=engine)
         df = df.dropna(axis=0, how="all")
         df.columns = self._normalize_columns(df.columns)
+        if self._platform_column_match_score(df.columns) <= 0:
+            # 兼容旧样表：第一行是标题，第二行才是真正表头。
+            fallback_df = pd.read_excel(file_path, header=1, engine=engine)
+            fallback_df = fallback_df.dropna(axis=0, how="all")
+            fallback_df.columns = self._normalize_columns(fallback_df.columns)
+            if self._platform_column_match_score(fallback_df.columns) > self._platform_column_match_score(df.columns):
+                df = fallback_df
         return df
+
+    def _platform_column_match_score(self, columns) -> int:
+        known = {self._normalize_header_name(col) for col in PLATFORM_SUMMARY_COLUMNS}
+        for field, aliases in PLATFORM_FIELD_ALIASES.items():
+            known.add(self._normalize_header_name(field))
+            for alias in aliases:
+                known.add(self._normalize_header_name(alias))
+        return sum(1 for col in columns if self._normalize_header_name(col) in known)
 
     def _display_text(self, value) -> str:
         if pd is not None:
@@ -532,6 +711,23 @@ class PlatformSummaryPage(BasePage):
         text = re.sub(r"[()（）\[\]【】,:：/\\._，；;\-]", "", text)
         return text.lower()
 
+    def _aliases_for_field(self, field: str) -> List[str]:
+        aliases = PLATFORM_FIELD_ALIASES.get(field, [])
+        return [field, *[alias for alias in aliases if alias != field]]
+
+    def _value_from_mapping(self, mapping: dict, field: str) -> str:
+        if not mapping:
+            return ""
+        normalized = {
+            self._normalize_header_name(key): value
+            for key, value in mapping.items()
+        }
+        for alias in self._aliases_for_field(field):
+            norm = self._normalize_header_name(alias)
+            if norm in normalized:
+                return self._display_text(normalized[norm])
+        return ""
+
     def _row_value(self, row: int, names: List[str]) -> str:
         if self.table is None:
             return ""
@@ -555,15 +751,16 @@ class PlatformSummaryPage(BasePage):
 
         signals_blocked = self.table.blockSignals(True)
         try:
-            self._set_table_columns(list(df.columns))
+            self._set_table_columns(list(PLATFORM_SUMMARY_COLUMNS))
             self.table.setRowCount(0)
             self.table.clearContents()
 
             for _, row_data in df.iterrows():
                 row = self.table.rowCount()
                 self.table.insertRow(row)
+                source = {str(col or ""): row_data.get(col, "") for col in df.columns}
                 for col, col_name in enumerate(self.columns):
-                    value = self._display_text(row_data.get(col_name, ""))
+                    value = self._value_from_mapping(source, col_name)
                     self.table.setItem(row, col, QTableWidgetItem(value))
 
             self._update_table_columns()
@@ -600,17 +797,19 @@ class PlatformSummaryPage(BasePage):
             for profile in profiles:
                 row = self.table.rowCount()
                 self.table.insertRow(row)
-                values = [
-                    profile.get("branch") or "",
-                    profile.get("op_company") or "",
-                    profile.get("oilfield") or "",
-                    profile.get("facility_code") or "",
-                    profile.get("facility_name") or "",
-                    profile.get("start_time") or "",
-                    profile.get("design_life") or "",
-                ]
-                for col, value in enumerate(values):
-                    self.table.setItem(row, col, QTableWidgetItem(str(value)))
+                source = {
+                    "分公司": profile.get("branch") or "",
+                    "作业公司": profile.get("op_company") or "",
+                    "油气田": profile.get("oilfield") or "",
+                    "设施编码": profile.get("facility_code") or "",
+                    "设施名称": profile.get("facility_name") or "",
+                    "设施类型": profile.get("facility_type") or "",
+                    "分类": profile.get("category") or "",
+                    "投产时间": profile.get("start_time") or "",
+                    "设计年限": profile.get("design_life") or "",
+                }
+                for col, col_name in enumerate(self.columns):
+                    self.table.setItem(row, col, QTableWidgetItem(str(source.get(col_name, ""))))
             self._update_table_columns()
         finally:
             self.table.blockSignals(signals_blocked)
@@ -627,15 +826,20 @@ class PlatformSummaryPage(BasePage):
 
         signals_blocked = self.table.blockSignals(True)
         try:
-            self._set_table_columns(columns)
+            self._set_table_columns(list(PLATFORM_SUMMARY_COLUMNS))
             self.table.setRowCount(0)
             self.table.clearContents()
             for row_data in rows:
                 row = self.table.rowCount()
                 self.table.insertRow(row)
                 values = list(row_data) if isinstance(row_data, list) else []
-                for col, value in enumerate(values[: len(columns)]):
-                    self.table.setItem(row, col, QTableWidgetItem(str(value or "")))
+                source = {
+                    columns[index]: values[index]
+                    for index in range(min(len(columns), len(values)))
+                }
+                for col, col_name in enumerate(self.columns):
+                    value = self._value_from_mapping(source, col_name)
+                    self.table.setItem(row, col, QTableWidgetItem(value))
             self._update_table_columns()
         finally:
             self.table.blockSignals(signals_blocked)
@@ -719,9 +923,10 @@ class PlatformSummaryPage(BasePage):
         header = self.table.horizontalHeader()
         self.table.resizeColumnsToContents()
         for col in range(self.table.columnCount()):
+            self.table.setColumnHidden(col, False)
             header.setSectionResizeMode(col, QHeaderView.Interactive)
             width = self.table.columnWidth(col)
-            self.table.setColumnWidth(col, min(max(width + 18, 120), 260))
+            self.table.setColumnWidth(col, min(max(width + 18, 96), 240))
         header.setStretchLastSection(False)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
@@ -766,28 +971,62 @@ class PlatformSummaryPage(BasePage):
         self.map_label.setPixmap(scaled)
 
     def open_batch_add_dialog(self):
-        dialog = PlatformBatchAddDialog(self.columns, self, initial_rows=5)
+        dialog = PlatformDetailDialog({}, self, is_new=True)
         if dialog.exec_() != QDialog.Accepted:
             return
 
-        rows = dialog.get_rows()
-        if not rows:
+        values = dialog.get_values()
+        if not any(str(value or "").strip() for value in values.values()):
             QMessageBox.information(self, "提示", "未录入任何平台数据。")
             return
 
         if self.table is None:
             return
 
-        for row_values in rows:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            for col, value in enumerate(row_values):
-                self.table.setItem(row, col, QTableWidgetItem(value))
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self._write_row_values(row, values)
 
         self._update_table_columns()
         self._store_session_profiles_cache()
         self._schedule_summary_pages_refresh()
-        QMessageBox.information(self, "新增完成", f"已新增 {len(rows)} 条平台记录。")
+        QMessageBox.information(self, "新增完成", "已新增 1 条平台记录。")
+
+    def open_detail_dialog_for_row(self, row: int, _col: int = 0):
+        if self.table is None or row < 0 or row >= self.table.rowCount():
+            return
+        values = self._row_values_dict(row)
+        dialog = PlatformDetailDialog(values, self, is_new=False)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        self._write_row_values(row, dialog.get_values())
+        self._update_table_columns()
+        self._store_session_profiles_cache()
+        self._schedule_summary_pages_refresh()
+
+    def _row_values_dict(self, row: int) -> dict[str, str]:
+        if self.table is None:
+            return {}
+        values: dict[str, str] = {}
+        for col, col_name in enumerate(self.columns):
+            item = self.table.item(row, col)
+            values[col_name] = item.text().strip() if item is not None else ""
+        return values
+
+    def _write_row_values(self, row: int, values: dict[str, str]):
+        if self.table is None:
+            return
+        signals_blocked = self.table.blockSignals(True)
+        try:
+            for col, col_name in enumerate(self.columns):
+                text = str(values.get(col_name, "") or "")
+                item = self.table.item(row, col)
+                if item is None:
+                    item = QTableWidgetItem("")
+                    self.table.setItem(row, col, item)
+                item.setText(text)
+        finally:
+            self.table.blockSignals(signals_blocked)
 
     # ------------------------------------------------------------------ #
     # 表格增删行

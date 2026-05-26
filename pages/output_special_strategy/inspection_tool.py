@@ -40,6 +40,8 @@ from typing import Dict, List, Tuple, Optional, Any, Iterable, Sequence, Set
 import numpy as np
 import pandas as pd
 import openpyxl
+from time import perf_counter
+from contextlib import contextmanager
 
 _STD_NORM = NormalDist()
 MAX_VBA_COLLAPSE_FILES = 12
@@ -3966,6 +3968,7 @@ def prepare_run_state(
     cfg = load_from_params_json(params_json) if params_json else load_from_template(template_xlsm)
     risk_pack: RiskMatrixPack = cfg["risk_pack"]
 
+
     joints, groups, members, sections = parse_sacinp(model_file)
     joints2, members2 = classify_structure(
         joints=joints,
@@ -4158,171 +4161,264 @@ def finalize_prepared_run_state(
     out_xlsx: str | Path,
     *,
     rule_overrides: Any = None,
+    write_excel: bool = False,
 ) -> Dict[str, pd.DataFrame]:
     """
     Execute the formal post-risk stage:
     1) apply member/joint exclusion corrections after Module 8
     2) perform Sheet10 / Sheet12 equivalent filtering
-    3) build Module 9 strategy outputs and write the workbook
+    3) build Module 9 strategy outputs
+
+    Excel workbook generation is kept as an optional export/audit path only.
+    The normal GUI/report flow uses returned DataFrames and database snapshots.
     """
-    cfg = dict(prepared_state["cfg"])
-    final_rules = _normalize_rule_overrides(
-        prepared_state.get("rule_overrides") if rule_overrides is None else rule_overrides
-    )
-    cfg["rule_overrides"] = final_rules
 
-    member_risk_df = prepared_state["member_risk_df"].copy()
-    joint_risk_df = prepared_state["joint_risk_df"].copy()
-    forecast_long_df = prepared_state["forecast_long_df"].copy()
-    forecast_df = prepared_state["forecast_df"].copy()
-    post_rule_audit_df = _build_user_exclusion_audit(member_risk_df, forecast_df, final_rules)
-    rule_override_audit_df = pd.concat(
-        [
-            prepared_state.get(
-                "rule_override_audit_df",
-                pd.DataFrame(columns=RULE_OVERRIDE_AUDIT_COLUMNS),
-            ),
-            post_rule_audit_df,
-        ],
-        ignore_index=True,
-    )
+    @contextmanager
+    def _timer(name: str):
+        t0 = perf_counter()
+        try:
+            yield
+        finally:
+            print(f"[TIME] {name} 耗时: {perf_counter() - t0:.4f} 秒")
 
-    member_risk_df = _apply_member_delete_rule(member_risk_df, user_rules=final_rules)
-    # VBA flow does not run Sheet11.删除JOINT; keep current joint-risk rows intact.
-    # joint_risk_df = _apply_joint_delete_rule(joint_risk_df)
-    forecast_long_df = _apply_joint_delete_rule(forecast_long_df, user_rules=final_rules)
-    forecast_df = _apply_joint_delete_rule(forecast_df, user_rules=final_rules)
+    with _timer("finalize_prepared_run_state 总流程"):
 
-    node_plan_df = build_node_plan_vba(
-        forecast_wide_df=forecast_df,
-        cfg=cfg,
-        seed=int(prepared_state["seed"]),
-    )
-    member_plan_df = build_member_plan_vba(
-        member_risk_df=member_risk_df,
-        cfg=cfg,
-        seed=int(prepared_state["seed"]),
-    )
-    node_plan_df = _apply_joint_delete_rule(node_plan_df, user_rules=final_rules)
-    member_plan_df = _apply_member_delete_rule(member_plan_df, user_rules=final_rules)
+        with _timer("复制 cfg 并标准化最终规则"):
+            cfg = dict(prepared_state["cfg"])
+            final_rules = _normalize_rule_overrides(
+                prepared_state.get("rule_overrides") if rule_overrides is None else rule_overrides
+            )
+            cfg["rule_overrides"] = final_rules
 
-    # Main output: write into template-like sheet layout to preserve format.
-    write_template_layout_workbook(
-        template_xlsm=prepared_state["template_xlsm"],
-        out_xlsx=out_xlsx,
-        joints_df=prepared_state["joints_df"],
-        groups_df=prepared_state["groups_df"],
-        members_df=prepared_state["members_df"],
-        sections_df=prepared_state["sections_df"],
-        collapse_df=prepared_state["collapse_df"],
-        collapse_summary_df=prepared_state["collapse_summary_df"],
-        fatigue_df=prepared_state["fatigue_df"],
-        member_risk_df=member_risk_df,
-        joint_risk_df=joint_risk_df,
-        forecast_wide_df=forecast_df,
-        node_plan_df=node_plan_df,
-        member_plan_df=member_plan_df,
-        clplog_paths=prepared_state["clplog_paths"],
-    )
+        with _timer("复制 prepared_state 中间结果 DataFrame"):
+            member_risk_df = prepared_state["member_risk_df"].copy()
+            joint_risk_df = prepared_state["joint_risk_df"].copy()
+            forecast_long_df = prepared_state["forecast_long_df"].copy()
+            forecast_df = prepared_state["forecast_df"].copy()
 
-    # Supplemental audit sheets for manual verification.
-    out_path = Path(out_xlsx)
-    keep_vba_out = out_path.suffix.lower() == ".xlsm"
-    wb_out = openpyxl.load_workbook(out_path, data_only=False, keep_vba=keep_vba_out)
-    for name in (
-        "InputFiles",
-        "FatigueSelectorAudit",
-        "RuleOverrideAudit",
-        "JointForecastLong(Python)",
-        "节点检验策略(Python)_raw",
-    ):
-        if name in wb_out.sheetnames:
-            wb_out.remove(wb_out[name])
+        with _timer("_build_user_exclusion_audit 构建用户剔除审计"):
+            post_rule_audit_df = _build_user_exclusion_audit(
+                member_risk_df,
+                forecast_df,
+                final_rules,
+            )
 
-    ws_input = wb_out.create_sheet("InputFiles")
-    input_rows: List[Dict[str, Any]] = []
+        with _timer("合并 rule_override_audit_df 审计表"):
+            rule_override_audit_df = pd.concat(
+                [
+                    prepared_state.get(
+                        "rule_override_audit_df",
+                        pd.DataFrame(columns=RULE_OVERRIDE_AUDIT_COLUMNS),
+                    ),
+                    post_rule_audit_df,
+                ],
+                ignore_index=True,
+            )
 
-    def _append_input_row(category: str, fp: str | Path) -> None:
-        path_obj = Path(fp).resolve()
-        input_rows.append(
-            {
-                "Category": category,
-                "Path": str(path_obj),
-                "SizeBytes": int(path_obj.stat().st_size),
-                "LineCount": _file_line_count(path_obj),
-            }
-        )
+        with _timer("_apply_member_delete_rule 剔除构件风险行"):
+            member_risk_df = _apply_member_delete_rule(
+                member_risk_df,
+                user_rules=final_rules,
+            )
 
-    _append_input_row("model", prepared_state["model_file"])
-    for p in prepared_state["clplog_paths"]:
-        _append_input_row("clplog", p)
-    for p in prepared_state["ftglst_paths"]:
-        _append_input_row("ftglst", p)
-    if prepared_state["ftginp_paths"]:
-        for p in prepared_state["ftginp_paths"]:
-            _append_input_row("ftginp", p)
-    if prepared_state["manual_fill_workbook"]:
-        mfw = Path(prepared_state["manual_fill_workbook"])
-        if mfw.exists():
-            _append_input_row("manual_fill_workbook", mfw)
+        # VBA flow does not run Sheet11.删除JOINT; keep current joint-risk rows intact.
+        # joint_risk_df = _apply_joint_delete_rule(joint_risk_df)
 
-    input_df = pd.DataFrame(input_rows, columns=["Category", "Path", "SizeBytes", "LineCount"])
-    for j, c in enumerate(input_df.columns, start=1):
-        ws_input.cell(1, j).value = c
-    for i, (_, rr) in enumerate(input_df.iterrows(), start=2):
-        for j, c in enumerate(input_df.columns, start=1):
-            ws_input.cell(i, j).value = rr[c]
+        with _timer("_apply_joint_delete_rule 剔除 forecast_long_df 节点预测行"):
+            forecast_long_df = _apply_joint_delete_rule(
+                forecast_long_df,
+                user_rules=final_rules,
+            )
 
-    if prepared_state["ftginp_paths"]:
-        ws_audit = wb_out.create_sheet("FatigueSelectorAudit")
-        audit_df = prepared_state["fatigue_selector_audit_df"].copy()
-        if "ManualBrace" not in audit_df.columns:
-            audit_df["ManualBrace"] = ""
-        if "Applied" not in audit_df.columns:
-            audit_df["Applied"] = ""
-        for j, c in enumerate(audit_df.columns, start=1):
-            ws_audit.cell(1, j).value = c
-        for i, (_, rr) in enumerate(audit_df.iterrows(), start=2):
-            for j, c in enumerate(audit_df.columns, start=1):
-                ws_audit.cell(i, j).value = rr[c]
+        with _timer("_apply_joint_delete_rule 剔除 forecast_df 节点预测宽表行"):
+            forecast_df = _apply_joint_delete_rule(
+                forecast_df,
+                user_rules=final_rules,
+            )
 
-    ws_rule_audit = wb_out.create_sheet("RuleOverrideAudit")
-    for j, c in enumerate(rule_override_audit_df.columns, start=1):
-        ws_rule_audit.cell(1, j).value = c
-    for i, (_, rr) in enumerate(rule_override_audit_df.iterrows(), start=2):
-        for j, c in enumerate(rule_override_audit_df.columns, start=1):
-            ws_rule_audit.cell(i, j).value = rr[c]
+        with _timer("build_node_plan_vba 生成节点检验策略"):
+            node_plan_df = build_node_plan_vba(
+                forecast_wide_df=forecast_df,
+                cfg=cfg,
+                seed=int(prepared_state["seed"]),
+            )
 
-    ws_long = wb_out.create_sheet("JointForecastLong(Python)")
-    long_df = forecast_long_df.copy()
-    for j, c in enumerate(long_df.columns, start=1):
-        ws_long.cell(1, j).value = c
-    for i, (_, rr) in enumerate(long_df.iterrows(), start=2):
-        for j, c in enumerate(long_df.columns, start=1):
-            ws_long.cell(i, j).value = rr[c]
+        with _timer("build_member_plan_vba 生成构件检验策略"):
+            member_plan_df = build_member_plan_vba(
+                member_risk_df=member_risk_df,
+                cfg=cfg,
+                seed=int(prepared_state["seed"]),
+            )
 
-    ws_plan_raw = wb_out.create_sheet("节点检验策略(Python)_raw")
-    raw_df = node_plan_df.copy()
-    for j, c in enumerate(raw_df.columns, start=1):
-        ws_plan_raw.cell(1, j).value = c
-    for i, (_, rr) in enumerate(raw_df.iterrows(), start=2):
-        for j, c in enumerate(raw_df.columns, start=1):
-            ws_plan_raw.cell(i, j).value = rr[c]
+        with _timer("_apply_joint_delete_rule 剔除 node_plan_df 节点策略行"):
+            node_plan_df = _apply_joint_delete_rule(
+                node_plan_df,
+                user_rules=final_rules,
+            )
 
-    wb_out.save(out_path)
+        with _timer("_apply_member_delete_rule 剔除 member_plan_df 构件策略行"):
+            member_plan_df = _apply_member_delete_rule(
+                member_plan_df,
+                user_rules=final_rules,
+            )
 
-    print(f"[OK] Wrote: {out_xlsx}")
-    return {
-        "member_risk_df": member_risk_df,
-        "joint_risk_df": joint_risk_df,
-        "forecast_long_df": forecast_long_df,
-        "forecast_df": forecast_df,
-        "node_plan_df": node_plan_df,
-        "member_plan_df": member_plan_df,
-        "rule_override_audit_df": rule_override_audit_df,
-    }
+        outputs = {
+            "member_risk_df": member_risk_df,
+            "joint_risk_df": joint_risk_df,
+            "forecast_long_df": forecast_long_df,
+            "forecast_df": forecast_df,
+            "node_plan_df": node_plan_df,
+            "member_plan_df": member_plan_df,
+            "rule_override_audit_df": rule_override_audit_df,
+        }
 
+        if not write_excel:
+            print("[INFO] Excel workbook generation skipped; using DataFrame snapshot output.")
+            return outputs
 
+        # Main output: write into template-like sheet layout to preserve format.
+        with _timer("write_template_layout_workbook 写入主结果工作簿"):
+            write_template_layout_workbook(
+                template_xlsm=prepared_state["template_xlsm"],
+                out_xlsx=out_xlsx,
+                joints_df=prepared_state["joints_df"],
+                groups_df=prepared_state["groups_df"],
+                members_df=prepared_state["members_df"],
+                sections_df=prepared_state["sections_df"],
+                collapse_df=prepared_state["collapse_df"],
+                collapse_summary_df=prepared_state["collapse_summary_df"],
+                fatigue_df=prepared_state["fatigue_df"],
+                member_risk_df=member_risk_df,
+                joint_risk_df=joint_risk_df,
+                forecast_wide_df=forecast_df,
+                node_plan_df=node_plan_df,
+                member_plan_df=member_plan_df,
+                clplog_paths=prepared_state["clplog_paths"],
+            )
+
+        # Supplemental audit sheets for manual verification.
+        with _timer("准备输出路径和 xlsm 标记"):
+            out_path = Path(out_xlsx)
+            keep_vba_out = out_path.suffix.lower() == ".xlsm"
+
+        with _timer("openpyxl.load_workbook 打开输出工作簿"):
+            wb_out = openpyxl.load_workbook(
+                out_path,
+                data_only=False,
+                keep_vba=keep_vba_out,
+            )
+
+        with _timer("删除已存在的补充审计 sheet"):
+            for name in (
+                "InputFiles",
+                "FatigueSelectorAudit",
+                "RuleOverrideAudit",
+                "JointForecastLong(Python)",
+                "节点检验策略(Python)_raw",
+            ):
+                if name in wb_out.sheetnames:
+                    wb_out.remove(wb_out[name])
+
+        with _timer("创建 InputFiles sheet 并统计输入文件信息"):
+            ws_input = wb_out.create_sheet("InputFiles")
+            input_rows: List[Dict[str, Any]] = []
+
+            def _append_input_row(category: str, fp: str | Path) -> None:
+                path_obj = Path(fp).resolve()
+                input_rows.append(
+                    {
+                        "Category": category,
+                        "Path": str(path_obj),
+                        "SizeBytes": int(path_obj.stat().st_size),
+                        "LineCount": _file_line_count(path_obj),
+                    }
+                )
+
+            _append_input_row("model", prepared_state["model_file"])
+
+            for p in prepared_state["clplog_paths"]:
+                _append_input_row("clplog", p)
+
+            for p in prepared_state["ftglst_paths"]:
+                _append_input_row("ftglst", p)
+
+            if prepared_state["ftginp_paths"]:
+                for p in prepared_state["ftginp_paths"]:
+                    _append_input_row("ftginp", p)
+
+            if prepared_state["manual_fill_workbook"]:
+                mfw = Path(prepared_state["manual_fill_workbook"])
+                if mfw.exists():
+                    _append_input_row("manual_fill_workbook", mfw)
+
+            input_df = pd.DataFrame(
+                input_rows,
+                columns=["Category", "Path", "SizeBytes", "LineCount"],
+            )
+
+            for j, c in enumerate(input_df.columns, start=1):
+                ws_input.cell(1, j).value = c
+
+            for i, (_, rr) in enumerate(input_df.iterrows(), start=2):
+                for j, c in enumerate(input_df.columns, start=1):
+                    ws_input.cell(i, j).value = rr[c]
+
+        if prepared_state["ftginp_paths"]:
+            with _timer("创建 FatigueSelectorAudit sheet"):
+                ws_audit = wb_out.create_sheet("FatigueSelectorAudit")
+                audit_df = prepared_state["fatigue_selector_audit_df"].copy()
+
+                if "ManualBrace" not in audit_df.columns:
+                    audit_df["ManualBrace"] = ""
+
+                if "Applied" not in audit_df.columns:
+                    audit_df["Applied"] = ""
+
+                for j, c in enumerate(audit_df.columns, start=1):
+                    ws_audit.cell(1, j).value = c
+
+                for i, (_, rr) in enumerate(audit_df.iterrows(), start=2):
+                    for j, c in enumerate(audit_df.columns, start=1):
+                        ws_audit.cell(i, j).value = rr[c]
+
+        with _timer("创建 RuleOverrideAudit sheet"):
+            ws_rule_audit = wb_out.create_sheet("RuleOverrideAudit")
+
+            for j, c in enumerate(rule_override_audit_df.columns, start=1):
+                ws_rule_audit.cell(1, j).value = c
+
+            for i, (_, rr) in enumerate(rule_override_audit_df.iterrows(), start=2):
+                for j, c in enumerate(rule_override_audit_df.columns, start=1):
+                    ws_rule_audit.cell(i, j).value = rr[c]
+
+        with _timer("创建 JointForecastLong(Python) sheet"):
+            ws_long = wb_out.create_sheet("JointForecastLong(Python)")
+            long_df = forecast_long_df.copy()
+
+            for j, c in enumerate(long_df.columns, start=1):
+                ws_long.cell(1, j).value = c
+
+            for i, (_, rr) in enumerate(long_df.iterrows(), start=2):
+                for j, c in enumerate(long_df.columns, start=1):
+                    ws_long.cell(i, j).value = rr[c]
+
+        with _timer("创建 节点检验策略(Python)_raw sheet"):
+            ws_plan_raw = wb_out.create_sheet("节点检验策略(Python)_raw")
+            raw_df = node_plan_df.copy()
+
+            for j, c in enumerate(raw_df.columns, start=1):
+                ws_plan_raw.cell(1, j).value = c
+
+            for i, (_, rr) in enumerate(raw_df.iterrows(), start=2):
+                for j, c in enumerate(raw_df.columns, start=1):
+                    ws_plan_raw.cell(i, j).value = rr[c]
+
+        with _timer("wb_out.save 保存最终工作簿"):
+            wb_out.save(out_path)
+
+        print(f"[OK] Wrote: {out_xlsx}")
+
+        return outputs
 def run(
     template_xlsm: str | Path,
     model_file: str | Path,
@@ -4359,7 +4455,7 @@ def run(
         apply_sheet2_jointtype=apply_sheet2_jointtype,
         apply_sheet3_membertype=apply_sheet3_membertype,
     )
-    finalize_prepared_run_state(prepared_state, out_xlsx)
+    finalize_prepared_run_state(prepared_state, out_xlsx, write_excel=False)
 
 
 def main() -> None:
