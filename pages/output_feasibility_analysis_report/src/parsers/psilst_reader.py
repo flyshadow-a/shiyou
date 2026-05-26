@@ -18,7 +18,6 @@ UI_ANALYSIS_INDEX_MARKERS = (
 )
 
 _SEARCH_CHUNK_SIZE = 4 * 1024 * 1024
-_UI_TAIL_SEARCH_BYTES = 48 * 1024 * 1024
 
 
 def _normalize_psilst_line(line: str) -> str:
@@ -130,10 +129,11 @@ def read_ui_analysis_lines(path: str) -> list[str]:
             early_end = axial_start + 200_000
         chunks.append(_read_bytes_range(file_path, status_start, early_end))
 
-    tail_search_start = max(max(axial_start, 0), file_size - _UI_TAIL_SEARCH_BYTES)
-    member_start = _find_bytes_marker(file_path, b"M E M B E R  G R O U P  S U M M A R Y", tail_search_start)
-    if member_start == -1:
-        member_start = _find_bytes_marker(file_path, b"M E M B E R  G R O U P  S U M M A R Y", max(axial_start, 0))
+    member_start = _find_bytes_marker(
+        file_path,
+        b"M E M B E R  G R O U P  S U M M A R Y",
+        max(axial_start, 0),
+    )
     if member_start != -1:
         member_end = _find_bytes_marker(file_path, b"L O A D  P A T H  R E P O R T", member_start)
         if member_end == -1:

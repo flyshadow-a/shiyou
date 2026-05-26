@@ -1668,25 +1668,33 @@ def _write_load_information_cell(
 def _set_load_information_column_widths(table) -> None:
     table.autofit = False
     widths = [
-        0.45,
-        1.25,
-        0.85,
-        1.45,
-        0.85,
-        0.85,
-        0.75,
+        0.35,
+        0.95,
+        0.70,
         1.05,
+        0.58,
+        0.58,
+        0.58,
+        0.55,
         0.75,
+        0.75,
+        0.62,
+        0.43,
+        0.43,
+        0.43,
+        0.43,
+        0.43,
+        0.43,
+        0.43,
+        0.43,
+        0.43,
+        0.43,
+        0.43,
+        0.43,
         0.55,
         0.55,
-        0.55,
-        0.55,
-        0.55,
-        0.55,
-        0.70,
-        0.70,
-        0.55,
-        1.00,
+        0.45,
+        0.75,
     ]
     for row in table.rows:
         for index, width in enumerate(widths):
@@ -1719,7 +1727,7 @@ def _build_load_information_table(
         document,
         anchor_paragraph,
         rows=4 + len(load_information_rows),
-        cols=19,
+        cols=27,
     )
     _set_load_information_column_widths(table)
 
@@ -1727,18 +1735,18 @@ def _build_load_information_table(
         table,
         0,
         (
-            (0, 7, "所属分公司", str(load_information_meta.get("branch", ""))),
-            (7, 6, "所属作业单元", str(load_information_meta.get("op_company", ""))),
-            (13, 6, "所属油（气）田", str(load_information_meta.get("oilfield", ""))),
+            (0, 9, "所属分公司", str(load_information_meta.get("branch", ""))),
+            (9, 9, "所属作业单元", str(load_information_meta.get("op_company", ""))),
+            (18, 9, "所属油（气）田", str(load_information_meta.get("oilfield", ""))),
         ),
     )
     _set_load_information_meta_row(
         table,
         1,
         (
-            (0, 7, "设施名称", str(load_information_meta.get("facility_name", ""))),
-            (7, 6, "投产时间", str(load_information_meta.get("start_time", ""))),
-            (13, 6, "设计年限", str(load_information_meta.get("design_life", ""))),
+            (0, 9, "设施名称", str(load_information_meta.get("facility_name", ""))),
+            (9, 9, "投产时间", str(load_information_meta.get("start_time", ""))),
+            (18, 9, "设计年限", str(load_information_meta.get("design_life", ""))),
         ),
     )
 
@@ -1747,25 +1755,32 @@ def _build_load_information_table(
         1: "改扩建\n项目名称",
         2: "改扩建\n时间",
         3: "改扩建\n内容",
-        4: "上部组块\n总操作重量\n（MT）",
-        5: "上部组块\n不可超越重量\n（MT）",
-        6: "重量变化\n（MT）",
-        7: "上部组块重心\nx,y,z\n（m）",
-        8: "重心不可\n超越半径\n（m）",
-        17: "是否整体\n评估",
-        18: "评估机构",
+        4: "上部组块\n干重量\n（MT）",
+        5: "上部组块\n总操作重量\n（MT）",
+        6: "上部组块\n不可超越重量\n（MT）",
+        7: "重量变化\n（MT）",
+        8: "上部组块\n干重心\nx,y,z\n（m）",
+        9: "上部组块\n操作重心\nx,y,z\n（m）",
+        10: "重心不可\n超越半径\n（m）",
+        25: "是否整体\n评估",
+        26: "评估机构",
     }
     for column_index, text in merged_row_headers.items():
         merged_cell = table.cell(2, column_index).merge(table.cell(3, column_index))
         _write_load_information_cell(merged_cell, text, bold=True)
 
     _write_load_information_cell(
-        table.cell(2, 9).merge(table.cell(2, 14)),
+        table.cell(2, 11).merge(table.cell(2, 16)),
+        "操作工况最大载荷",
+        bold=True,
+    )
+    _write_load_information_cell(
+        table.cell(2, 17).merge(table.cell(2, 22)),
         "极端工况最大载荷",
         bold=True,
     )
     _write_load_information_cell(
-        table.cell(2, 15).merge(table.cell(2, 16)),
+        table.cell(2, 23).merge(table.cell(2, 24)),
         "桩基承载力\n安全系数（最小）",
         bold=True,
     )
@@ -1776,11 +1791,17 @@ def _build_load_information_table(
         "Fz\n（KN）",
         "Mx\n（KN·m）",
         "My\n（KN·m）",
-        "Mz,（KN·m）",
+        "Mz\n（KN·m）",
+        "Fx\n（KN）",
+        "Fy\n（KN）",
+        "Fz\n（KN）",
+        "Mx\n（KN·m）",
+        "My\n（KN·m）",
+        "Mz\n（KN·m）",
         "操作工况",
         "极端工况",
     ]
-    for column_index, text in enumerate(sub_headers, start=9):
+    for column_index, text in enumerate(sub_headers, start=11):
         _write_load_information_cell(table.cell(3, column_index), text, bold=True)
 
     row_fields = [
@@ -1788,11 +1809,19 @@ def _build_load_information_table(
         "project_name",
         "rebuild_time",
         "rebuild_content",
+        "dry_weight_mt",
         "total_weight_mt",
         "weight_limit_mt",
         "weight_delta_mt",
+        "dry_center_xyz",
         "center_xyz",
         "center_radius_m",
+        "op_fx_kn",
+        "op_fy_kn",
+        "op_fz_kn",
+        "op_mx_kn_m",
+        "op_my_kn_m",
+        "op_mz_kn_m",
         "fx_kn",
         "fy_kn",
         "fz_kn",

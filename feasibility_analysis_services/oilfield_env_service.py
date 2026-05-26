@@ -223,7 +223,6 @@ def sync_env_profiles_from_records(
     mysql_url: str | None = None,
     version_no: int = 1,
 ) -> int:
-    ensure_oilfield_env_schema(mysql_url)
     cleaned_records: list[dict[str, str]] = []
     seen = set()
     for record in records:
@@ -266,7 +265,6 @@ def sync_env_profiles_from_records(
 
 
 def load_env_profiles(mysql_url: str | None = None, version_no: int = 1) -> list[dict[str, str]]:
-    ensure_oilfield_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     sql = text(
         """
@@ -311,7 +309,6 @@ def get_env_profile_id(
     version_no: int = 1,
     create_if_missing: bool = False,
 ) -> int | None:
-    ensure_oilfield_env_schema(mysql_url)
     norm_branch = _normalize_text(branch)
     norm_op_company = _normalize_text(op_company)
     norm_oilfield = _normalize_text(oilfield)
@@ -353,7 +350,6 @@ def get_env_profile_id(
 
 
 def load_water_level_items(profile_id: int, mysql_url: str | None = None) -> list[dict[str, Any]]:
-    ensure_oilfield_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     sql = text(
         """
@@ -373,7 +369,6 @@ def replace_water_level_items(
     items: list[dict[str, Any]],
     mysql_url: str | None = None,
 ) -> None:
-    ensure_oilfield_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     delete_sql = text("DELETE FROM oilfield_water_level_item WHERE profile_id = :profile_id")
     insert_sql = text(
@@ -404,7 +399,6 @@ def replace_water_level_items(
 
 
 def load_metric_items(table_name: str, profile_id: int, mysql_url: str | None = None) -> list[dict[str, Any]]:
-    ensure_oilfield_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     sql = text(
         f"""
@@ -425,7 +419,6 @@ def replace_metric_items(
     items: list[dict[str, Any]],
     mysql_url: str | None = None,
 ) -> None:
-    ensure_oilfield_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     delete_sql = text(f"DELETE FROM {table_name} WHERE profile_id = :profile_id")
     insert_sql = text(
@@ -465,7 +458,6 @@ def load_platform_strength_splash_items(
     facility_code: str,
     mysql_url: str | None = None,
 ) -> list[dict[str, Any]]:
-    ensure_oilfield_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     sql = text(
         """
@@ -492,7 +484,6 @@ def replace_platform_strength_splash_items(
     items: list[dict[str, Any]],
     mysql_url: str | None = None,
 ) -> None:
-    ensure_oilfield_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     delete_sql = text(
         """
@@ -537,7 +528,6 @@ def load_platform_strength_pile_items(
     facility_code: str,
     mysql_url: str | None = None,
 ) -> list[dict[str, Any]]:
-    ensure_oilfield_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     sql = text(
         """
@@ -564,7 +554,6 @@ def replace_platform_strength_pile_items(
     items: list[dict[str, Any]],
     mysql_url: str | None = None,
 ) -> None:
-    ensure_oilfield_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     delete_sql = text(
         """
@@ -610,7 +599,6 @@ def load_platform_strength_marine_items(
     facility_code: str,
     mysql_url: str | None = None,
 ) -> list[dict[str, Any]]:
-    ensure_oilfield_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     sql = text(
         """
@@ -637,7 +625,6 @@ def replace_platform_strength_marine_items(
     items: list[dict[str, Any]],
     mysql_url: str | None = None,
 ) -> None:
-    ensure_oilfield_env_schema(mysql_url)
     engine = _create_mysql_engine(mysql_url)
     delete_sql = text(
         """

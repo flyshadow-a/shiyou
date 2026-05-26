@@ -30,9 +30,9 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QComboBox, QLabel,
     QTableWidget, QTableWidgetItem, QScrollArea, QMessageBox,
     QHeaderView, QToolTip, QFileDialog, QGridLayout, QMenu, QSizePolicy, QFrame,
-    QButtonGroup, QRadioButton, QCheckBox,
+    QButtonGroup, QRadioButton, QCheckBox, QProgressDialog,
 )
-from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtCore import Qt, QEvent, QObject, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics
 
 from core.app_paths import existing_dirs, external_path, first_existing_path
@@ -60,11 +60,413 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib as mpl
 from matplotlib import font_manager
+from matplotlib.ticker import FuncFormatter
 
 try:
     import pandas as pd
 except ImportError:
     pd = None
+
+
+RESULT_FACTOR_KEYS = [
+    "op_Fx", "op_Fy", "op_Fz", "op_Mx", "op_My", "op_Mz",
+    "ext_Fx", "ext_Fy", "ext_Fz", "ext_Mx", "ext_My", "ext_Mz",
+    "Fx", "Fy", "Fz", "Mx", "My", "Mz", "操作工况", "极端工况",
+]
+
+_FACTOR_SEARCH_CHUNK_SIZE = 1024 * 1024
+_FACTOR_FORCE_HEADER_LOOKAHEAD_BYTES = 16 * 1024
+_FACTOR_FORCE_SECTION_MAX_BYTES = 256 * 1024
+
+
+
+def _find_factor_bytes_marker(path: str, marker: bytes, start: int = 0) -> int:
+    marker_length = len(marker)
+    overlap = max(marker_length - 1, 0)
+    with open(path, "rb") as handle:
+        handle.seek(start)
+        offset = start
+        previous_tail = b""
+        while True:
+            chunk = handle.read(_FACTOR_SEARCH_CHUNK_SIZE)
+            if not chunk:
+                return -1
+            data = previous_tail + chunk
+            index = data.find(marker)
+            if index != -1:
+                return offset - len(previous_tail) + index
+            previous_tail = data[-overlap:] if overlap else b""
+            offset += len(chunk)
+
+
+def _iter_factor_bytes_marker_positions(path: str, marker: bytes, start: int = 0):
+    marker_length = len(marker)
+    overlap = max(marker_length - 1, 0)
+    with open(path, "rb") as handle:
+        handle.seek(start)
+        offset = start
+        previous_tail = b""
+        while True:
+            chunk = handle.read(_FACTOR_SEARCH_CHUNK_SIZE)
+            if not chunk:
+                return
+            data = previous_tail + chunk
+            search_from = 0
+            while True:
+                index = data.find(marker, search_from)
+                if index == -1:
+                    break
+                position = offset - len(previous_tail) + index
+                if position >= start:
+                    yield position
+                search_from = index + marker_length
+            previous_tail = data[-overlap:] if overlap else b""
+            offset += len(chunk)
+
+
+def _read_factor_bytes_range(path: str, start: int, end: int) -> bytes:
+    with open(path, "rb") as handle:
+        handle.seek(start)
+        return handle.read(max(0, end - start))
+
+
+def _read_factor_force_chunks(path: str, start: int, file_size: int) -> List[bytes]:
+    chunks: List[bytes] = []
+    try:
+        force_positions = list(_iter_factor_bytes_marker_positions(path, b"INTERNAL FORCES ON STRUCTURE", start))
+    except OSError:
+        return chunks
+    if not force_positions:
+        return chunks
+
+    for index, force_start in enumerate(force_positions):
+        next_force_start = force_positions[index + 1] if index + 1 < len(force_positions) else file_size
+        section_end = min(next_force_start, force_start + _FACTOR_FORCE_SECTION_MAX_BYTES, file_size)
+        lookahead_end = min(section_end, force_start + _FACTOR_FORCE_HEADER_LOOKAHEAD_BYTES, file_size)
+        header = _read_factor_bytes_range(path, force_start, lookahead_end)
+        if b"PILE HEAD COORDINATES" not in header:
+            continue
+        chunks.append(_read_factor_bytes_range(path, force_start, section_end))
+    return chunks
+
+
+def _decode_factor_chunks(chunks: List[bytes]) -> List[str]:
+    text = "\n".join(chunk.decode("latin-1", errors="ignore") for chunk in chunks)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\ufeff", "").replace("\t", "    ")
+    return [line.rstrip() for line in text.split("\n")]
+
+
+def _read_result_factor_marker_lines(path: str) -> List[str]:
+    file_size = os.path.getsize(path)
+    chunks: List[bytes] = []
+
+    status_start = _find_factor_bytes_marker(path, b"**** LOAD CASE STATUS REPORT")
+    load_cases_start = _find_factor_bytes_marker(path, b"***** SEASTATE COMBINED LOAD CASES *****")
+    axial_start = _find_factor_bytes_marker(
+        path,
+        b"S O I L  M A X I M U M  A X I A L  C A P A C I T Y  S U M M A R Y",
+        max(status_start, 0),
+    )
+
+    early_starts = [pos for pos in (status_start, load_cases_start, axial_start) if pos != -1]
+    if early_starts:
+        early_start = min(early_starts)
+        early_end_candidates = []
+        if axial_start != -1:
+            for marker in (b"SACS LOAD CASE REPORT", b"PST VERSION"):
+                marker_pos = _find_factor_bytes_marker(path, marker, axial_start)
+                if marker_pos != -1:
+                    early_end_candidates.append(marker_pos)
+        if load_cases_start != -1:
+            marker_pos = _find_factor_bytes_marker(path, b"SACS LOAD CASE REPORT", load_cases_start)
+            if marker_pos != -1:
+                early_end_candidates.append(marker_pos)
+        early_end = min(early_end_candidates) if early_end_candidates else min(file_size, max(early_starts) + 800_000)
+        chunks.append(_read_factor_bytes_range(path, early_start, early_end))
+
+    chunks.extend(_read_factor_force_chunks(path, max(status_start, 0), file_size))
+
+    if not chunks:
+        return []
+    return _decode_factor_chunks(chunks)
+
+
+def _factor_to_float(value: object) -> Optional[float]:
+    text = str(value).strip().replace(",", "")
+    if not text or text in ("\\", "/"):
+        return None
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def _fmt_result_load_value(value: object) -> str:
+    fv = _factor_to_float(value)
+    return f"{fv:.0f}" if fv is not None else (str(value) if value else "")
+
+
+def _fmt_result_safety_value(value: object) -> str:
+    fv = _factor_to_float(value)
+    return f"{fv:.2f}" if fv is not None else (str(value) if value else "")
+
+
+def _pick_max_abs_loads_by_type(rows: List[Dict[str, object]], case_type: str) -> Dict[str, str]:
+    fields = [("fx", "Fx"), ("fy", "Fy"), ("fz", "Fz"), ("mx", "Mx"), ("my", "My"), ("mz", "Mz")]
+    out: Dict[str, str] = {}
+    typed_rows = [row for row in rows if row.get("case_type") == case_type]
+    for field_key, out_key in fields:
+        best_row = None
+        best_abs = -1.0
+        for row in typed_rows:
+            value = row.get(field_key)
+            if value is None:
+                continue
+            abs_value = abs(float(value))
+            if abs_value > best_abs:
+                best_abs = abs_value
+                best_row = row
+        if best_row is not None:
+            out[out_key] = _fmt_result_load_value(best_row.get(field_key))
+    return out
+
+
+def _parse_result_factor_stream(path: str, num_pat: str) -> Dict[str, object]:
+    try:
+        marker_lines = _read_result_factor_marker_lines(path)
+    except OSError:
+        marker_lines = []
+    if marker_lines:
+        marker_result = _parse_result_factor_lines(marker_lines, num_pat)
+        op_load_keys = ["op_Fx", "op_Fy", "op_Fz", "op_Mx", "op_My", "op_Mz"]
+        ext_load_keys = ["ext_Fx", "ext_Fy", "ext_Fz", "ext_Mx", "ext_My", "ext_Mz"]
+        has_complete_loads = all(str(marker_result.get(k, "")).strip() for k in op_load_keys) or all(
+            str(marker_result.get(k, "")).strip() for k in ext_load_keys
+        )
+        has_complete_safety = all(str(marker_result.get(k, "")).strip() for k in ["操作工况", "极端工况"])
+        if has_complete_loads or has_complete_safety:
+            marker_result["_read_mode"] = "fast_marker"
+            return marker_result
+
+    last_error: Optional[Exception] = None
+    for enc in ["utf-8", "gb18030", "gbk", "latin-1"]:
+        try:
+            with open(path, "r", encoding=enc) as handle:
+                result = _parse_result_factor_lines(handle, num_pat)
+                result["_read_mode"] = "stream_fallback"
+                return result
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            continue
+    if last_error:
+        raise last_error
+    return {}
+
+
+def _parse_result_factor_lines(lines, num_pat: str) -> Dict[str, object]:
+    result: Dict[str, object] = {}
+    load_rows: List[Dict[str, object]] = []
+    case_types: Dict[str, str] = {}
+    pile_capacities: Dict[str, Dict[str, float]] = {}
+    pile_force_rows: List[Tuple[str, str, float]] = []
+    fallback_loads: Dict[str, str] = {}
+    fallback_safety: Dict[str, str] = {}
+
+    reading_load_cases = False
+    load_skip = 0
+    current_load: Optional[Dict[str, object]] = None
+
+    reading_pile_capacity = False
+    pile_capacity_skip = 0
+
+    force_state = "normal"
+    force_load_case = ""
+    force_header_scan = 0
+    force_skip = 0
+
+    for raw in lines:
+        line = raw.replace("\x0c", "")
+
+        for key in ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]:
+            if key not in fallback_loads:
+                m_load = re.search(rf"(?i)\b{key}\b.*?\b({num_pat})\b", line)
+                if m_load:
+                    fallback_loads[key] = _fmt_result_load_value(m_load.group(1))
+        if "操作工况" not in fallback_safety:
+            m_op = re.search(rf"(?im)操作工况.*?({num_pat})", line)
+            if m_op:
+                fallback_safety["操作工况"] = _fmt_result_safety_value(m_op.group(1))
+        if "极端工况" not in fallback_safety:
+            m_ex = re.search(rf"(?im)极端工况.*?({num_pat})", line)
+            if m_ex:
+                fallback_safety["极端工况"] = _fmt_result_safety_value(m_ex.group(1))
+
+        m_type = re.match(
+            r"^\s*\d+\s+([A-Z0-9]+)\s+\S+\s+\S+\s+\S+\s+([-+]?\d+(?:\.\d+)?)\s+([-+]?\d+(?:\.\d+)?)\s*$",
+            line,
+        )
+        if m_type:
+            load_case = m_type.group(1).strip()
+            amod_value = _factor_to_float(m_type.group(3))
+            if load_case and amod_value is not None:
+                case_types[load_case] = "Extreme" if abs(amod_value - 1.33) < 1e-6 else "Operation"
+
+        if "***** SEASTATE COMBINED LOAD CASES *****" in raw:
+            reading_load_cases = True
+            load_skip = 6
+            current_load = None
+        elif reading_load_cases:
+            if load_skip > 0:
+                load_skip -= 1
+            elif "*****" in raw and "SEASTATE COMBINED LOAD CASES" not in raw:
+                reading_load_cases = False
+                current_load = None
+            elif line.strip():
+                prefix = line[:12].strip()
+                if prefix.isdigit():
+                    current_load = {
+                        "load_case": line[14:18].strip(),
+                        "fx": None,
+                        "fy": None,
+                        "fz": None,
+                        "mx": None,
+                        "my": None,
+                        "mz": None,
+                    }
+                    load_rows.append(current_load)
+                elif current_load is not None and "TOTAL" in line[:28] and line.strip()[-1:].isdigit():
+                    current_load["fx"] = _factor_to_float(line[28:42].strip())
+                    current_load["fy"] = _factor_to_float(line[42:55].strip())
+                    current_load["fz"] = _factor_to_float(line[55:68].strip())
+                    current_load["mx"] = _factor_to_float(line[68:81].strip())
+                    current_load["my"] = _factor_to_float(line[81:94].strip())
+                    current_load["mz"] = _factor_to_float(line[94:107].strip())
+
+        if "S O I L  M A X I M U M  A X I A L  C A P A C I T Y  S U M M A R Y" in raw:
+            reading_pile_capacity = True
+            pile_capacity_skip = 6
+        elif reading_pile_capacity:
+            if pile_capacity_skip > 0:
+                pile_capacity_skip -= 1
+            elif "*****" in raw and "S O I L  M A X I M U M" not in raw:
+                reading_pile_capacity = False
+            elif line.strip():
+                pile_id = line[:4].strip()
+                if pile_id:
+                    pile_capacities[pile_id] = {
+                        "weight": _factor_to_float(line[21:28].strip()) or 0.0,
+                        "comb_capacity": abs(_factor_to_float(line[34:44].strip()) or 0.0),
+                        "ten_capacity": abs(_factor_to_float(line[76:86].strip()) or 0.0),
+                    }
+
+        if "INTERNAL FORCES ON STRUCTURE" in raw:
+            force_state = "scan_header"
+            force_load_case = raw.strip()[-4:]
+            force_header_scan = 4
+            force_skip = 0
+            continue
+        if force_state == "scan_header":
+            if "PILE HEAD COORDINATES" in raw:
+                force_state = "skip_header"
+                force_skip = 5
+            else:
+                force_header_scan -= 1
+                if force_header_scan <= 0:
+                    force_state = "normal"
+            continue
+        if force_state == "skip_header":
+            force_skip -= 1
+            if force_skip <= 0:
+                force_state = "read_forces"
+            continue
+        if force_state == "read_forces":
+            if "\x0c" in raw:
+                force_state = "normal"
+                continue
+            if not line.strip():
+                continue
+            pile_tokens = line[:10].split()
+            pile_id = pile_tokens[0].strip() if pile_tokens else ""
+            force_value = _factor_to_float(line[:33][-14:].strip())
+            if pile_id and force_load_case and force_value is not None:
+                pile_force_rows.append((pile_id, force_load_case, -force_value))
+
+    load_rows = [row for row in load_rows if row.get("load_case")]
+    for row in load_rows:
+        row["case_type"] = case_types.get(str(row.get("load_case") or ""), "")
+
+    operation_loads = _pick_max_abs_loads_by_type(load_rows, "Operation")
+    if operation_loads:
+        result.update({f"op_{key}": value for key, value in operation_loads.items() if str(value or "").strip()})
+    extreme_loads = _pick_max_abs_loads_by_type(load_rows, "Extreme")
+    if extreme_loads:
+        result.update({f"ext_{key}": value for key, value in extreme_loads.items() if str(value or "").strip()})
+    result.update(extreme_loads or operation_loads)
+
+    pile_forces: Dict[str, Dict[str, List[float]]] = {}
+    for pile_id, load_case, force_value in pile_force_rows:
+        case_type = case_types.get(load_case, "")
+        if not case_type:
+            continue
+        pile_bucket = pile_forces.setdefault(pile_id, {"Operation": [], "Extreme": []})
+        pile_bucket.setdefault(case_type, []).append(force_value)
+
+    minima: Dict[str, Optional[float]] = {"Operation": None, "Extreme": None}
+    for pile_id, capacities in pile_capacities.items():
+        force_groups = pile_forces.get(pile_id)
+        if not force_groups:
+            continue
+        weight = capacities.get("weight", 0.0)
+        comb_capacity = capacities.get("comb_capacity", 0.0)
+        ten_capacity = capacities.get("ten_capacity", 0.0)
+        for case_type in ("Operation", "Extreme"):
+            values = force_groups.get(case_type, [])
+            if not values:
+                continue
+            case_sfs: List[float] = []
+            max_compression = min(values)
+            if comb_capacity > 0:
+                denom = abs(max_compression) + weight
+                if denom > 0:
+                    case_sfs.append(comb_capacity / denom)
+            max_tension = max(values)
+            if max_tension >= 0 and ten_capacity > 0:
+                denom = max_tension - weight
+                if denom > 0:
+                    case_sfs.append(ten_capacity / denom)
+            if case_sfs:
+                best = min(case_sfs)
+                current = minima[case_type]
+                minima[case_type] = best if current is None else min(current, best)
+
+    if minima["Operation"] is not None:
+        result["操作工况"] = _fmt_result_safety_value(minima["Operation"])
+    if minima["Extreme"] is not None:
+        result["极端工况"] = _fmt_result_safety_value(minima["Extreme"])
+
+    if not any(str(result.get(k, "")).strip() for k in RESULT_FACTOR_KEYS):
+        result.update(fallback_loads)
+        result.update(fallback_safety)
+    return result
+
+
+class ResultFactorReadWorker(QObject):
+    finished = pyqtSignal(int, str, dict)
+    failed = pyqtSignal(int, str, str)
+
+    def __init__(self, row: int, path: str, num_pat: str):
+        super().__init__()
+        self.row = row
+        self.path = path
+        self.num_pat = num_pat
+
+    def run(self) -> None:
+        try:
+            values = _parse_result_factor_stream(self.path, self.num_pat)
+            self.finished.emit(self.row, self.path, values)
+        except Exception as exc:
+            self.failed.emit(self.row, self.path, str(exc))
 
 def _setup_chinese_matplotlib_font():
     """为 matplotlib 设置中文字体（避免标题/坐标轴中文变成方块）。
@@ -154,6 +556,267 @@ class SimpleLineChart(FigureCanvas):
         self.draw_idle()
 
 
+class MultiLineChart(FigureCanvas):
+    """多系列折线图控件，用于复现样表中的组合曲线。"""
+
+    _font_inited = False
+    SMALL_FOUR_PT = 12
+    LINE_MARKERS = ("o", "s", "^", "D", "v", "P", "X", "*", "<", ">")
+    DEFAULT_LINE_COLORS = (
+        "#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
+        "#17becf", "#005b9f", "#8b0000", "#008000", "#000000",
+    )
+
+    def __init__(
+        self,
+        title: str,
+        x: List[float],
+        lines: List[Tuple[str, List[float], str]],
+        xlabel: str = "改建次序",
+        left_ylabel: str = "",
+        right_ylabel: str = "",
+        parent=None,
+    ):
+        if not MultiLineChart._font_inited:
+            _setup_chinese_matplotlib_font()
+            MultiLineChart._font_inited = True
+        fig = Figure(figsize=(6.8, 3.9), dpi=100)
+        self.ax = fig.add_subplot(111)
+        self.ax_right = self.ax.twinx() if any(line_def[2] == "right" for line_def in lines) else None
+        super().__init__(fig)
+        self.setParent(parent)
+        self.setWindowFlags(Qt.Widget)
+
+        self._title = title
+        self._xlabel = xlabel
+        self._left_ylabel = left_ylabel
+        self._right_ylabel = right_ylabel
+        self._lines: Dict[str, object] = {}
+        self._display_labels: Dict[str, str] = {}
+        self._points: Dict[str, Tuple[List[float], List[float]]] = {}
+        self._point_axes: Dict[str, object] = {}
+        self._line_markers: Dict[str, str] = {}
+        self._line_styles: Dict[str, Dict[str, str]] = {}
+        self._legend = None
+        self._init_axes()
+        self._hover_annots = {}
+        for axis in [self.ax, self.ax_right] if self.ax_right is not None else [self.ax]:
+            annot = axis.annotate(
+                "",
+                xy=(0, 0),
+                xytext=(12, 12),
+                textcoords="offset points",
+                bbox={"boxstyle": "round,pad=0.3", "fc": "#ffffff", "ec": "#5b7aa0", "alpha": 0.92},
+                arrowprops={"arrowstyle": "->", "color": "#5b7aa0"},
+                fontsize=10,
+                annotation_clip=False,
+            )
+            annot.set_clip_on(False)
+            annot.set_visible(False)
+            self._hover_annots[axis] = annot
+        self.mpl_connect("motion_notify_event", self._on_motion)
+        self.mpl_connect("axes_leave_event", self._hide_hover)
+        self.update_data(x, lines)
+
+    def _init_axes(self):
+        self.figure.suptitle(self._title, fontsize=self.SMALL_FOUR_PT, y=0.98)
+        self.ax.set_xlabel(self._xlabel, fontsize=self.SMALL_FOUR_PT)
+        if self._left_ylabel:
+            self.ax.set_ylabel(self._left_ylabel, fontsize=self.SMALL_FOUR_PT)
+        if self.ax_right is not None and self._right_ylabel:
+            self.ax_right.set_ylabel(self._right_ylabel, fontsize=self.SMALL_FOUR_PT)
+        self.ax.tick_params(axis="both", labelsize=self.SMALL_FOUR_PT)
+        if self.ax_right is not None:
+            self.ax_right.tick_params(axis="y", labelsize=self.SMALL_FOUR_PT)
+        self.ax.grid(True, linewidth=0.6, alpha=0.6)
+        self._apply_axis_number_format()
+
+    @staticmethod
+    def _format_axis_tick(value: float, _pos=None) -> str:
+        if value == 0:
+            return "0"
+        abs_value = abs(value)
+        if abs_value >= 10000 or abs_value < 0.001:
+            return f"{value:.2e}".replace("e+0", "e+").replace("e-0", "e-")
+        if abs_value >= 100:
+            return f"{value:.0f}"
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+
+    def _apply_axis_number_format(self) -> None:
+        formatter = FuncFormatter(self._format_axis_tick)
+        self.ax.yaxis.set_major_formatter(formatter)
+        self.ax.yaxis.offsetText.set_visible(False)
+        if self.ax_right is not None:
+            self.ax_right.yaxis.set_major_formatter(formatter)
+            self.ax_right.yaxis.offsetText.set_visible(False)
+
+    @staticmethod
+    def _line_style_for_index(line_index: int) -> Dict[str, str]:
+        color = MultiLineChart.DEFAULT_LINE_COLORS[line_index % len(MultiLineChart.DEFAULT_LINE_COLORS)]
+        marker = MultiLineChart.LINE_MARKERS[line_index % len(MultiLineChart.LINE_MARKERS)]
+        return {
+            "color": color,
+            "marker": marker,
+            "linestyle": "-",
+            "markerfacecolor": color,
+            "markeredgecolor": color,
+        }
+
+    @staticmethod
+    def _merged_line_style(line_index: int, style: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        merged = MultiLineChart._line_style_for_index(line_index)
+        if style:
+            merged.update(style)
+            if style.get("filled") == "hollow":
+                merged["markerfacecolor"] = "none"
+                merged["markeredgecolor"] = merged.get("color", "#1f77b4")
+            elif style.get("filled") == "solid":
+                merged["markerfacecolor"] = merged.get("color", "#1f77b4")
+                merged["markeredgecolor"] = merged.get("color", "#1f77b4")
+        merged.pop("filled", None)
+        return merged
+
+    def _normalise_line_scales(
+        self,
+        x: List[float],
+        lines: List[Tuple[str, List[float], str]],
+    ) -> List[Tuple[str, str, List[float], str, Dict[str, str]]]:
+        adjusted: List[Tuple[str, List[float], str, float, Dict[str, str]]] = []
+        for line_index, line_def in enumerate(lines):
+            label, y, axis_name = line_def[:3]
+            style = line_def[3] if len(line_def) > 3 else None
+            if len(y) != len(x):
+                y = (y + [0.0] * len(x))[:len(x)]
+            y_values = [float(v) for v in y]
+            max_abs = max([abs(v) for v in y_values] or [0.0])
+            adjusted.append((label, y_values, axis_name, max_abs, self._merged_line_style(line_index, style)))
+
+        return [(label, label, y_values, axis_name, style) for label, y_values, axis_name, _max_abs, style in adjusted]
+
+    def update_data(self, x: List[float], lines: List[Tuple[str, List[float], str]]):
+        existing = set(self._lines.keys())
+        incoming = {line_def[0] for line_def in lines}
+        for label in existing - incoming:
+            self._lines[label].remove()
+            del self._lines[label]
+            self._display_labels.pop(label, None)
+            self._points.pop(label, None)
+            self._point_axes.pop(label, None)
+            self._line_markers.pop(label, None)
+            self._line_styles.pop(label, None)
+
+        for _line_index, (label, display_label, y, axis_name, style) in enumerate(self._normalise_line_scales(x, lines)):
+            x_values = [float(v) for v in x]
+            y_values = [float(v) for v in y]
+            target_ax = self.ax_right if axis_name == "right" and self.ax_right is not None else self.ax
+            marker = style.get("marker", "o")
+            self._display_labels[label] = display_label
+            self._points[label] = (x_values, y_values)
+            self._point_axes[label] = target_ax
+            self._line_markers[label] = marker
+            self._line_styles[label] = style
+            if label in self._lines:
+                self._lines[label].set_data(x_values, y_values)
+                self._lines[label].set_label(display_label)
+                self._lines[label].set(**style)
+            else:
+                (line,) = target_ax.plot(x_values, y_values, label=display_label, **style)
+                self._lines[label] = line
+
+        self.ax.relim()
+        self.ax.autoscale_view()
+        if self.ax_right is not None:
+            self.ax_right.relim()
+            self.ax_right.autoscale_view()
+        self._apply_axis_number_format()
+        ticks = [int(v) for v in x]
+        self.ax.set_xticks(ticks)
+        if ticks:
+            left = min(ticks)
+            right = max(ticks)
+            if left == right:
+                right = left + 1
+            self.ax.set_xlim(left, right)
+        else:
+            self.ax.set_xlim(0, 1)
+        handles = list(self._lines.values())
+        labels = [self._display_labels.get(label, label) for label in self._lines.keys()]
+        if self._legend is not None:
+            self._legend.remove()
+            self._legend = None
+        if handles:
+            self._legend = self.figure.legend(
+                handles,
+                labels,
+                fontsize=9,
+                loc="upper center",
+                bbox_to_anchor=(0.5, 0.90),
+                ncol=min(3, max(1, len(labels))),
+                frameon=False,
+                handlelength=1.8,
+                columnspacing=1.2,
+                labelspacing=0.5,
+            )
+        self.figure.subplots_adjust(
+            left=0.12,
+            right=0.82 if self.ax_right is not None else 0.96,
+            bottom=0.16,
+            top=0.68 if len(labels) > 3 else 0.72,
+        )
+        self.draw_idle()
+
+    @staticmethod
+    def _format_hover_value(value: float) -> str:
+        if abs(value) >= 100:
+            return f"{value:.0f}"
+        return f"{value:.3f}".rstrip("0").rstrip(".")
+
+    def _on_motion(self, event) -> None:
+        valid_axes = [self.ax]
+        if self.ax_right is not None:
+            valid_axes.append(self.ax_right)
+        if event.inaxes not in valid_axes or event.x is None or event.y is None:
+            self._hide_hover(event)
+            return
+
+        best = None
+        max_distance_px = 12.0
+        for label, (xs, ys) in self._points.items():
+            axis = self._point_axes.get(label, self.ax)
+            for x_value, y_value in zip(xs, ys):
+                px, py = axis.transData.transform((x_value, y_value))
+                distance = ((px - event.x) ** 2 + (py - event.y) ** 2) ** 0.5
+                if distance <= max_distance_px and (best is None or distance < best[0]):
+                    best = (distance, label, x_value, y_value, axis)
+
+        if best is None:
+            self._hide_hover(event)
+            return
+
+        _, label, x_value, y_value, axis = best
+        bbox = self.ax.get_window_extent()
+        offset_x = -12 if event.x > bbox.x0 + bbox.width * 0.72 else 12
+        offset_y = -24 if event.y > bbox.y0 + bbox.height * 0.72 else 12
+        self._hide_hover(event)
+        annot = self._hover_annots[axis]
+        annot.xy = (x_value, y_value)
+        annot.set_position((offset_x, offset_y))
+        annot.set_ha("right" if offset_x < 0 else "left")
+        annot.set_va("top" if offset_y < 0 else "bottom")
+        annot.set_text(f"{self._display_labels.get(label, label)}：{self._format_hover_value(y_value)}")
+        annot.set_visible(True)
+        self.draw_idle()
+
+    def _hide_hover(self, _event=None) -> None:
+        changed = False
+        for annot in self._hover_annots.values():
+            if annot.get_visible():
+                annot.set_visible(False)
+                changed = True
+        if changed:
+            self.draw_idle()
+
+
 class PlatformWeightCenterCurvePage(BasePage):
     """曲线图页面：3×3 网格（与截图一致）。"""
     def __init__(self, facility_code: str, series: Dict[str, List[float]], parent=None):
@@ -213,28 +876,89 @@ class PlatformWeightCenterCurvePage(BasePage):
 
 
 class PlatformWeightCenterCurveWidget(QWidget):
-    """页面内嵌曲线区：3×3 网格。"""
+    """页面内嵌曲线区：按样表展示 2×2 组合曲线。"""
 
-    CHART_MIN_WIDTH = 360
-    CHART_MIN_HEIGHT = 260
+    CHART_MIN_WIDTH = 640
+    CHART_MIN_HEIGHT = 410
+    STYLE_DEEP_BLUE = "#005b9f"
+    STYLE_LIGHT_BLUE = "#00a6d6"
+    STYLE_RED = "#d00000"
+    STYLE_DEEP_RED = "#8b0000"
+    STYLE_GREEN = "#6cc24a"
+    STYLE_DEEP_GREEN = "#00843d"
+    STYLE_YELLOW = "#ffd400"
+    STYLE_PURPLE = "#7f3fbf"
+    STYLE_BLACK = "#000000"
+
+    @staticmethod
+    def _chart_style(color: str, marker: str, filled: str = "hollow") -> Dict[str, str]:
+        return {
+            "color": color,
+            "marker": marker,
+            "linestyle": "-",
+            "filled": filled,
+        }
 
     CHARTS = [
-        ("上部组块重量t", "weight", "上部组块重量t"),
-        ("上部组块重心x(m)", "cgx", "上部组块重心x(m)"),
-        ("上部组块重心y(m)", "cgy", "上部组块重心y(m)"),
-        ("极端工况最大载荷Fx(KN)", "fx", "极端工况最大载荷Fx(KN)"),
-        ("极端工况最大载荷Fy(KN)", "fy", "极端工况最大载荷Fy(KN)"),
-        ("极端工况最大载荷Fz(KN)", "fz", "极端工况最大载荷Fz(KN)"),
-        ("极端工况最大载荷Mx(KN·m)", "mx", "极端工况最大载荷Mx(KN·m)"),
-        ("极端工况最大载荷My(KN·m)", "my", "极端工况最大载荷My(KN·m)"),
-        ("极端工况最大载荷Mz(KN·m)", "mz", "极端工况最大载荷Mz(KN·m)"),
+        (
+            "上部组块重量",
+            "weight",
+            "重量(t)",
+            "",
+            [
+                ("干重量", "dry_weight", "left", _chart_style.__func__(STYLE_DEEP_BLUE, "s", "hollow")),
+                ("总操作重量", "total_weight", "left", _chart_style.__func__(STYLE_RED, "^", "hollow")),
+            ],
+        ),
+        (
+            "上部组块重心",
+            "center",
+            "Gx,Gy(m)",
+            "Gz(m)",
+            [
+                ("干重心Gx", "dry_cgx", "left", _chart_style.__func__(STYLE_LIGHT_BLUE, "s", "hollow")),
+                ("干重心Gy", "dry_cgy", "left", _chart_style.__func__(STYLE_RED, "D", "hollow")),
+                ("干重心Gz", "dry_cgz", "right", _chart_style.__func__(STYLE_GREEN, "^", "hollow")),
+                ("操作重心Gx", "op_cgx", "left", _chart_style.__func__(STYLE_DEEP_BLUE, "s", "solid")),
+                ("操作重心Gy", "op_cgy", "left", _chart_style.__func__(STYLE_DEEP_RED, "D", "solid")),
+                ("操作重心Gz", "op_cgz", "right", _chart_style.__func__(STYLE_DEEP_GREEN, "^", "solid")),
+            ],
+        ),
+        (
+            "操作工况最大载荷",
+            "op_load",
+            "Fx,Fy,Fz(kN)",
+            "Mx,My,Mz(kN·m)",
+            [
+                ("Fx", "op_fx", "left", _chart_style.__func__(STYLE_YELLOW, "s", "hollow")),
+                ("Fy", "op_fy", "left", _chart_style.__func__(STYLE_PURPLE, "D", "hollow")),
+                ("Fz", "op_fz", "left", _chart_style.__func__(STYLE_RED, "^", "hollow")),
+                ("Mx", "op_mx", "right", _chart_style.__func__(STYLE_GREEN, "s", "hollow")),
+                ("My", "op_my", "right", _chart_style.__func__(STYLE_DEEP_BLUE, "D", "hollow")),
+                ("Mz", "op_mz", "right", _chart_style.__func__(STYLE_BLACK, "^", "hollow")),
+            ],
+        ),
+        (
+            "极端工况最大载荷",
+            "ext_load",
+            "Fx,Fy,Fz(kN)",
+            "Mx,My,Mz(kN·m)",
+            [
+                ("Fx", "ext_fx", "left", _chart_style.__func__(STYLE_YELLOW, "s", "hollow")),
+                ("Fy", "ext_fy", "left", _chart_style.__func__(STYLE_PURPLE, "D", "hollow")),
+                ("Fz", "ext_fz", "left", _chart_style.__func__(STYLE_RED, "^", "hollow")),
+                ("Mx", "ext_mx", "right", _chart_style.__func__(STYLE_GREEN, "s", "hollow")),
+                ("My", "ext_my", "right", _chart_style.__func__(STYLE_DEEP_BLUE, "D", "hollow")),
+                ("Mz", "ext_mz", "right", _chart_style.__func__(STYLE_BLACK, "^", "hollow")),
+            ],
+        ),
     ]
 
     def __init__(self, facility_code: str, series: Dict[str, List[float]], parent=None):
         super().__init__(parent)
         self.title_label: Optional[QLabel] = None
         self.grid: Optional[QGridLayout] = None
-        self._chart_canvases: Dict[str, SimpleLineChart] = {}
+        self._chart_canvases: Dict[str, MultiLineChart] = {}
         self._build_ui()
         self.update_series(facility_code, series)
 
@@ -252,6 +976,10 @@ class PlatformWeightCenterCurveWidget(QWidget):
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setHorizontalSpacing(12)
         self.grid.setVerticalSpacing(12)
+        self.grid.setColumnStretch(0, 1)
+        self.grid.setColumnStretch(1, 1)
+        self.grid.setRowStretch(0, 1)
+        self.grid.setRowStretch(1, 1)
         root.addWidget(grid_wrap, 1)
 
     def update_series(self, facility_code: str, series: Dict[str, List[float]]):
@@ -262,26 +990,35 @@ class PlatformWeightCenterCurveWidget(QWidget):
         if self.grid is None:
             return
 
-        x = list(range(len(series.get("idx", []))))
-        for i, (title, key, unit) in enumerate(self.CHARTS):
-            y = series.get(key, [])
-            if len(y) != len(x):
-                y = (y + [0.0] * len(x))[:len(x)]
+        x = series.get("idx", [])
+        for i, (title, key, left_unit, right_unit, line_defs) in enumerate(self.CHARTS):
+            lines = [
+                (label, series.get(series_key, []), axis, style)
+                for label, series_key, axis, style in line_defs
+            ]
             canvas = self._chart_canvases.get(key)
             if canvas is None:
                 holder = QWidget(self)
                 holder.setStyleSheet("background:#dfe9f6; border:1px solid #b6c2d6;")
                 holder.setMinimumSize(self.CHART_MIN_WIDTH, self.CHART_MIN_HEIGHT)
-                holder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                holder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
                 layout = QVBoxLayout(holder)
-                layout.setContentsMargins(6, 6, 6, 6)
-                canvas = SimpleLineChart(title, x, y, xlabel="改建次序", ylabel=unit, parent=holder)
+                layout.setContentsMargins(8, 8, 8, 8)
+                canvas = MultiLineChart(
+                    title,
+                    x,
+                    lines,
+                    xlabel="改建次序",
+                    left_ylabel=left_unit,
+                    right_ylabel=right_unit,
+                    parent=holder,
+                )
                 layout.addWidget(canvas)
-                row, col = divmod(i, 3)
+                row, col = divmod(i, 2)
                 self.grid.addWidget(holder, row, col)
                 self._chart_canvases[key] = canvas
             else:
-                canvas.update_data(x, y)
+                canvas.update_data(x, lines)
 
 
 class PlatformLoadInformationPage(BasePage):
@@ -367,6 +1104,9 @@ class PlatformLoadInformationPage(BasePage):
         # 缓存子计算表用户输入的数据
         self._uppercalc_saved_data: Dict[int, dict] = {}
         self._result_factor_cache: Dict[tuple[str, float], Dict[str, object]] = {}
+        self._result_factor_thread: Optional[QThread] = None
+        self._result_factor_worker: Optional[ResultFactorReadWorker] = None
+        self._result_factor_progress: Optional[QProgressDialog] = None
         self._switching_platform = False
         self._build_ui()
         self._ensure_demo_files()
@@ -1411,23 +2151,73 @@ class PlatformLoadInformationPage(BasePage):
             QMessageBox.warning(self, "读取失败", "请选择名为 psilst.factor 的结果文件。")
             return
 
+        values = self._get_cached_result_factor_values(path)
+        if values is not None:
+            self._apply_result_factor_values(row, path, values)
+            return
+
+        self._start_result_factor_read_thread(row, path)
+
+    def _start_result_factor_read_thread(self, row: int, path: str) -> None:
+        if self._result_factor_thread is not None:
+            QMessageBox.information(self, "提示", "正在读取结果文件，请稍候。")
+            return
+
+        progress = QProgressDialog("正在读取 psilst.factor，请稍候...", None, 0, 0, self)
+        progress.setWindowTitle("读取结果文件")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        thread = QThread(self)
+        worker = ResultFactorReadWorker(row, os.path.normpath(path), self._num_pat)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_result_factor_read_finished)
+        worker.failed.connect(self._on_result_factor_read_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_result_factor_thread)
+
+        self._result_factor_thread = thread
+        self._result_factor_worker = worker
+        self._result_factor_progress = progress
+        thread.start()
+
+    def _clear_result_factor_thread(self) -> None:
+        if self._result_factor_progress is not None:
+            self._result_factor_progress.close()
+        self._result_factor_thread = None
+        self._result_factor_worker = None
+        self._result_factor_progress = None
+
+    def _on_result_factor_read_finished(self, row: int, path: str, values: Dict[str, object]) -> None:
         try:
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            values = self._get_cached_result_factor_values(path)
-            keys = [
-                'op_Fx', 'op_Fy', 'op_Fz', 'op_Mx', 'op_My', 'op_Mz',
-                'ext_Fx', 'ext_Fy', 'ext_Fz', 'ext_Mx', 'ext_My', 'ext_Mz',
-                '操作工况', '极端工况',
-            ]
-            if not any(str(values.get(k, '')).strip() for k in keys):
-                QMessageBox.warning(self, "读取失败", "在 psilst.factor 文件中未解析到有效字段。")
-                return
-            self._apply_excel_values_to_row(row, values, bg_color=QColor("#e1f5fe"))
-            QMessageBox.information(self, "读取结果文件", f"结果文件读取并回填成功。\n文件：{path}")
-        except Exception as e:
-            QMessageBox.warning(self, "读取失败", f"读取或解析失败：{e}")
-        finally:
-            QApplication.restoreOverrideCursor()
+            normalized = os.path.normpath(path)
+            cache_key = (normalized, os.path.getmtime(normalized))
+            self._result_factor_cache = {cache_key: dict(values)}
+        except OSError:
+            pass
+        self._apply_result_factor_values(row, path, values)
+
+    def _on_result_factor_read_failed(self, row: int, path: str, error: str) -> None:
+        QMessageBox.warning(self, "读取失败", f"读取或解析失败：{error}")
+
+    def _apply_result_factor_values(self, row: int, path: str, values: Dict[str, object]) -> None:
+        keys = [
+            'op_Fx', 'op_Fy', 'op_Fz', 'op_Mx', 'op_My', 'op_Mz',
+            'ext_Fx', 'ext_Fy', 'ext_Fz', 'ext_Mx', 'ext_My', 'ext_Mz',
+            '操作工况', '极端工况',
+        ]
+        if not any(str(values.get(k, '')).strip() for k in keys):
+            QMessageBox.warning(self, "读取失败", "在 psilst.factor 文件中未解析到有效字段。")
+            return
+        self._apply_excel_values_to_row(row, values, bg_color=QColor("#e1f5fe"))
+        QMessageBox.information(self, "读取结果文件", f"结果文件读取并回填成功。\n文件：{path}")
 
     def _on_red_field_mode_changed(self, idx: int):
         self.red_field_mode = 'manual' if idx == 0 else 'excel'
@@ -1502,8 +2292,18 @@ class PlatformLoadInformationPage(BasePage):
         return result
 
     def _to_float(self, value: object) -> Optional[float]:
-        try: return float(str(value).strip())
+        text = str(value).strip().replace(",", "")
+        if not text or text in ("\\", "/"):
+            return None
+        try: return float(text)
         except: return None
+
+    def _parse_xyz_values(self, value: object) -> Tuple[float, float, float]:
+        nums = re.findall(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", str(value or ""))
+        vals = [self._to_float(num) or 0.0 for num in nums[:3]]
+        while len(vals) < 3:
+            vals.append(0.0)
+        return vals[0], vals[1], vals[2]
 
     def _fmt_float(self, value: object) -> str:
         fv = self._to_float(value)
@@ -1931,17 +2731,14 @@ class PlatformLoadInformationPage(BasePage):
         result.update(self._compute_vba_style_min_pile_safety(text))
         return result
 
-    def _get_cached_result_factor_values(self, path: str) -> Dict[str, object]:
+    def _get_cached_result_factor_values(self, path: str) -> Optional[Dict[str, object]]:
         normalized = os.path.normpath(path)
         mtime = os.path.getmtime(normalized)
         cache_key = (normalized, mtime)
         cached = self._result_factor_cache.get(cache_key)
         if cached is not None:
             return dict(cached)
-
-        values = self._read_result_factor_generic(normalized)
-        self._result_factor_cache = {cache_key: dict(values)}
-        return values
+        return None
 
     def _read_result_factor_generic(self, path: str) -> Dict[str, object]:
         text = self._read_text_file_with_fallback(path)
@@ -1953,22 +2750,56 @@ class PlatformLoadInformationPage(BasePage):
 
     def _collect_series_for_curve(self) -> Dict[str, List[float]]:
         base_rows, data_end = self.DATA_START_ROW, self._find_data_end_row()
-        idxs, weight, cgx, cgy, fx, fy, fz, mx, my, mz = [], [], [], [], [], [], [], [], [], []
+        series = {
+            "idx": [],
+            "dry_weight": [],
+            "total_weight": [],
+            "dry_cgx": [],
+            "dry_cgy": [],
+            "dry_cgz": [],
+            "op_cgx": [],
+            "op_cgy": [],
+            "op_cgz": [],
+            "op_fx": [],
+            "op_fy": [],
+            "op_fz": [],
+            "op_mx": [],
+            "op_my": [],
+            "op_mz": [],
+            "ext_fx": [],
+            "ext_fy": [],
+            "ext_fz": [],
+            "ext_mx": [],
+            "ext_my": [],
+            "ext_mz": [],
+        }
         for r in range(base_rows, data_end):
             seq = self._cell_text(r, 0).strip()
             if not seq.isdigit(): continue
-            idxs.append(len(idxs))
-            weight.append(self._to_float(self._cell_text(r, 5)) or 0.0)
-            xyz = self._cell_text(r, 9).split(",")
-            cgx.append(self._to_float(xyz[0]) if len(xyz)>0 else 0.0)
-            cgy.append(self._to_float(xyz[1]) if len(xyz)>1 else 0.0)
-            fx.append(self._to_float(self._cell_text(r, 17)) or 0.0)
-            fy.append(self._to_float(self._cell_text(r, 18)) or 0.0)
-            fz.append(self._to_float(self._cell_text(r, 19)) or 0.0)
-            mx.append(self._to_float(self._cell_text(r, 20)) or 0.0)
-            my.append(self._to_float(self._cell_text(r, 21)) or 0.0)
-            mz.append(self._to_float(self._cell_text(r, 22)) or 0.0)
-        return {"idx": idxs, "weight": weight, "cgx": cgx, "cgy": cgy, "fx": fx, "fy": fy, "fz": fz, "mx": mx, "my": my, "mz": mz}
+            series["idx"].append(float(seq))
+            series["dry_weight"].append(self._to_float(self._cell_text(r, 4)) or 0.0)
+            series["total_weight"].append(self._to_float(self._cell_text(r, 5)) or 0.0)
+
+            dry_x, dry_y, dry_z = self._parse_xyz_values(self._cell_text(r, 8))
+            op_x, op_y, op_z = self._parse_xyz_values(self._cell_text(r, 9))
+            series["dry_cgx"].append(dry_x)
+            series["dry_cgy"].append(dry_y)
+            series["dry_cgz"].append(dry_z)
+            series["op_cgx"].append(op_x)
+            series["op_cgy"].append(op_y)
+            series["op_cgz"].append(op_z)
+
+            for key, col in zip(
+                ["op_fx", "op_fy", "op_fz", "op_mx", "op_my", "op_mz"],
+                range(11, 17),
+            ):
+                series[key].append(self._to_float(self._cell_text(r, col)) or 0.0)
+            for key, col in zip(
+                ["ext_fx", "ext_fy", "ext_fz", "ext_mx", "ext_my", "ext_mz"],
+                range(17, 23),
+            ):
+                series[key].append(self._to_float(self._cell_text(r, col)) or 0.0)
+        return series
 
     def _refresh_curve_view(self):
         if getattr(self, "_loading_data", False):

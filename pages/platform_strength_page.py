@@ -1014,10 +1014,8 @@ class PlatformStrengthPage(BasePage):
         except Exception as exc:
             print("[PlatformStrengthPage] load structure model info failed:", exc)
 
-    def _save_structure_model_info_to_db(self) -> None:
+    def _save_structure_model_info_values_to_db(self, mud_level: float | None, workpoint: float | None) -> None:
         profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
-        mud_level = self._parse_optional_float(self.edt_mud_level.text() if hasattr(self, "edt_mud_level") else "")
-        workpoint = self._parse_optional_float(self.edt_workpoint.text() if hasattr(self, "edt_workpoint") else "")
         threshold = self._get_level_threshold()
         engine = self._get_db_engine()
         with engine.begin() as conn:
@@ -1038,6 +1036,11 @@ class PlatformStrengthPage(BasePage):
                 "workpoint_m": workpoint,
                 "level_threshold": threshold,
             })
+
+    def _save_structure_model_info_to_db(self) -> None:
+        mud_level = self._parse_optional_float(self.edt_mud_level.text() if hasattr(self, "edt_mud_level") else "")
+        workpoint = self._parse_optional_float(self.edt_workpoint.text() if hasattr(self, "edt_workpoint") else "")
+        self._save_structure_model_info_values_to_db(mud_level, workpoint)
 
     def _load_horizontal_levels_from_db(self, profile_id: int | None = None, facility_code: str | None = None) -> List[Tuple[float, int, bool]]:
         levels: List[Tuple[float, int, bool]] = []
@@ -1114,32 +1117,343 @@ class PlatformStrengthPage(BasePage):
         self._refresh_layers_table()
 
     def _on_update_structure_model_info_to_db(self) -> None:
-        try:
-            self._save_structure_model_info_to_db()
-            QMessageBox.information(self, "更新完成", "结构模型信息已更新到数据库。")
-        except Exception as exc:
-            QMessageBox.critical(self, "更新失败", f"结构模型信息更新到数据库失败：\n{exc}")
+        dialog = QDialog(self)
+        dialog.setWindowTitle("编辑结构模型信息")
+        dialog.resize(540, 230)
+        root = self._setup_edit_dialog(dialog, "编辑结构模型信息", "泥面高程与工作平面高程将用于模型预览和后续分析，请确认后保存。")
+        card, card_layout = self._make_dialog_card(dialog)
+
+        form_table = QTableWidget(2, 3, dialog)
+        self._init_table_common(form_table, show_vertical_header=False)
+        self._style_dialog_table(form_table)
+        form_table.horizontalHeader().setVisible(False)
+        form_table.verticalHeader().setVisible(False)
+        form_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        form_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        form_table.setColumnWidth(0, 220)
+        form_table.setColumnWidth(1, 150)
+        form_table.setColumnWidth(2, 60)
+        self._set_center_item(form_table, 0, 0, "泥面高程", editable=False)
+        self._set_center_item(form_table, 0, 1, self.edt_mud_level.text() if hasattr(self, "edt_mud_level") else "")
+        self._set_center_item(form_table, 0, 2, "m", editable=False)
+        self._set_center_item(form_table, 1, 0, "工作平面高程Workpoint", editable=False)
+        self._set_center_item(form_table, 1, 1, self.edt_workpoint.text() if hasattr(self, "edt_workpoint") else "")
+        self._set_center_item(form_table, 1, 2, "m", editable=False)
+        for r in range(2):
+            form_table.setRowHeight(r, 34)
+        form_table.setFixedHeight(78)
+        card_layout.addWidget(form_table, 0)
+        root.addWidget(card, 0)
+
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        btn_save = QPushButton("确认更新到数据库")
+        btn_cancel = QPushButton("取消")
+        self._style_dialog_buttons(btn_save, btn_cancel)
+        bottom.addWidget(btn_save)
+        bottom.addWidget(btn_cancel)
+        root.addLayout(bottom)
+
+        def save_dialog() -> None:
+            try:
+                mud_level = self._parse_optional_float(self._table_text(form_table, 0, 1))
+                workpoint = self._parse_optional_float(self._table_text(form_table, 1, 1))
+                self._save_structure_model_info_values_to_db(mud_level, workpoint)
+                self.edt_mud_level.setText(self._format_optional_number(mud_level))
+                self.edt_workpoint.setText(self._format_optional_number(workpoint))
+                self._autoload_inp_to_view()
+            except Exception as exc:
+                QMessageBox.critical(dialog, "更新失败", f"结构模型信息更新到数据库失败：\n{exc}")
+                return
+            QMessageBox.information(dialog, "更新完成", "结构模型信息已更新到数据库。")
+            dialog.accept()
+
+        btn_save.clicked.connect(save_dialog)
+        btn_cancel.clicked.connect(dialog.reject)
+        dialog.exec_()
 
     def _on_update_splash_table_to_db(self) -> None:
-        try:
-            self._save_splash_table_to_db()
-            QMessageBox.information(self, "更新完成", "飞溅区腐蚀余量已更新到数据库。")
-        except Exception as exc:
-            QMessageBox.critical(self, "更新失败", f"飞溅区腐蚀余量更新到数据库失败：\n{exc}")
+        self._open_splash_edit_dialog()
 
     def _on_update_pile_table_to_db(self) -> None:
-        try:
-            self._save_pile_table_to_db()
-            QMessageBox.information(self, "更新完成", "桩基信息已更新到数据库。")
-        except Exception as exc:
-            QMessageBox.critical(self, "更新失败", f"桩基信息更新到数据库失败：\n{exc}")
+        self._open_pile_edit_dialog()
 
     def _on_update_marine_table_to_db(self) -> None:
-        try:
-            self._save_marine_table_to_db()
-            QMessageBox.information(self, "更新完成", "海生物信息已更新到数据库。")
-        except Exception as exc:
-            QMessageBox.critical(self, "更新失败", f"海生物信息更新到数据库失败：\n{exc}")
+        self._open_marine_edit_dialog()
+
+    def _replace_splash_items_to_db(self, items: List[Dict[str, object]]) -> None:
+        profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
+        replace_platform_strength_splash_items(profile_id, facility_code, items)
+
+    def _replace_pile_items_to_db(self, items: List[Dict[str, object]]) -> None:
+        profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
+        replace_platform_strength_pile_items(profile_id, facility_code, items)
+
+    def _replace_marine_items_to_db(self, items: List[Dict[str, object]]) -> None:
+        profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
+        replace_platform_strength_marine_items(profile_id, facility_code, items)
+
+    def _setup_edit_dialog(self, dialog: QDialog, title: str, hint: str) -> QVBoxLayout:
+        dialog.setStyleSheet("""
+            QDialog { background-color: #f5f8fc; }
+            QLabel#DialogTitle {
+                color: #1d2b3a;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 13pt;
+                font-weight: bold;
+            }
+            QLabel#DialogHint {
+                color: #52677a;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 10pt;
+            }
+            QFrame#DialogCard {
+                background-color: #ffffff;
+                border: 1px solid #d8e2ef;
+                border-radius: 8px;
+            }
+            QPushButton#PrimaryDialogButton {
+                background-color: #168bd0;
+                color: #ffffff;
+                border: 1px solid #0b5f92;
+                border-radius: 5px;
+                padding: 6px 18px;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+                font-weight: bold;
+            }
+            QPushButton#PrimaryDialogButton:hover { background-color: #22a3ee; }
+            QPushButton#PrimaryDialogButton:pressed { background-color: #0d6ca5; }
+            QPushButton#SecondaryDialogButton {
+                background-color: #ffffff;
+                color: #34495e;
+                border: 1px solid #b8c7d9;
+                border-radius: 5px;
+                padding: 6px 18px;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+            }
+            QPushButton#SecondaryDialogButton:hover { background-color: #eef4fb; }
+        """)
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
+
+        title_label = QLabel(title, dialog)
+        title_label.setObjectName("DialogTitle")
+        root.addWidget(title_label, 0)
+
+        if hint:
+            hint_label = QLabel(hint, dialog)
+            hint_label.setObjectName("DialogHint")
+            hint_label.setWordWrap(True)
+            root.addWidget(hint_label, 0)
+        return root
+
+    def _make_dialog_card(self, parent: QWidget) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame(parent)
+        card.setObjectName("DialogCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        return card, layout
+
+    def _style_dialog_table(self, table: QTableWidget) -> None:
+        table.setStyleSheet(table.styleSheet() + """
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #f8fbff;
+                border: 1px solid #ccd8e6;
+                border-radius: 4px;
+                gridline-color: #dce5ef;
+                selection-background-color: #dbe9ff;
+            }
+            QTableWidget::item { padding: 4px; }
+            QHeaderView::section {
+                background-color: #eaf2fb;
+                color: #1d2b3a;
+                border: 1px solid #d7e2ef;
+                padding: 6px;
+            }
+        """)
+
+    def _style_dialog_buttons(self, primary: QPushButton, secondary: QPushButton) -> None:
+        primary.setObjectName("PrimaryDialogButton")
+        secondary.setObjectName("SecondaryDialogButton")
+        for btn in (primary, secondary):
+            btn.setFont(self._songti_small_four_font(bold=(btn is primary)))
+            btn.setMinimumHeight(36)
+            btn.setMinimumWidth(120)
+
+    def _style_dialog_tool_button(self, button: QPushButton) -> None:
+        button.setObjectName("SecondaryDialogButton")
+        button.setFont(self._songti_small_four_font())
+        button.setMinimumHeight(32)
+
+    def _open_simple_table_edit_dialog(
+        self,
+        *,
+        title: str,
+        source_table: QTableWidget,
+        headers: List[str],
+        save_callback,
+        apply_callback,
+        success_message: str,
+    ) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(max(560, len(headers) * 170), 190)
+        root = self._setup_edit_dialog(dialog, title, "请在下方表格中编辑数据，确认后将保存到数据库并回显到主页面。")
+        card, card_layout = self._make_dialog_card(dialog)
+
+        edit_table = QTableWidget(1, len(headers), dialog)
+        edit_table.setHorizontalHeaderLabels(headers)
+        self._init_table_common(edit_table, show_vertical_header=False)
+        self._style_dialog_table(edit_table)
+        for c in range(len(headers)):
+            self._set_center_item(edit_table, 0, c, self._table_text(source_table, 0, c), editable=True)
+        edit_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        edit_table.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        edit_table.setRowHeight(0, 34)
+        edit_table.setFixedHeight(edit_table.horizontalHeader().height() + 44)
+        card_layout.addWidget(edit_table, 0)
+        root.addWidget(card, 0)
+
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        btn_save = QPushButton("确认更新到数据库")
+        btn_cancel = QPushButton("取消")
+        self._style_dialog_buttons(btn_save, btn_cancel)
+        bottom.addWidget(btn_save)
+        bottom.addWidget(btn_cancel)
+        root.addLayout(bottom)
+
+        def save_dialog() -> None:
+            try:
+                values = [self._parse_optional_float(self._table_text(edit_table, 0, c)) for c in range(len(headers))]
+                items = save_callback(values)
+                apply_callback(items)
+            except Exception as exc:
+                QMessageBox.critical(dialog, "更新失败", f"{title}更新到数据库失败：\n{exc}")
+                return
+            QMessageBox.information(dialog, "更新完成", success_message)
+            dialog.accept()
+
+        btn_save.clicked.connect(save_dialog)
+        btn_cancel.clicked.connect(dialog.reject)
+        dialog.exec_()
+
+    def _open_splash_edit_dialog(self) -> None:
+        def save(values: List[float | None]) -> List[Dict[str, object]]:
+            items = [{
+                "upper_limit_m": values[0],
+                "lower_limit_m": values[1],
+                "corrosion_allowance_mm_per_y": values[2],
+                "sort_order": 1,
+            }]
+            self._replace_splash_items_to_db(items)
+            return items
+
+        self._open_simple_table_edit_dialog(
+            title="编辑飞溅区腐蚀余量",
+            source_table=self.tbl_splash,
+            headers=["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm/y)"],
+            save_callback=save,
+            apply_callback=self._apply_splash_items,
+            success_message="飞溅区腐蚀余量已更新到数据库。",
+        )
+
+    def _open_pile_edit_dialog(self) -> None:
+        def save(values: List[float | None]) -> List[Dict[str, object]]:
+            items = [{
+                "scour_depth_m": values[0],
+                "compressive_capacity_t": values[1],
+                "uplift_capacity_t": values[2],
+                "submerged_weight_t": values[3],
+                "sort_order": 1,
+            }]
+            self._replace_pile_items_to_db(items)
+            return items
+
+        self._open_simple_table_edit_dialog(
+            title="编辑桩基信息",
+            source_table=self.tbl_pile,
+            headers=["基础冲刷(m)", "桩基础抗压承载能力(t)", "桩基础抗拔承载能力(t)", "单根桩泥下自重(t)"],
+            save_callback=save,
+            apply_callback=self._apply_pile_items,
+            success_message="桩基信息已更新到数据库。",
+        )
+
+    def _open_marine_edit_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("编辑海生物信息")
+        dialog.resize(980, 300)
+        root = self._setup_edit_dialog(dialog, "编辑海生物信息", "每一列对应一个海生物层，可分别编辑高度范围、厚度和密度。")
+        card, card_layout = self._make_dialog_card(dialog)
+
+        edit_table = QTableWidget(4, 10, dialog)
+        edit_table.setHorizontalHeaderLabels(["项目"] + [str(i) for i in range(1, 10)])
+        self._init_table_common(edit_table, show_vertical_header=False)
+        self._style_dialog_table(edit_table)
+        labels = ["上限(m)", "下限(m)", "厚度(mm)", "密度(t/m^3)"]
+        density = self._table_text(self.tbl_marine, 4, 3)
+        for r, label in enumerate(labels):
+            self._set_center_item(edit_table, r, 0, label, editable=False)
+        for i in range(9):
+            source_col = 3 + i
+            target_col = 1 + i
+            self._set_center_item(edit_table, 0, target_col, self._table_text(self.tbl_marine, 1, source_col))
+            self._set_center_item(edit_table, 1, target_col, self._table_text(self.tbl_marine, 2, source_col))
+            self._set_center_item(edit_table, 2, target_col, self._table_text(self.tbl_marine, 3, source_col))
+            self._set_center_item(edit_table, 3, target_col, density)
+        edit_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        edit_table.setColumnWidth(0, 110)
+        for r in range(4):
+            edit_table.setRowHeight(r, 32)
+        card_layout.addWidget(edit_table, 1)
+        root.addWidget(card, 1)
+
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        btn_save = QPushButton("确认更新到数据库")
+        btn_cancel = QPushButton("取消")
+        self._style_dialog_buttons(btn_save, btn_cancel)
+        bottom.addWidget(btn_save)
+        bottom.addWidget(btn_cancel)
+        root.addLayout(bottom)
+
+        def save_dialog() -> None:
+            try:
+                items = []
+                first_density = None
+                for i in range(9):
+                    col = 1 + i
+                    density_value = self._parse_optional_float(self._table_text(edit_table, 3, col))
+                    if first_density is None and density_value is not None:
+                        first_density = density_value
+                    items.append({
+                        "layer_no": i + 1,
+                        "upper_limit_m": self._parse_optional_float(self._table_text(edit_table, 0, col)),
+                        "lower_limit_m": self._parse_optional_float(self._table_text(edit_table, 1, col)),
+                        "thickness_mm": self._parse_optional_float(self._table_text(edit_table, 2, col)),
+                        "density_t_per_m3": density_value,
+                        "sort_order": i + 1,
+                    })
+                if first_density is not None:
+                    for item in items:
+                        if item.get("density_t_per_m3") is None:
+                            item["density_t_per_m3"] = first_density
+                self._replace_marine_items_to_db(items)
+                self._apply_marine_items(items)
+            except Exception as exc:
+                QMessageBox.critical(dialog, "更新失败", f"海生物信息更新到数据库失败：\n{exc}")
+                return
+            QMessageBox.information(dialog, "更新完成", "海生物信息已更新到数据库。")
+            dialog.accept()
+
+        btn_save.clicked.connect(save_dialog)
+        btn_cancel.clicked.connect(dialog.reject)
+        dialog.exec_()
 
     def _save_splash_table_to_db(self) -> None:
         profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
@@ -1182,26 +1496,29 @@ class PlatformStrengthPage(BasePage):
     def _on_update_horizontal_levels_to_db(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("更新水平层高程")
-        dialog.resize(860, 360)
-
-        root = QVBoxLayout(dialog)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        dialog.resize(900, 390)
+        root = self._setup_edit_dialog(
+            dialog,
+            "编辑水平层高程",
+            "先输入节点数量限制并点击“自动更新水平高程”，也可以手动新增、删除或编辑 Z(m)，确认后保存到数据库并回显。",
+        )
+        card, card_layout = self._make_dialog_card(dialog)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(8)
         lbl = QLabel("水平层高程节点数量限制：")
         lbl.setFont(self._songti_small_four_font(bold=True))
+        lbl.setStyleSheet("color:#1d2b3a;")
         edit_threshold = QLineEdit(str(self._get_level_threshold()))
         edit_threshold.setFont(self._songti_small_four_font())
+        edit_threshold.setStyleSheet("background:#ffffff; border:1px solid #b8c7d9; border-radius:4px; padding:4px 6px;")
         edit_threshold.setFixedWidth(120)
         btn_auto = QPushButton("自动更新水平高程")
-        btn_auto.setFont(self._songti_small_four_font(bold=True))
         btn_add = QPushButton("新增高程列")
-        btn_add.setFont(self._songti_small_four_font(bold=True))
         btn_del = QPushButton("删除最后一列")
-        btn_del.setFont(self._songti_small_four_font(bold=True))
+        for btn in (btn_auto, btn_add, btn_del):
+            self._style_dialog_tool_button(btn)
         top.addWidget(lbl, 0)
         top.addWidget(edit_threshold, 0)
         top.addSpacing(10)
@@ -1209,21 +1526,18 @@ class PlatformStrengthPage(BasePage):
         top.addWidget(btn_add, 0)
         top.addWidget(btn_del, 0)
         top.addStretch(1)
-        root.addLayout(top)
-
-        hint = QLabel("说明：先输入节点数量限制并点击“自动更新水平高程”，系统会根据模型节点自动筛选；随后可直接编辑 Z(m)，最后保存到数据库。")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color:#52677a; font-size:10pt;")
-        root.addWidget(hint, 0)
+        card_layout.addLayout(top)
 
         edit_table = QTableWidget(1, 1, dialog)
         edit_table.setHorizontalHeaderLabels(["编号"])
         self._init_table_common(edit_table, show_vertical_header=False)
+        self._style_dialog_table(edit_table)
         edit_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         edit_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         edit_table.setRowHeight(0, 34)
         self._set_center_item(edit_table, 0, 0, "Z(m)", editable=False)
-        root.addWidget(edit_table, 1)
+        card_layout.addWidget(edit_table, 1)
+        root.addWidget(card, 1)
 
         def fill_table(levels: List[Tuple[float, int, bool]]):
             col_count = max(1, len(levels) + 1)
@@ -1272,12 +1586,9 @@ class PlatformStrengthPage(BasePage):
 
         bottom = QHBoxLayout()
         bottom.addStretch(1)
-        btn_save = QPushButton("保存到数据库")
+        btn_save = QPushButton("确认更新到数据库")
         btn_cancel = QPushButton("取消")
-        for btn in (btn_save, btn_cancel):
-            btn.setFont(self._songti_small_four_font(bold=True))
-            btn.setMinimumWidth(120)
-            btn.setMinimumHeight(34)
+        self._style_dialog_buttons(btn_save, btn_cancel)
         bottom.addWidget(btn_save)
         bottom.addWidget(btn_cancel)
         root.addLayout(bottom)
@@ -2156,6 +2467,136 @@ class PlatformStrengthPage(BasePage):
                         pass
         return None
 
+    def _parse_water_depth_from_ldopt(self, lines: List[str]) -> Optional[float]:
+        """从 SeaInp/INP 的 LDOPT 卡片读取水深字段。"""
+        for line in lines:
+            if not line.upper().startswith("LDOPT"):
+                continue
+            if len(line) >= 48:
+                try:
+                    return abs(float(line[40:48].strip()))
+                except ValueError:
+                    pass
+        return None
+
+    @staticmethod
+    def _parse_mgrov_number(text: str) -> Optional[float]:
+        text = (text or "").strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            pass
+        # SACS 中常见 2.5400-4 这类省略 E 的科学计数法。
+        if re.match(r"^[+-]?\d+(?:\.\d+)?[+-]\d+$", text):
+            match = re.match(r"^([+-]?\d+(?:\.\d+)?)([+-]\d+)$", text)
+            if not match:
+                return None
+            try:
+                return float(f"{match.group(1)}e{match.group(2)}")
+            except ValueError:
+                return None
+        return None
+
+    def _parse_mgrov_card(self, line: str) -> Optional[Tuple[float, float, float, Optional[float]]]:
+        start_depth = self._parse_mgrov_number(line[8:16] if len(line) >= 16 else "")
+        end_depth = self._parse_mgrov_number(line[16:24] if len(line) >= 24 else "")
+        thickness = self._parse_mgrov_number(line[24:32] if len(line) >= 32 else "")
+        density = self._parse_mgrov_number(line[48:56] if len(line) >= 56 else "")
+
+        # 固定列失败时退回空白切分，兼容非标准间距的 SeaInp。
+        if end_depth is None or thickness is None:
+            values = line.split()[1:]
+            if len(values) >= 5:
+                start_depth = self._parse_mgrov_number(values[0])
+                end_depth = self._parse_mgrov_number(values[1])
+                thickness = self._parse_mgrov_number(values[2])
+                density = self._parse_mgrov_number(values[4])
+            elif len(values) >= 2:
+                start_depth = 0.0
+                end_depth = self._parse_mgrov_number(values[0])
+                thickness = self._parse_mgrov_number(values[1])
+                density = self._parse_mgrov_number(values[3]) if len(values) >= 4 else None
+
+        if end_depth is None or thickness is None:
+            return None
+        return float(start_depth or 0.0), float(end_depth), float(thickness), density
+
+    def _parse_marine_growth_from_seainp(self, file_path: str) -> List[Dict[str, Any]]:
+        """按甲方 MGROV 逻辑读取 SeaInp 海生物信息。
+
+        MGROV 固定列：起始深度、结束深度、厚度、阻力系数、密度。
+        使用水深把深度转换为模型高程；厚度按 SeaInp 原值写入表格。
+        """
+        lines = self.inp_view._read_lines_with_fallback(file_path)
+        water_depth = self._parse_water_depth_from_ldopt(lines)
+
+        raw_rows: List[Tuple[float, float, float, Optional[float]]] = []
+        for raw_line in lines:
+            line = raw_line.rstrip("\r\n")
+            if not line.upper().startswith("MGROV"):
+                continue
+            if not line[5:].strip():
+                continue
+            parsed = self._parse_mgrov_card(line)
+            if parsed is None:
+                continue
+            raw_rows.append(parsed)
+
+        if not raw_rows:
+            return []
+
+        if water_depth is None:
+            water_depth = max(max(abs(a), abs(b)) for a, b, _t, _d in raw_rows)
+
+        layers: List[Tuple[float, float, float, Optional[float]]] = []
+        for depth_a, depth_b, thickness, density in raw_rows:
+            elevation_a = -(abs(water_depth) - depth_a)
+            elevation_b = -(abs(water_depth) - depth_b)
+            if abs(elevation_a) < 1e-9:
+                elevation_a = 0.0
+            if abs(elevation_b) < 1e-9:
+                elevation_b = 0.0
+            upper_limit = max(elevation_a, elevation_b)
+            lower_limit = min(elevation_a, elevation_b)
+            if abs(upper_limit - lower_limit) < 1e-9:
+                continue
+            layers.append((upper_limit, lower_limit, thickness, density))
+
+        layers.sort(key=lambda row: row[0], reverse=True)
+
+        items: List[Dict[str, Any]] = []
+        for layer_no, (upper_limit, lower_limit, thickness_mm, density) in enumerate(layers[:9], start=1):
+            items.append({
+                "layer_no": layer_no,
+                "upper_limit_m": upper_limit,
+                "lower_limit_m": lower_limit,
+                "thickness_mm": thickness_mm,
+                "density_t_per_m3": density,
+                "sort_order": layer_no,
+            })
+        return items
+
+    def _resolve_current_sea_file(self) -> str:
+        facility_code = self._get_top_value("facility_code")
+        return self._find_current_sea_file_from_db(facility_code)
+
+    def _on_read_marine_table_from_seainp(self) -> None:
+        try:
+            sea_file = self._resolve_current_sea_file()
+            if not sea_file:
+                QMessageBox.warning(self, "读取失败", "未在文件管理保存路径中找到当前设施对应的 SeaInp 海况文件。")
+                return
+            items = self._parse_marine_growth_from_seainp(sea_file)
+            if not items:
+                QMessageBox.warning(self, "读取失败", f"SeaInp 文件中未读取到有效 MGROV 数据：\n{sea_file}")
+                return
+            self._apply_marine_items(items)
+            QMessageBox.information(self, "读取完成", f"已从 SeaInp 读取 {len(items)} 层海生物信息。\n{sea_file}")
+        except Exception as exc:
+            QMessageBox.critical(self, "读取失败", f"SeaInp 海生物信息读取失败：\n{exc}")
+
     def _autoload_inp_to_view(self):
         if not hasattr(self, "inp_view"):
             return
@@ -2240,6 +2681,22 @@ class PlatformStrengthPage(BasePage):
         lay.addWidget(btn, 0)
         return row
 
+    def _make_marine_button_row(self) -> QWidget:
+        row = QWidget(self)
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        lay.addStretch(1)
+
+        btn_read = self._make_update_db_button("更新")
+        btn_read.clicked.connect(self._on_read_marine_table_from_seainp)
+        lay.addWidget(btn_read, 0)
+
+        btn_save = self._make_update_db_button("更新数据库")
+        btn_save.clicked.connect(self._on_update_marine_table_to_db)
+        lay.addWidget(btn_save, 0)
+        return row
+
     def _build_structure_model_kv_table(self) -> QTableWidget:
         tbl = QTableWidget(2, 3)
         tbl.setFocusPolicy(Qt.NoFocus)
@@ -2256,12 +2713,14 @@ class PlatformStrengthPage(BasePage):
         self._set_center_item(tbl, 0, 0, "泥面高程", editable=False)
         self.edt_mud_level = QLineEdit("")  # 初始为空，由模型加载后回填或数据库读取
         self.edt_mud_level.setFont(self._songti_small_four_font())
+        self.edt_mud_level.setReadOnly(True)
         tbl.setCellWidget(0, 1, self.edt_mud_level)
         self._set_center_item(tbl, 0, 2, "m", editable=False)
 
         self._set_center_item(tbl, 1, 0, "工作平面高程Workpoint", editable=False)
         self.edt_workpoint = QLineEdit("")  # 用户输入，初始为空
         self.edt_workpoint.setFont(self._songti_small_four_font())
+        self.edt_workpoint.setReadOnly(True)
         tbl.setCellWidget(1, 1, self.edt_workpoint)
         self._set_center_item(tbl, 1, 2, "m", editable=False)
 
@@ -2316,6 +2775,7 @@ class PlatformStrengthPage(BasePage):
         self.tbl_layers = QTableWidget(1, 1, box)
         self.tbl_layers.setFocusPolicy(Qt.NoFocus)
         self._init_table_common(self.tbl_layers, show_vertical_header=False)
+        self.tbl_layers.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_layers.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self._set_center_item(self.tbl_layers, 0, 0, "Z(m)", editable=False)
@@ -2411,6 +2871,7 @@ class PlatformStrengthPage(BasePage):
         self.tbl_splash = tbl_splash
         tbl_splash.setHorizontalHeaderLabels(["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm/y)"])
         self._init_table_common(tbl_splash, show_vertical_header=False)
+        tbl_splash.setEditTriggers(QAbstractItemView.NoEditTriggers)
         for c in range(3):
             self._set_center_item(tbl_splash, 0, c, "")
         tbl_splash.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -2443,6 +2904,7 @@ class PlatformStrengthPage(BasePage):
         self.tbl_pile = tbl_pile
         tbl_pile.setHorizontalHeaderLabels(["基础冲刷(m)", "桩基础抗压承载能力(t)", "桩基础抗拔承载能力(t)", "单根桩泥下自重(t)"])
         self._init_table_common(tbl_pile, show_vertical_header=False)
+        tbl_pile.setEditTriggers(QAbstractItemView.NoEditTriggers)
         for c in range(4):
             self._set_center_item(tbl_pile, 0, c, "")
         tbl_pile.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -2469,11 +2931,12 @@ class PlatformStrengthPage(BasePage):
         marine_box.setStyleSheet(section_title_qss)
         marine_layout = QVBoxLayout(marine_box)
         marine_layout.setContentsMargins(8, 8, 8, 8)
-        marine_layout.addWidget(self._make_update_button_row(self._on_update_marine_table_to_db), 0)
+        marine_layout.addWidget(self._make_marine_button_row(), 0)
 
         tbl_marine = QTableWidget(5, 12, marine_box)
         self.tbl_marine = tbl_marine
         self._init_table_common(tbl_marine, show_vertical_header=False)
+        tbl_marine.setEditTriggers(QAbstractItemView.NoEditTriggers)
         tbl_marine.horizontalHeader().setVisible(False)
         tbl_marine.verticalHeader().setVisible(False)
         tbl_marine.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)

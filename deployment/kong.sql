@@ -416,33 +416,6 @@ CREATE TABLE `new_riser_members` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Table structure for table `oilfield_current_param_item`
---
-
-DROP TABLE IF EXISTS `oilfield_current_param_item`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `oilfield_current_param_item` (
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `profile_id` bigint NOT NULL COMMENT '关联主表ID',
-  `group_name` varchar(100) NOT NULL COMMENT '分组名称，如主极值/风主极值条件下极值/波浪主极值条件下极值',
-  `item_name` varchar(100) NOT NULL COMMENT '项目名称，如表层(0.1倍水深)、中层(0.5倍水深)等',
-  `return_period` int NOT NULL COMMENT '回归周期，单位年，如1/10/25/50/100',
-  `value` decimal(10,3) NOT NULL COMMENT '数值',
-  `unit` varchar(20) NOT NULL DEFAULT 'm/s' COMMENT '单位',
-  `sort_order` int NOT NULL DEFAULT '0' COMMENT '排序号',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  PRIMARY KEY (`id`),
-  KEY `idx_current_profile` (`profile_id`),
-  KEY `idx_current_sort` (`profile_id`,`sort_order`),
-  KEY `idx_current_group` (`profile_id`,`group_name`),
-  KEY `idx_current_period` (`profile_id`,`return_period`),
-  CONSTRAINT `fk_current_param_profile` FOREIGN KEY (`profile_id`) REFERENCES `oilfield_env_profile` (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=181 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='油气田海流参数明细表';
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
 -- Table structure for table `oilfield_env_profile`
 --
 
@@ -451,16 +424,16 @@ DROP TABLE IF EXISTS `oilfield_env_profile`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `oilfield_env_profile` (
   `id` bigint NOT NULL AUTO_INCREMENT,
-  `branch` varchar(100) NOT NULL COMMENT '分公司',
-  `op_company` varchar(100) NOT NULL COMMENT '作业公司',
-  `oilfield` varchar(100) NOT NULL COMMENT '油气田',
-  `version_no` int NOT NULL DEFAULT '1' COMMENT '版本号',
-  `remark` varchar(255) DEFAULT NULL COMMENT '备注',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `branch` varchar(100) NOT NULL,
+  `op_company` varchar(100) NOT NULL,
+  `oilfield` varchar(100) NOT NULL,
+  `version_no` int NOT NULL DEFAULT '1',
+  `remark` varchar(255) DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_oilfield_env_profile` (`branch`,`op_company`,`oilfield`,`version_no`)
-) ENGINE=InnoDB AUTO_INCREMENT=96 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='油气田环境参数主表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -472,47 +445,20 @@ DROP TABLE IF EXISTS `oilfield_water_level_item`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `oilfield_water_level_item` (
   `id` bigint NOT NULL AUTO_INCREMENT,
-  `profile_id` bigint NOT NULL COMMENT '关联主表ID',
-  `group_name` varchar(50) DEFAULT NULL COMMENT '分组名称，如最高水位/最低水位；无分组时为空',
-  `item_name` varchar(100) NOT NULL COMMENT '项目名称',
-  `value` decimal(10,3) NOT NULL COMMENT '数值',
-  `unit` varchar(20) NOT NULL DEFAULT 'm' COMMENT '单位',
-  `sort_order` int NOT NULL DEFAULT '0' COMMENT '排序号',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `profile_id` bigint NOT NULL,
+  `group_name` varchar(50) DEFAULT NULL,
+  `item_name` varchar(100) NOT NULL,
+  `value` decimal(10,3) NOT NULL,
+  `unit` varchar(20) NOT NULL DEFAULT 'm',
+  `sort_order` int NOT NULL DEFAULT '0',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_water_level_profile` (`profile_id`),
   KEY `idx_water_level_sort` (`profile_id`,`sort_order`),
   KEY `idx_water_level_group` (`profile_id`,`group_name`),
-  CONSTRAINT `fk_water_level_profile` FOREIGN KEY (`profile_id`) REFERENCES `oilfield_env_profile` (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=37 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='油气田水深水位明细表';
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `oilfield_wave_param_item`
---
-
-DROP TABLE IF EXISTS `oilfield_wave_param_item`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `oilfield_wave_param_item` (
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `profile_id` bigint NOT NULL COMMENT '关联主表ID',
-  `group_name` varchar(100) NOT NULL COMMENT '分组名称，如主极值/风主极值条件下极值/海流主极值条件下极值',
-  `item_name` varchar(100) NOT NULL COMMENT '项目名称，如有义波高Hs、最大波高Hmax、跨零周期Tz等',
-  `return_period` int NOT NULL COMMENT '回归周期，单位年，如1/10/25/50/100',
-  `value` decimal(10,3) NOT NULL COMMENT '数值',
-  `unit` varchar(20) NOT NULL COMMENT '单位，如m/s/m',
-  `sort_order` int NOT NULL DEFAULT '0' COMMENT '排序号',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  PRIMARY KEY (`id`),
-  KEY `idx_wave_profile` (`profile_id`),
-  KEY `idx_wave_sort` (`profile_id`,`sort_order`),
-  KEY `idx_wave_group` (`profile_id`,`group_name`),
-  KEY `idx_wave_period` (`profile_id`,`return_period`),
-  CONSTRAINT `fk_wave_param_profile` FOREIGN KEY (`profile_id`) REFERENCES `oilfield_env_profile` (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=241 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='油气田波浪参数明细表';
+  CONSTRAINT `fk_water_level_profile` FOREIGN KEY (`profile_id`) REFERENCES `oilfield_env_profile` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -524,22 +470,76 @@ DROP TABLE IF EXISTS `oilfield_wind_param_item`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `oilfield_wind_param_item` (
   `id` bigint NOT NULL AUTO_INCREMENT,
-  `profile_id` bigint NOT NULL COMMENT '关联主表ID',
-  `group_name` varchar(100) NOT NULL COMMENT '分组名称，如主极值/波浪主极值下条件极值/海流主极值下条件极值',
-  `item_name` varchar(50) NOT NULL COMMENT '项目名称，如1 h、10 min、1 min、3 s',
-  `return_period` int NOT NULL COMMENT '回归周期，单位年，如1/10/25/50/100',
-  `value` decimal(10,3) NOT NULL COMMENT '数值',
-  `unit` varchar(20) NOT NULL DEFAULT 'm/s' COMMENT '单位',
-  `sort_order` int NOT NULL DEFAULT '0' COMMENT '排序号',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `profile_id` bigint NOT NULL,
+  `group_name` varchar(100) NOT NULL,
+  `item_name` varchar(50) NOT NULL,
+  `return_period` int NOT NULL,
+  `value` decimal(10,3) NOT NULL,
+  `unit` varchar(20) NOT NULL DEFAULT 'm/s',
+  `sort_order` int NOT NULL DEFAULT '0',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_wind_profile` (`profile_id`),
   KEY `idx_wind_sort` (`profile_id`,`sort_order`),
   KEY `idx_wind_group` (`profile_id`,`group_name`),
   KEY `idx_wind_period` (`profile_id`,`return_period`),
-  CONSTRAINT `fk_wind_param_profile` FOREIGN KEY (`profile_id`) REFERENCES `oilfield_env_profile` (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=181 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='油气田风参数明细表';
+  CONSTRAINT `fk_wind_param_profile` FOREIGN KEY (`profile_id`) REFERENCES `oilfield_env_profile` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `oilfield_wave_param_item`
+--
+
+DROP TABLE IF EXISTS `oilfield_wave_param_item`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `oilfield_wave_param_item` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `profile_id` bigint NOT NULL,
+  `group_name` varchar(100) NOT NULL,
+  `item_name` varchar(100) NOT NULL,
+  `return_period` int NOT NULL,
+  `value` decimal(10,3) NOT NULL,
+  `unit` varchar(20) NOT NULL,
+  `sort_order` int NOT NULL DEFAULT '0',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_wave_profile` (`profile_id`),
+  KEY `idx_wave_sort` (`profile_id`,`sort_order`),
+  KEY `idx_wave_group` (`profile_id`,`group_name`),
+  KEY `idx_wave_period` (`profile_id`,`return_period`),
+  CONSTRAINT `fk_wave_param_profile` FOREIGN KEY (`profile_id`) REFERENCES `oilfield_env_profile` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `oilfield_current_param_item`
+--
+
+DROP TABLE IF EXISTS `oilfield_current_param_item`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `oilfield_current_param_item` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `profile_id` bigint NOT NULL,
+  `group_name` varchar(100) NOT NULL,
+  `item_name` varchar(100) NOT NULL,
+  `return_period` int NOT NULL,
+  `value` decimal(10,3) NOT NULL,
+  `unit` varchar(20) NOT NULL DEFAULT 'm/s',
+  `sort_order` int NOT NULL DEFAULT '0',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_current_profile` (`profile_id`),
+  KEY `idx_current_sort` (`profile_id`,`sort_order`),
+  KEY `idx_current_group` (`profile_id`,`group_name`),
+  KEY `idx_current_period` (`profile_id`,`return_period`),
+  CONSTRAINT `fk_current_param_profile` FOREIGN KEY (`profile_id`) REFERENCES `oilfield_env_profile` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
