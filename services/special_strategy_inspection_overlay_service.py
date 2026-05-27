@@ -358,7 +358,23 @@ def _load_context_overlay_fallback(
         return _empty_overlay(facility_code, run_id, display_year, _norm_time_label(display_year))
 
     context = payload.get("context") or {}
+    context = dict(context or {})
     context_year = _norm_time_label(display_year)
+
+    # 新版计算路径不生成 special_strategy.pipeline.xlsx，而是把检验策略明细
+    # 保存进 snapshot。这里把 snapshot 顶层明细补回 context，确保旧/新缓存都能读取。
+    member_strategy_rows = payload.get("member_inspection_strategy_rows") or []
+    node_strategy_rows = payload.get("node_inspection_strategy_rows") or []
+
+    if member_strategy_rows and not context.get("member_inspection_strategy_rows"):
+        context["member_inspection_strategy_rows"] = member_strategy_rows
+    if node_strategy_rows and not context.get("node_inspection_strategy_rows"):
+        context["node_inspection_strategy_rows"] = node_strategy_rows
+
+    if member_strategy_rows and not context.get("member_inspection_rows"):
+        context["member_inspection_rows"] = member_strategy_rows
+    if node_strategy_rows and not context.get("node_inspection_rows"):
+        context["node_inspection_rows"] = node_strategy_rows
 
     member_level_by_key = {}
     node_level_by_joint = {}
@@ -478,14 +494,22 @@ def load_strategy_inspection_overlay(
                 "context_year": context_year,
             })
 
+            member_count = len(overlay.get("member_level_by_key") or {})
+            node_count = len(overlay.get("node_level_by_joint") or {})
             print(
                 "[InspectionOverlay] source=pipeline_xlsx",
                 "year=", context_year,
                 "workbook=", workbook_path,
-                "member=", len(overlay.get("member_level_by_key") or {}),
-                "node=", len(overlay.get("node_level_by_joint") or {}),
+                "member=", member_count,
+                "node=", node_count,
             )
-            return overlay
+
+            # 旧文件或空文件存在时，不要直接返回空 overlay；
+            # 继续 fallback 到 snapshot/context，避免右侧立面等级图空白。
+            if member_count or node_count:
+                return overlay
+
+            print("[InspectionOverlay] pipeline overlay empty, fallback to snapshot/context:", workbook_path)
 
         except Exception as exc:
             print("[InspectionOverlay] read pipeline workbook failed:", workbook_path, exc)
