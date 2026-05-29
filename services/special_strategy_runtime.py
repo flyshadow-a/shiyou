@@ -1172,6 +1172,7 @@ def _build_result_bundle_from_pipeline_outputs(
     member_strategy_rows = _member_strategy_records_from_df(final_outputs.get("member_plan_df"))
     node_risk_rows = _node_risk_records_from_df(final_outputs.get("joint_risk_df"))
     node_strategy_rows = _node_strategy_records_from_df(final_outputs.get("node_plan_df"))
+
     context = build_context(
         node_risk_rows,
         node_strategy_rows,
@@ -1183,6 +1184,19 @@ def _build_result_bundle_from_pipeline_outputs(
         apply_vba_joint_delete_rules_current=False,
         apply_vba_joint_delete_rules_future=False,
     )
+    context = dict(context or {})
+
+    # 右侧“模型立面检验等级图”需要的是检验策略明细行中的
+    # joint_a / joint_b / joint_id / brace / inspect_level / time_node。
+    # 当前正常计算路径 write_excel=False，不再生成 special_strategy.pipeline.xlsx，
+    # 因此必须把这些明细行持久化到 snapshot/context 中，供 overlay fallback 直接读取。
+    context["member_inspection_strategy_rows"] = member_strategy_rows
+    context["node_inspection_strategy_rows"] = node_strategy_rows
+
+    # 兼容 services.special_strategy_inspection_overlay_service 中已有的读取 key。
+    context["member_inspection_rows"] = member_strategy_rows
+    context["node_inspection_rows"] = node_strategy_rows
+
     detail_rows = _detail_rows_from_pipeline_records(
         member_risk_rows=member_risk_rows,
         node_risk_rows=node_risk_rows,
@@ -1193,6 +1207,8 @@ def _build_result_bundle_from_pipeline_outputs(
         "context": context,
         "member_risk_rows_full": detail_rows["member"],
         "node_risk_rows_full": detail_rows["node"],
+        "member_inspection_strategy_rows": member_strategy_rows,
+        "node_inspection_strategy_rows": node_strategy_rows,
     }
 
 
@@ -1384,6 +1400,11 @@ def finalize_special_strategy_calculation(
             "context": result_bundle["context"],
             "member_risk_rows_full": result_bundle["member_risk_rows_full"],
             "node_risk_rows_full": result_bundle["node_risk_rows_full"],
+
+            # 给右侧立面检验等级图直接从缓存读取，避免依赖 special_strategy.pipeline.xlsx。
+            "member_inspection_strategy_rows": result_bundle.get("member_inspection_strategy_rows", []),
+            "node_inspection_strategy_rows": result_bundle.get("node_inspection_strategy_rows", []),
+
             "state": {
                 "facility_code": state["facility_code"],
                 "metadata": state["metadata"],

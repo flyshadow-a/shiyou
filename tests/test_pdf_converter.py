@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from zipfile import ZipFile
 
 
 from pages.output_feasibility_analysis_report.src.pdf_converter import (
     _compute_body_page_count,
     _configure_body_page_numbers,
+    _sanitize_docx_for_word_com,
     _update_body_header_footer_fields,
     _update_table_page_numbers,
     convert_docx_to_pdf,
@@ -81,28 +84,78 @@ class PdfConverterTests(unittest.TestCase):
         self.assertFalse(sections[1].Footers.Item(1).Range.Fields.Update.called)
         self.assertTrue(sections[2].Footers.Item(1).Range.Fields.Update.called)
 
+    def test_sanitize_docx_for_word_com_removes_document_ignorable_attribute(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.subTest("mc prefix"):
+                path = Path(tmp_dir) / "test_report_mc.docx"
+                document_xml = (
+                    b"<?xml version='1.0' encoding='utf-8'?>"
+                    b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+                    b'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+                    b'mc:Ignorable="w14 w15 wp14"><w:body /></w:document>'
+                )
+                with ZipFile(path, "w") as archive:
+                    archive.writestr("word/document.xml", document_xml)
+                    archive.writestr("word/_rels/document.xml.rels", b"<Relationships />")
+
+                self.assertTrue(_sanitize_docx_for_word_com(path))
+
+                with ZipFile(path) as archive:
+                    cleaned_xml = archive.read("word/document.xml")
+                    self.assertIn(b'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"', cleaned_xml)
+                    self.assertNotIn(b"mc:Ignorable", cleaned_xml)
+                    self.assertEqual(b"<Relationships />", archive.read("word/_rels/document.xml.rels"))
+
+            with self.subTest("rewritten namespace prefix"):
+                path = Path(tmp_dir) / "test_report_ns.docx"
+                document_xml = (
+                    b"<?xml version='1.0' encoding='utf-8'?>"
+                    b'<ns0:document xmlns:ns0="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+                    b'xmlns:ns1="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+                    b'ns1:Ignorable="w14 w15 wp14"><ns0:body /></ns0:document>'
+                )
+                with ZipFile(path, "w") as archive:
+                    archive.writestr("word/document.xml", document_xml)
+
+                self.assertTrue(_sanitize_docx_for_word_com(path))
+
+                with ZipFile(path) as archive:
+                    cleaned_xml = archive.read("word/document.xml")
+                    self.assertIn(
+                        b'xmlns:ns1="http://schemas.openxmlformats.org/markup-compatibility/2006"',
+                        cleaned_xml,
+                    )
+                    self.assertNotIn(b"ns1:Ignorable", cleaned_xml)
+
     def test_convert_docx_to_pdf_ignores_word_quit_cleanup_failure(self) -> None:
-        document = Mock()
-        word = Mock()
-        word.Documents.Open.return_value = document
-        del word.Quit
-        word.Application.Quit.side_effect = AttributeError("Word.Application.Quit")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "file.docx"
+            pdf_path = Path(tmp_dir) / "file.pdf"
+            docx_path.write_bytes(b"fake docx")
 
-        with patch("pathlib.Path.exists", return_value=True), patch(
-            "pathlib.Path.resolve", side_effect=lambda *args, **kwargs: Path(r"D:\reports\file.docx")
-        ), patch(
-            "pages.output_feasibility_analysis_report.src.pdf_converter._update_document_fields"
-        ), patch.dict(
-            "sys.modules",
-            {
-                "pythoncom": Mock(CoInitialize=Mock(), CoUninitialize=Mock()),
-                "win32com": Mock(),
-                "win32com.client": Mock(DispatchEx=Mock(return_value=word)),
-            },
-        ):
-            result = convert_docx_to_pdf(r"D:\reports\file.docx", r"D:\reports\file.pdf")
+            document = Mock()
+            document.ExportAsFixedFormat.side_effect = lambda **kwargs: pdf_path.write_bytes(b"%PDF")
+            word = Mock()
+            word.Documents.Open.return_value = document
+            del word.Quit
+            word.Application.Quit.side_effect = AttributeError("Word.Application.Quit")
+            win32com_client = Mock(DispatchEx=Mock(return_value=word))
 
-        self.assertEqual(r"D:\reports\file.pdf", result)
+            with patch(
+                "pages.output_feasibility_analysis_report.src.pdf_converter._update_document_fields"
+            ), patch(
+                "pages.output_feasibility_analysis_report.src.pdf_converter._sanitize_docx_for_word_com"
+            ), patch.dict(
+                "sys.modules",
+                {
+                    "pythoncom": Mock(CoInitialize=Mock(), CoUninitialize=Mock()),
+                    "win32com": SimpleNamespace(client=win32com_client),
+                    "win32com.client": win32com_client,
+                },
+            ):
+                result = convert_docx_to_pdf(docx_path, pdf_path)
+
+        self.assertEqual(str(pdf_path), result)
 
 
 if __name__ == "__main__":

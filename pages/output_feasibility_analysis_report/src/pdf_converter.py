@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from zipfile import ZipFile
 
 
 PDF_FORMAT_CODE = 17
@@ -10,6 +12,14 @@ TOTAL_PAGES_FIELD = "NUMPAGES"
 PAGE_FIELD = "PAGE"
 HEADER_FOOTER_INDEXES = range(1, 4)
 BODY_PAGE_COUNT_OFFSET = 1
+DOCUMENT_XML_PART = "word/document.xml"
+MARKUP_COMPATIBILITY_NAMESPACE = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+ROOT_DOCUMENT_TAG_RE = re.compile(rb"<(?:[\w.-]+:)?document\b[^>]*>", re.DOTALL)
+XMLNS_PREFIX_RE = re.compile(
+    rb"\s+xmlns:([A-Za-z_][\w.-]*)=(['\"])"
+    + re.escape(MARKUP_COMPATIBILITY_NAMESPACE.encode("ascii"))
+    + rb"\2"
+)
 
 
 def _safe_call(method, *args) -> None:
@@ -234,6 +244,52 @@ def _update_document_fields(document) -> None:
     _update_body_header_footer_fields(document, first_body_section_index, total_pages)
 
 
+def _remove_document_ignorable_attribute(xml_data: bytes) -> tuple[bytes, bool]:
+    match = ROOT_DOCUMENT_TAG_RE.search(xml_data)
+    if not match:
+        return xml_data, False
+
+    root_tag = match.group(0)
+    updated_tag = root_tag
+    for prefix_match in XMLNS_PREFIX_RE.finditer(root_tag):
+        prefix = re.escape(prefix_match.group(1))
+        attr_re = re.compile(rb"\s+" + prefix + rb":Ignorable=(['\"]).*?\1", re.DOTALL)
+        updated_tag = attr_re.sub(b"", updated_tag)
+
+    if updated_tag == root_tag:
+        return xml_data, False
+    return xml_data[: match.start()] + updated_tag + xml_data[match.end() :], True
+
+
+def _sanitize_docx_for_word_com(docx_path: str | Path) -> bool:
+    path = Path(docx_path)
+    temp_path = path.with_name(f".{path.name}.word_com_tmp")
+    changed = False
+
+    if temp_path.exists():
+        temp_path.unlink()
+
+    try:
+        with ZipFile(path, "r") as source_zip, ZipFile(temp_path, "w") as target_zip:
+            for item in source_zip.infolist():
+                data = source_zip.read(item.filename)
+                if item.filename == DOCUMENT_XML_PART:
+                    data, part_changed = _remove_document_ignorable_attribute(data)
+                    changed = changed or part_changed
+                target_zip.writestr(item, data)
+
+        if changed:
+            temp_path.replace(path)
+        else:
+            temp_path.unlink(missing_ok=True)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
+
+    return changed
+
+
 def build_pdf_output_path(docx_path: str | Path) -> str:
     return str(Path(docx_path).with_suffix(".pdf"))
 
@@ -253,6 +309,8 @@ def convert_docx_to_pdf(docx_path: str | Path, pdf_path: str | Path | None = Non
             "未安装 pywin32，无法将 Word 文档转换为 PDF。请先安装 pywin32，并确保本机已安装 Microsoft Word。"
         ) from exc
 
+    _sanitize_docx_for_word_com(source)
+
     target.parent.mkdir(parents=True, exist_ok=True)
     pythoncom.CoInitialize()
     word = None
@@ -261,9 +319,17 @@ def convert_docx_to_pdf(docx_path: str | Path, pdf_path: str | Path | None = Non
         word = win32com.client.DispatchEx("Word.Application")
         word.Visible = False
         word.DisplayAlerts = 0
-        document = word.Documents.Open(str(source.resolve()))
+        document = word.Documents.Open(
+            FileName=str(source.resolve()),
+            ConfirmConversions=False,
+            ReadOnly=False,
+            AddToRecentFiles=False,
+        )
         _update_document_fields(document)
-        document.ExportAsFixedFormat(str(target.resolve()), PDF_FORMAT_CODE)
+        document.ExportAsFixedFormat(
+            OutputFileName=str(target.resolve()),
+            ExportFormat=PDF_FORMAT_CODE,
+        )
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(f"Word 转 PDF 失败: {exc}") from exc
     finally:
