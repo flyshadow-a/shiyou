@@ -2,11 +2,10 @@
 解析桩头力结果块。
 
 说明：
-1. VBA `ReadList` 读取的是 `INTERNAL FORCES ON STRUCTURE` 下的 `PILE HEAD COORDINATES` 数据。
-2. 其中桩局部坐标系的 `FORCE(X)` 被视为轴向力，并在写入 Excel 时取相反数：
-   - 压缩为负值
-   - 拉伸为正值
-3. 这里保持与 VBA 同口径，直接输出 `axial_force_kn = -FORCE(X)`。
+1. 甲方更正后读取 `FINAL PILE HEAD FORCES` 下的 `PILE HEAD COORDINATES` 数据。
+2. 其中 `FORCE(X)` 被视为轴向力，原始符号即业务含义：
+   - 负数代表压力 compression
+   - 正数代表拉力 tension
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ class PileHeadForceResult(TypedDict):
     rows: list[PileHeadForceRow]
 
 
-TITLE_PREFIX = "INTERNAL FORCES ON STRUCTURE"
+TITLE_PREFIX = "FINAL PILE HEAD FORCES"
 PILE_HEAD_MARKER = "PILE HEAD COORDINATES"
 
 
@@ -43,14 +42,19 @@ def _parse_row(line: str, load_case: str) -> PileHeadForceRow | None:
     parts = line.split()
     if len(parts) < 8:
         return None
-    if not parts[0].startswith("P"):
+    if "P" not in parts[0].upper():
+        return None
+
+    try:
+        axial_force_kn = float(parts[2])
+    except ValueError:
         return None
 
     return {
         "load_case": load_case,
         "pile_head_id": parts[0].strip(),
         "batter_joint_id": parts[1].strip(),
-        "axial_force_kn": -float(parts[2]),
+        "axial_force_kn": axial_force_kn,
     }
 
 
@@ -83,7 +87,7 @@ def parse_pile_head_forces(lines: list[str]) -> PileHeadForceResult:
             continue
         if "JOINT  JOINT" in upper_line and "FORCE(X)" in upper_line:
             continue
-        if TITLE_PREFIX in upper_line or "STRUCTURAL COORDINATES" in upper_line:
+        if "FINAL PILE HEAD FORCES" in upper_line or "STRUCTURAL COORDINATES" in upper_line:
             reading_pile_head_rows = False
             continue
 

@@ -1,12 +1,12 @@
 """
-按 VBA `FindMaxPileHead()` 逻辑装配 4.5.3 桩基承载力结果。
+装配 4.5.3 桩基承载力结果。
 
 说明：
 1. 操作/极端工况来源于 `LOAD CASE STATUS REPORT` 的真实分类。
 2. 压力/拉力来源于 `PILE HEAD COORDINATES` 下的轴向力极值，而不是直接抄
    `SOIL MAXIMUM AXIAL CAPACITY SUMMARY` 的控制工况。
 3. 承载力和桩身重量仍复用 `SOIL MAXIMUM AXIAL CAPACITY SUMMARY` 中每个桩头的能力参数。
-4. 安全系数公式与 VBA 保持一致：
+4. 安全系数公式：
    - 抗压: capacity / (compression_load + weight)
    - 抗拔: capacity / (tension_load - weight)
 """

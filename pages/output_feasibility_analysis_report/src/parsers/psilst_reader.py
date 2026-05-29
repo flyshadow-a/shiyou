@@ -53,8 +53,8 @@ def _ui_analysis_marker_for_line(upper_line: str) -> str:
     stripped = upper_line.strip()
     if stripped.startswith("**** LOAD CASE STATUS REPORT"):
         return "LOAD CASE STATUS REPORT"
-    if "INTERNAL FORCES ON STRUCTURE" in upper_line and "FOR LOAD CASE" in upper_line:
-        return "INTERNAL FORCES ON STRUCTURE"
+    if "FINAL PILE HEAD FORCES" in upper_line and "FOR LOAD CASE" in upper_line:
+        return "FINAL PILE HEAD FORCES"
     for marker in (
         "M E M B E R  G R O U P  S U M M A R Y",
         "J O I N T   C A N   S U M M A R Y",
@@ -134,6 +134,16 @@ def read_ui_analysis_lines(path: str) -> list[str]:
         b"M E M B E R  G R O U P  S U M M A R Y",
         max(axial_start, 0),
     )
+
+    force_start = _find_bytes_marker(
+        file_path,
+        b"FINAL PILE HEAD FORCES",
+        max(status_start, 0),
+    )
+    if force_start != -1:
+        force_end = member_start if member_start != -1 and member_start > force_start else file_size
+        chunks.append(_read_bytes_range(file_path, force_start, force_end))
+
     if member_start != -1:
         member_end = _find_bytes_marker(file_path, b"L O A D  P A T H  R E P O R T", member_start)
         if member_end == -1:

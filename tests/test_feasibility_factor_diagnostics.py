@@ -32,24 +32,24 @@ MINIMAL_FACTOR_LINES = [
     "       2    OL16     YES    NO      NO        1.00    1.00",
     "       3    EH11     YES    NO      NO        1.00    1.33",
     "       4    EL16     YES    NO      NO        1.00    1.33",
-    "                                        INTERNAL FORCES ON STRUCTURE (KN   AND KN-M    ) FOR LOAD CASE OL16",
+    "                                        FINAL PILE HEAD FORCES (KN   AND KN-M    ) FOR LOAD CASE OL16",
     "                                                    PILE HEAD COORDINATES",
     "     PILE   BATTER",
     "     JOINT  JOINT       FORCE(X)       FORCE(Y)       FORCE(Z)      MOMENT(X)      MOMENT(Y)      MOMENT(Z)",
-    "     P101   P111      30315.626      -1571.200        317.665          5.901       4102.623      10058.362",
+    "     001P   101P     -30315.626      -1571.200        317.665          5.901       4102.623      10058.362",
     "                                                     STRUCTURAL COORDINATES",
-    "                                        INTERNAL FORCES ON STRUCTURE (KN   AND KN-M    ) FOR LOAD CASE EL16",
+    "                                        FINAL PILE HEAD FORCES (KN   AND KN-M    ) FOR LOAD CASE EL16",
     "                                                    PILE HEAD COORDINATES",
     "     PILE   BATTER",
     "     JOINT  JOINT       FORCE(X)       FORCE(Y)       FORCE(Z)      MOMENT(X)      MOMENT(Y)      MOMENT(Z)",
-    "     P101   P111      46458.635      -1571.200        317.665          5.901       4102.623      10058.362",
+    "     001P   101P     -46458.635      -1571.200        317.665          5.901       4102.623      10058.362",
     "                                                     STRUCTURAL COORDINATES",
     "                               * * *  S O I L  M A X I M U M  A X I A L  C A P A C I T Y  S U M M A R Y  * * *",
     "PILE GRP  ********* PILE *********  ************** COMPRESSION *************  **************** TENSION ***************",
     " JT         PILEHEAD  WEIGHT  PEN.   CAPACITY    MAX.     CRITICAL CONDITION   CAPACITY    MAX.     CRITICAL CONDITION    *MAXIMUM*",
     "           O.D.  THK.               (INCL. WT)   LOAD      LOAD  LOAD SAFETY  (INCL. WT)   LOAD      LOAD  LOAD SAFETY    UNITY LOAD",
     "           CM    CM     KN     M       KN        KN        KN    CASE FACTOR     KN        KN        KN    CASE FACTOR    CHECK CASE",
-    "P101 PA  243.80  9.50 6002.4 133.0  -89154.0  -46458.6  -46458.6 EL16   1.92   96017.2    7875.0    7875.0 LTL3  12.19     0.78 EL16",
+    "001P PA  243.80  9.50 6002.4 133.0  -89154.0  -46458.6  -46458.6 EL16   1.92   96017.2    7875.0    7875.0 LTL3  12.19     0.78 EL16",
     "***** SACS LOAD CASE REPORT *****",
 ]
 
@@ -103,6 +103,7 @@ class FeasibilityFactorParserChainTests(unittest.TestCase):
             lines = read_ui_analysis_lines(str(factor_path))
 
         self.assertTrue(any("LOAD CASE STATUS REPORT" in line for line in lines))
+        self.assertTrue(any("FINAL PILE HEAD FORCES" in line for line in lines))
         self.assertTrue(any("PILE HEAD COORDINATES" in line for line in lines))
         self.assertTrue(any("S O I L  M A X I M U M" in line for line in lines))
         self.assertIn("PILE GROUP SUMMARY", lines)

@@ -14,7 +14,7 @@ from src.parsers.pile_head_capacity_summary_builder import build_pile_head_capac
 
 
 class PileHeadCapacitySummaryBuilderTests(unittest.TestCase):
-    def test_vba_style_negative_max_tension_outputs_dash(self) -> None:
+    def test_negative_axial_force_outputs_dash_for_tension(self) -> None:
         pile_head_forces = {
             "rows": [
                 {
@@ -58,7 +58,7 @@ class PileHeadCapacitySummaryBuilderTests(unittest.TestCase):
         self.assertEqual("P201", built["operation_tension"]["pile_head_id"])
         self.assertAlmostEqual(15.0, built["operation_tension"]["min_sf"])
 
-    def test_vba_style_tension_less_than_weight_is_still_calculated(self) -> None:
+    def test_tension_less_than_weight_is_still_calculated(self) -> None:
         pile_head_forces = {
             "rows": [
                 {

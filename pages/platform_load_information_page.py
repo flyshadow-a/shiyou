@@ -133,7 +133,7 @@ def _read_factor_bytes_range(path: str, start: int, end: int) -> bytes:
 def _read_factor_force_chunks(path: str, start: int, file_size: int) -> List[bytes]:
     chunks: List[bytes] = []
     try:
-        force_positions = list(_iter_factor_bytes_marker_positions(path, b"INTERNAL FORCES ON STRUCTURE", start))
+        force_positions = list(_iter_factor_bytes_marker_positions(path, b"FINAL PILE HEAD FORCES", start))
     except OSError:
         return chunks
     if not force_positions:
@@ -360,7 +360,7 @@ def _parse_result_factor_lines(lines, num_pat: str) -> Dict[str, object]:
                         "ten_capacity": abs(_factor_to_float(line[76:86].strip()) or 0.0),
                     }
 
-        if "INTERNAL FORCES ON STRUCTURE" in raw:
+        if "FINAL PILE HEAD FORCES" in raw:
             force_state = "scan_header"
             force_load_case = raw.strip()[-4:]
             force_header_scan = 4
@@ -384,13 +384,16 @@ def _parse_result_factor_lines(lines, num_pat: str) -> Dict[str, object]:
             if "\x0c" in raw:
                 force_state = "normal"
                 continue
+            if "STRUCTURAL COORDINATES" in raw or "FINAL PILE HEAD FORCES" in raw:
+                force_state = "normal"
+                continue
             if not line.strip():
                 continue
             pile_tokens = line[:10].split()
             pile_id = pile_tokens[0].strip() if pile_tokens else ""
             force_value = _factor_to_float(line[:33][-14:].strip())
-            if pile_id and force_load_case and force_value is not None:
-                pile_force_rows.append((pile_id, force_load_case, -force_value))
+            if "P" in pile_id.upper() and force_load_case and force_value is not None:
+                pile_force_rows.append((pile_id, force_load_case, force_value))
 
     load_rows = [row for row in load_rows if row.get("load_case")]
     for row in load_rows:
@@ -2619,7 +2622,7 @@ class PlatformLoadInformationPage(BasePage):
 
         while i < total:
             raw = lines[i]
-            if "INTERNAL FORCES ON STRUCTURE" not in raw:
+            if "FINAL PILE HEAD FORCES" not in raw:
                 i += 1
                 continue
 
@@ -2643,15 +2646,19 @@ class PlatformLoadInformationPage(BasePage):
             while j < total:
                 current_raw = lines[j]
                 current = current_raw.replace("\x0c", "")
-                if "\x0c" in current_raw or "INTERNAL FORCES ON STRUCTURE" in current_raw:
+                if (
+                    "\x0c" in current_raw
+                    or "FINAL PILE HEAD FORCES" in current_raw
+                    or "STRUCTURAL COORDINATES" in current_raw
+                ):
                     break
                 if current.strip():
                     pile_tokens = current[:10].split()
                     pile_id = pile_tokens[0].strip() if pile_tokens else ""
                     force_value = self._to_float(current[:33][-14:].strip())
-                    if pile_id and force_value is not None and case_type:
+                    if "P" in pile_id.upper() and force_value is not None and case_type:
                         pile_bucket = forces.setdefault(pile_id, {"Operation": [], "Extreme": []})
-                        pile_bucket.setdefault(case_type, []).append(-force_value)
+                        pile_bucket.setdefault(case_type, []).append(force_value)
                 j += 1
 
             i = j

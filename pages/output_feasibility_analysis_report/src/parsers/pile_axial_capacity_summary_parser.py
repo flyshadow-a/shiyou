@@ -76,7 +76,7 @@ def _parse_row(line: str) -> PileAxialCapacitySummaryRow | None:
     if len(parts) != 18:
         return None
 
-    if not parts[0].startswith("P"):
+    if "P" not in parts[0].upper():
         return None
 
     return {
