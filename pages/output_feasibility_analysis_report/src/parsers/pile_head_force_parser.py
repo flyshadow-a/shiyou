@@ -27,6 +27,9 @@ class PileHeadForceResult(TypedDict):
 
 TITLE_PREFIX = "FINAL PILE HEAD FORCES"
 PILE_HEAD_MARKER = "PILE HEAD COORDINATES"
+NON_TARGET_TITLE_PREFIXES = (
+    "INTERNAL FORCES ON STRUCTURE",
+)
 
 
 def _extract_case_name(line: str) -> str:
@@ -61,6 +64,7 @@ def _parse_row(line: str, load_case: str) -> PileHeadForceRow | None:
 def parse_pile_head_forces(lines: list[str]) -> PileHeadForceResult:
     rows: list[PileHeadForceRow] = []
     current_case = ""
+    current_block_is_target = False
     reading_pile_head_rows = False
 
     for line in lines:
@@ -68,10 +72,16 @@ def parse_pile_head_forces(lines: list[str]) -> PileHeadForceResult:
 
         if TITLE_PREFIX in upper_line and "FOR LOAD CASE" in upper_line:
             current_case = _extract_case_name(line)
+            current_block_is_target = True
+            reading_pile_head_rows = False
+            continue
+        if any(prefix in upper_line for prefix in NON_TARGET_TITLE_PREFIXES):
+            current_case = ""
+            current_block_is_target = False
             reading_pile_head_rows = False
             continue
 
-        if not current_case:
+        if not current_case or not current_block_is_target:
             continue
 
         if PILE_HEAD_MARKER in upper_line:

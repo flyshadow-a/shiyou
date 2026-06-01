@@ -7,6 +7,10 @@
    - `OP`/`OL` -> 操作工况
    - `EH`/`EL`/`LTH`/`LTL` -> 极端工况
 3. 这样可以与原 VBA 的 `AMOD FACTOR = 1.33` 判定逻辑保持一致。
+4. 安全系数按非倒数口径重算：
+   - 受压: abs(comp_capacity) / (abs(comp_max_load) + weight)
+   - 受拉: abs(tens_capacity) / (abs(tens_max_load) - weight)
+     若受拉分母小于等于 0，则显示为 "-"，不参与控制值判断。
 """
 
 from __future__ import annotations
@@ -83,6 +87,52 @@ def _format_positive(value: float | None) -> str:
     return _format_number(abs(value))
 
 
+def _calc_compression_ratio(row: Mapping[str, Any]) -> float | None:
+    capacity = abs(float(row.get("comp_capacity_kn", 0.0) or 0.0))
+    if capacity <= 0:
+        return None
+    load = abs(float(row.get("comp_max_load_kn", 0.0) or 0.0))
+    weight = float(row.get("pile_weight_kn", 0.0) or 0.0)
+    denominator = load + weight
+    if denominator <= 0:
+        return None
+    return capacity / denominator
+
+
+def _calc_tension_ratio(row: Mapping[str, Any]) -> float | None:
+    capacity = abs(float(row.get("tens_capacity_kn", 0.0) or 0.0))
+    if capacity <= 0:
+        return None
+    load = abs(float(row.get("tens_max_load_kn", 0.0) or 0.0))
+    weight = float(row.get("pile_weight_kn", 0.0) or 0.0)
+    denominator = load - weight
+    if denominator <= 0:
+        return None
+    return capacity / denominator
+
+
+def _calc_ratio(row: Mapping[str, Any], resistance_type: ResistanceType) -> float | None:
+    if resistance_type == "compression":
+        return _calc_compression_ratio(row)
+    return _calc_tension_ratio(row)
+
+
+def _rows_with_ratio(
+    rows: list[dict],
+    *,
+    condition_type: ConditionType,
+    resistance_type: ResistanceType,
+    case_type_map: Mapping[str, ConditionType] | None,
+) -> list[dict]:
+    case_field = "comp_case" if resistance_type == "compression" else "tens_case"
+    return [
+        row
+        for row in rows
+        if _match_condition(str(row.get(case_field, "")), case_type_map) == condition_type
+        and _calc_ratio(row, resistance_type) is not None
+    ]
+
+
 def _build_condition_table_rows(
     rows: list[dict],
     condition_type: ConditionType,
@@ -113,10 +163,12 @@ def _build_condition_table_rows(
                     row.get("tens_max_load_kn") if tens_matches else None
                 ),
                 "compression_sf": _format_number(
-                    float(row["comp_sf"]) if comp_matches else None
+                    _calc_compression_ratio(row) if comp_matches else None
                 ),
-                "tension_sf": _format_number(
-                    float(row["tens_sf"]) if tens_matches else None
+                "tension_sf": (
+                    _format_number(tension_ratio)
+                    if tens_matches and (tension_ratio := _calc_tension_ratio(row)) is not None
+                    else ("-" if tens_matches else "")
                 ),
             }
         )
@@ -131,7 +183,6 @@ def _build_control_summary(
     check_item: str,
     condition_type: ConditionType,
     resistance_type: ResistanceType,
-    sf_field: str,
     case_field: str,
     capacity_field: str,
     max_load_field: str,
@@ -164,7 +215,34 @@ def _build_control_summary(
             },
         }
 
-    min_sf = float(row[sf_field])
+    ratio = _calc_ratio(row, resistance_type)
+    if ratio is None:
+        return {
+            "key": key,
+            "check_item": check_item,
+            "condition_type": condition_type,
+            "resistance_type": resistance_type,
+            "min_sf": 0.0,
+            "pile_head_id": "",
+            "group_id": "",
+            "case": "",
+            "capacity_kn": 0.0,
+            "design_load_kn": 0.0,
+            "critical_load_kn": 0.0,
+            "max_unity_check": 0.0,
+            "is_pass": False,
+            "is_pass_text": "无数据",
+            "summary_text": f"未读取到{check_item}结果，无法生成摘要。",
+            "summary_table_row": {
+                "check_item": check_item,
+                "position": "",
+                "value": "",
+                "case": "",
+                "is_pass": "无数据",
+            },
+        }
+
+    min_sf = ratio
     is_pass = min_sf >= pass_threshold
     is_pass_text = "满足" if is_pass else "不满足"
     case_name = str(row[case_field]).strip()
@@ -229,39 +307,43 @@ def build_pile_axial_capacity_summary(
             extreme_rows.append(row)
 
     operation_comp_row = min(
-        (
-            row
-            for row in rows
-            if _match_condition(str(row.get("comp_case", "")), case_type_map) == "operation"
+        _rows_with_ratio(
+            rows,
+            condition_type="operation",
+            resistance_type="compression",
+            case_type_map=case_type_map,
         ),
-        key=lambda item: item["comp_sf"],
+        key=lambda item: _calc_compression_ratio(item) or float("-inf"),
         default=None,
     )
     operation_tens_row = min(
-        (
-            row
-            for row in rows
-            if _match_condition(str(row.get("tens_case", "")), case_type_map) == "operation"
+        _rows_with_ratio(
+            rows,
+            condition_type="operation",
+            resistance_type="tension",
+            case_type_map=case_type_map,
         ),
-        key=lambda item: item["tens_sf"],
+        key=lambda item: _calc_tension_ratio(item) if _calc_tension_ratio(item) is not None else float("-inf"),
         default=None,
     )
     extreme_comp_row = min(
-        (
-            row
-            for row in rows
-            if _match_condition(str(row.get("comp_case", "")), case_type_map) == "extreme"
+        _rows_with_ratio(
+            rows,
+            condition_type="extreme",
+            resistance_type="compression",
+            case_type_map=case_type_map,
         ),
-        key=lambda item: item["comp_sf"],
+        key=lambda item: _calc_compression_ratio(item) or float("-inf"),
         default=None,
     )
     extreme_tens_row = min(
-        (
-            row
-            for row in rows
-            if _match_condition(str(row.get("tens_case", "")), case_type_map) == "extreme"
+        _rows_with_ratio(
+            rows,
+            condition_type="extreme",
+            resistance_type="tension",
+            case_type_map=case_type_map,
         ),
-        key=lambda item: item["tens_sf"],
+        key=lambda item: _calc_tension_ratio(item) if _calc_tension_ratio(item) is not None else float("-inf"),
         default=None,
     )
 
@@ -271,7 +353,6 @@ def build_pile_axial_capacity_summary(
         check_item="操作工况桩基抗压",
         condition_type="operation",
         resistance_type="compression",
-        sf_field="comp_sf",
         case_field="comp_case",
         capacity_field="comp_capacity_kn",
         max_load_field="comp_max_load_kn",
@@ -284,7 +365,6 @@ def build_pile_axial_capacity_summary(
         check_item="操作工况桩基抗拔",
         condition_type="operation",
         resistance_type="tension",
-        sf_field="tens_sf",
         case_field="tens_case",
         capacity_field="tens_capacity_kn",
         max_load_field="tens_max_load_kn",
@@ -297,7 +377,6 @@ def build_pile_axial_capacity_summary(
         check_item="极端工况桩基抗压",
         condition_type="extreme",
         resistance_type="compression",
-        sf_field="comp_sf",
         case_field="comp_case",
         capacity_field="comp_capacity_kn",
         max_load_field="comp_max_load_kn",
@@ -310,7 +389,6 @@ def build_pile_axial_capacity_summary(
         check_item="极端工况桩基抗拔",
         condition_type="extreme",
         resistance_type="tension",
-        sf_field="tens_sf",
         case_field="tens_case",
         capacity_field="tens_capacity_kn",
         max_load_field="tens_max_load_kn",

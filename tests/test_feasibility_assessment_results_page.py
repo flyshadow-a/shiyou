@@ -336,6 +336,41 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         self.assertEqual("OL12", page.tbl_summary.item(2, 3).text())
         self.assertEqual("满足", page.tbl_summary.item(2, 4).text())
 
+    def test_result_tables_display_dash_for_empty_cells(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page.HDR_BG = FeasibilityAssessmentResultsPage.HDR_BG
+        page.INDEX_BG = FeasibilityAssessmentResultsPage.INDEX_BG
+        page.cb_row_limit = type("FakeCombo", (), {"currentText": lambda self: "全部"})()
+        page._detail_table_rows = {}
+
+        page.tbl_summary = QTableWidget(3, 5)
+        page._fill_summary_table_from_analysis(
+            {
+                "items": [
+                    {
+                        "check_item": "构件",
+                        "position": "",
+                        "value": None,
+                        "case": " ",
+                        "is_pass": "",
+                    }
+                ]
+            }
+        )
+        self.assertEqual("-", page.tbl_summary.item(2, 1).text())
+        self.assertEqual("-", page.tbl_summary.item(2, 2).text())
+        self.assertEqual("-", page.tbl_summary.item(2, 3).text())
+        self.assertEqual("-", page.tbl_summary.item(2, 4).text())
+
+        standard_table = QTableWidget(2, 5)
+        standard_table.setProperty("header_rows", 2)
+        page.detail_tables = {"构件": standard_table}
+        page._fill_standard_detail_table("构件", [["1", "", None]])
+        self.assertEqual("-", standard_table.item(2, 1).text())
+        self.assertEqual("-", standard_table.item(2, 2).text())
+        self.assertEqual("-", standard_table.item(2, 3).text())
+        self.assertEqual("-", standard_table.item(2, 4).text())
+
     def test_fill_detail_tables_from_analysis_uses_report_pile_capacity_rows(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
         page.HDR_BG = FeasibilityAssessmentResultsPage.HDR_BG
@@ -368,6 +403,40 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         self.assertEqual("P108", table.item(3, 0).text())
         self.assertEqual("OL12", table.item(3, 4).text())
         self.assertEqual("2.42", table.item(3, 8).text())
+
+    def test_pile_capacity_empty_cells_display_dash_and_export_dash(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page.HDR_BG = FeasibilityAssessmentResultsPage.HDR_BG
+        page.INDEX_BG = FeasibilityAssessmentResultsPage.INDEX_BG
+        page._detail_table_rows = {}
+        page.cb_row_limit = type("FakeCombo", (), {"currentText": lambda self: "全部"})()
+        table = QTableWidget(3, 10)
+        table.setProperty("header_rows", 3)
+        tab_name = "操作工况桩基承载力"
+        page.detail_tables = {tab_name: table}
+
+        page._fill_pile_capacity_detail_table(
+            tab_name,
+            [
+                {
+                    "pile_head_id": "P108",
+                    "compression_capacity_kn": "110887",
+                    "tension_capacity_kn": "117019",
+                    "pile_weight_kn": "6864.3",
+                    "compression_case": "OL12",
+                    "compression_load_kn": "38993",
+                    "tension_case": "",
+                    "tension_load_kn": "",
+                    "compression_sf": "2.42",
+                    "tension_sf": "",
+                }
+            ],
+        )
+
+        self.assertEqual("-", table.item(3, 6).text())
+        self.assertEqual("-", table.item(3, 7).text())
+        self.assertEqual("-", table.item(3, 9).text())
+        self.assertEqual("-", page._detail_rows_for_export(tab_name)[0][6])
 
     def test_detail_table_row_limit_applies_to_loaded_rows(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)

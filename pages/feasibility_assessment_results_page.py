@@ -537,7 +537,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         if hasattr(self, "tbl_summary"):
             for r in range(2, self.tbl_summary.rowCount()):
                 for c in range(1, self.tbl_summary.columnCount()):
-                    self._set_cell(self.tbl_summary, r, c, "", editable=False)
+                    self._set_cell(self.tbl_summary, r, c, "-", editable=False)
             if self.tbl_summary.rowCount() > 2 and self.tbl_summary.columnCount() > 1:
                 self._set_cell(self.tbl_summary, 2, 1, message, editable=False, align_center=False)
 
@@ -548,7 +548,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             table.setRowCount(header_rows + 1)
             table.setRowHeight(header_rows, 32)
             for c in range(table.columnCount()):
-                text = message if c == 0 else ""
+                text = message if c == 0 else "-"
                 self._set_cell(table, header_rows, c, text, editable=False, align_center=False)
 
     # ---------------- 上方 快速评估汇总信息表 ----------------
@@ -586,10 +586,10 @@ class FeasibilityAssessmentResultsPage(BasePage):
         for i, name in enumerate(items):
             r = 2 + i
             self._set_cell(self.tbl_summary, r, 0, name, bg=self.HDR_BG, bold=False, align_center=False, editable=False)
-            self._set_cell(self.tbl_summary, r, 1, "", bg=None)
-            self._set_cell(self.tbl_summary, r, 2, "", bg=None)
-            self._set_cell(self.tbl_summary, r, 3, "", bg=None)
-            self._set_cell(self.tbl_summary, r, 4, "", bg=None)
+            self._set_cell(self.tbl_summary, r, 1, "-", bg=None)
+            self._set_cell(self.tbl_summary, r, 2, "-", bg=None)
+            self._set_cell(self.tbl_summary, r, 3, "-", bg=None)
+            self._set_cell(self.tbl_summary, r, 4, "-", bg=None)
 
             # ====== 列宽自适应与滚动条终极策略 ======
             # 1. 明确开启：内容超出时显示横向滚动条
@@ -838,10 +838,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
         # 数据区（静态示例）
         for i, row_data in enumerate(self.PILE_CAPACITY_STATIC_ROWS):
             rr = header_rows + i
-            for c, v in enumerate(row_data):
+            for c in range(cols):
+                v = row_data[c] if c < len(row_data) else ""
                 bg = self.INDEX_BG if c == 0 else None
                 editable = (c != 0)
-                self._set_cell(tbl, rr, c, v, bg=bg, editable=editable)
+                self._set_cell(tbl, rr, c, self._display_table_value(v), bg=bg, editable=editable)
 
         for r in range(rows):
             tbl.setRowHeight(r, 32)
@@ -898,7 +899,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
                     header_item = current_tbl.item(header_rows - 1, c)
                     header_text = header_item.text() if header_item else ""
                     align_center = ("名称" not in header_text)
-                    self._set_cell(current_tbl, r, c, "", bg=None, align_center=align_center)
+                    self._set_cell(current_tbl, r, c, "-", bg=None, align_center=align_center)
 
     def _current_row_limit(self, *, default_all: int | None = None) -> int | None:
         limit_text = self.cb_row_limit.currentText()
@@ -924,6 +925,10 @@ class FeasibilityAssessmentResultsPage(BasePage):
     def _format_analysis_table_value(self, value) -> str:
         return self._format_result_number(value)
 
+    def _display_table_value(self, value) -> str:
+        text = "" if value is None else str(value).strip()
+        return text or "-"
+
     def _is_pass_text_for_uc(self, value) -> str:
         try:
             return "满足" if float(value) < 1.0 else "不满足"
@@ -941,11 +946,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
         for index, item in enumerate(rows, start=2):
             if index >= self.tbl_summary.rowCount():
                 break
-            self._set_cell(self.tbl_summary, index, 0, str(item.get("check_item", "")), bg=self.HDR_BG, bold=False, align_center=False, editable=False)
-            self._set_cell(self.tbl_summary, index, 1, str(item.get("position", "")), editable=False)
-            self._set_cell(self.tbl_summary, index, 2, self._format_analysis_table_value(item.get("value", "")), editable=False)
-            self._set_cell(self.tbl_summary, index, 3, str(item.get("case", "")), editable=False)
-            self._set_cell(self.tbl_summary, index, 4, str(item.get("is_pass", "")), editable=False)
+            self._set_cell(self.tbl_summary, index, 0, self._display_table_value(item.get("check_item", "")), bg=self.HDR_BG, bold=False, align_center=False, editable=False)
+            self._set_cell(self.tbl_summary, index, 1, self._display_table_value(item.get("position", "")), editable=False)
+            self._set_cell(self.tbl_summary, index, 2, self._display_table_value(self._format_analysis_table_value(item.get("value", ""))), editable=False)
+            self._set_cell(self.tbl_summary, index, 3, self._display_table_value(item.get("case", "")), editable=False)
+            self._set_cell(self.tbl_summary, index, 4, self._display_table_value(item.get("is_pass", "")), editable=False)
 
     def _render_standard_detail_rows(self, table: QTableWidget, rows: List[List[str]]) -> None:
         display_rows = self._limited_detail_rows(rows)
@@ -953,11 +958,20 @@ class FeasibilityAssessmentResultsPage(BasePage):
         table.setRowCount(header_rows + len(display_rows))
         for row_index, values in enumerate(display_rows, start=header_rows):
             table.setRowHeight(row_index, 32)
-            for column_index, value in enumerate(values):
+            for column_index in range(table.columnCount()):
+                value = values[column_index] if column_index < len(values) else ""
                 bg = self.INDEX_BG if column_index == 0 else None
                 editable = False
                 align_center = column_index != 1
-                self._set_cell(table, row_index, column_index, value, bg=bg, editable=editable, align_center=align_center)
+                self._set_cell(
+                    table,
+                    row_index,
+                    column_index,
+                    self._display_table_value(value),
+                    bg=bg,
+                    editable=editable,
+                    align_center=align_center,
+                )
         self._narrow_detail_index_column(table)
 
     def _fill_standard_detail_table(self, tab_name: str, rows: List[List[str]]) -> None:
@@ -1002,7 +1016,14 @@ class FeasibilityAssessmentResultsPage(BasePage):
                     value = self._format_analysis_table_value(value)
                 else:
                     value = str(value)
-                self._set_cell(table, row_index, column_index, value, bg=bg, editable=False)
+                self._set_cell(
+                    table,
+                    row_index,
+                    column_index,
+                    self._display_table_value(value),
+                    bg=bg,
+                    editable=False,
+                )
         self._sync_pile_capacity_head_column_width()
 
     def _fill_pile_capacity_detail_table(self, tab_name: str, rows: List[dict]) -> None:
@@ -1328,11 +1349,15 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _table_matrix_for_export(self, table: QTableWidget) -> List[List[str]]:
         rows: List[List[str]] = []
+        header_rows = int(table.property("header_rows") or 2)
         for r in range(table.rowCount()):
             values: List[str] = []
             for c in range(table.columnCount()):
                 item = table.item(r, c)
-                values.append(item.text() if item is not None else "")
+                value = item.text() if item is not None else ""
+                if r >= header_rows:
+                    value = self._display_table_value(value)
+                values.append(value)
             if any(value.strip() for value in values):
                 rows.append(values)
         return rows
@@ -1412,11 +1437,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
                     value = item.get(key, "") if isinstance(item, dict) else ""
                     if key in numeric_keys:
                         value = self._format_analysis_table_value(value)
-                    row.append(str(value))
+                    row.append(self._display_table_value(value))
                 rows.append(row)
             return rows
 
-        rows.extend([list(row) for row in stored_rows])
+        rows.extend([[self._display_table_value(value) for value in row] for row in stored_rows])
         return rows
 
     def _export_result_tables_to_xlsx(self, output_path: str) -> None:

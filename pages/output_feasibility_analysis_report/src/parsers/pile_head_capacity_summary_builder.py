@@ -7,8 +7,9 @@
    `SOIL MAXIMUM AXIAL CAPACITY SUMMARY` 的控制工况。
 3. 承载力和桩身重量仍复用 `SOIL MAXIMUM AXIAL CAPACITY SUMMARY` 中每个桩头的能力参数。
 4. 安全系数公式：
-   - 抗压: capacity / (compression_load + weight)
-   - 抗拔: capacity / (tension_load - weight)
+   - 受压: compression_capacity / (abs(compression_load) + weight)
+   - 受拉: tension_capacity / (abs(tension_load) - weight)
+     若受拉分母小于等于 0，则显示为 "-"，不参与控制值判断。
 """
 
 from __future__ import annotations
@@ -243,7 +244,7 @@ def build_pile_head_capacity_summary(
             record["compression_case"] = load_case
 
         current_tension = record["tension_load_kn"]
-        if current_tension is None or axial_force_kn > current_tension:
+        if axial_force_kn > 0 and (current_tension is None or axial_force_kn > current_tension):
             record["tension_load_kn"] = axial_force_kn
             record["tension_case"] = load_case
 
@@ -270,12 +271,12 @@ def build_pile_head_capacity_summary(
                 if denominator > 0:
                     compression_sf = compression_capacity_kn / denominator
 
-            tension_sf: float | str | None = None
+            tension_sf: float | str | None = "-"
             if tension_load_kn is not None:
-                if tension_load_kn < 0:
-                    tension_sf = "-"
-                else:
-                    tension_sf = tension_capacity_kn / (tension_load_kn - pile_weight_kn)
+                tension_load_kn = abs(tension_load_kn)
+                denominator = tension_load_kn - pile_weight_kn
+                if denominator > 0:
+                    tension_sf = tension_capacity_kn / denominator
 
             condition_rows[condition_type].append(
                 {

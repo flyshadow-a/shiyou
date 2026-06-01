@@ -79,26 +79,29 @@ def _parse_row(line: str) -> PileAxialCapacitySummaryRow | None:
     if "P" not in parts[0].upper():
         return None
 
-    return {
-        "pile_head_id": parts[0].strip(),
-        "group_id": parts[1].strip(),
-        "od_cm": _to_float(parts[2]),
-        "thk_cm": _to_float(parts[3]),
-        "pile_weight_kn": _to_float(parts[4]),
-        "penetration_m": _to_float(parts[5]),
-        "comp_capacity_kn": _to_float(parts[6]),
-        "comp_max_load_kn": _to_float(parts[7]),
-        "comp_critical_load_kn": _to_float(parts[8]),
-        "comp_case": parts[9].strip(),
-        "comp_sf": _to_float(parts[10]),
-        "tens_capacity_kn": _to_float(parts[11]),
-        "tens_max_load_kn": _to_float(parts[12]),
-        "tens_critical_load_kn": _to_float(parts[13]),
-        "tens_case": parts[14].strip(),
-        "tens_sf": _to_float(parts[15]),
-        "max_unity_check": _to_float(parts[16]),
-        "unity_case": parts[17].strip(),
-    }
+    try:
+        return {
+            "pile_head_id": parts[0].strip(),
+            "group_id": parts[1].strip(),
+            "od_cm": _to_float(parts[2]),
+            "thk_cm": _to_float(parts[3]),
+            "pile_weight_kn": _to_float(parts[4]),
+            "penetration_m": _to_float(parts[5]),
+            "comp_capacity_kn": _to_float(parts[6]),
+            "comp_max_load_kn": _to_float(parts[7]),
+            "comp_critical_load_kn": _to_float(parts[8]),
+            "comp_case": parts[9].strip(),
+            "comp_sf": _to_float(parts[10]),
+            "tens_capacity_kn": _to_float(parts[11]),
+            "tens_max_load_kn": _to_float(parts[12]),
+            "tens_critical_load_kn": _to_float(parts[13]),
+            "tens_case": parts[14].strip(),
+            "tens_sf": _to_float(parts[15]),
+            "max_unity_check": _to_float(parts[16]),
+            "unity_case": parts[17].strip(),
+        }
+    except ValueError:
+        return None
 
 
 def _parse_rows(block_lines: list[str]) -> list[PileAxialCapacitySummaryRow]:

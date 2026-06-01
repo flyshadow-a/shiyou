@@ -100,14 +100,12 @@ def _extract_platform_evaluation_conclusion_text(
     valid_pile_items = [
         item for item in pile_items if str(item.get("is_pass_text", "")) != "无数据"
     ]
-    pile_min_sf = min(
-        (float(item.get("min_sf", 0.0) or 0.0) for item in valid_pile_items),
-        default=0.0,
+    pile_ok = bool(valid_pile_items) and all(
+        str(item.get("is_pass_text", "")) == "满足" for item in valid_pile_items
     )
-    pile_ok = bool(valid_pile_items) and pile_min_sf >= 1.5
 
     uc_text = "小于1.0" if member_ok and joint_ok else "大于1.0"
-    pile_text = "大于1.5" if pile_ok else "小于1.5"
+    pile_text = "满足要求" if pile_ok else "不满足要求"
 
     if member_ok and joint_ok and pile_ok:
         suffix = (

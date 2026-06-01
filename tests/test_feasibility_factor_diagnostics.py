@@ -84,6 +84,44 @@ class FeasibilityFactorParserChainTests(unittest.TestCase):
         self.assertEqual(1, len(pile_capacity.get("operation_table_rows", [])))
         self.assertEqual(1, len(pile_capacity.get("extreme_table_rows", [])))
 
+    def test_pile_head_forces_only_read_final_pile_head_coordinates_block(self) -> None:
+        lines = [
+            "                                        FINAL PILE HEAD FORCES (KN   AND KN-M    ) FOR LOAD CASE T688",
+            "                                                    PILE HEAD COORDINATES",
+            "     PILE   BATTER",
+            "     JOINT  JOINT       FORCE(X)       FORCE(Y)       FORCE(Z)      MOMENT(X)      MOMENT(Y)      MOMENT(Z)",
+            "     001P   101P     -32140.752      -5682.946       -649.623         23.159      -3529.758      30538.847",
+            "                                                     STRUCTURAL COORDINATES",
+            "     PILE   BATTER",
+            "     JOINT  JOINT       FORCE(X)       FORCE(Y)       FORCE(Z)      MOMENT(X)      MOMENT(Y)      MOMENT(Z)",
+            "     001P   101P       2456.450      -5105.631     -32140.752     -22746.325     -13237.139         23.159",
+            "                                        INTERNAL FORCES ON STRUCTURE (KN   AND KN-M    ) FOR LOAD CASE T688",
+            "                                                    PILE HEAD COORDINATES",
+            "     PILE   BATTER",
+            "     JOINT  JOINT       FORCE(X)       FORCE(Y)       FORCE(Z)      MOMENT(X)      MOMENT(Y)      MOMENT(Z)",
+            "     001P   101P      32140.937       5682.956        649.610        -23.157       3529.725     -30538.893",
+        ]
+
+        result = parse_pile_head_forces(lines)
+
+        self.assertEqual(1, len(result["rows"]))
+        self.assertEqual("T688", result["rows"][0]["load_case"])
+        self.assertEqual("001P", result["rows"][0]["pile_head_id"])
+        self.assertEqual(-32140.752, result["rows"][0]["axial_force_kn"])
+
+    def test_pile_axial_capacity_skips_load_header_like_rows(self) -> None:
+        lines = [
+            "                               * * *  S O I L  M A X I M U M  A X I A L  C A P A C I T Y  S U M M A R Y  * * *",
+            "001P PA  OD THK WEIGHT PEN. CAPACITY MAX. CRITICAL LOAD SAFETY CAPACITY MAX. CRITICAL LOAD SAFETY UNITY CASE",
+            "001P PA  243.80  9.50 6002.4 133.0  -89154.0  -46458.6  -46458.6 EL16   1.92   96017.2    7875.0    7875.0 LTL3  12.19     0.78 EL16",
+            "***** SACS LOAD CASE REPORT *****",
+        ]
+
+        result = parse_pile_axial_capacity_summary(lines)
+
+        self.assertEqual(1, len(result["rows"]))
+        self.assertEqual("001P", result["rows"][0]["pile_head_id"])
+
     def test_read_ui_analysis_lines_extracts_relevant_blocks_from_file(self) -> None:
         import tempfile
 

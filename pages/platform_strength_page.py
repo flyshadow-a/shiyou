@@ -1387,9 +1387,18 @@ class PlatformStrengthPage(BasePage):
     def _open_marine_edit_dialog(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("编辑海生物信息")
-        dialog.resize(980, 300)
+        dialog.resize(1120, 420)
+        dialog.setMinimumSize(1080, 400)
         root = self._setup_edit_dialog(dialog, "编辑海生物信息", "每一列对应一个海生物层，可分别编辑高度范围、厚度和密度。")
         card, card_layout = self._make_dialog_card(dialog)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.addStretch(1)
+        btn_read = QPushButton("读取海况文件")
+        self._style_dialog_tool_button(btn_read)
+        top.addWidget(btn_read, 0)
+        card_layout.addLayout(top)
 
         edit_table = QTableWidget(4, 10, dialog)
         edit_table.setHorizontalHeaderLabels(["项目"] + [str(i) for i in range(1, 10)])
@@ -1409,9 +1418,18 @@ class PlatformStrengthPage(BasePage):
         edit_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         edit_table.setColumnWidth(0, 110)
         for r in range(4):
-            edit_table.setRowHeight(r, 32)
-        card_layout.addWidget(edit_table, 1)
-        root.addWidget(card, 1)
+            edit_table.setRowHeight(r, 38)
+        edit_table_h = (
+            edit_table.horizontalHeader().height()
+            + sum(edit_table.rowHeight(r) for r in range(edit_table.rowCount()))
+            + edit_table.frameWidth() * 2
+            + 8
+        )
+        edit_table.setFixedHeight(edit_table_h)
+        edit_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        edit_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        card_layout.addWidget(edit_table, 0)
+        root.addWidget(card, 0)
 
         bottom = QHBoxLayout()
         bottom.addStretch(1)
@@ -1421,6 +1439,42 @@ class PlatformStrengthPage(BasePage):
         bottom.addWidget(btn_save)
         bottom.addWidget(btn_cancel)
         root.addLayout(bottom)
+
+        def apply_items_to_edit_table(items: List[Dict[str, object]]) -> None:
+            by_layer = {
+                int(item.get("layer_no", 0) or 0): item
+                for item in items
+                if int(item.get("layer_no", 0) or 0) > 0
+            }
+            first_density = ""
+            for i in range(9):
+                item = by_layer.get(i + 1, {})
+                density_text = self._format_optional_number(item.get("density_t_per_m3"))
+                if not first_density and density_text:
+                    first_density = density_text
+                self._set_table_text(edit_table, 0, i + 1, self._format_optional_number(item.get("upper_limit_m")))
+                self._set_table_text(edit_table, 1, i + 1, self._format_optional_number(item.get("lower_limit_m")))
+                self._set_table_text(edit_table, 2, i + 1, self._format_optional_number(item.get("thickness_mm")))
+                self._set_table_text(edit_table, 3, i + 1, density_text)
+            if first_density:
+                for i in range(9):
+                    if not self._table_text(edit_table, 3, i + 1):
+                        self._set_table_text(edit_table, 3, i + 1, first_density)
+
+        def read_from_seainp() -> None:
+            try:
+                sea_file = self._resolve_current_sea_file()
+                if not sea_file:
+                    QMessageBox.warning(dialog, "读取失败", "未在文件管理保存路径中找到当前设施对应的 SeaInp 海况文件。")
+                    return
+                items = self._parse_marine_growth_from_seainp(sea_file)
+                if not items:
+                    QMessageBox.warning(dialog, "读取失败", f"SeaInp 文件中未读取到有效 MGROV 数据：\n{sea_file}")
+                    return
+                apply_items_to_edit_table(items)
+                QMessageBox.information(dialog, "读取完成", f"已从 SeaInp 读取 {len(items)} 层海生物信息。\n{sea_file}")
+            except Exception as exc:
+                QMessageBox.critical(dialog, "读取失败", f"SeaInp 海生物信息读取失败：\n{exc}")
 
         def save_dialog() -> None:
             try:
@@ -1451,6 +1505,7 @@ class PlatformStrengthPage(BasePage):
             QMessageBox.information(dialog, "更新完成", "海生物信息已更新到数据库。")
             dialog.accept()
 
+        btn_read.clicked.connect(read_from_seainp)
         btn_save.clicked.connect(save_dialog)
         btn_cancel.clicked.connect(dialog.reject)
         dialog.exec_()
@@ -2688,11 +2743,7 @@ class PlatformStrengthPage(BasePage):
         lay.setSpacing(6)
         lay.addStretch(1)
 
-        btn_read = self._make_update_db_button("更新")
-        btn_read.clicked.connect(self._on_read_marine_table_from_seainp)
-        lay.addWidget(btn_read, 0)
-
-        btn_save = self._make_update_db_button("更新数据库")
+        btn_save = self._make_update_db_button("更新到数据库")
         btn_save.clicked.connect(self._on_update_marine_table_to_db)
         lay.addWidget(btn_save, 0)
         return row
