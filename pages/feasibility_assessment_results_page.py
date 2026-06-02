@@ -53,7 +53,6 @@ from PyQt5.QtWidgets import (
 
 from core.base_page import BasePage
 
-from sqlalchemy import create_engine, text
 from pages.sacs_compare_view import SacsComparePanel
 
 from shiyou_db.runtime_db import get_mysql_url
@@ -72,6 +71,12 @@ from feasibility_analysis_services.oilfield_env_service import (
 from services.inspection_business_db_adapter import load_facility_profile, list_inspection_projects
 from services.inspection_business_db_adapter import load_platform_load_information_items
 from services.file_db_adapter import DOC_MAN_MODULE_CODE, list_files_by_prefix, resolve_storage_path
+from services.feasibility_assessment_db import (
+    empty_platform_evaluation_statistics,
+    load_latest_wizard_model_paths,
+    load_latest_wizard_workpoint,
+    load_platform_evaluation_statistics,
+)
 
 
 from pages.sacs_storage_service import get_job_runtime_dir, get_job_sea_file
@@ -1208,11 +1213,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
         lay.addStretch(1)
         return wrap
 
-    def _get_engine(self):
-        if not self.mysql_url:
-            raise ValueError("MYSQL_URL 未配置")
-        return create_engine(self.mysql_url, future=True, pool_pre_ping=True)
-
     def _get_current_job_factor_path(self) -> str:
         runtime_dir = os.path.normpath(get_job_runtime_dir(self.job_name))
         factor_path = os.path.join(runtime_dir, "psilst.factor")
@@ -1754,84 +1754,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return "；".join(f"（{index}）{name}" for index, name in enumerate(file_names, start=1)) + "。"
 
     def _load_platform_evaluation_statistics(self) -> dict:
-        empty_result = {
-            "well_slot_count": 0,
-            "riser_count": 0,
-            "topside_weight_sum_t": 0.0,
-            "well_slot_rows": [],
-            "riser_rows": [],
-            "topside_weight_rows": [],
-        }
         if not self.mysql_url or not self.job_name:
-            return empty_result
-
-        engine = self._get_engine()
-        statistics_sql = text(
-            """
-            SELECT
-                (SELECT COUNT(*) FROM well_slots WHERE job_name = :job_name) AS well_slot_count,
-                (SELECT COUNT(*) FROM risers WHERE job_name = :job_name) AS riser_count,
-                (SELECT COALESCE(SUM(weight_t), 0) FROM topside_weights WHERE job_name = :job_name) AS topside_weight_sum_t
-            """
+            return empty_platform_evaluation_statistics()
+        return load_platform_evaluation_statistics(
+            self.mysql_url,
+            job_name=self.job_name,
         )
-        try:
-            with engine.connect() as conn:
-                row = conn.execute(statistics_sql, {"job_name": self.job_name}).mappings().first() or {}
-                well_slot_rows = [
-                    dict(item)
-                    for item in conn.execute(
-                        text(
-                            """
-                            SELECT slot_no, x, y, conductor_od, conductor_wt,
-                                   support_od, support_wt, top_load_fz
-                            FROM well_slots
-                            WHERE job_name = :job_name
-                            ORDER BY slot_no
-                            """
-                        ),
-                        {"job_name": self.job_name},
-                    ).mappings()
-                ]
-                riser_rows = [
-                    dict(item)
-                    for item in conn.execute(
-                        text(
-                            """
-                            SELECT riser_no, x, y, riser_od, riser_wt,
-                                   support_od, support_wt, batter_x, batter_y
-                            FROM risers
-                            WHERE job_name = :job_name
-                            ORDER BY riser_no
-                            """
-                        ),
-                        {"job_name": self.job_name},
-                    ).mappings()
-                ]
-                topside_weight_rows = [
-                    dict(item)
-                    for item in conn.execute(
-                        text(
-                            """
-                            SELECT weight_no, x, y, z, weight_t
-                            FROM topside_weights
-                            WHERE job_name = :job_name
-                            ORDER BY weight_no
-                            """
-                        ),
-                        {"job_name": self.job_name},
-                    ).mappings()
-                ]
-        except Exception:
-            return empty_result
-
-        return {
-            "well_slot_count": int(row.get("well_slot_count") or 0),
-            "riser_count": int(row.get("riser_count") or 0),
-            "topside_weight_sum_t": float(row.get("topside_weight_sum_t") or 0.0),
-            "well_slot_rows": well_slot_rows,
-            "riser_rows": riser_rows,
-            "topside_weight_rows": topside_weight_rows,
-        }
 
     def _build_latest_inspection_record_summary(self) -> str:
         projects = []
@@ -2246,39 +2174,16 @@ class FeasibilityAssessmentResultsPage(BasePage):
             old_file = str(bundle.get("old_model_file") or "").strip()
             new_file = str(bundle.get("new_model_file") or "").strip()
             if old_file and new_file and os.path.exists(old_file) and os.path.exists(new_file):
-                # workpoint 仍从 wizard_model_info 取；取不到就用默认值。
-                workpoint = 9.1
-                try:
-                    sql_wp = text("""
-                        SELECT workpoint
-                        FROM wizard_model_info
-                        WHERE job_name = :job_name
-                        ORDER BY id DESC
-                        LIMIT 1
-                    """)
-                    engine = self._get_engine()
-                    with engine.begin() as conn:
-                        row_wp = conn.execute(sql_wp, {"job_name": self.job_name}).mappings().first()
-                    if row_wp and row_wp.get("workpoint") is not None:
-                        workpoint = float(row_wp.get("workpoint"))
-                except Exception:
-                    pass
+                workpoint = load_latest_wizard_workpoint(
+                    self.mysql_url,
+                    job_name=self.job_name,
+                    default=9.1,
+                )
                 return old_file, new_file, workpoint
         except Exception:
             pass
 
-        # 兜底：保留原 wizard_model_info 读取逻辑。
-        sql = text("""
-            SELECT model_file, new_model_file, workpoint
-            FROM wizard_model_info
-            WHERE job_name = :job_name
-            ORDER BY id DESC
-            LIMIT 1
-        """)
-
-        engine = self._get_engine()
-        with engine.begin() as conn:
-            row = conn.execute(sql, {"job_name": self.job_name}).mappings().first()
+        row = load_latest_wizard_model_paths(self.mysql_url, job_name=self.job_name)
 
         if row is None:
             raise ValueError(f"wizard_model_info 中未找到 job_name={self.job_name} 的记录")

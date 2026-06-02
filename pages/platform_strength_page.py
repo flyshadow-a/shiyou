@@ -50,6 +50,12 @@ from services.file_db_adapter import (
     list_files_by_prefix,
     resolve_storage_path,
 )
+from services.platform_strength_db import (
+    load_horizontal_levels,
+    load_structure_model_info,
+    save_horizontal_levels,
+    save_structure_model_info,
+)
 
 from pages.sacs_import_service import import_model_bundle_to_db
 
@@ -58,8 +64,6 @@ from shiyou_db.config import get_storage_root
 from services.special_strategy_image_service import build_strategy_image_path, save_strategy_image_record
 
 from collections import Counter
-
-from sqlalchemy import create_engine, text
 
 from pages.sacs_storage_service import (
     get_job_runtime_dir,
@@ -947,38 +951,6 @@ class PlatformStrengthPage(BasePage):
             raise ValueError("未能创建或获取环境主表记录。")
         return int(profile_id), facility_code
 
-    def _get_db_engine(self):
-        mysql_url = self._get_mysql_url()
-        if not mysql_url:
-            raise ValueError("MYSQL_URL 未配置，无法更新数据库。")
-        return create_engine(mysql_url, future=True, pool_pre_ping=True)
-
-    def _ensure_strength_custom_tables(self, conn) -> None:
-        """创建本页面新增的结构模型信息与水平层高程表。"""
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS platform_strength_structure_model_info (
-                profile_id BIGINT NOT NULL,
-                facility_code VARCHAR(128) NOT NULL,
-                mud_level_m DOUBLE NULL,
-                workpoint_m DOUBLE NULL,
-                level_threshold INT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (profile_id, facility_code)
-            )
-        """))
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS platform_strength_horizontal_level_items (
-                profile_id BIGINT NOT NULL,
-                facility_code VARCHAR(128) NOT NULL,
-                sort_order INT NOT NULL,
-                z_m DOUBLE NULL,
-                node_count INT NULL,
-                selected TINYINT DEFAULT 1,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (profile_id, facility_code, sort_order)
-            )
-        """))
-
     def _safe_db_float(self, value) -> float | None:
         if value in (None, ""):
             return None
@@ -991,15 +963,11 @@ class PlatformStrengthPage(BasePage):
         try:
             if profile_id is None or facility_code is None:
                 profile_id, facility_code = self._get_strength_profile_context(create_if_missing=False)
-            engine = self._get_db_engine()
-            with engine.begin() as conn:
-                self._ensure_strength_custom_tables(conn)
-                row = conn.execute(text("""
-                    SELECT mud_level_m, workpoint_m, level_threshold
-                    FROM platform_strength_structure_model_info
-                    WHERE profile_id=:profile_id AND facility_code=:facility_code
-                    LIMIT 1
-                """), {"profile_id": profile_id, "facility_code": facility_code}).mappings().first()
+            row = load_structure_model_info(
+                self._get_mysql_url(),
+                profile_id=profile_id,
+                facility_code=facility_code,
+            )
             if not row:
                 return
             if hasattr(self, "edt_mud_level") and row.get("mud_level_m") not in (None, ""):
@@ -1017,25 +985,14 @@ class PlatformStrengthPage(BasePage):
     def _save_structure_model_info_values_to_db(self, mud_level: float | None, workpoint: float | None) -> None:
         profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
         threshold = self._get_level_threshold()
-        engine = self._get_db_engine()
-        with engine.begin() as conn:
-            self._ensure_strength_custom_tables(conn)
-            conn.execute(text("""
-                DELETE FROM platform_strength_structure_model_info
-                WHERE profile_id=:profile_id AND facility_code=:facility_code
-            """), {"profile_id": profile_id, "facility_code": facility_code})
-            conn.execute(text("""
-                INSERT INTO platform_strength_structure_model_info
-                    (profile_id, facility_code, mud_level_m, workpoint_m, level_threshold)
-                VALUES
-                    (:profile_id, :facility_code, :mud_level_m, :workpoint_m, :level_threshold)
-            """), {
-                "profile_id": profile_id,
-                "facility_code": facility_code,
-                "mud_level_m": mud_level,
-                "workpoint_m": workpoint,
-                "level_threshold": threshold,
-            })
+        save_structure_model_info(
+            self._get_mysql_url(),
+            profile_id=profile_id,
+            facility_code=facility_code,
+            mud_level_m=mud_level,
+            workpoint_m=workpoint,
+            level_threshold=threshold,
+        )
 
     def _save_structure_model_info_to_db(self) -> None:
         mud_level = self._parse_optional_float(self.edt_mud_level.text() if hasattr(self, "edt_mud_level") else "")
@@ -1047,15 +1004,11 @@ class PlatformStrengthPage(BasePage):
         try:
             if profile_id is None or facility_code is None:
                 profile_id, facility_code = self._get_strength_profile_context(create_if_missing=False)
-            engine = self._get_db_engine()
-            with engine.begin() as conn:
-                self._ensure_strength_custom_tables(conn)
-                rows = conn.execute(text("""
-                    SELECT z_m, node_count, selected
-                    FROM platform_strength_horizontal_level_items
-                    WHERE profile_id=:profile_id AND facility_code=:facility_code
-                    ORDER BY sort_order ASC
-                """), {"profile_id": profile_id, "facility_code": facility_code}).mappings().all()
+            rows = load_horizontal_levels(
+                self._get_mysql_url(),
+                profile_id=profile_id,
+                facility_code=facility_code,
+            )
             for row in rows:
                 z = self._safe_db_float(row.get("z_m"))
                 if z is None:
@@ -1075,44 +1028,15 @@ class PlatformStrengthPage(BasePage):
     def _save_horizontal_levels_to_db(self, levels: List[Tuple[float, int, bool]], threshold: int) -> None:
         profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
         self._horizontal_level_threshold = int(threshold or 40)
-        engine = self._get_db_engine()
-        with engine.begin() as conn:
-            self._ensure_strength_custom_tables(conn)
-            conn.execute(text("""
-                DELETE FROM platform_strength_horizontal_level_items
-                WHERE profile_id=:profile_id AND facility_code=:facility_code
-            """), {"profile_id": profile_id, "facility_code": facility_code})
-            for idx, (z, occ, selected) in enumerate(levels, start=1):
-                conn.execute(text("""
-                    INSERT INTO platform_strength_horizontal_level_items
-                        (profile_id, facility_code, sort_order, z_m, node_count, selected)
-                    VALUES
-                        (:profile_id, :facility_code, :sort_order, :z_m, :node_count, :selected)
-                """), {
-                    "profile_id": profile_id,
-                    "facility_code": facility_code,
-                    "sort_order": idx,
-                    "z_m": float(z),
-                    "node_count": int(occ or 0),
-                    "selected": 1 if selected else 0,
-                })
-            # 同步保存阈值，后续导入模型/立面划分仍能使用同一个阈值。
-            conn.execute(text("""
-                DELETE FROM platform_strength_structure_model_info
-                WHERE profile_id=:profile_id AND facility_code=:facility_code
-            """), {"profile_id": profile_id, "facility_code": facility_code})
-            conn.execute(text("""
-                INSERT INTO platform_strength_structure_model_info
-                    (profile_id, facility_code, mud_level_m, workpoint_m, level_threshold)
-                VALUES
-                    (:profile_id, :facility_code, :mud_level_m, :workpoint_m, :level_threshold)
-            """), {
-                "profile_id": profile_id,
-                "facility_code": facility_code,
-                "mud_level_m": self._parse_optional_float(self.edt_mud_level.text() if hasattr(self, "edt_mud_level") else ""),
-                "workpoint_m": self._parse_optional_float(self.edt_workpoint.text() if hasattr(self, "edt_workpoint") else ""),
-                "level_threshold": self._horizontal_level_threshold,
-            })
+        save_horizontal_levels(
+            self._get_mysql_url(),
+            profile_id=profile_id,
+            facility_code=facility_code,
+            levels=levels,
+            level_threshold=self._horizontal_level_threshold,
+            mud_level_m=self._parse_optional_float(self.edt_mud_level.text() if hasattr(self, "edt_mud_level") else ""),
+            workpoint_m=self._parse_optional_float(self.edt_workpoint.text() if hasattr(self, "edt_workpoint") else ""),
+        )
         self._horizontal_levels = list(levels)
         self._refresh_layers_table()
 

@@ -285,9 +285,19 @@ def get_history_rebuild_projects(
     database_name: str | None = None,
 ) -> list[dict[str, Any]]:
     # 预留给页面和报告的统一读取接口：
-    # - 优先与页面保持一致，读取业务库 inspection_projects
+    # - 优先读取文件管理新目录表 document_rebuild_directories
+    # - 兼容此前业务库 inspection_projects
     # - 兼容历史旧表 history_rebuild_projects
     # - 两者都未命中时回退到当前占位数据
+    directory_projects = _load_document_rebuild_directories(
+        facility_code,
+        folder_name=folder_name,
+        mysql_url=mysql_url,
+        database_name=database_name,
+    )
+    if directory_projects:
+        return directory_projects
+
     business_projects = _load_business_projects(
         facility_code,
         folder_name=folder_name,
@@ -356,6 +366,66 @@ def get_history_rebuild_projects(
             return projects
     except Exception:
         return _fallback_projects(facility_code, folder_name)
+
+
+def _load_document_rebuild_directories(
+    facility_code: str,
+    *,
+    folder_name: str,
+    mysql_url: str | None = None,
+    database_name: str | None = None,
+) -> list[dict[str, Any]]:
+    project_type = FOLDER_PROJECT_TYPE_MAP.get(folder_name)
+    if not project_type:
+        return []
+
+    engine = create_engine(_build_database_url(database_name, mysql_url), future=True, pool_pre_ping=True)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT
+                        id,
+                        seq_no,
+                        directory_name,
+                        project_name,
+                        project_year,
+                        summary_text,
+                        sort_order
+                    FROM document_rebuild_directories
+                    WHERE facility_code = :facility_code
+                      AND (
+                            project_type = :project_type
+                            OR (:project_type = 'history_rebuild' AND project_type IS NULL)
+                          )
+                      AND is_deleted = 0
+                    ORDER BY sort_order ASC, seq_no ASC, id ASC
+                    """
+                ),
+                {
+                    "facility_code": facility_code,
+                    "project_type": project_type,
+                },
+            ).mappings().all()
+    except Exception:
+        return []
+
+    projects: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        projects.append(
+            {
+                "id": row.get("id"),
+                "index": int(row.get("seq_no") or index),
+                "facility_code": facility_code,
+                "facility_name": "",
+                "name": row.get("directory_name") or row.get("project_name") or "",
+                "year": row.get("project_year") or "",
+                "conclusion": row.get("summary_text") or "",
+                "files": [],
+            }
+        )
+    return projects
 
 
 def _load_business_projects(

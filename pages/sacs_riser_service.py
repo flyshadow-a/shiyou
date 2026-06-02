@@ -4,7 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Set
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from shiyou_db.database import build_engine_from_url
 
 
 Z_TOL = 1e-6
@@ -706,7 +707,7 @@ def insert_new_members(conn, job_name: str, rows: List[NewRiserMember]) -> None:
 
 
 def generate_riser_to_db(mysql_url: str, job_name: str, overwrite_job: bool = True) -> dict:
-    engine = create_engine(mysql_url, future=True, pool_pre_ping=True)
+    engine = build_engine_from_url(mysql_url)
     ensure_tables(engine)
 
     with engine.begin() as conn:

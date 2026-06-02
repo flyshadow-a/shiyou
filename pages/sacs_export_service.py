@@ -5,7 +5,8 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from shiyou_db.database import build_engine_from_url
 from shiyou_db.config import get_sacs_analysis_engine_exe, get_sacs_default_runx_path
 from pages.sacs_runtime_service import ensure_analysis_bat, ensure_runx_in_workdir
 
@@ -587,7 +588,7 @@ def export_model_bundle(mysql_url: str, job_name: str, generate_bat_flag: bool =
     GENERATE_BAT = generate_bat_flag
 
     try:
-        engine = create_engine(mysql_url, future=True, pool_pre_ping=True)
+        engine = build_engine_from_url(mysql_url)
 
         with engine.begin() as conn:
             model_info = fetch_model_info(conn, job_name)

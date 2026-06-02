@@ -17,6 +17,15 @@ def build_engine(settings: AppSettings):
     )
 
 
+def build_engine_from_url(sqlalchemy_url: str, *, echo: bool = False):
+    return create_engine(
+        sqlalchemy_url,
+        echo=echo,
+        future=True,
+        pool_pre_ping=True,
+    )
+
+
 def build_session_factory(settings: AppSettings):
     engine = build_engine(settings)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)

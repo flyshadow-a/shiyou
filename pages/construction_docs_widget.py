@@ -170,24 +170,20 @@ class ConstructionDocsWidget(QWidget):
             }
 
             QFrame#PlatformDescriptionCard {
-                background: qlineargradient(
-                    x1: 0, y1: 0, x2: 1, y2: 1,
-                    stop: 0 #0f5ea5,
-                    stop: 1 #1e88d8
-                );
-                border: none;
+                background-color: #e8f2ff;
+                border: 1px solid #b9d9f4;
                 border-radius: 16px;
             }
 
             QLabel#PlatformDescriptionTitle {
-                color: #dbeeff;
+                color: #12344d;
                 font-size: 14px;
                 font-weight: 600;
                 background: transparent;
             }
 
             QLabel#PlatformDescriptionText {
-                color: #ffffff;
+                color: #12344d;
                 font-size: 14px;
                 line-height: 1.6;
                 background: transparent;
@@ -463,6 +459,7 @@ class ConstructionDocsWidget(QWidget):
             ]
             for col, v in enumerate(values):
                 item = QTableWidgetItem(str(v))
+                item.setToolTip(item.text())
                 if col in (0, 1, 2, 3, 4, 5):
                     # 这些列只读
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)

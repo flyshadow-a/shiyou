@@ -21,6 +21,28 @@ class FileBackendError(RuntimeError):
 
 
 _UNSET = object()
+_LIST_FILES_CACHE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+_REBUILD_DIRECTORIES_CACHE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+
+
+def _cache_config_key(config_path: str | None = None) -> str:
+    return str(Path(config_path).resolve()) if config_path else ""
+
+
+def _copy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(row) for row in rows]
+
+
+def _invalidate_file_list_cache() -> None:
+    _LIST_FILES_CACHE.clear()
+
+
+def _invalidate_rebuild_directory_cache() -> None:
+    _REBUILD_DIRECTORIES_CACHE.clear()
+
+
+def clear_file_list_cache() -> None:
+    _invalidate_file_list_cache()
 
 
 def _ensure_import_path() -> None:
@@ -62,6 +84,8 @@ def _get_service(config_path: str | None = None):
     try:
         service = FileMetadataService.from_config(resolved)
         service.seed_file_types()
+        if hasattr(service, "seed_document_categories"):
+            service.seed_document_categories()
         return service
     except Exception as exc:
         raise FileBackendError(f"Cannot initialize file database service: {exc}") from exc
@@ -162,15 +186,40 @@ def list_files(
     file_type_code: str | None = None,
     module_code: str | None = None,
     logical_path: str | None = None,
+    logical_path_prefix: str | None = None,
     facility_code: str | None = None,
+    document_code_query: str | None = None,
+    document_title_query: str | None = None,
     config_path: str | None = None,
 ) -> list[dict[str, Any]]:
-    return _get_service(config_path).list_files(
+    prefix = str(logical_path_prefix or "").replace("\\", "/").strip().strip("/")
+    code_query = str(document_code_query or "").strip()
+    title_query = str(document_title_query or "").strip()
+    key = (
+        _cache_config_key(config_path),
+        file_type_code or "",
+        module_code or "",
+        logical_path or "",
+        prefix,
+        facility_code or "",
+        code_query,
+        title_query,
+    )
+    cached = _LIST_FILES_CACHE.get(key)
+    if cached is not None:
+        return _copy_rows(cached)
+
+    rows = _get_service(config_path).list_files(
         file_type_code=file_type_code,
         module_code=module_code,
         logical_path=logical_path,
+        logical_path_prefix=prefix or None,
         facility_code=facility_code,
+        document_code_query=code_query or None,
+        document_title_query=title_query or None,
     )
+    _LIST_FILES_CACHE[key] = _copy_rows(rows)
+    return _copy_rows(rows)
 
 
 def list_storage_paths(
@@ -202,22 +251,20 @@ def list_files_by_prefix(
     module_code: str | None = None,
     logical_path_prefix: str | None = None,
     facility_code: str | None = None,
+    document_code_query: str | None = None,
+    document_title_query: str | None = None,
     config_path: str | None = None,
 ) -> list[dict[str, Any]]:
-    rows = list_files(
+    prefix = str(logical_path_prefix or "").replace("\\", "/").strip().strip("/")
+    return list_files(
         file_type_code=file_type_code,
         module_code=module_code,
+        logical_path_prefix=prefix or None,
         facility_code=facility_code,
+        document_code_query=document_code_query,
+        document_title_query=document_title_query,
         config_path=config_path,
     )
-    prefix = str(logical_path_prefix or "").replace("\\", "/").strip().strip("/")
-    if not prefix:
-        return rows
-    prefix_lower = prefix.lower()
-    return [
-        row for row in rows
-        if str(row.get("logical_path") or "").replace("\\", "/").strip().strip("/").lower().startswith(prefix_lower)
-    ]
 
 
 def list_storage_paths_by_prefix(
@@ -255,7 +302,7 @@ def upload_file(
     remark: str | None = None,
     config_path: str | None = None,
 ) -> dict[str, Any]:
-    return _get_service(config_path).upload_file(
+    result = _get_service(config_path).upload_file(
         local_path,
         file_type_code=file_type_code,
         module_code=module_code,
@@ -265,14 +312,18 @@ def upload_file(
         work_condition=work_condition,
         remark=remark,
     )
+    _invalidate_file_list_cache()
+    return result
 
 
 def soft_delete_record(record_id: int, *, config_path: str | None = None) -> None:
     _get_service(config_path).soft_delete(int(record_id))
+    _invalidate_file_list_cache()
 
 
 def hard_delete_record(record_id: int, *, config_path: str | None = None) -> None:
     _get_service(config_path).hard_delete(int(record_id))
+    _invalidate_file_list_cache()
 
 
 def update_file_record(
@@ -281,6 +332,7 @@ def update_file_record(
     category_name: str | object = _UNSET,
     work_condition: str | object = _UNSET,
     remark: str | object = _UNSET,
+    expected_updated_at: object = _UNSET,
     config_path: str | None = None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
@@ -290,7 +342,107 @@ def update_file_record(
         kwargs["work_condition"] = work_condition
     if remark is not _UNSET:
         kwargs["remark"] = remark
-    return _get_service(config_path).update_file_record(int(record_id), **kwargs)
+    if expected_updated_at is not _UNSET:
+        kwargs["expected_updated_at"] = expected_updated_at
+    try:
+        result = _get_service(config_path).update_file_record(int(record_id), **kwargs)
+    except Exception as exc:
+        raise FileBackendError(str(exc)) from exc
+    _invalidate_file_list_cache()
+    return result
+
+
+def list_document_categories(
+    scope_code: str | None = None,
+    *,
+    config_path: str | None = None,
+) -> list[dict[str, Any]]:
+    return _get_service(config_path).list_document_categories(scope_code)
+
+
+def list_rebuild_directories(
+    facility_code: str,
+    *,
+    project_type: str | None = None,
+    config_path: str | None = None,
+) -> list[dict[str, Any]]:
+    key = (_cache_config_key(config_path), facility_code or "", project_type or "")
+    cached = _REBUILD_DIRECTORIES_CACHE.get(key)
+    if cached is not None:
+        return _copy_rows(cached)
+    rows = _get_service(config_path).list_rebuild_directories(facility_code, project_type)
+    _REBUILD_DIRECTORIES_CACHE[key] = _copy_rows(rows)
+    return _copy_rows(rows)
+
+
+def create_rebuild_directory(
+    facility_code: str,
+    *,
+    project_type: str | None = None,
+    directory_name: str | None = None,
+    project_name: str | None = None,
+    project_year: str | None = None,
+    summary_text: str | None = None,
+    config_path: str | None = None,
+) -> dict[str, Any]:
+    result = _get_service(config_path).create_rebuild_directory(
+        facility_code,
+        project_type=project_type,
+        directory_name=directory_name,
+        project_name=project_name,
+        project_year=project_year,
+        summary_text=summary_text,
+    )
+    _invalidate_rebuild_directory_cache()
+    return result
+
+
+def update_rebuild_directory(
+    directory_id: int,
+    *,
+    directory_name: str | None = None,
+    project_name: str | None = None,
+    project_year: str | None = None,
+    summary_text: str | None = None,
+    config_path: str | None = None,
+) -> dict[str, Any]:
+    result = _get_service(config_path).update_rebuild_directory(
+        int(directory_id),
+        directory_name=directory_name,
+        project_name=project_name,
+        project_year=project_year,
+        summary_text=summary_text,
+    )
+    _invalidate_rebuild_directory_cache()
+    return result
+
+
+def delete_rebuild_directory(
+    directory_id: int,
+    *,
+    config_path: str | None = None,
+) -> None:
+    _get_service(config_path).delete_rebuild_directory(int(directory_id))
+    _invalidate_rebuild_directory_cache()
+
+
+def delete_rebuild_directory_with_files(
+    directory_id: int,
+    *,
+    module_code: str,
+    logical_path_prefix: str,
+    facility_code: str | None = None,
+    config_path: str | None = None,
+) -> int:
+    deleted = _get_service(config_path).delete_rebuild_directory_with_files(
+        int(directory_id),
+        module_code=module_code,
+        logical_path_prefix=logical_path_prefix,
+        facility_code=facility_code,
+    )
+    _invalidate_rebuild_directory_cache()
+    _invalidate_file_list_cache()
+    return deleted
 
 
 def soft_delete_storage_path(
@@ -321,6 +473,7 @@ def soft_delete_storage_path(
             row_id = row.get("id")
             if row_id is not None:
                 _get_service(config_path).soft_delete(int(row_id))
+                _invalidate_file_list_cache()
                 return True
     return False
 
@@ -353,6 +506,7 @@ def hard_delete_storage_path(
             row_id = row.get("id")
             if row_id is not None:
                 _get_service(config_path).hard_delete(int(row_id))
+                _invalidate_file_list_cache()
                 return True
     return False
 
@@ -365,20 +519,14 @@ def soft_delete_files_by_prefix(
     file_type_code: str | None = None,
     config_path: str | None = None,
 ) -> int:
-    rows = list_files_by_prefix(
-        file_type_code=file_type_code,
+    deleted = _get_service(config_path).soft_delete_files_by_prefix(
         module_code=module_code,
         logical_path_prefix=logical_path_prefix,
         facility_code=facility_code,
-        config_path=config_path,
+        file_type_code=file_type_code,
     )
-    deleted = 0
-    for row in rows:
-        row_id = row.get("id")
-        if row_id is None:
-            continue
-        _get_service(config_path).soft_delete(int(row_id))
-        deleted += 1
+    if deleted:
+        _invalidate_file_list_cache()
     return deleted
 
 
@@ -452,9 +600,23 @@ def load_docman_records(
             rec["work_condition"] = latest.get("work_condition") or rec.get("work_condition", "")
             rec["remark"] = latest.get("remark") if latest.get("remark") is not None else rec.get("remark", "")
             rec["logical_path"] = latest.get("logical_path") or rec.get("logical_path", "")
+            for meta_key in (
+                "document_code",
+                "document_title",
+                "design_stage_code",
+                "design_stage_name",
+                "discipline_code",
+                "discipline_name",
+                "file_class_code",
+                "file_class_name",
+                "recognition_status",
+                "recognition_message",
+            ):
+                rec[meta_key] = latest.get(meta_key) or rec.get(meta_key, "")
             dt = latest.get("uploaded_at") or latest.get("source_modified_at") or latest.get("updated_at")
             if dt is not None:
                 rec["mtime"] = dt.strftime("%Y/%m/%d %H:%M")
+            rec["_lock_updated_at"] = latest.get("lock_updated_at")
         merged.append(rec)
     return merged
 
@@ -463,6 +625,8 @@ def load_docman_record_list(
     path_segments: list[str],
     *,
     facility_code: str | None = None,
+    document_code_query: str | None = None,
+    document_title_query: str | None = None,
     config_path: str | None = None,
 ) -> list[dict[str, Any]]:
     prefix = build_docman_logical_prefix(path_segments)
@@ -470,6 +634,8 @@ def load_docman_record_list(
         module_code=DOC_MAN_MODULE_CODE,
         logical_path_prefix=prefix,
         facility_code=facility_code,
+        document_code_query=document_code_query,
+        document_title_query=document_title_query,
         config_path=config_path,
     )
     ordered = sorted(
@@ -495,6 +661,17 @@ def load_docman_record_list(
                 "remark": row.get("remark") or "",
                 "record_id": row.get("id"),
                 "logical_path": row.get("logical_path") or "",
+                "document_code": row.get("document_code") or "",
+                "document_title": row.get("document_title") or "",
+                "design_stage_code": row.get("design_stage_code") or "",
+                "design_stage_name": row.get("design_stage_name") or "",
+                "discipline_code": row.get("discipline_code") or "",
+                "discipline_name": row.get("discipline_name") or "",
+                "file_class_code": row.get("file_class_code") or "",
+                "file_class_name": row.get("file_class_name") or "",
+                "recognition_status": row.get("recognition_status") or "",
+                "recognition_message": row.get("recognition_message") or "",
+                "_lock_updated_at": row.get("lock_updated_at"),
             }
         )
     return records
@@ -504,7 +681,7 @@ def append_docman_file(
     local_path: str,
     *,
     path_segments: list[str],
-    category: str,
+    category: str | None = None,
     work_condition: str | None = None,
     remark: str | None = None,
     facility_code: str | None = None,
@@ -539,7 +716,7 @@ def replace_docman_list_file(
     *,
     logical_path: str,
     record_id: int | None = None,
-    category: str,
+    category: str | None = None,
     work_condition: str | None = None,
     remark: str | None = None,
     facility_code: str | None = None,
@@ -548,6 +725,7 @@ def replace_docman_list_file(
     service = _get_service(config_path)
     if record_id is not None:
         service.hard_delete(int(record_id))
+        _invalidate_file_list_cache()
     return upload_file(
         local_path,
         file_type_code=infer_file_type_code(local_path, category),
@@ -566,7 +744,7 @@ def replace_docman_file(
     *,
     path_segments: list[str],
     row_index: int,
-    category: str,
+    category: str | None = None,
     work_condition: str | None = None,
     remark: str | None = None,
     facility_code: str | None = None,
@@ -584,6 +762,7 @@ def replace_docman_file(
         row_id = row.get("id")
         if row_id is not None:
             service.hard_delete(int(row_id))
+            _invalidate_file_list_cache()
     return upload_file(
         local_path,
         file_type_code=infer_file_type_code(local_path, category),

@@ -8,17 +8,16 @@ from PyQt5.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFrame,
-    QHBoxLayout,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QTextEdit,
     QVBoxLayout,
 )
 from core.base_page import BasePage
-from core.dropdown_bar import DropdownBar
-from pages.construction_docs_widget import ConstructionDocsWidget
+from pages.document_library_widget import DocumentLibraryWidget
+from pages.file_management_filter_search_bar import FileManagementFilterSearchBar
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
+from shiyou_db.document_code_parser import OTHER_FILE_CLASS_NAMES
 from pages.file_management_header import build_platform_description
 from services.inspection_business_db_adapter import load_facility_profile, save_facility_profile
 
@@ -162,6 +161,7 @@ class ConstructionDocsPage(BasePage):
                 "design_life": platform_defaults["design_life"],
             },
         )
+        self._initial_profile = dict(profile_defaults)
         field_map = {item["key"]: item for item in fields}
         field_map["division"]["options"] = [profile_defaults["branch"]]
         field_map["division"]["default"] = profile_defaults["branch"]
@@ -181,8 +181,10 @@ class ConstructionDocsPage(BasePage):
         field_map["start_time"]["default"] = profile_defaults["start_time"]
         field_map["design_years"]["options"] = [profile_defaults["design_life"]]
         field_map["design_years"]["default"] = profile_defaults["design_life"]
-        self.dropdown_bar = DropdownBar(fields, self)
-        self.main_layout.addWidget(self.dropdown_bar, 0)
+        self.filter_search_bar = FileManagementFilterSearchBar(fields, self)
+        self.dropdown_bar = self.filter_search_bar.dropdown_bar
+        self.filter_search_bar.searchRequested.connect(self._search_documents)
+        self.main_layout.addWidget(self.filter_search_bar, 0)
 
         self.content_scroll = QScrollArea(self)
         self.content_scroll.setWidgetResizable(True)
@@ -196,62 +198,103 @@ class ConstructionDocsPage(BasePage):
         content_layout.setSpacing(8)
         self.content_scroll.setWidget(content_widget)
 
-        action_row = QHBoxLayout()
-        action_row.setContentsMargins(0, 0, 20, 0)
-        action_row.addStretch()
-        self.btn_edit_description = QPushButton("编辑平台描述", self)
-        self.btn_edit_description.setCursor(Qt.PointingHandCursor)
-        self.btn_edit_description.setStyleSheet(
-            """
-            QPushButton {
-                min-height: 32px;
-                padding: 0 18px;
-                border: none;
-                border-radius: 6px;
-                background-color: #1677c5;
-                color: #ffffff;
-                font-size: 12pt;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background-color: #2186d4;
-            }
-            """
+        self.docs_widget = DocumentLibraryWidget(
+            self._build_document_sections(),
+            module_code="doc_man",
+            show_description=True,
+            parent=content_widget,
         )
-        self.btn_edit_description.clicked.connect(self._edit_platform_description)
-        action_row.addWidget(self.btn_edit_description)
-        content_layout.addLayout(action_row)
-
-        # ✅ 2) 关键：不要再额外包一层 HomeCard/HomeHeaderBar
-        #    直接使用 ConstructionDocsWidget 自己那套“首页 + 文件夹UI”
-        self.docs_widget = ConstructionDocsWidget(content_widget, show_platform_description=True)
         content_layout.addWidget(self.docs_widget)
 
         # 3) 监听筛选条件变化（保留）
-        self.dropdown_bar.valueChanged.connect(self.on_filter_changed)
+        self.filter_search_bar.valueChanged.connect(self.on_filter_changed)
         self.docs_widget.navigationStateChanged.connect(self._set_dropdown_visible)
+        self.docs_widget.descriptionEditRequested.connect(self._edit_platform_description)
         self._sync_platform_ui()
 
+    def _search_documents(self, code: str = "", name: str = ""):
+        if not hasattr(self, "docs_widget"):
+            return
+        self.docs_widget.search_all_documents(code, name)
+
+    def _build_document_sections(self) -> list[dict]:
+        structural = [
+            ("规格书", "规格书", "详细设计/完工阶段结构专业规格书，支持标准编码自动识别。"),
+            ("报告", "报告", "结构专业分析报告、校核报告、检测策略报告等。"),
+            ("图纸", "图纸", "结构专业设计图纸，文件名可按 DD-DWG-平台(模块)-ST-图号 自动解析。"),
+            ("料单", "材料清单", "结构专业材料清单。"),
+            ("设计基础", "设计基础数据", "结构专业设计基础数据。"),
+        ]
+        general = [
+            ("图纸", "图纸", "总体专业图纸，文件名可按 DD-DWG-平台-GE-图号 自动解析。"),
+            ("规格书", "规格书", "总体专业规格书。"),
+            ("报告", "报告", "总体专业报告。"),
+        ]
+
+        sections: list[dict] = []
+        for stage in ("详细设计", "完工"):
+            for name, category, hint in structural:
+                sections.append(
+                    {
+                        "label": f"{stage} / 结构(ST) / {name}",
+                        "tree_path": [stage, "结构(ST)", name],
+                        "path_segments": [stage, "结构(ST)", name],
+                        "categories": [category, "其他"],
+                        "hint": hint,
+                        "display_profile": "design",
+                    }
+                )
+            for name, category, hint in general:
+                sections.append(
+                    {
+                        "label": f"{stage} / 总体(GE) / {name}",
+                        "tree_path": [stage, "总体(GE)", name],
+                        "path_segments": [stage, "总体(GE)", name],
+                        "categories": [category, "其他"],
+                        "hint": hint,
+                        "display_profile": "design",
+                    }
+                )
+            sections.append(
+                {
+                    "label": f"{stage} / 其他",
+                    "tree_path": [stage, "其他"],
+                    "path_segments": [stage, "其他"],
+                    "categories": ["未分类/其他", *OTHER_FILE_CLASS_NAMES, "其他"],
+                    "hint": "无法按标准编码自动归类的文件先放入其他，后续可在表格中手动维护类别。",
+                    "display_profile": "design",
+                }
+            )
+        return sections
+
     def on_filter_changed(self, key: str, value: str):
-        print(f"[ConstructionDocsPage] filter changed: {key} -> {value}")
         self._sync_platform_ui(changed_key=key)
 
     def _sync_platform_ui(self, changed_key: str | None = None):
         platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
-        profile = load_facility_profile(
-            platform["facility_code"],
-            defaults={
-                "branch": platform["branch"],
-                "op_company": platform["op_company"],
-                "oilfield": platform["oilfield"],
-                "facility_code": platform["facility_code"],
-                "facility_name": platform["facility_name"],
-                "facility_type": platform["facility_type"],
-                "category": platform["category"],
-                "start_time": platform["start_time"],
-                "design_life": platform["design_life"],
-            },
-        )
+        initial_profile = getattr(self, "_initial_profile", None)
+        if (
+            changed_key is None
+            and isinstance(initial_profile, dict)
+            and initial_profile.get("facility_code") == platform["facility_code"]
+        ):
+            profile = initial_profile
+            self._initial_profile = None
+        else:
+            profile = load_facility_profile(
+                platform["facility_code"],
+                defaults={
+                    "branch": platform["branch"],
+                    "op_company": platform["op_company"],
+                    "oilfield": platform["oilfield"],
+                    "facility_code": platform["facility_code"],
+                    "facility_name": platform["facility_name"],
+                    "facility_type": platform["facility_type"],
+                    "category": platform["category"],
+                    "start_time": platform["start_time"],
+                    "design_life": platform["design_life"],
+                },
+            )
         self.dropdown_bar.set_options("division", [profile["branch"]], profile["branch"])
         self.dropdown_bar.set_options("company", [profile["op_company"]], profile["op_company"])
         self.dropdown_bar.set_options("field", [profile["oilfield"]], profile["oilfield"])
@@ -264,20 +307,6 @@ class ConstructionDocsPage(BasePage):
         values["facility_name"] = profile["facility_name"]
         generated_description = build_platform_description(values)
         description_text = profile.get("description_text") or generated_description
-        save_facility_profile(
-            profile["facility_code"],
-            {
-                "facility_name": values.get("facility_name"),
-                "branch": values.get("division"),
-                "op_company": values.get("company"),
-                "oilfield": values.get("field"),
-                "facility_type": values.get("facility_type"),
-                "category": values.get("category"),
-                "start_time": values.get("start_time"),
-                "design_life": values.get("design_years"),
-                "description_text": description_text,
-            },
-        )
         platform_name = values.get("facility_name", "")
         self.docs_widget.set_facility_code(profile["facility_code"])
         self.docs_widget.set_platform_name(platform_name)
@@ -336,10 +365,10 @@ class ConstructionDocsPage(BasePage):
         self._refresh_edit_description_button_visibility(show_top_level=visible)
 
     def _refresh_edit_description_button_visibility(self, show_top_level: bool | None = None):
-        if not hasattr(self, "btn_edit_description"):
+        if not hasattr(self, "docs_widget"):
             return
 
         if show_top_level is None:
-            show_top_level = not getattr(self.docs_widget, "current_path", [])
+            show_top_level = True
         has_description = bool(getattr(self.docs_widget, "platform_description", "").strip())
-        self.btn_edit_description.setVisible(bool(show_top_level and has_description))
+        self.docs_widget.set_description_edit_visible(bool(show_top_level and has_description))

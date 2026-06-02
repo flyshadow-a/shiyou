@@ -5,7 +5,8 @@ import os
 import shutil
 from typing import Any, Dict, Optional
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from shiyou_db.database import build_engine_from_url
 
 from core.app_paths import first_existing_path
 from pages.sacs_wellslot_service import (
@@ -262,7 +263,7 @@ def create_new_model_files(
     if not job_name:
         raise ValueError("job_name 为空，无法创建新模型")
 
-    engine = create_engine(mysql_url, future=True, pool_pre_ping=True)
+    engine = build_engine_from_url(mysql_url)
     _ensure_all_result_tables(engine)
 
     with engine.begin() as conn:

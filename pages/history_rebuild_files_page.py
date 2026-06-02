@@ -14,8 +14,8 @@ from PyQt5.QtWidgets import (
 )
 
 from core.base_page import BasePage
-from core.dropdown_bar import DropdownBar
 from .file_management_platforms import default_platform, sync_platform_dropdowns
+from .file_management_filter_search_bar import FileManagementFilterSearchBar
 from .construction_docs_widget import ConstructionDocsWidget
 from .important_history_rebuild_info_page import ImportantHistoryDetailWidget
 
@@ -93,8 +93,10 @@ class HistoryRebuildFilesPage(BasePage):
         field_map["start_time"]["default"] = platform_defaults["start_time"]
         field_map["design_life"]["options"] = [platform_defaults["design_life"]]
         field_map["design_life"]["default"] = platform_defaults["design_life"]
-        self.dropdown_bar = DropdownBar(fields, parent=self)
-        self.main_layout.addWidget(self.dropdown_bar, 0)
+        self.filter_search_bar = FileManagementFilterSearchBar(fields, self)
+        self.dropdown_bar = self.filter_search_bar.dropdown_bar
+        self.filter_search_bar.searchRequested.connect(self._search_documents)
+        self.main_layout.addWidget(self.filter_search_bar, 0)
 
         card = QFrame(self)
         card.setObjectName("HistoryRebuildCard")
@@ -123,12 +125,15 @@ class HistoryRebuildFilesPage(BasePage):
             }
             """
         )
-        self.dropdown_bar.valueChanged.connect(self.on_filter_changed)
+        self.filter_search_bar.valueChanged.connect(self.on_filter_changed)
         self._sync_platform_ui()
-        self._set_dropdown_visible(False)
+        self._set_dropdown_visible(True)
 
     def on_filter_changed(self, key: str, value: str):
         self._sync_platform_ui(changed_key=key)
+
+    def _search_documents(self, code: str = "", name: str = ""):
+        self.detail_widget.search_all_documents(code, name)
 
     def _sync_platform_ui(self, changed_key: str | None = None):
         platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
@@ -142,5 +147,4 @@ class HistoryRebuildFilesPage(BasePage):
         return self.dropdown_bar.get_value("facility_name")
 
     def _set_dropdown_visible(self, visible: bool):
-        self.dropdown_bar.setVisible(visible)
-        self.dropdown_bar.setFixedHeight(self.dropdown_bar.sizeHint().height() if visible else 0)
+        self.filter_search_bar.set_filter_visible(visible)

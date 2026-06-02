@@ -6,7 +6,8 @@ import re
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from shiyou_db.database import build_engine_from_url
 
 from pages.sacs_storage_service import (
     get_job_new_model_file,
@@ -572,7 +573,7 @@ def import_sacs_model_to_db(
     # 若尚未上传，不阻塞评估页打开；创建模型或计算分析时再做强校验。
     stage_support_files_for_job(job_name, require_all=False)
 
-    engine = create_engine(mysql_url, future=True, pool_pre_ping=True)
+    engine = build_engine_from_url(mysql_url)
     ensure_model_tables(engine)
 
     # 解析也直接使用文件库真实路径。
@@ -741,7 +742,7 @@ def import_dummy_joints_to_db(
     if not os.path.exists(model_file):
         raise FileNotFoundError(f"找不到 model_file: {model_file}")
 
-    engine = create_engine(mysql_url, future=True, pool_pre_ping=True)
+    engine = build_engine_from_url(mysql_url)
     ensure_dummy_table(engine)
 
     rows = parse_dummy_delete_joints(model_file, job_name)

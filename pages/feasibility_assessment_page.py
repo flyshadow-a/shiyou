@@ -39,8 +39,6 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QDesktopServices
 
-from sqlalchemy import create_engine, text
-
 from core.base_page import BasePage
 from core.message_boxes import ask_yes_no
 
@@ -56,6 +54,11 @@ from pages.sacs_storage_service import get_job_runtime_dir, stage_support_files_
 from services.history_rebuild_auto_service import (
     prepare_latest_rebuild_runtime_for_analysis,
     prepare_original_runtime_for_analysis,
+)
+from services.feasibility_assessment_db import (
+    replace_risers,
+    replace_topside_weights,
+    replace_well_slots,
 )
 
 SONGTI_FONT_FALLBACK = '"SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei"'
@@ -596,12 +599,6 @@ class FeasibilityAssessmentPage(BasePage):
         table = meta["table"]
         row = table.rowCount()
         self._insert_dynamic_row_at(table_key, row)
-
-    def _get_engine(self):
-        if not self.mysql_url:
-            raise ValueError("MYSQL_URL 未配置")
-        return create_engine(self.mysql_url, future=True, pool_pre_ping=True)
-
 
     def _refresh_table_scroll_height(self, table_key: str, max_height: int = 210):
         meta = self._dynamic_table_meta.get(table_key)
@@ -2389,83 +2386,6 @@ class FeasibilityAssessmentPage(BasePage):
         v.addLayout(btn_row)
         dlg.exec_()
 
-    def _get_engine(self):
-        if not self.mysql_url:
-            raise ValueError("MYSQL_URL 未配置，请先在环境变量中设置 MYSQL_URL")
-        return create_engine(self.mysql_url, future=True, pool_pre_ping=True)
-
-    def _ensure_input_tables(self, engine) -> None:
-        ddl_list = [
-            """
-            CREATE TABLE IF NOT EXISTS well_slots (
-                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                job_name VARCHAR(100) NOT NULL,
-                slot_no INT NOT NULL,
-                x DOUBLE NULL,
-                y DOUBLE NULL,
-                conductor_od DOUBLE NULL,
-                conductor_wt DOUBLE NULL,
-                support_od DOUBLE NULL,
-                support_wt DOUBLE NULL,
-                top_load_fz DOUBLE NULL,
-                KEY idx_ws_job_slot (job_name, slot_no)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS well_slot_connections (
-                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                job_name VARCHAR(100) NOT NULL,
-                slot_no INT NOT NULL,
-                level_z DOUBLE NULL,
-                connection_type VARCHAR(50) NULL,
-                KEY idx_wsc_job_slot (job_name, slot_no),
-                KEY idx_wsc_job_level (job_name, level_z)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS risers (
-                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                job_name VARCHAR(100) NOT NULL,
-                riser_no INT NOT NULL,
-                x DOUBLE NULL,
-                y DOUBLE NULL,
-                riser_od DOUBLE NULL,
-                riser_wt DOUBLE NULL,
-                support_od DOUBLE NULL,
-                support_wt DOUBLE NULL,
-                batter_x DOUBLE NULL,
-                batter_y DOUBLE NULL,
-                KEY idx_risers_job_riser (job_name, riser_no)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS riser_connections (
-                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                job_name VARCHAR(100) NOT NULL,
-                riser_no INT NOT NULL,
-                level_z DOUBLE NULL,
-                connection_type VARCHAR(50) NULL,
-                KEY idx_rc_job_riser (job_name, riser_no),
-                KEY idx_rc_job_level (job_name, level_z)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS topside_weights (
-                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                job_name VARCHAR(100) NOT NULL,
-                weight_no INT NOT NULL,
-                x DOUBLE NULL,
-                y DOUBLE NULL,
-                z DOUBLE NULL,
-                weight_t DOUBLE NULL,
-                KEY idx_tw_job_weight (job_name, weight_no)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """
-        ]
-        with engine.begin() as conn:
-            for ddl in ddl_list:
-                conn.execute(text(ddl))
-
     def _cell_text(self, table: QTableWidget, row: int, col: int) -> str:
         it = table.item(row, col)
         return (it.text() if it else "").strip()
@@ -2499,13 +2419,6 @@ class FeasibilityAssessmentPage(BasePage):
                 return True
         return False
 
-    def _delete_old_input_rows(self, conn, table_names: List[str]) -> None:
-        for table_name in table_names:
-            conn.execute(
-                text(f"DELETE FROM {table_name} WHERE job_name = :job_name"),
-                {"job_name": self.job_name}
-            )
-
     def _get_level_headers(self, table: QTableWidget, start_col: int) -> List[tuple]:
         levels = []
         for c in range(start_col, table.columnCount()):
@@ -2520,9 +2433,6 @@ class FeasibilityAssessmentPage(BasePage):
         return levels
 
     def _save_well_slots_to_db(self):
-        engine = self._get_engine()
-        self._ensure_input_tables(engine)
-
         level_headers = self._get_level_headers(self.tbl1, 8)
 
         slot_rows = []
@@ -2566,37 +2476,14 @@ class FeasibilityAssessmentPage(BasePage):
                     "connection_type": connection_type,
                 })
 
-        with engine.begin() as conn:
-            self._delete_old_input_rows(conn, ["well_slot_connections", "well_slots"])
-
-            if slot_rows:
-                conn.execute(text("""
-                    INSERT INTO well_slots (
-                        job_name, slot_no, x, y,
-                        conductor_od, conductor_wt,
-                        support_od, support_wt,
-                        top_load_fz
-                    ) VALUES (
-                        :job_name, :slot_no, :x, :y,
-                        :conductor_od, :conductor_wt,
-                        :support_od, :support_wt,
-                        :top_load_fz
-                    )
-                """), slot_rows)
-
-            if conn_rows:
-                conn.execute(text("""
-                    INSERT INTO well_slot_connections (
-                        job_name, slot_no, level_z, connection_type
-                    ) VALUES (
-                        :job_name, :slot_no, :level_z, :connection_type
-                    )
-                """), conn_rows)
+        replace_well_slots(
+            self.mysql_url,
+            job_name=self.job_name,
+            slot_rows=slot_rows,
+            connection_rows=conn_rows,
+        )
 
     def _save_risers_to_db(self):
-        engine = self._get_engine()
-        self._ensure_input_tables(engine)
-
         level_headers = self._get_level_headers(self.tbl2, 9)
 
         riser_rows = []
@@ -2641,37 +2528,14 @@ class FeasibilityAssessmentPage(BasePage):
                     "connection_type": connection_type,
                 })
 
-        with engine.begin() as conn:
-            self._delete_old_input_rows(conn, ["riser_connections", "risers"])
-
-            if riser_rows:
-                conn.execute(text("""
-                    INSERT INTO risers (
-                        job_name, riser_no, x, y,
-                        riser_od, riser_wt,
-                        support_od, support_wt,
-                        batter_x, batter_y
-                    ) VALUES (
-                        :job_name, :riser_no, :x, :y,
-                        :riser_od, :riser_wt,
-                        :support_od, :support_wt,
-                        :batter_x, :batter_y
-                    )
-                """), riser_rows)
-
-            if conn_rows:
-                conn.execute(text("""
-                    INSERT INTO riser_connections (
-                        job_name, riser_no, level_z, connection_type
-                    ) VALUES (
-                        :job_name, :riser_no, :level_z, :connection_type
-                    )
-                """), conn_rows)
+        replace_risers(
+            self.mysql_url,
+            job_name=self.job_name,
+            riser_rows=riser_rows,
+            connection_rows=conn_rows,
+        )
 
     def _save_topside_weights_to_db(self):
-        engine = self._get_engine()
-        self._ensure_input_tables(engine)
-
         rows = []
         header_rows = 2
         for r in range(header_rows, self.tbl3.rowCount()):
@@ -2693,17 +2557,11 @@ class FeasibilityAssessmentPage(BasePage):
                 "weight_t": weight_t,
             })
 
-        with engine.begin() as conn:
-            self._delete_old_input_rows(conn, ["topside_weights"])
-
-            if rows:
-                conn.execute(text("""
-                    INSERT INTO topside_weights (
-                        job_name, weight_no, x, y, z, weight_t
-                    ) VALUES (
-                        :job_name, :weight_no, :x, :y, :z, :weight_t
-                    )
-                """), rows)
+        replace_topside_weights(
+            self.mysql_url,
+            job_name=self.job_name,
+            rows=rows,
+        )
 
     def _open_local_file(self, path: str) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))

@@ -1,20 +1,127 @@
 # -*- coding: utf-8 -*-
 # pages/history_events_inspection_page.py
 
+import os
+
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QFrame,
+    QHeaderView,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
     QScrollArea,
-    QStackedWidget,
     QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from core.base_page import BasePage
+from core.message_boxes import ask_yes_no
 from pages.construction_docs_widget import ConstructionDocsWidget
-from core.dropdown_bar import DropdownBar
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
+from pages.file_management_filter_search_bar import FileManagementFilterSearchBar
+from pages.file_management_ui_constants import FILE_MANAGEMENT_SIDEBAR_WIDTH
 from pages.important_history_rebuild_info_page import ImportantHistoryEventsPage
-from pages.history_inspection_summary_page import HistoryInspectionSummaryPage
+from pages.history_inspection_summary_page import (
+    HistoryInspectionSummaryPage,
+    InspectionProjectEditDialog,
+    InspectionFindingDialog,
+)
+from pages.doc_man import DocManWidget, apply_docman_table_style
+from services.file_db_adapter import (
+    DOC_MAN_MODULE_CODE,
+    FileBackendError,
+    is_file_db_configured,
+    load_docman_record_list,
+)
+from services.inspection_business_db_adapter import (
+    create_inspection_project,
+    list_inspection_findings,
+    list_inspection_projects,
+    replace_inspection_findings,
+    soft_delete_inspection_project_with_files,
+    update_inspection_project,
+)
+
+
+class _FacilityCodeMirror:
+    def __init__(self):
+        self.facility_code = ""
+
+    def set_facility_code(self, facility_code: str) -> None:
+        self.facility_code = facility_code
+
+
+class AddInspectionProjectDialog(QDialog):
+    def __init__(self, default_project_type: str = "periodic", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("新增检测项目")
+        self.setModal(True)
+        self.resize(440, 240)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(10)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.type_combo = QComboBox(self)
+        self.type_combo.addItem("定期检测", "periodic")
+        self.type_combo.addItem("特殊事件检测", "special_event")
+        index = self.type_combo.findData(default_project_type)
+        self.type_combo.setCurrentIndex(index if index >= 0 else 0)
+
+        self.name_edit = QLineEdit(self)
+        self.name_edit.setPlaceholderText("例如：第一次检测 / 台风检测")
+        self.description_edit = QLineEdit(self)
+        self.description_edit.setPlaceholderText("请输入检测描述")
+        self.year_edit = QLineEdit(self)
+        self.year_edit.setPlaceholderText("例如：2025")
+
+        form.addRow("检测类型", self.type_combo)
+        form.addRow("项目名称", self.name_edit)
+        form.addRow("描述", self.description_edit)
+        form.addRow("年份", self.year_edit)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.button(QDialogButtonBox.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _accept_if_valid(self) -> None:
+        if not self.name_edit.text().strip():
+            QMessageBox.information(self, "提示", "请先填写项目名称。")
+            return
+        if not self.year_edit.text().strip():
+            QMessageBox.information(self, "提示", "请先填写年份。")
+            return
+        self.accept()
+
+    def get_values(self) -> dict[str, str]:
+        return {
+            "project_type": str(self.type_combo.currentData() or "periodic"),
+            "project_name": self.name_edit.text().strip(),
+            "summary_text": self.description_edit.text().strip(),
+            "project_year": self.year_edit.text().strip(),
+        }
 
 
 class _CombinedHistoryHomeWidget(ConstructionDocsWidget):
@@ -142,78 +249,635 @@ class HistoryEventsInspectionPage(BasePage):
         field_map["start_time"]["default"] = platform_defaults["start_time"]
         field_map["design_life"]["options"] = [platform_defaults["design_life"]]
         field_map["design_life"]["default"] = platform_defaults["design_life"]
-        self.dropdown_bar = DropdownBar(fields, parent=self)
-        self.main_layout.addWidget(self.dropdown_bar, 0)
+        self.filter_search_bar = FileManagementFilterSearchBar(fields, self)
+        self.dropdown_bar = self.filter_search_bar.dropdown_bar
+        self.filter_search_bar.searchRequested.connect(self._search_documents)
+        self.main_layout.addWidget(self.filter_search_bar, 0)
 
-        # Content stack.
-        self.stack = QStackedWidget(self)
-        self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.home_widget = _CombinedHistoryHomeWidget(self)
-        self.page_events = _EventsPage(self)
-        self.page_inspection = _InspectionPage(self)
+        content_root = QFrame(self)
+        content_root.setObjectName("HistoryInspectionLibraryRoot")
+        content_layout = QHBoxLayout(content_root)
+        content_layout.setContentsMargins(12, 8, 12, 12)
+        content_layout.setSpacing(12)
 
-        self.stack.addWidget(self.home_widget)
-        self.stack.addWidget(self.page_events)
-        self.stack.addWidget(self.page_inspection)
-        self.stack.setCurrentWidget(self.home_widget)
+        sidebar = QFrame(content_root)
+        sidebar.setObjectName("HistoryInspectionSidebar")
+        sidebar.setFixedWidth(FILE_MANAGEMENT_SIDEBAR_WIDTH)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(12, 12, 12, 12)
+        sidebar_layout.setSpacing(8)
+        sidebar_title = QLabel("检测记录分类", sidebar)
+        sidebar_title.setObjectName("HistoryInspectionSidebarTitle")
+        sidebar_layout.addWidget(sidebar_title)
+
+        self.btn_add_project = QPushButton("＋ 新增检测项目", sidebar)
+        self.btn_add_project.setProperty("class", "DocManBlueButton")
+        self.btn_add_project.setCursor(Qt.PointingHandCursor)
+        self.btn_add_project.clicked.connect(self._add_inspection_project)
+        sidebar_layout.addWidget(self.btn_add_project)
+
+        self._sidebar_items = {}
+        self.sidebar_tree = QTreeWidget(sidebar)
+        self.sidebar_tree.setObjectName("HistoryInspectionTree")
+        self.sidebar_tree.setHeaderHidden(True)
+        self.sidebar_tree.setIndentation(18)
+        self.sidebar_tree.itemClicked.connect(self._on_sidebar_item_clicked)
+        sidebar_layout.addWidget(self.sidebar_tree, 1)
+
+        sidebar_actions = QHBoxLayout()
+        sidebar_actions.setContentsMargins(0, 0, 0, 0)
+        sidebar_actions.setSpacing(6)
+        self.btn_edit_project = QPushButton("编辑", sidebar)
+        self.btn_edit_project.setProperty("class", "DocManBlueButton")
+        self.btn_edit_project.setCursor(Qt.PointingHandCursor)
+        self.btn_edit_project.clicked.connect(self._edit_inspection_project)
+        sidebar_actions.addWidget(self.btn_edit_project)
+        self.btn_delete_project = QPushButton("删除", sidebar)
+        self.btn_delete_project.setProperty("class", "DocManBlueButton")
+        self.btn_delete_project.setCursor(Qt.PointingHandCursor)
+        self.btn_delete_project.clicked.connect(self._delete_inspection_project)
+        sidebar_actions.addWidget(self.btn_delete_project)
+        sidebar_layout.addLayout(sidebar_actions)
+
+        content_layout.addWidget(sidebar, 0)
+
+        right_content = QFrame(content_root)
+        right_content.setObjectName("HistoryInspectionContentCard")
+        right_layout = QVBoxLayout(right_content)
+        right_layout.setContentsMargins(14, 12, 14, 14)
+        right_layout.setSpacing(8)
+
+        self.desc_frame = QFrame(right_content)
+        self.desc_frame.setObjectName("InspectionDescFrame")
+        desc_layout = QVBoxLayout(self.desc_frame)
+        desc_layout.setContentsMargins(14, 10, 14, 10)
+        desc_layout.setSpacing(6)
+        self.desc_title = QLabel("检测描述", self.desc_frame)
+        self.desc_title.setObjectName("InspectionDescTitle")
+        self.desc_label = QLabel("当前暂无检测描述。", self.desc_frame)
+        self.desc_label.setObjectName("InspectionDescLabel")
+        self.desc_label.setWordWrap(True)
+        self.desc_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        desc_layout.addWidget(self.desc_title)
+        desc_layout.addWidget(self.desc_label)
+        right_layout.addWidget(self.desc_frame, 0)
+
+        self.doc_man_widget = DocManWidget(self._get_doc_man_upload_dir, right_content)
+        # Backward-compatible state mirrors for existing callers/tests that
+        # checked the old stacked child pages' selected facility code.
+        self.home_widget = _FacilityCodeMirror()
+        self.page_inspection = _FacilityCodeMirror()
+        right_layout.addWidget(self.doc_man_widget, 6)
+
+        findings_frame = QFrame(right_content)
+        findings_layout = QVBoxLayout(findings_frame)
+        findings_layout.setContentsMargins(0, 0, 0, 0)
+        findings_layout.setSpacing(8)
+
+        self.findings_title = QLabel("抽检记录", findings_frame)
+        self.findings_title.setObjectName("InspectionFindingTitle")
+        findings_layout.addWidget(self.findings_title, 0)
+
+        findings_action_row = QHBoxLayout()
+        findings_action_row.setContentsMargins(0, 0, 0, 0)
+        findings_action_row.setSpacing(8)
+        findings_action_row.addStretch()
+        self.btn_add_finding = QPushButton("新增记录", findings_frame)
+        self.btn_add_finding.setProperty("class", "DocManBlueButton")
+        self.btn_add_finding.clicked.connect(self._add_finding)
+        findings_action_row.addWidget(self.btn_add_finding)
+        self.btn_delete_finding = QPushButton("删除记录", findings_frame)
+        self.btn_delete_finding.setProperty("class", "DocManBlueButton")
+        self.btn_delete_finding.clicked.connect(self._delete_finding)
+        findings_action_row.addWidget(self.btn_delete_finding)
+        self.btn_edit_finding = QPushButton("编辑记录", findings_frame)
+        self.btn_edit_finding.setProperty("class", "DocManBlueButton")
+        self.btn_edit_finding.clicked.connect(self._edit_finding)
+        findings_action_row.addWidget(self.btn_edit_finding)
+        findings_layout.addLayout(findings_action_row)
+
+        self.findings_table = QTableWidget(0, 3, findings_frame)
+        self.findings_table.setHorizontalHeaderLabels(["节点号", "检验等级", "检验结论"])
+        self.findings_table.verticalHeader().setVisible(False)
+        self.findings_table.setAlternatingRowColors(False)
+        self.findings_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.findings_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.findings_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
+        self.findings_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.findings_table.setMinimumHeight(170)
+        self.findings_table.itemChanged.connect(self._on_finding_item_changed)
+        apply_docman_table_style(self.findings_table)
+        findings_layout.addWidget(self.findings_table, 1)
+        right_layout.addWidget(findings_frame, 4)
+
+        self._selected_project: dict | None = None
+        self._loading_findings = False
+        content_layout.addWidget(right_content, 1)
 
         self.content_scroll = QScrollArea(self)
         self.content_scroll.setWidgetResizable(True)
         self.content_scroll.setFrameShape(QFrame.NoFrame)
         self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.content_scroll.setWidget(self.stack)
+        self.content_scroll.setWidget(content_root)
         self.main_layout.addWidget(self.content_scroll, 1)
 
-        self.home_widget.folderSelected.connect(self._open_folder)
-        self.page_events.goHomeRequested.connect(self._go_home)
-        self.page_inspection.goHomeRequested.connect(self._go_home)
-        self.dropdown_bar.valueChanged.connect(self.on_filter_changed)
+        self.filter_search_bar.valueChanged.connect(self.on_filter_changed)
+        self.setStyleSheet(
+            """
+            QFrame#HistoryInspectionLibraryRoot {
+                background-color: #f3f6fb;
+            }
+            QFrame#HistoryInspectionSidebar {
+                background-color: #ffffff;
+                border: 1px solid #d7e1ec;
+                border-radius: 10px;
+            }
+            QFrame#HistoryInspectionContentCard {
+                background-color: #ffffff;
+                border: 1px solid #d7e1ec;
+                border-radius: 10px;
+            }
+            QLabel#HistoryInspectionSidebarTitle {
+                color: #12344d;
+                font-size: 13pt;
+                font-weight: 700;
+            }
+            QLabel#InspectionFindingTitle {
+                min-height: 30px;
+                padding: 0 10px;
+                border-radius: 4px;
+                background-color: #1677c5;
+                color: #ffffff;
+                font-size: 12pt;
+                font-weight: 600;
+            }
+            QFrame#InspectionDescFrame {
+                background-color: #e8f2ff;
+                border: 1px solid #b9d9f4;
+                border-radius: 8px;
+            }
+            QLabel#InspectionDescTitle {
+                color: #12344d;
+                background-color: transparent;
+                font-size: 12pt;
+                font-weight: 700;
+            }
+            QLabel#InspectionDescLabel {
+                color: #12344d;
+                background-color: transparent;
+                font-size: 11pt;
+            }
+            QTreeWidget#HistoryInspectionTree {
+                border: none;
+                background: transparent;
+                color: #12344d;
+                font-size: 12pt;
+            }
+            QTreeWidget#HistoryInspectionTree::item {
+                min-height: 30px;
+                padding: 4px 6px;
+                border-radius: 6px;
+            }
+            QTreeWidget#HistoryInspectionTree::item:hover {
+                background-color: #e8f2ff;
+            }
+            QTreeWidget#HistoryInspectionTree::item:selected {
+                background-color: #1677c5;
+                color: #ffffff;
+            }
+            QPushButton[class="DocManBlueButton"] {
+                min-height: 32px;
+                padding: 0 18px;
+                border: none;
+                border-radius: 6px;
+                background-color: #1677c5;
+                color: #ffffff;
+                font-size: 12pt;
+                font-weight: 600;
+            }
+            QPushButton[class="DocManBlueButton"]:hover {
+                background-color: #2186d4;
+            }
+            """
+        )
         self._sync_platform_ui()
 
-    def _open_folder(self, group: str, key: str):
-        self._set_dropdown_visible(False)
-        if group == "events":
-            self.page_events.open_folder(key)
-            self.stack.setCurrentWidget(self.page_events)
-        elif group == "inspection":
-            self.page_inspection.open_folder(key)
-            self.stack.setCurrentWidget(self.page_inspection)
+    def _group_label(self, project_type: str) -> str:
+        return "定期检测" if project_type == "periodic" else "特殊事件检测"
 
-    def _go_home(self):
-        self._set_dropdown_visible(True)
-        self.stack.setCurrentWidget(self.home_widget)
+    def _path_root_label(self) -> str:
+        values = self.dropdown_bar.get_all_values() if hasattr(self.dropdown_bar, "get_all_values") else {}
+        branch = values.get("branch") or self.dropdown_bar.get_value("branch")
+        oilfield = values.get("oilfield") or self.dropdown_bar.get_value("oilfield")
+        facility = values.get("facility_code") or self.dropdown_bar.get_value("facility_code")
+        parts = [branch, oilfield, facility, "检测记录文件"]
+        return " / ".join(str(part).strip() for part in parts if str(part or "").strip())
+
+    def _project_storage_segments(self, project_type: str, project: dict | None) -> list[str]:
+        root = self._group_label(project_type)
+        if not project or not project.get("id"):
+            return [root]
+        return [root, f"project_{int(project['id'])}"]
+
+    def _file_categories(self) -> list[str]:
+        return ["检测文档", "图纸", "Excel", "CAD", "其他"]
+
+    def _get_doc_man_upload_dir(self, path_segments: list[str]) -> str:
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        facility = (self.dropdown_bar.get_value("facility_code") or default_platform()["facility_code"]).strip()
+        target = os.path.join(project_root, "upload", "history_inspection", facility, *path_segments)
+        os.makedirs(target, exist_ok=True)
+        return target
+
+    def _reload_sidebar_projects(self, *, selected_type: str | None = None, selected_id: int | None = None):
+        self.sidebar_tree.clear()
+        self._sidebar_items = {}
+        facility_code = self.dropdown_bar.get_value("facility_code") or default_platform()["facility_code"]
+
+        first_project_item = None
+        for project_type in ("periodic", "special_event"):
+            group_item = QTreeWidgetItem([self._group_label(project_type)])
+            group_item.setData(0, Qt.UserRole, {"project_type": project_type, "project": None})
+            self.sidebar_tree.addTopLevelItem(group_item)
+            self._sidebar_items[project_type] = group_item
+
+            try:
+                rows = list_inspection_projects(facility_code, project_type)
+            except Exception:
+                rows = []
+            for index, row in enumerate(rows, start=1):
+                project = {
+                    "id": row.get("id"),
+                    "title": row.get("project_name") or f"检测项目{index}",
+                    "year": row.get("project_year") or row.get("event_date") or "",
+                    "summary_text": row.get("summary_text") or "",
+                    "project_type": project_type,
+                }
+                text = f"({index}) {project['title']}"
+                if project["year"]:
+                    text = f"{text}\uff08{self._project_year_label(project['year'])}\uff09"
+                item = QTreeWidgetItem([text])
+                item.setData(0, Qt.UserRole, {"project_type": project_type, "project": project})
+                group_item.addChild(item)
+                if first_project_item is None:
+                    first_project_item = item
+                if selected_type == project_type and selected_id is not None and int(project.get("id") or 0) == int(selected_id):
+                    first_project_item = item
+            self.sidebar_tree.expandItem(group_item)
+
+        if first_project_item is not None:
+            self.sidebar_tree.setCurrentItem(first_project_item)
+            self._show_project_files(first_project_item.data(0, Qt.UserRole))
+            return
+
+        first_group = self._sidebar_items.get("periodic")
+        if first_group is not None:
+            self.sidebar_tree.setCurrentItem(first_group)
+            self._show_project_files(first_group.data(0, Qt.UserRole))
+
+    def _on_sidebar_item_clicked(self, item: QTreeWidgetItem, _column: int):
+        data = item.data(0, Qt.UserRole)
+        if isinstance(data, dict):
+            self._show_project_files(data)
+
+    @staticmethod
+    def _project_year_label(value: str) -> str:
+        text = str(value or "").strip().strip("()\uff08\uff09")
+        digits = "".join(ch for ch in text[:10] if ch.isdigit())
+        if len(digits) >= 4:
+            return digits[:4]
+        return text.replace("\u5e74", "").strip()
+
+    def _show_project_files(self, data: dict):
+        project_type = data.get("project_type") or "periodic"
+        project = data.get("project")
+        project_name = project.get("title") if project else ""
+        self._selected_project = project
+        self._update_project_description(project)
+        display_segments = [self._group_label(project_type)]
+        if project_name:
+            display_segments.append(project_name)
+        self.doc_man_widget.set_context(
+            self._project_storage_segments(project_type, project),
+            [],
+            self._file_categories(),
+            facility_code=self.dropdown_bar.get_value("facility_code"),
+            hide_empty_templates=True,
+            db_list_mode=True,
+            display_profile="inspection",
+            path_root_label=self._path_root_label(),
+            display_path_segments=display_segments,
+            path_hint="检测项目文件按当前检测类型和项目归档，可上传、下载、删除并查看详情。",
+            default_work_condition=project_name or self._group_label(project_type),
+        )
+        self.doc_man_widget.facility_code = self.dropdown_bar.get_value("facility_code")
+        self._load_findings(project_type, project)
+
+    def _update_project_description(self, project: dict | None) -> None:
+        text = str((project or {}).get("summary_text") or "").strip()
+        self.desc_label.setText(text or "当前暂无检测描述。")
+
+    def _current_project_type(self) -> str:
+        item = self.sidebar_tree.currentItem()
+        if item is not None:
+            data = item.data(0, Qt.UserRole)
+            if isinstance(data, dict) and data.get("project_type"):
+                return str(data.get("project_type"))
+        return "periodic"
+
+    def _add_inspection_project(self):
+        dialog = AddInspectionProjectDialog(self._current_project_type(), self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        values = dialog.get_values()
+        project_type = values["project_type"]
+        try:
+            created = create_inspection_project(
+                facility_code=self.dropdown_bar.get_value("facility_code") or default_platform()["facility_code"],
+                project_type=project_type,
+                project_name=values["project_name"],
+                project_year=values["project_year"],
+                summary_text=values["summary_text"],
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "新增失败", str(exc))
+            return
+        self._reload_sidebar_projects(selected_type=project_type, selected_id=created.get("id") if isinstance(created, dict) else None)
+
+    def _selected_project_data(self) -> tuple[str, dict | None]:
+        item = self.sidebar_tree.currentItem()
+        if item is None:
+            return self._current_project_type(), None
+        data = item.data(0, Qt.UserRole)
+        if not isinstance(data, dict):
+            return self._current_project_type(), None
+        return str(data.get("project_type") or self._current_project_type()), data.get("project")
+
+    def _edit_inspection_project(self) -> None:
+        project_type, project = self._selected_project_data()
+        if not project or not project.get("id"):
+            QMessageBox.information(self, "提示", "请先选择一个检测项目。")
+            return
+        dialog = InspectionProjectEditDialog(
+            title_text="编辑检测项目",
+            project_name=project.get("title", ""),
+            project_year=project.get("year", ""),
+            summary_text=project.get("summary_text", ""),
+            parent=self,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        values = dialog.get_values()
+        try:
+            update_inspection_project(
+                int(project["id"]),
+                project_name=values["project_name"],
+                project_year=values["project_year"],
+                summary_text=values["summary_text"],
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "保存失败", str(exc))
+            return
+        self._reload_sidebar_projects(selected_type=project_type, selected_id=int(project["id"]))
+
+    def _delete_inspection_project(self) -> None:
+        project_type, project = self._selected_project_data()
+        if not project or not project.get("id"):
+            QMessageBox.information(self, "提示", "请先选择一个检测项目。")
+            return
+        project_name = str(project.get("title") or "")
+        if not ask_yes_no(
+            self,
+            "删除检测项目",
+            f"确认删除检测项目“{project_name}”吗？相关文件会一并隐藏。",
+        ):
+            return
+        try:
+            soft_delete_inspection_project_with_files(
+                int(project["id"]),
+                module_code=DOC_MAN_MODULE_CODE,
+                logical_path_prefix="/".join(self._project_storage_segments(project_type, project)),
+                facility_code=self.dropdown_bar.get_value("facility_code"),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "删除失败", str(exc))
+            return
+        self._reload_sidebar_projects(selected_type=project_type)
+
+    def _set_findings_enabled(self, enabled: bool) -> None:
+        self.btn_add_finding.setEnabled(enabled)
+        self.btn_delete_finding.setEnabled(enabled)
+        self.btn_edit_finding.setEnabled(enabled)
+        self.findings_table.setEnabled(enabled)
+
+    def _load_findings(self, project_type: str, project: dict | None) -> None:
+        project_name = str((project or {}).get("title") or "").strip()
+        self.findings_title.setText(f"{project_name}抽检记录" if project_name else "抽检记录")
+        self._loading_findings = True
+        self.findings_table.clearContents()
+        self.findings_table.setRowCount(0)
+        project_id = (project or {}).get("id")
+        if not project_id:
+            self._set_findings_enabled(False)
+            self._loading_findings = False
+            return
+        self._set_findings_enabled(True)
+        try:
+            rows = list_inspection_findings(int(project_id))
+        except Exception as exc:
+            self._loading_findings = False
+            QMessageBox.warning(self, "加载抽检记录失败", str(exc))
+            return
+        self.findings_table.setRowCount(len(rows))
+        for row, info in enumerate(rows):
+            self._set_finding_text_item(row, 0, str(info.get("item_code") or ""))
+            self._set_risk_level_combo(row, str(info.get("risk_level") or ""))
+            self._set_finding_text_item(row, 2, str(info.get("conclusion") or ""))
+        self._loading_findings = False
+
+    def _set_finding_text_item(self, row: int, col: int, text: str) -> None:
+        item = QTableWidgetItem(text)
+        item.setTextAlignment(Qt.AlignCenter)
+        item.setToolTip(item.text())
+        self.findings_table.setItem(row, col, item)
+
+    def _set_risk_level_combo(self, row: int, value: str = "") -> None:
+        combo = QComboBox(self.findings_table)
+        combo.addItems(["Ⅰ", "Ⅱ", "Ⅲ", "Ⅳ"])
+        index = combo.findText(str(value or "").strip())
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.currentTextChanged.connect(lambda _text: self._on_finding_combo_changed())
+        self.findings_table.setCellWidget(row, 1, combo)
+
+    def _finding_cell_text(self, row: int, col: int) -> str:
+        widget = self.findings_table.cellWidget(row, col)
+        if isinstance(widget, QComboBox):
+            return widget.currentText().strip()
+        item = self.findings_table.item(row, col)
+        return item.text().strip() if item else ""
+
+    def _collect_findings(self) -> list[dict]:
+        rows: list[dict] = []
+        for row in range(self.findings_table.rowCount()):
+            values = [self._finding_cell_text(row, col) for col in range(3)]
+            if any(values):
+                rows.append(
+                    {
+                        "item_code": values[0],
+                        "risk_level": values[1],
+                        "conclusion": values[2],
+                    }
+                )
+        return rows
+
+    def _save_findings(self) -> None:
+        project_id = (self._selected_project or {}).get("id")
+        if not project_id:
+            return
+        replace_inspection_findings(int(project_id), self._collect_findings())
+
+    def _add_finding(self) -> None:
+        if not (self._selected_project or {}).get("id"):
+            QMessageBox.information(self, "提示", "请先选择一个检测项目。")
+            return
+        self._loading_findings = True
+        row = self.findings_table.rowCount()
+        self.findings_table.insertRow(row)
+        self._set_finding_text_item(row, 0, "")
+        self._set_risk_level_combo(row, "Ⅰ")
+        self._set_finding_text_item(row, 2, "")
+        self._loading_findings = False
+        self._save_findings()
+
+    def _delete_finding(self) -> None:
+        row = self.findings_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先选择一条抽检记录。")
+            return
+        self._loading_findings = True
+        self.findings_table.removeRow(row)
+        self._loading_findings = False
+        self._save_findings()
+
+    def _edit_finding(self) -> None:
+        if not (self._selected_project or {}).get("id"):
+            QMessageBox.information(self, "提示", "请先选择一个检测项目。")
+            return
+        row = self.findings_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先选择一条抽检记录。")
+            return
+        values = [self._finding_cell_text(row, col) for col in range(3)]
+        dialog = InspectionFindingDialog(
+            title_text="编辑抽检记录",
+            item_code=values[0],
+            risk_level=values[1],
+            conclusion=values[2],
+            parent=self,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        result = dialog.get_values()
+        self._loading_findings = True
+        self._set_finding_text_item(row, 0, result["item_code"])
+        self._set_risk_level_combo(row, result["risk_level"])
+        self._set_finding_text_item(row, 2, result["conclusion"])
+        self._loading_findings = False
+        self._save_findings()
+
+    def _on_finding_item_changed(self, _item: QTableWidgetItem) -> None:
+        if self._loading_findings:
+            return
+        self._save_findings()
+
+    def _on_finding_combo_changed(self) -> None:
+        if self._loading_findings:
+            return
+        self._save_findings()
 
     def _set_dropdown_visible(self, visible: bool):
-        if visible:
-            self.dropdown_bar.setVisible(True)
-            self.dropdown_bar.setFixedHeight(self.dropdown_bar.sizeHint().height())
-        else:
-            self.dropdown_bar.setVisible(False)
-            self.dropdown_bar.setFixedHeight(0)
-
-    def on_filter_changed(self, key: str, value: str):
-        self._sync_platform_ui()
-
-    def _sync_platform_ui(self):
-        platform_name = self.dropdown_bar.get_value("facility_name")
-        window = self.window()
-        if hasattr(window, "set_current_platform_name"):
-            window.set_current_platform_name(platform_name)
+        self.filter_search_bar.set_filter_visible(visible)
 
     def on_filter_changed(self, key: str, value: str):
         self._sync_platform_ui(changed_key=key)
 
+    def _search_documents(self, code: str = "", name: str = ""):
+        code = (code or "").strip().lower()
+        name = (name or "").strip().lower()
+        if not code and not name:
+            current = self.sidebar_tree.currentItem()
+            if current is not None:
+                self._show_project_files(current.data(0, Qt.UserRole))
+            return
+        if not is_file_db_configured():
+            QMessageBox.information(self, "提示", "当前未配置文件数据库，无法跨分类搜索。")
+            return
+        try:
+            records = load_docman_record_list([], facility_code=self.dropdown_bar.get_value("facility_code"))
+        except FileBackendError as exc:
+            QMessageBox.warning(self, "搜索失败", str(exc))
+            return
+        matched = []
+        for rec in records:
+            logical_path = str(rec.get("logical_path") or "")
+            if not (logical_path.startswith("定期检测") or logical_path.startswith("特殊事件检测")):
+                continue
+            code_text = " ".join(str(rec.get(k) or "") for k in ("document_code", "logical_path", "filename")).lower()
+            name_text = " ".join(str(rec.get(k) or "") for k in ("document_title", "filename", "logical_path")).lower()
+            if code and code not in code_text:
+                continue
+            if name and name not in name_text:
+                continue
+            if not rec.get("work_condition"):
+                rec["work_condition"] = self._project_name_from_logical_path(logical_path) or "搜索结果"
+            matched.append(rec)
+        self.doc_man_widget.set_context(
+            ["搜索结果"],
+            matched,
+            self._file_categories(),
+            facility_code=self.dropdown_bar.get_value("facility_code"),
+            overlay_from_db=False,
+            hide_empty_templates=False,
+            db_list_mode=False,
+            display_profile="inspection",
+            path_root_label=self._path_root_label(),
+            display_path_segments=["搜索结果"],
+            path_hint=f"按文件编码/文件名搜索检测记录文件，共 {len(matched)} 条。",
+            default_work_condition="搜索结果",
+        )
+
     def _sync_platform_ui(self, changed_key: str | None = None):
         platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
         platform_name = platform["facility_name"]
-        self.home_widget.set_facility_code(platform["facility_code"])
-        if hasattr(self.page_events, "set_facility_code"):
-            self.page_events.set_facility_code(platform["facility_code"])
-        if hasattr(self.page_inspection, "set_facility_code"):
-            self.page_inspection.set_facility_code(platform["facility_code"])
+        facility_code = platform["facility_code"]
+        self.home_widget.set_facility_code(facility_code)
+        self.page_inspection.set_facility_code(facility_code)
+        self.doc_man_widget.facility_code = facility_code
+        if hasattr(self, "sidebar_tree"):
+            self._reload_sidebar_projects()
         window = self.window()
         if hasattr(window, "set_current_platform_name"):
             window.set_current_platform_name(platform_name)
 
     def get_current_platform_name(self):
         return self.dropdown_bar.get_value("facility_name")
+
+    def _project_name_from_logical_path(self, logical_path: str) -> str:
+        project_id = ""
+        for part in str(logical_path or "").replace("\\", "/").split("/"):
+            if part.startswith("project_"):
+                project_id = part[len("project_") :]
+                break
+        if not project_id:
+            return ""
+        for top_index in range(self.sidebar_tree.topLevelItemCount()):
+            group_item = self.sidebar_tree.topLevelItem(top_index)
+            for child_index in range(group_item.childCount()):
+                child = group_item.child(child_index)
+                data = child.data(0, Qt.UserRole)
+                if not isinstance(data, dict):
+                    continue
+                project = data.get("project") or {}
+                if str(project.get("id") or "") == project_id:
+                    return str(project.get("title") or "").strip()
+        return ""

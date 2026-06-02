@@ -163,6 +163,29 @@ def soft_delete_inspection_project(
     _get_service(config_path).soft_delete_inspection_project(int(project_id))
 
 
+def soft_delete_inspection_project_with_files(
+    project_id: int,
+    *,
+    module_code: str,
+    logical_path_prefix: str,
+    facility_code: str | None = None,
+    config_path: str | None = None,
+) -> int:
+    deleted = _get_service(config_path).soft_delete_inspection_project_with_files(
+        int(project_id),
+        module_code=module_code,
+        logical_path_prefix=logical_path_prefix,
+        facility_code=facility_code,
+    )
+    try:
+        from services.file_db_adapter import clear_file_list_cache
+
+        clear_file_list_cache()
+    except Exception:
+        pass
+    return deleted
+
+
 def list_inspection_findings(project_id: int, *, config_path: str | None = None) -> list[dict[str, Any]]:
     return _get_service(config_path).list_inspection_findings(int(project_id))
 

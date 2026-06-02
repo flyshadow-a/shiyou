@@ -53,6 +53,22 @@ class FileRecord(Base):
     category_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     work_condition: Mapped[str | None] = mapped_column(String(255), nullable=True)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    document_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    document_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    design_stage_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    design_stage_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    discipline_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    discipline_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    file_class_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    file_class_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    asset_unit_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    asset_unit_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    module_unit_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    module_unit_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    drawing_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    sub_sequence: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    recognition_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    recognition_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     file_type: Mapped[FileType] = relationship("FileType", back_populates="records")
@@ -60,7 +76,68 @@ class FileRecord(Base):
 
 Index("ix_file_records_type_module_path", FileRecord.file_type_id, FileRecord.module_code, FileRecord.logical_path)
 Index("ix_file_records_facility", FileRecord.facility_code)
+Index(
+    "ix_file_records_module_facility_deleted_path",
+    FileRecord.module_code,
+    FileRecord.facility_code,
+    FileRecord.is_deleted,
+    FileRecord.logical_path,
+)
 Index("ix_file_records_hash", FileRecord.file_hash)
+Index("ix_file_records_document_code", FileRecord.document_code)
+Index("ix_file_records_recognition", FileRecord.recognition_status)
+
+
+class DocumentCategory(Base):
+    __tablename__ = "document_categories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    parent_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    code: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    discipline_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    file_class_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    table_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DocumentRebuildDirectory(Base):
+    __tablename__ = "document_rebuild_directories"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    facility_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    project_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    seq_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    directory_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    project_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    project_year: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+Index("ix_document_categories_scope_parent", DocumentCategory.scope_code, DocumentCategory.parent_code)
+Index("ix_document_categories_code", DocumentCategory.code)
+Index(
+    "ix_document_rebuild_dirs_facility_sort",
+    DocumentRebuildDirectory.facility_code,
+    DocumentRebuildDirectory.project_type,
+    DocumentRebuildDirectory.sort_order,
+)
+Index(
+    "ix_document_rebuild_dirs_facility_type_deleted_sort",
+    DocumentRebuildDirectory.facility_code,
+    DocumentRebuildDirectory.project_type,
+    DocumentRebuildDirectory.is_deleted,
+    DocumentRebuildDirectory.sort_order,
+    DocumentRebuildDirectory.seq_no,
+)
 
 
 class FacilityProfile(Base):

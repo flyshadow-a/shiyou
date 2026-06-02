@@ -8,13 +8,16 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect, or_, select
 from sqlalchemy.orm import joinedload, sessionmaker
 
 from .config import AppSettings, load_settings
 from .database import Base, build_engine
+from .document_code_parser import parse_document_code_from_name
 from .models import (
     AuthRole,
+    DocumentCategory,
+    DocumentRebuildDirectory,
     FacilityProfile,
     FileRecord,
     FileType,
@@ -40,6 +43,36 @@ DEFAULT_FILE_TYPES = [
 DEFAULT_AUTH_ROLES = [
     {"code": "engineer", "name": "工程师", "description": "普通工程师用户，可使用业务功能"},
     {"code": "admin", "name": "管理员", "description": "系统管理员角色，暂时预留"},
+]
+
+DEFAULT_DOCUMENT_CATEGORIES = [
+    {"scope_code": "detail_design", "parent_code": "", "code": "detail_design", "name": "详细设计", "table_key": "design", "sort_order": 10},
+    {"scope_code": "detail_design", "parent_code": "detail_design", "code": "detail_design/ST", "name": "结构(ST)", "discipline_code": "ST", "table_key": "design", "sort_order": 20},
+    {"scope_code": "detail_design", "parent_code": "detail_design/ST", "code": "detail_design/ST/SPC", "name": "规格书", "discipline_code": "ST", "file_class_code": "SPC", "table_key": "design", "sort_order": 30},
+    {"scope_code": "detail_design", "parent_code": "detail_design/ST", "code": "detail_design/ST/RPT", "name": "报告", "discipline_code": "ST", "file_class_code": "RPT", "table_key": "design", "sort_order": 40},
+    {"scope_code": "detail_design", "parent_code": "detail_design/ST", "code": "detail_design/ST/DWG", "name": "图纸", "discipline_code": "ST", "file_class_code": "DWG", "table_key": "design", "sort_order": 50},
+    {"scope_code": "detail_design", "parent_code": "detail_design/ST", "code": "detail_design/ST/MAL", "name": "料单", "discipline_code": "ST", "file_class_code": "MAL", "table_key": "design", "sort_order": 60},
+    {"scope_code": "detail_design", "parent_code": "detail_design/ST", "code": "detail_design/ST/BOD", "name": "设计基础", "discipline_code": "ST", "file_class_code": "BOD", "table_key": "design", "sort_order": 70},
+    {"scope_code": "detail_design", "parent_code": "detail_design", "code": "detail_design/GE", "name": "总体(GE)", "discipline_code": "GE", "table_key": "design", "sort_order": 80},
+    {"scope_code": "detail_design", "parent_code": "detail_design/GE", "code": "detail_design/GE/DWG", "name": "图纸", "discipline_code": "GE", "file_class_code": "DWG", "table_key": "design", "sort_order": 90},
+    {"scope_code": "detail_design", "parent_code": "detail_design/GE", "code": "detail_design/GE/SPC", "name": "规格书", "discipline_code": "GE", "file_class_code": "SPC", "table_key": "design", "sort_order": 100},
+    {"scope_code": "detail_design", "parent_code": "detail_design/GE", "code": "detail_design/GE/RPT", "name": "报告", "discipline_code": "GE", "file_class_code": "RPT", "table_key": "design", "sort_order": 110},
+    {"scope_code": "detail_design", "parent_code": "detail_design", "code": "detail_design/OTHER", "name": "其他", "table_key": "design", "sort_order": 120},
+    {"scope_code": "detail_design", "parent_code": "detail_design/OTHER", "code": "detail_design/OTHER/OTHER", "name": "未分类/其他", "file_class_code": "OTR", "table_key": "design", "sort_order": 130},
+    {"scope_code": "completion", "parent_code": "", "code": "completion", "name": "完工", "table_key": "design", "sort_order": 140},
+    {"scope_code": "completion", "parent_code": "completion", "code": "completion/ST", "name": "结构(ST)", "discipline_code": "ST", "table_key": "design", "sort_order": 150},
+    {"scope_code": "completion", "parent_code": "completion/ST", "code": "completion/ST/SPC", "name": "规格书", "discipline_code": "ST", "file_class_code": "SPC", "table_key": "design", "sort_order": 160},
+    {"scope_code": "completion", "parent_code": "completion/ST", "code": "completion/ST/RPT", "name": "报告", "discipline_code": "ST", "file_class_code": "RPT", "table_key": "design", "sort_order": 170},
+    {"scope_code": "completion", "parent_code": "completion/ST", "code": "completion/ST/DWG", "name": "图纸", "discipline_code": "ST", "file_class_code": "DWG", "table_key": "design", "sort_order": 180},
+    {"scope_code": "completion", "parent_code": "completion/ST", "code": "completion/ST/MAL", "name": "料单", "discipline_code": "ST", "file_class_code": "MAL", "table_key": "design", "sort_order": 190},
+    {"scope_code": "completion", "parent_code": "completion/ST", "code": "completion/ST/BOD", "name": "设计基础", "discipline_code": "ST", "file_class_code": "BOD", "table_key": "design", "sort_order": 200},
+    {"scope_code": "completion", "parent_code": "completion", "code": "completion/GE", "name": "总体(GE)", "discipline_code": "GE", "table_key": "design", "sort_order": 210},
+    {"scope_code": "completion", "parent_code": "completion/GE", "code": "completion/GE/DWG", "name": "图纸", "discipline_code": "GE", "file_class_code": "DWG", "table_key": "design", "sort_order": 220},
+    {"scope_code": "completion", "parent_code": "completion/GE", "code": "completion/GE/SPC", "name": "规格书", "discipline_code": "GE", "file_class_code": "SPC", "table_key": "design", "sort_order": 230},
+    {"scope_code": "completion", "parent_code": "completion/GE", "code": "completion/GE/RPT", "name": "报告", "discipline_code": "GE", "file_class_code": "RPT", "table_key": "design", "sort_order": 240},
+    {"scope_code": "completion", "parent_code": "completion", "code": "completion/OTHER", "name": "其他", "file_class_code": "OTR", "table_key": "design", "sort_order": 250},
+    {"scope_code": "rebuild_project", "parent_code": "", "code": "rebuild_project", "name": "历次改造文件", "table_key": "rebuild", "sort_order": 300},
+    {"scope_code": "model_files", "parent_code": "", "code": "model_files", "name": "模型文件", "table_key": "model", "sort_order": 400},
 ]
 
 _UNSET = object()
@@ -77,6 +110,59 @@ class FileMetadataService:
                 statements.append("ALTER TABLE file_records ADD COLUMN category_name VARCHAR(255) NULL AFTER updated_at")
             if "work_condition" not in columns:
                 statements.append("ALTER TABLE file_records ADD COLUMN work_condition VARCHAR(255) NULL AFTER category_name")
+            document_columns = [
+                ("document_code", "VARCHAR(255)", "remark"),
+                ("document_title", "VARCHAR(500)", "document_code"),
+                ("design_stage_code", "VARCHAR(50)", "document_title"),
+                ("design_stage_name", "VARCHAR(100)", "design_stage_code"),
+                ("discipline_code", "VARCHAR(50)", "design_stage_name"),
+                ("discipline_name", "VARCHAR(100)", "discipline_code"),
+                ("file_class_code", "VARCHAR(50)", "discipline_name"),
+                ("file_class_name", "VARCHAR(100)", "file_class_code"),
+                ("asset_unit_code", "VARCHAR(50)", "file_class_name"),
+                ("asset_unit_name", "VARCHAR(100)", "asset_unit_code"),
+                ("module_unit_code", "VARCHAR(50)", "asset_unit_name"),
+                ("module_unit_name", "VARCHAR(100)", "module_unit_code"),
+                ("drawing_no", "VARCHAR(50)", "module_unit_name"),
+                ("sub_sequence", "VARCHAR(50)", "drawing_no"),
+                ("recognition_status", "VARCHAR(50)", "sub_sequence"),
+                ("recognition_message", "VARCHAR(500)", "recognition_status"),
+            ]
+            for name, sql_type, after in document_columns:
+                if name not in columns:
+                    statements.append(f"ALTER TABLE file_records ADD COLUMN {name} {sql_type} NULL AFTER {after}")
+            file_indexes = {str(idx.get("name") or "") for idx in inspector.get_indexes("file_records")}
+            if "ix_file_records_module_facility_deleted_path" not in file_indexes:
+                statements.append(
+                    "CREATE INDEX ix_file_records_module_facility_deleted_path "
+                    "ON file_records (module_code, facility_code, is_deleted, logical_path)"
+                )
+
+        if inspector.has_table("document_rebuild_directories"):
+            rebuild_columns = {
+                str(col.get("name") or "")
+                for col in inspector.get_columns("document_rebuild_directories")
+            }
+            if "project_type" not in rebuild_columns:
+                statements.append(
+                    "ALTER TABLE document_rebuild_directories "
+                    "ADD COLUMN project_type VARCHAR(50) NULL AFTER facility_code"
+                )
+            if "summary_text" not in rebuild_columns:
+                statements.append(
+                    "ALTER TABLE document_rebuild_directories "
+                    "ADD COLUMN summary_text TEXT NULL AFTER project_year"
+                )
+            rebuild_indexes = {
+                str(idx.get("name") or "")
+                for idx in inspector.get_indexes("document_rebuild_directories")
+            }
+            if "ix_document_rebuild_dirs_facility_type_deleted_sort" not in rebuild_indexes:
+                statements.append(
+                    "CREATE INDEX ix_document_rebuild_dirs_facility_type_deleted_sort "
+                    "ON document_rebuild_directories "
+                    "(facility_code, project_type, is_deleted, sort_order, seq_no)"
+                )
 
         if statements:
             with self.engine.begin() as conn:
@@ -161,6 +247,193 @@ class FileMetadataService:
             if changed:
                 session.commit()
 
+    def seed_document_categories(self) -> None:
+        with self.session_factory() as session:
+            existing = {item.code: item for item in session.execute(select(DocumentCategory)).scalars().all()}
+            changed = False
+            for item in DEFAULT_DOCUMENT_CATEGORIES:
+                code = str(item["code"])
+                row = existing.get(code)
+                if row is None:
+                    session.add(
+                        DocumentCategory(
+                            scope_code=str(item.get("scope_code") or ""),
+                            parent_code=(str(item.get("parent_code") or "").strip() or None),
+                            code=code,
+                            name=str(item.get("name") or code),
+                            discipline_code=(str(item.get("discipline_code") or "").strip() or None),
+                            file_class_code=(str(item.get("file_class_code") or "").strip() or None),
+                            table_key=(str(item.get("table_key") or "").strip() or None),
+                            sort_order=int(item.get("sort_order") or 0),
+                            is_active=True,
+                        )
+                    )
+                    changed = True
+                    continue
+                for attr in ("scope_code", "code", "name", "discipline_code", "file_class_code", "table_key"):
+                    new_value = str(item.get(attr) or "").strip() or None
+                    if attr in ("scope_code", "code", "name"):
+                        new_value = new_value or code
+                    if getattr(row, attr) != new_value:
+                        setattr(row, attr, new_value)
+                        changed = True
+                parent_code = str(item.get("parent_code") or "").strip() or None
+                if row.parent_code != parent_code:
+                    row.parent_code = parent_code
+                    changed = True
+                sort_order = int(item.get("sort_order") or 0)
+                if row.sort_order != sort_order:
+                    row.sort_order = sort_order
+                    changed = True
+                if not row.is_active:
+                    row.is_active = True
+                    changed = True
+            if changed:
+                session.commit()
+
+    def list_document_categories(self, scope_code: str | None = None) -> list[dict]:
+        with self.session_factory() as session:
+            stmt = select(DocumentCategory).where(DocumentCategory.is_active.is_(True))
+            if scope_code:
+                stmt = stmt.where(DocumentCategory.scope_code == scope_code)
+            stmt = stmt.order_by(DocumentCategory.sort_order.asc(), DocumentCategory.id.asc())
+            rows = session.execute(stmt).scalars().all()
+            return [self._document_category_to_dict(row) for row in rows]
+
+    def list_rebuild_directories(self, facility_code: str, project_type: str | None = None) -> list[dict]:
+        code = (facility_code or "").strip()
+        if not code:
+            return []
+        ptype = (project_type or "").strip() or None
+        with self.session_factory() as session:
+            stmt = (
+                select(DocumentRebuildDirectory)
+                .where(DocumentRebuildDirectory.facility_code == code)
+                .where(DocumentRebuildDirectory.is_deleted.is_(False))
+            )
+            if ptype:
+                if ptype == "history_rebuild":
+                    stmt = stmt.where(
+                        or_(
+                            DocumentRebuildDirectory.project_type == ptype,
+                            DocumentRebuildDirectory.project_type.is_(None),
+                        )
+                    )
+                else:
+                    stmt = stmt.where(DocumentRebuildDirectory.project_type == ptype)
+            stmt = stmt.order_by(DocumentRebuildDirectory.sort_order.asc(), DocumentRebuildDirectory.seq_no.asc())
+            rows = session.execute(stmt).scalars().all()
+            return [self._rebuild_directory_to_dict(row) for row in rows]
+
+    def create_rebuild_directory(
+        self,
+        facility_code: str,
+        *,
+        project_type: str | None = None,
+        directory_name: str | None = None,
+        project_name: str | None = None,
+        project_year: str | None = None,
+        summary_text: str | None = None,
+    ) -> dict:
+        code = (facility_code or "").strip()
+        if not code:
+            raise ValueError("facility_code is required")
+        ptype = (project_type or "").strip() or "history_rebuild"
+        with self.session_factory() as session:
+            with session.begin():
+                existing = session.execute(
+                    select(DocumentRebuildDirectory)
+                    .where(DocumentRebuildDirectory.facility_code == code)
+                    .where(
+                        or_(
+                            DocumentRebuildDirectory.project_type == ptype,
+                            DocumentRebuildDirectory.project_type.is_(None),
+                        )
+                        if ptype == "history_rebuild"
+                        else DocumentRebuildDirectory.project_type == ptype
+                    )
+                    .where(DocumentRebuildDirectory.is_deleted.is_(False))
+                    .with_for_update()
+                ).scalars().all()
+                next_seq = max([int(row.seq_no or 0) for row in existing] or [0]) + 1
+                name = (directory_name or "").strip() or f"第{next_seq}次改造项目"
+                row = DocumentRebuildDirectory(
+                    facility_code=code,
+                    project_type=ptype,
+                    seq_no=next_seq,
+                    directory_name=name,
+                    project_name=(project_name or "").strip() or name,
+                    project_year=(project_year or "").strip() or None,
+                    summary_text=(summary_text or "").strip() or None,
+                    sort_order=next_seq * 10,
+                    is_deleted=False,
+                )
+                session.add(row)
+            session.refresh(row)
+            return self._rebuild_directory_to_dict(row)
+
+    def update_rebuild_directory(self, directory_id: int, **values) -> dict:
+        with self.session_factory() as session:
+            row = session.get(DocumentRebuildDirectory, int(directory_id))
+            if row is None or row.is_deleted:
+                raise ValueError(f"Document rebuild directory not found: {directory_id}")
+            for key in ("directory_name", "project_name", "project_year", "summary_text"):
+                if key in values:
+                    setattr(row, key, (str(values.get(key) or "").strip() or None))
+            if not row.directory_name:
+                row.directory_name = f"第{row.seq_no}次改造项目"
+            row.updated_at = datetime.utcnow()
+            session.commit()
+            session.refresh(row)
+            return self._rebuild_directory_to_dict(row)
+
+    def delete_rebuild_directory(self, directory_id: int) -> None:
+        with self.session_factory() as session:
+            row = session.get(DocumentRebuildDirectory, int(directory_id))
+            if row is None:
+                raise ValueError(f"Document rebuild directory not found: {directory_id}")
+            row.is_deleted = True
+            row.updated_at = datetime.utcnow()
+            session.commit()
+
+    def delete_rebuild_directory_with_files(
+        self,
+        directory_id: int,
+        *,
+        module_code: str,
+        logical_path_prefix: str,
+        facility_code: str | None = None,
+    ) -> int:
+        prefix = self._normalize_logical_path(logical_path_prefix)
+        with self.session_factory() as session:
+            with session.begin():
+                directory = session.get(
+                    DocumentRebuildDirectory,
+                    int(directory_id),
+                    with_for_update=True,
+                )
+                if directory is None:
+                    raise ValueError(f"Document rebuild directory not found: {directory_id}")
+                directory.is_deleted = True
+                directory.updated_at = datetime.utcnow()
+
+                stmt = (
+                    select(FileRecord)
+                    .where(FileRecord.module_code == module_code)
+                    .where(FileRecord.is_deleted.is_(False))
+                )
+                prefix_condition = self._logical_path_prefix_condition(prefix)
+                if prefix_condition is not None:
+                    stmt = stmt.where(prefix_condition)
+                if facility_code:
+                    stmt = stmt.where(FileRecord.facility_code == facility_code)
+                rows = session.execute(stmt.with_for_update()).scalars().all()
+                now = datetime.utcnow()
+                for row in rows:
+                    row.is_deleted = True
+                    row.updated_at = now
+                return len(rows)
+
     def list_file_types(self) -> list[dict]:
         with self.session_factory() as session:
             rows = session.execute(select(FileType).order_by(FileType.sort_order, FileType.id)).scalars().all()
@@ -196,35 +469,68 @@ class FileMetadataService:
         )
         if source_modified_at is None:
             source_modified_at = datetime.fromtimestamp(source.stat().st_mtime)
+        parsed_meta = parse_document_code_from_name(source.name)
+        if normalized_category is None and parsed_meta.get("file_class_name"):
+            normalized_category = str(parsed_meta.get("file_class_name") or "").strip() or None
+        if normalized_category is None and module_code == "doc_man":
+            normalized_category = "未分类/其他"
 
-        with self.session_factory() as session:
-            file_type = session.execute(select(FileType).where(FileType.code == file_type_code)).scalar_one_or_none()
-            if file_type is None:
-                raise ValueError(f"Unknown file type code: {file_type_code}")
+        try:
+            with self.session_factory() as session:
+                with session.begin():
+                    file_type = session.execute(
+                        select(FileType).where(FileType.code == file_type_code)
+                    ).scalar_one_or_none()
+                    if file_type is None:
+                        raise ValueError(f"Unknown file type code: {file_type_code}")
 
-            record = FileRecord(
-                original_name=source.name,
-                stored_name=stored["stored_name"],
-                file_ext=source.suffix.lower().lstrip("."),
-                file_type_id=file_type.id,
-                module_code=module_code,
-                logical_path=normalized_logical,
-                facility_code=normalized_facility,
-                storage_path=stored["absolute_path"],
-                storage_rel_path=stored["relative_path"],
-                file_size=stored["size"],
-                file_hash=stored["sha256"],
-                source_modified_at=source_modified_at,
-                category_name=normalized_category,
-                work_condition=normalized_work_condition,
-                remark=(remark or "").strip() or None,
-                is_deleted=False,
-            )
-            session.add(record)
-            session.commit()
-            session.refresh(record)
-            session.refresh(file_type)
-            return self._record_to_dict(record)
+                    record = FileRecord(
+                        original_name=source.name,
+                        stored_name=stored["stored_name"],
+                        file_ext=source.suffix.lower().lstrip("."),
+                        file_type_id=file_type.id,
+                        module_code=module_code,
+                        logical_path=normalized_logical,
+                        facility_code=normalized_facility,
+                        storage_path=stored["absolute_path"],
+                        storage_rel_path=stored["relative_path"],
+                        file_size=stored["size"],
+                        file_hash=stored["sha256"],
+                        source_modified_at=source_modified_at,
+                        category_name=normalized_category,
+                        work_condition=normalized_work_condition,
+                        remark=(remark or "").strip() or None,
+                        document_code=(parsed_meta.get("document_code") or None),
+                        document_title=(parsed_meta.get("document_title") or None),
+                        design_stage_code=(parsed_meta.get("design_stage_code") or None),
+                        design_stage_name=(parsed_meta.get("design_stage_name") or None),
+                        discipline_code=(parsed_meta.get("discipline_code") or None),
+                        discipline_name=(parsed_meta.get("discipline_name") or None),
+                        file_class_code=(parsed_meta.get("file_class_code") or None),
+                        file_class_name=(parsed_meta.get("file_class_name") or None),
+                        asset_unit_code=(parsed_meta.get("asset_unit_code") or None),
+                        asset_unit_name=(parsed_meta.get("asset_unit_name") or None),
+                        module_unit_code=(parsed_meta.get("module_unit_code") or None),
+                        module_unit_name=(parsed_meta.get("module_unit_name") or None),
+                        drawing_no=(parsed_meta.get("drawing_no") or None),
+                        sub_sequence=(parsed_meta.get("sub_sequence") or None),
+                        recognition_status=(parsed_meta.get("recognition_status") or None),
+                        recognition_message=(parsed_meta.get("recognition_message") or None),
+                        is_deleted=False,
+                    )
+                    session.add(record)
+                session.refresh(record)
+                session.refresh(file_type)
+                return self._record_to_dict(record)
+        except Exception:
+            stored_path = Path(stored["absolute_path"])
+            try:
+                if stored_path.exists():
+                    stored_path.unlink()
+                    self._cleanup_empty_parents(stored_path.parent)
+            except Exception:
+                pass
+            raise
 
     def list_files(
         self,
@@ -232,7 +538,10 @@ class FileMetadataService:
         file_type_code: str | None = None,
         module_code: str | None = None,
         logical_path: str | None = None,
+        logical_path_prefix: str | None = None,
         facility_code: str | None = None,
+        document_code_query: str | None = None,
+        document_title_query: str | None = None,
         include_deleted: bool = False,
     ) -> list[dict]:
         with self.session_factory() as session:
@@ -243,8 +552,31 @@ class FileMetadataService:
                 stmt = stmt.where(FileRecord.module_code == module_code)
             if logical_path:
                 stmt = stmt.where(FileRecord.logical_path == self._normalize_logical_path(logical_path))
+            elif logical_path_prefix:
+                prefix = self._normalize_logical_path(logical_path_prefix)
+                prefix_condition = self._logical_path_prefix_condition(prefix)
+                if prefix_condition is not None:
+                    stmt = stmt.where(prefix_condition)
             if facility_code:
                 stmt = stmt.where(FileRecord.facility_code == facility_code)
+            code_pattern = self._contains_like_pattern(document_code_query)
+            if code_pattern:
+                stmt = stmt.where(
+                    or_(
+                        FileRecord.document_code.like(code_pattern, escape="\\"),
+                        FileRecord.logical_path.like(code_pattern, escape="\\"),
+                        FileRecord.original_name.like(code_pattern, escape="\\"),
+                    )
+                )
+            title_pattern = self._contains_like_pattern(document_title_query)
+            if title_pattern:
+                stmt = stmt.where(
+                    or_(
+                        FileRecord.document_title.like(title_pattern, escape="\\"),
+                        FileRecord.original_name.like(title_pattern, escape="\\"),
+                        FileRecord.logical_path.like(title_pattern, escape="\\"),
+                    )
+                )
             if not include_deleted:
                 stmt = stmt.where(FileRecord.is_deleted.is_(False))
             stmt = stmt.order_by(FileRecord.uploaded_at.desc(), FileRecord.updated_at.desc(), FileRecord.id.desc())
@@ -268,12 +600,39 @@ class FileMetadataService:
 
     def soft_delete(self, record_id: int) -> None:
         with self.session_factory() as session:
-            row = session.get(FileRecord, record_id)
-            if row is None:
-                raise ValueError(f"File record not found: {record_id}")
-            row.is_deleted = True
-            row.updated_at = datetime.utcnow()
-            session.commit()
+            with session.begin():
+                row = session.get(FileRecord, record_id, with_for_update=True)
+                if row is None:
+                    raise ValueError(f"File record not found: {record_id}")
+                row.is_deleted = True
+                row.updated_at = datetime.utcnow()
+
+    def soft_delete_files_by_prefix(
+        self,
+        *,
+        module_code: str,
+        logical_path_prefix: str,
+        facility_code: str | None = None,
+        file_type_code: str | None = None,
+    ) -> int:
+        prefix = self._normalize_logical_path(logical_path_prefix)
+        with self.session_factory() as session:
+            with session.begin():
+                stmt = select(FileRecord).where(FileRecord.module_code == module_code)
+                if file_type_code:
+                    stmt = stmt.join(FileRecord.file_type).where(FileType.code == file_type_code)
+                prefix_condition = self._logical_path_prefix_condition(prefix)
+                if prefix_condition is not None:
+                    stmt = stmt.where(prefix_condition)
+                if facility_code:
+                    stmt = stmt.where(FileRecord.facility_code == facility_code)
+                stmt = stmt.where(FileRecord.is_deleted.is_(False)).with_for_update()
+                rows = session.execute(stmt).scalars().all()
+                now = datetime.utcnow()
+                for row in rows:
+                    row.is_deleted = True
+                    row.updated_at = now
+                return len(rows)
 
     def hard_delete(self, record_id: int) -> None:
         with self.session_factory() as session:
@@ -300,19 +659,25 @@ class FileMetadataService:
         category_name: str | object = _UNSET,
         work_condition: str | object = _UNSET,
         remark: str | object = _UNSET,
+        expected_updated_at: datetime | object = _UNSET,
     ) -> dict:
         with self.session_factory() as session:
-            row = session.get(FileRecord, int(record_id))
-            if row is None:
-                raise ValueError(f"File record not found: {record_id}")
-            if category_name is not _UNSET:
-                row.category_name = (str(category_name or "").strip() or None)
-            if work_condition is not _UNSET:
-                row.work_condition = (str(work_condition or "").strip() or None)
-            if remark is not _UNSET:
-                row.remark = (str(remark or "").strip() or None)
-            row.updated_at = datetime.utcnow()
-            session.commit()
+            with session.begin():
+                row = session.get(FileRecord, int(record_id), with_for_update=True)
+                if row is None:
+                    raise ValueError(f"File record not found: {record_id}")
+                if expected_updated_at is not _UNSET and not self._same_lock_timestamp(
+                    row.updated_at,
+                    expected_updated_at,
+                ):
+                    raise ValueError("文件记录已被其他用户修改，请刷新后重试。")
+                if category_name is not _UNSET:
+                    row.category_name = (str(category_name or "").strip() or None)
+                if work_condition is not _UNSET:
+                    row.work_condition = (str(work_condition or "").strip() or None)
+                if remark is not _UNSET:
+                    row.remark = (str(remark or "").strip() or None)
+                row.updated_at = datetime.utcnow()
             session.refresh(row)
             return self._record_to_dict(row)
 
@@ -457,6 +822,40 @@ class FileMetadataService:
             row.is_deleted = True
             row.updated_at = datetime.utcnow()
             session.commit()
+
+    def soft_delete_inspection_project_with_files(
+        self,
+        project_id: int,
+        *,
+        module_code: str,
+        logical_path_prefix: str,
+        facility_code: str | None = None,
+    ) -> int:
+        prefix = self._normalize_logical_path(logical_path_prefix)
+        with self.session_factory() as session:
+            with session.begin():
+                project = session.get(InspectionProject, int(project_id), with_for_update=True)
+                if project is None:
+                    raise ValueError(f"Inspection project not found: {project_id}")
+                project.is_deleted = True
+                project.updated_at = datetime.utcnow()
+
+                stmt = (
+                    select(FileRecord)
+                    .where(FileRecord.module_code == module_code)
+                    .where(FileRecord.is_deleted.is_(False))
+                )
+                prefix_condition = self._logical_path_prefix_condition(prefix)
+                if prefix_condition is not None:
+                    stmt = stmt.where(prefix_condition)
+                if facility_code:
+                    stmt = stmt.where(FileRecord.facility_code == facility_code)
+                rows = session.execute(stmt.with_for_update()).scalars().all()
+                now = datetime.utcnow()
+                for row in rows:
+                    row.is_deleted = True
+                    row.updated_at = now
+                return len(rows)
 
     def list_inspection_findings(self, project_id: int, *, include_deleted: bool = False) -> list[dict]:
         with self.session_factory() as session:
@@ -717,6 +1116,24 @@ class FileMetadataService:
         return text or None
 
     @staticmethod
+    def _contains_like_pattern(value: str | None) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        text = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{text}%"
+
+    @classmethod
+    def _logical_path_prefix_condition(cls, logical_path_prefix: str | None):
+        prefix = cls._normalize_logical_path(logical_path_prefix)
+        if not prefix:
+            return None
+        return or_(
+            FileRecord.logical_path == prefix,
+            FileRecord.logical_path.startswith(f"{prefix}/", autoescape=True),
+        )
+
+    @staticmethod
     def _normalize_storage_rel_path(storage_rel_path: str | None) -> str | None:
         if storage_rel_path is None:
             return None
@@ -807,6 +1224,18 @@ class FileMetadataService:
             value = value.replace(tzinfo=timezone.utc)
         return value.astimezone().replace(tzinfo=None)
 
+    @staticmethod
+    def _same_lock_timestamp(current: datetime | None, expected: object) -> bool:
+        if expected in (None, ""):
+            return True
+        if not isinstance(expected, datetime):
+            return False
+        current_dt = current.replace(tzinfo=None) if current and current.tzinfo else current
+        expected_dt = expected.replace(tzinfo=None) if expected.tzinfo else expected
+        if current_dt is None:
+            return False
+        return abs((current_dt - expected_dt).total_seconds()) < 0.001
+
     def _record_to_dict(self, row: FileRecord) -> dict:
         uploaded_at = self._utc_to_local_naive(row.uploaded_at)
         updated_at = self._utc_to_local_naive(row.updated_at)
@@ -830,9 +1259,58 @@ class FileMetadataService:
             "source_file_modified_at": row.source_modified_at,
             "uploaded_at": uploaded_at,
             "updated_at": updated_at,
+            "lock_updated_at": row.updated_at,
             "category_name": row.category_name,
             "work_condition": row.work_condition,
             "remark": row.remark,
+            "document_code": row.document_code,
+            "document_title": row.document_title,
+            "design_stage_code": row.design_stage_code,
+            "design_stage_name": row.design_stage_name,
+            "discipline_code": row.discipline_code,
+            "discipline_name": row.discipline_name,
+            "file_class_code": row.file_class_code,
+            "file_class_name": row.file_class_name,
+            "asset_unit_code": row.asset_unit_code,
+            "asset_unit_name": row.asset_unit_name,
+            "module_unit_code": row.module_unit_code,
+            "module_unit_name": row.module_unit_name,
+            "drawing_no": row.drawing_no,
+            "sub_sequence": row.sub_sequence,
+            "recognition_status": row.recognition_status,
+            "recognition_message": row.recognition_message,
+            "is_deleted": row.is_deleted,
+        }
+
+    @staticmethod
+    def _document_category_to_dict(row: DocumentCategory) -> dict:
+        return {
+            "id": row.id,
+            "scope_code": row.scope_code,
+            "parent_code": row.parent_code,
+            "code": row.code,
+            "name": row.name,
+            "discipline_code": row.discipline_code,
+            "file_class_code": row.file_class_code,
+            "table_key": row.table_key,
+            "sort_order": row.sort_order,
+            "is_active": row.is_active,
+        }
+
+    @staticmethod
+    def _rebuild_directory_to_dict(row: DocumentRebuildDirectory) -> dict:
+        return {
+            "id": row.id,
+            "facility_code": row.facility_code,
+            "project_type": row.project_type,
+            "seq_no": row.seq_no,
+            "directory_name": row.directory_name,
+            "project_name": row.project_name,
+            "project_year": row.project_year,
+            "summary_text": row.summary_text,
+            "sort_order": row.sort_order,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
             "is_deleted": row.is_deleted,
         }
 

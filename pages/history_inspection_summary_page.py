@@ -55,10 +55,15 @@ from services.inspection_business_db_adapter import (
     list_inspection_findings,
     list_inspection_projects,
     replace_inspection_findings,
-    soft_delete_inspection_project,
+    soft_delete_inspection_project_with_files,
     update_inspection_project,
 )
-from services.file_db_adapter import DOC_MAN_MODULE_CODE, soft_delete_files_by_prefix
+from services.file_db_adapter import (
+    DOC_MAN_MODULE_CODE,
+    FileBackendError,
+    is_file_db_configured,
+    load_docman_record_list,
+)
 
 # ✅ 直接复用 ConstructionDocsWidget 的文件夹布局样式
 from pages.construction_docs_widget import ConstructionDocsWidget
@@ -516,6 +521,8 @@ class HistoryInspectionSummaryPage(BasePage):
 
         # 面包屑
         self.breadcrumb_bar = self._create_breadcrumb_bar(card)
+        self.breadcrumb_bar.setVisible(False)
+        self.breadcrumb_bar.setFixedHeight(0)
         card_layout.addWidget(self.breadcrumb_bar, 0)
 
         # 内容堆栈
@@ -568,6 +575,58 @@ class HistoryInspectionSummaryPage(BasePage):
         else:
             self.breadcrumb_bar.set_path([name_map.get(self.current_folder_key, "")])
 
+    def search_all_documents(self, code_query: str = "", name_query: str = "") -> None:
+        code = (code_query or "").strip().lower()
+        name = (name_query or "").strip().lower()
+        if not code and not name:
+            self._switch_to(self.current_folder_key if self.current_folder_key != "search" else "complete")
+            return
+        if not is_file_db_configured():
+            QMessageBox.information(self, "提示", "当前未配置文件数据库，无法跨分类搜索。")
+            return
+        try:
+            records = load_docman_record_list([], facility_code=self.facility_code)
+        except FileBackendError as exc:
+            QMessageBox.warning(self, "搜索失败", str(exc))
+            return
+        matched = [rec for rec in records if self._record_matches_query(rec, code, name)]
+        self._ensure_search_page()
+        self.search_doc_widget.set_context(
+            [self.current_folder_key or "搜索结果"],
+            matched,
+            ["未分类/其他", "其他"],
+            facility_code=self.facility_code,
+            overlay_from_db=False,
+            hide_empty_templates=False,
+            db_list_mode=False,
+            display_profile="rebuild",
+            path_root_label="检测记录文件",
+            display_path_segments=["搜索结果"],
+            path_hint=f"按文件编码/文件名搜索检测记录文件，共 {len(matched)} 条。",
+        )
+        self.stack.setCurrentWidget(self.pages["search"])
+
+    def _ensure_search_page(self) -> None:
+        if "search" in self.pages:
+            return
+        page = QWidget(self.stack)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 8, 0, 8)
+        self.search_doc_widget = DocManWidget(self._get_doc_man_upload_dir, page)
+        layout.addWidget(self.search_doc_widget)
+        self.pages["search"] = page
+        self.stack.addWidget(page)
+
+    @staticmethod
+    def _record_matches_query(record: dict, code_query: str, name_query: str) -> bool:
+        code_text = " ".join(str(record.get(key) or "") for key in ("document_code", "logical_path", "filename")).lower()
+        name_text = " ".join(str(record.get(key) or "") for key in ("document_title", "filename", "logical_path")).lower()
+        if code_query and code_query not in code_text:
+            return False
+        if name_query and name_query not in name_text:
+            return False
+        return True
+
     # ------------------------------------------------------------------
     # 首页：四个文件夹
     # ------------------------------------------------------------------
@@ -617,6 +676,9 @@ class HistoryInspectionSummaryPage(BasePage):
                 facility_code=self.facility_code,
                 hide_empty_templates=True,
                 db_list_mode=True,
+                path_root_label="检测记录文件",
+                display_path_segments=[title],
+                path_hint="检测记录文件按检测类别归档。",
             )
             layout.addWidget(doc_widget)
             return page
@@ -1456,13 +1518,8 @@ class HistoryInspectionSummaryPage(BasePage):
 
         # ✅ 关键：首页用 ConstructionDocsWidget 自带的“首页条”，
         # 所以把你原来的面包屑蓝条隐藏，避免出现两条“首页”
-        if folder_key == "home":
-            self.breadcrumb_bar.setVisible(False)
-            self.breadcrumb_bar.setFixedHeight(0)  # 防止仍占高度形成空白
-        else:
-            self.breadcrumb_bar.setVisible(True)
-            self.breadcrumb_bar.setFixedHeight(40)  # 还原高度（你原来是 40）
-            self._update_breadcrumb()
+        self.breadcrumb_bar.setVisible(False)
+        self.breadcrumb_bar.setFixedHeight(0)
 
     # ------------------------------------------------------------------
     # 数据库优先：覆盖残留 demo/旧表格逻辑
@@ -1511,6 +1568,9 @@ class HistoryInspectionSummaryPage(BasePage):
             facility_code=self.facility_code,
             hide_empty_templates=True,
             db_list_mode=True,
+            path_root_label="检测记录文件",
+            display_path_segments=["定期检测1-N"],
+            path_hint="定期检测文件按检测项目归档。",
         )
         self.periodic_sampling_table.clearContents()
         self.periodic_sampling_table.setRowCount(0)
@@ -1547,6 +1607,9 @@ class HistoryInspectionSummaryPage(BasePage):
             facility_code=self.facility_code,
             hide_empty_templates=True,
             db_list_mode=True,
+            path_root_label="检测记录文件",
+            display_path_segments=["特殊事件检测"],
+            path_hint="特殊事件检测文件按检测项目归档。",
         )
         self.special_event_records_table.clearContents()
         self.special_event_records_table.setRowCount(0)
@@ -1569,6 +1632,9 @@ class HistoryInspectionSummaryPage(BasePage):
             facility_code=self.facility_code,
             hide_empty_templates=True,
             db_list_mode=True,
+            path_root_label="检测记录文件",
+            display_path_segments=["定期检测1-N", project.get("title", "")],
+            path_hint="定期检测项目文件，可上传、下载、删除并查看详情。",
         )
 
     def _refresh_special_event_detail(self, row: int):
@@ -1589,6 +1655,9 @@ class HistoryInspectionSummaryPage(BasePage):
             facility_code=self.facility_code,
             hide_empty_templates=True,
             db_list_mode=True,
+            path_root_label="检测记录文件",
+            display_path_segments=["特殊事件检测", event.get("title", "")],
+            path_hint="特殊事件检测项目文件，可上传、下载、删除并查看详情。",
         )
 
     def _edit_periodic_project(self):
@@ -1625,12 +1694,12 @@ class HistoryInspectionSummaryPage(BasePage):
             f"确认删除定期检测项目“{project.get('title', '')}”吗？相关文件会一并隐藏。",
         ):
             return
-        soft_delete_files_by_prefix(
+        soft_delete_inspection_project_with_files(
+            int(project["id"]),
             module_code=DOC_MAN_MODULE_CODE,
             logical_path_prefix="/".join(self._project_storage_segments("periodic", project)),
             facility_code=self.facility_code,
         )
-        soft_delete_inspection_project(int(project["id"]))
         self._reload_database_backed_data()
 
     def _edit_special_event_project(self):
@@ -1667,12 +1736,12 @@ class HistoryInspectionSummaryPage(BasePage):
             f"确认删除特殊事件检测项目“{project.get('title', '')}”吗？相关文件会一并隐藏。",
         ):
             return
-        soft_delete_files_by_prefix(
+        soft_delete_inspection_project_with_files(
+            int(project["id"]),
             module_code=DOC_MAN_MODULE_CODE,
             logical_path_prefix="/".join(self._project_storage_segments("special_event", project)),
             facility_code=self.facility_code,
         )
-        soft_delete_inspection_project(int(project["id"]))
         self._reload_database_backed_data()
 
     def _edit_periodic_finding(self):

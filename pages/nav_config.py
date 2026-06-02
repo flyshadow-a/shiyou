@@ -31,15 +31,14 @@ NAV_CONFIG = [
         "text": "个人中心","page": PersonalCenterPage
     },
     {
+        "text": "汇总信息", "page": PlatformSummaryPage
+    },
+    {
         "text": "文件管理",
         "children": [
-            {"text": "汇总信息","page":PlatformSummaryPage},
-            {
-                "text": "建设阶段完工文件",
-                "page": ConstructionDocsPage,
-            },
-            {"text": "历史改造文件", "page": HistoryRebuildFilesPage},
-            {"text": "检测记录", "page": HistoryEventsInspectionPage},
+            {"text": "设计文件", "page": ConstructionDocsPage},
+            {"text": "历次改造文件", "page": HistoryRebuildFilesPage},
+            {"text": "检测记录文件", "page": HistoryEventsInspectionPage},
             {"text": "模型文件", "page": ModelFilesPage},
         ],
     },

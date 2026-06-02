@@ -7,7 +7,8 @@ import re
 import shutil
 from typing import Any, Dict, Optional
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from shiyou_db.database import build_engine_from_url
 
 from services.inspection_business_db_adapter import (
     create_inspection_project,
@@ -119,7 +120,7 @@ def _get_current_workpoint_and_threshold(mysql_url: str, job_name: str) -> tuple
     workpoint = 9.1
     level_threshold = 40
     try:
-        engine = create_engine(mysql_url, future=True, pool_pre_ping=True)
+        engine = build_engine_from_url(mysql_url)
         with engine.connect() as conn:
             row = conn.execute(
                 text("""

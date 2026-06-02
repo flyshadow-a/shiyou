@@ -324,7 +324,7 @@ class MainWindow(QMainWindow):
         self.set_current_platform_name("")
         self._update_header_font_scale()
 
-        self.nav_container.setMaximumWidth(380)
+        self.nav_container.setMaximumWidth(300)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.nav_container)
@@ -482,8 +482,21 @@ class MainWindow(QMainWindow):
 
         add_nodes(NAV_CONFIG)
 
-        self.nav_tree.expandAll()
-        self.nav_tree.expandToDepth(0)
+        self.nav_tree.collapseAll()
+        self._expand_nav_tree_to_depth(2)
+
+    def _expand_nav_tree_to_depth(self, max_depth: int) -> None:
+        if self.nav_tree is None:
+            return
+
+        def expand_item(item: QTreeWidgetItem, depth: int) -> None:
+            if depth < max_depth:
+                self.nav_tree.expandItem(item)
+            for child_index in range(item.childCount()):
+                expand_item(item.child(child_index), depth + 1)
+
+        for top_index in range(self.nav_tree.topLevelItemCount()):
+            expand_item(self.nav_tree.topLevelItem(top_index), 1)
 
     # ================== 首页显示（不进入 Tab） ================== #
     def open_home_tab(self):
