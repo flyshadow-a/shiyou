@@ -615,15 +615,18 @@ CREATE TABLE `platform_strength_pile_info_item` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `profile_id` bigint NOT NULL,
   `facility_code` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `pile_head_id` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `scour_depth_m` decimal(10,3) DEFAULT NULL,
   `compressive_capacity_t` decimal(12,3) DEFAULT NULL,
   `uplift_capacity_t` decimal(12,3) DEFAULT NULL,
   `submerged_weight_t` decimal(12,3) DEFAULT NULL,
+  `is_display_row` tinyint(1) NOT NULL DEFAULT '0',
   `sort_order` int NOT NULL DEFAULT '0',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `fk_strength_pile_profile` (`profile_id`),
+  KEY `idx_ps_pile_head` (`profile_id`,`facility_code`,`pile_head_id`),
   CONSTRAINT `fk_strength_pile_profile` FOREIGN KEY (`profile_id`) REFERENCES `oilfield_env_profile` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB AUTO_INCREMENT=88 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;

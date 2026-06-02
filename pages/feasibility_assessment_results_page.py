@@ -127,10 +127,11 @@ class AnalysisResultsWorker(QObject):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, project_root: Path, factor_path: str):
+    def __init__(self, project_root: Path, factor_path: str, pile_capacity_input_rows: List[dict] | None = None):
         super().__init__()
         self._project_root = project_root
         self._factor_path = factor_path
+        self._pile_capacity_input_rows = list(pile_capacity_input_rows or [])
 
     def run(self):
         try:
@@ -139,7 +140,12 @@ class AnalysisResultsWorker(QObject):
                 sys.path.insert(0, project_root_text)
             from src.report_service import build_analysis_results_for_ui
 
-            self.finished.emit(build_analysis_results_for_ui(self._factor_path))
+            self.finished.emit(
+                build_analysis_results_for_ui(
+                    self._factor_path,
+                    pile_capacity_input_rows=self._pile_capacity_input_rows,
+                )
+            )
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -1107,12 +1113,13 @@ class FeasibilityAssessmentResultsPage(BasePage):
         try:
             factor_path = self._get_current_job_factor_path()
             project_root = self._get_wordtemplate_project_root()
+            pile_capacity_input_rows = self._load_pile_capacity_input_rows()
         except Exception:
             self._analysis_results = {}
             return
 
         thread = QThread(self)
-        worker = AnalysisResultsWorker(project_root, factor_path)
+        worker = AnalysisResultsWorker(project_root, factor_path, pile_capacity_input_rows)
         worker.moveToThread(thread)
 
         thread.started.connect(worker.run)
@@ -1213,6 +1220,33 @@ class FeasibilityAssessmentResultsPage(BasePage):
         lay.addStretch(1)
         return wrap
 
+    def _get_engine(self):
+        if not self.mysql_url:
+            raise ValueError("MYSQL_URL 未配置")
+        return create_engine(self.mysql_url, future=True, pool_pre_ping=True)
+
+    def _load_pile_capacity_input_rows(self) -> List[dict]:
+        if not (self.mysql_url and self.env_branch and self.env_op_company and self.env_oilfield):
+            return []
+        profile_id = get_env_profile_id(
+            branch=self.env_branch,
+            op_company=self.env_op_company,
+            oilfield=self.env_oilfield,
+            mysql_url=self.mysql_url,
+            create_if_missing=False,
+        )
+        if not profile_id:
+            return []
+        rows = load_platform_strength_pile_items(
+            profile_id,
+            self.facility_code,
+            mysql_url=self.mysql_url,
+        )
+        return [
+            dict(row) for row in rows
+            if str(row.get("pile_head_id") or "").strip()
+        ]
+
     def _get_current_job_factor_path(self) -> str:
         runtime_dir = os.path.normpath(get_job_runtime_dir(self.job_name))
         factor_path = os.path.join(runtime_dir, "psilst.factor")
@@ -1307,6 +1341,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             "factor_path": factor_path,
             "output_filename": f"{self.facility_code}_可行性评估报告.pdf",
             "chapter_1_3": chapter_1_3,
+            "pile_capacity_input_rows": self._load_pile_capacity_input_rows(),
         }
 
     def _select_report_output_path(self, output_filename: str) -> str:
@@ -2053,6 +2088,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             factor_path=payload.get("factor_path"),
             template_path=payload.get("template_path"),
             output_path=output_path,
+            pile_capacity_input_rows=payload.get("pile_capacity_input_rows", []),
         )
         return {"message": "report generated (local)", "output_path": result}
 

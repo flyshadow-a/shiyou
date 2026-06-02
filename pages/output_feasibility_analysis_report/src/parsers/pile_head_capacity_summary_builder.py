@@ -203,20 +203,38 @@ def build_pile_head_capacity_summary(
     pile_head_force_result: Mapping[str, Any],
     pile_axial_capacity_summary: Mapping[str, Any],
     *,
+    pile_capacity_input_rows: list[Mapping[str, Any]] | None = None,
     case_type_map: Mapping[str, ConditionType] | None = None,
     operation_pass_threshold: float = 1.5,
     extreme_pass_threshold: float = 1.5,
 ) -> PileHeadCapacitySummaryBuilt:
     capacity_map: dict[str, dict[str, float]] = {}
-    for row in pile_axial_capacity_summary.get("rows", []):
-        pile_head_id = str(row.get("pile_head_id", "")).strip()
-        if not pile_head_id:
-            continue
-        capacity_map[pile_head_id] = {
-            "compression_capacity_kn": abs(float(row.get("comp_capacity_kn", 0.0))),
-            "tension_capacity_kn": abs(float(row.get("tens_capacity_kn", 0.0))),
-            "pile_weight_kn": float(row.get("pile_weight_kn", 0.0)),
-        }
+    if pile_capacity_input_rows is not None:
+        for row in pile_capacity_input_rows:
+            pile_head_id = str(row.get("pile_head_id", "")).strip()
+            if not pile_head_id:
+                continue
+            try:
+                compression_capacity_t = float(row.get("compressive_capacity_t") or 0.0)
+                tension_capacity_t = float(row.get("uplift_capacity_t") or 0.0)
+                pile_weight_t = float(row.get("submerged_weight_t") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            capacity_map[pile_head_id] = {
+                "compression_capacity_kn": abs(compression_capacity_t) * 9.8,
+                "tension_capacity_kn": abs(tension_capacity_t) * 9.8,
+                "pile_weight_kn": pile_weight_t * 9.8,
+            }
+    else:
+        for row in pile_axial_capacity_summary.get("rows", []):
+            pile_head_id = str(row.get("pile_head_id", "")).strip()
+            if not pile_head_id:
+                continue
+            capacity_map[pile_head_id] = {
+                "compression_capacity_kn": abs(float(row.get("comp_capacity_kn", 0.0))),
+                "tension_capacity_kn": abs(float(row.get("tens_capacity_kn", 0.0))),
+                "pile_weight_kn": float(row.get("pile_weight_kn", 0.0)),
+            }
 
     grouped: dict[tuple[str, ConditionType], dict[str, Any]] = {}
     for row in pile_head_force_result.get("rows", []):

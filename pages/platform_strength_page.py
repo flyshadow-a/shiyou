@@ -791,11 +791,23 @@ class PlatformStrengthPage(BasePage):
         self._set_table_text(self.tbl_splash, 0, 2, self._format_optional_number(source.get("corrosion_allowance_mm_per_y")))
 
     def _apply_pile_items(self, items: List[Dict]):
-        source = items[0] if items else (self._default_pile_items[0] if self._default_pile_items else {})
+        source = self._select_pile_display_item(items)
         self._set_table_text(self.tbl_pile, 0, 0, self._format_optional_number(source.get("scour_depth_m")))
         self._set_table_text(self.tbl_pile, 0, 1, self._format_optional_number(source.get("compressive_capacity_t")))
         self._set_table_text(self.tbl_pile, 0, 2, self._format_optional_number(source.get("uplift_capacity_t")))
         self._set_table_text(self.tbl_pile, 0, 3, self._format_optional_number(source.get("submerged_weight_t")))
+
+    def _select_pile_display_item(self, items: List[Dict]) -> Dict:
+        valid_items = [
+            item for item in (items or [])
+            if str(item.get("pile_head_id") or "").strip()
+        ]
+        for item in valid_items:
+            if item.get("is_display_row"):
+                return item
+        if valid_items:
+            return valid_items[-1]
+        return self._default_pile_items[0] if self._default_pile_items else {}
 
     def _apply_marine_items(self, items: List[Dict]):
         source_items = items if items else self._default_marine_items
@@ -880,14 +892,6 @@ class PlatformStrengthPage(BasePage):
             "sort_order": 1,
         }]
 
-        pile_items = [{
-            "scour_depth_m": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 0)),
-            "compressive_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 1)),
-            "uplift_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 2)),
-            "submerged_weight_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 3)),
-            "sort_order": 1,
-        }]
-
         marine_items = []
         density_text = self._table_text(self.tbl_marine, 4, 3)
         density_value = self._parse_optional_float(density_text)
@@ -903,13 +907,20 @@ class PlatformStrengthPage(BasePage):
             })
 
         replace_platform_strength_splash_items(profile_id, facility_code, splash_items)
-        replace_platform_strength_pile_items(profile_id, facility_code, pile_items)
         replace_platform_strength_marine_items(profile_id, facility_code, marine_items)
         try:
             self._save_structure_model_info_to_db()
         except Exception as exc:
             print("[PlatformStrengthPage] save structure model info with env tables failed:", exc)
-        return len(splash_items), len(pile_items), len(marine_items)
+        return len(splash_items), 0, len(marine_items)
+
+    def _current_pile_default_values(self) -> Dict[str, float | None]:
+        return {
+            "scour_depth_m": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 0)),
+            "compressive_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 1)),
+            "uplift_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 2)),
+            "submerged_weight_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 3)),
+        }
 
     def _get_level_threshold(self) -> int:
         """当前用于模型导入/立面划分的水平层阈值。
@@ -1288,25 +1299,207 @@ class PlatformStrengthPage(BasePage):
         )
 
     def _open_pile_edit_dialog(self) -> None:
-        def save(values: List[float | None]) -> List[Dict[str, object]]:
-            items = [{
-                "scour_depth_m": values[0],
-                "compressive_capacity_t": values[1],
-                "uplift_capacity_t": values[2],
-                "submerged_weight_t": values[3],
-                "sort_order": 1,
-            }]
-            self._replace_pile_items_to_db(items)
-            return items
-
-        self._open_simple_table_edit_dialog(
-            title="编辑桩基信息",
-            source_table=self.tbl_pile,
-            headers=["基础冲刷(m)", "桩基础抗压承载能力(t)", "桩基础抗拔承载能力(t)", "单根桩泥下自重(t)"],
-            save_callback=save,
-            apply_callback=self._apply_pile_items,
-            success_message="桩基信息已更新到数据库。",
+        dialog = QDialog(self)
+        dialog.setWindowTitle("编辑桩基信息")
+        dialog.resize(980, 460)
+        dialog.setMinimumSize(880, 380)
+        root = self._setup_edit_dialog(
+            dialog,
+            "编辑桩基信息",
+            "桩头ID从当前 SACINP 的 JOINT 行 PILEHD 标记读取，也可以手动新增、删除或编辑。",
         )
+        card, card_layout = self._make_dialog_card(dialog)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(8)
+        btn_read = QPushButton("读取模型桩头")
+        btn_add = QPushButton("新增行")
+        btn_del = QPushButton("删除选中行")
+        for btn in (btn_read, btn_add, btn_del):
+            self._style_dialog_tool_button(btn)
+        top.addWidget(btn_read, 0)
+        top.addWidget(btn_add, 0)
+        top.addWidget(btn_del, 0)
+        top.addStretch(1)
+        card_layout.addLayout(top)
+
+        headers = ["桩头ID", "基础冲刷(m)", "桩基础抗压承载能力(t)", "桩基础抗拔承载能力(t)", "单根桩泥下自重(t)"]
+        edit_table = QTableWidget(0, len(headers), dialog)
+        edit_table.setHorizontalHeaderLabels(headers)
+        self._init_table_common(edit_table, show_vertical_header=False)
+        self._style_dialog_table(edit_table)
+        edit_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        edit_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        edit_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        edit_table.verticalHeader().setDefaultSectionSize(34)
+        card_layout.addWidget(edit_table, 1)
+        root.addWidget(card, 1)
+
+        last_touched_row = {"row": -1}
+
+        def default_values() -> Dict[str, float | None]:
+            return self._current_pile_default_values()
+
+        def set_last_touched(row: int) -> None:
+            if 0 <= row < edit_table.rowCount():
+                last_touched_row["row"] = row
+
+        def append_row(pile_head_id: str = "", values: Dict[str, object] | None = None) -> int:
+            values = values or {}
+            row = edit_table.rowCount()
+            edit_table.insertRow(row)
+            edit_table.setRowHeight(row, 34)
+            self._set_center_item(edit_table, row, 0, str(pile_head_id or "").upper(), editable=True)
+            keys = ["scour_depth_m", "compressive_capacity_t", "uplift_capacity_t", "submerged_weight_t"]
+            for col, key in enumerate(keys, start=1):
+                self._set_center_item(edit_table, row, col, self._format_optional_number(values.get(key)), editable=True)
+            edit_table.setCurrentCell(row, 0)
+            set_last_touched(row)
+            return row
+
+        def valid_db_rows(rows: List[Dict]) -> List[Dict]:
+            return [
+                row for row in rows
+                if str(row.get("pile_head_id") or "").strip()
+            ]
+
+        def fill_initial_rows() -> None:
+            try:
+                profile_id, facility_code = self._get_strength_profile_context(create_if_missing=False)
+                db_rows = valid_db_rows(load_platform_strength_pile_items(profile_id, facility_code))
+            except Exception:
+                db_rows = []
+            edit_table.setRowCount(0)
+            if db_rows:
+                display_row = 0
+                for i, item in enumerate(db_rows):
+                    append_row(str(item.get("pile_head_id") or ""), item)
+                    if item.get("is_display_row"):
+                        display_row = i
+                edit_table.setCurrentCell(display_row, 0)
+                set_last_touched(display_row)
+                return
+
+            heads = self._read_current_model_pile_heads()
+            values = default_values()
+            if heads:
+                for head in heads:
+                    append_row(head, values)
+            else:
+                append_row("", values)
+                QMessageBox.information(dialog, "未识别到桩头", "未从 SACINP 中识别到桩头信息，请手动维护。")
+
+        def merge_model_heads() -> None:
+            heads = self._read_current_model_pile_heads()
+            if not heads:
+                QMessageBox.information(dialog, "未识别到桩头", "未从 SACINP 中识别到桩头信息，请手动维护。")
+                return
+            existing = {
+                self._table_text(edit_table, row, 0).upper()
+                for row in range(edit_table.rowCount())
+                if self._table_text(edit_table, row, 0)
+            }
+            if edit_table.rowCount() > 0:
+                seed = {
+                    "scour_depth_m": self._parse_optional_float(self._table_text(edit_table, 0, 1)),
+                    "compressive_capacity_t": self._parse_optional_float(self._table_text(edit_table, 0, 2)),
+                    "uplift_capacity_t": self._parse_optional_float(self._table_text(edit_table, 0, 3)),
+                    "submerged_weight_t": self._parse_optional_float(self._table_text(edit_table, 0, 4)),
+                }
+            else:
+                seed = default_values()
+            added = 0
+            for head in heads:
+                if head in existing:
+                    continue
+                append_row(head, seed)
+                existing.add(head)
+                added += 1
+            QMessageBox.information(dialog, "读取完成", f"已读取 {len(heads)} 个桩头，新增 {added} 行。")
+
+        def add_empty_row() -> None:
+            append_row("", default_values())
+
+        def delete_current_row() -> None:
+            row = edit_table.currentRow()
+            if row < 0:
+                QMessageBox.information(dialog, "请选择行", "请先选择要删除的桩基信息行。")
+                return
+            edit_table.removeRow(row)
+            if edit_table.rowCount() <= 0:
+                append_row("", default_values())
+                return
+            next_row = min(row, edit_table.rowCount() - 1)
+            edit_table.setCurrentCell(next_row, 0)
+            set_last_touched(next_row)
+
+        def collect_items() -> tuple[List[Dict[str, object]], int]:
+            items: List[Dict[str, object]] = []
+            seen = set()
+            display_row = last_touched_row["row"]
+            if not (0 <= display_row < edit_table.rowCount()):
+                display_row = edit_table.currentRow()
+            if not (0 <= display_row < edit_table.rowCount()):
+                display_row = edit_table.rowCount() - 1
+
+            for row in range(edit_table.rowCount()):
+                pile_head_id = self._table_text(edit_table, row, 0).upper()
+                if not pile_head_id:
+                    raise ValueError(f"第 {row + 1} 行桩头ID不能为空。")
+                if pile_head_id in seen:
+                    raise ValueError(f"桩头ID重复：{pile_head_id}")
+                seen.add(pile_head_id)
+                values = []
+                for col in range(1, 5):
+                    raw = self._table_text(edit_table, row, col)
+                    try:
+                        values.append(self._parse_optional_float(raw))
+                    except Exception:
+                        raise ValueError(f"第 {row + 1} 行第 {col + 1} 列不是有效数字：{raw}") from None
+                items.append({
+                    "pile_head_id": pile_head_id,
+                    "scour_depth_m": values[0],
+                    "compressive_capacity_t": values[1],
+                    "uplift_capacity_t": values[2],
+                    "submerged_weight_t": values[3],
+                    "is_display_row": row == display_row,
+                    "sort_order": row + 1,
+                })
+            if not items:
+                raise ValueError("至少需要保留一条桩基信息。")
+            return items, display_row
+
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        btn_save = QPushButton("确认更新到数据库")
+        btn_cancel = QPushButton("取消")
+        self._style_dialog_buttons(btn_save, btn_cancel)
+        bottom.addWidget(btn_save)
+        bottom.addWidget(btn_cancel)
+        root.addLayout(bottom)
+
+        def save_dialog() -> None:
+            try:
+                items, _display_row = collect_items()
+                self._replace_pile_items_to_db(items)
+                self._apply_pile_items(items)
+            except Exception as exc:
+                QMessageBox.critical(dialog, "更新失败", f"桩基信息更新到数据库失败：\n{exc}")
+                return
+            QMessageBox.information(dialog, "更新完成", "桩基信息已更新到数据库。")
+            dialog.accept()
+
+        edit_table.currentCellChanged.connect(lambda row, _col, _prev_row, _prev_col: set_last_touched(row))
+        edit_table.itemChanged.connect(lambda item: set_last_touched(item.row()) if item is not None else None)
+        btn_read.clicked.connect(merge_model_heads)
+        btn_add.clicked.connect(add_empty_row)
+        btn_del.clicked.connect(delete_current_row)
+        btn_save.clicked.connect(save_dialog)
+        btn_cancel.clicked.connect(dialog.reject)
+
+        fill_initial_rows()
+        dialog.exec_()
 
     def _open_marine_edit_dialog(self) -> None:
         dialog = QDialog(self)
@@ -1445,15 +1638,7 @@ class PlatformStrengthPage(BasePage):
         replace_platform_strength_splash_items(profile_id, facility_code, items)
 
     def _save_pile_table_to_db(self) -> None:
-        profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
-        items = [{
-            "scour_depth_m": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 0)),
-            "compressive_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 1)),
-            "uplift_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 2)),
-            "submerged_weight_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 3)),
-            "sort_order": 1,
-        }]
-        replace_platform_strength_pile_items(profile_id, facility_code, items)
+        raise ValueError("桩基信息必须通过编辑弹窗按桩头ID更新到数据库。")
 
     def _save_marine_table_to_db(self) -> None:
         profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
@@ -2445,6 +2630,32 @@ class PlatformStrengthPage(BasePage):
                     except ValueError:
                         pass
         return None
+
+    def _parse_pile_heads_from_sacinp(self, file_path: str) -> List[str]:
+        """按 SACINP JOINT 固定列读取桩头 ID。"""
+        lines = self.inp_view._read_lines_with_fallback(file_path)
+        pile_heads: List[str] = []
+        seen = set()
+        for raw_line in lines:
+            line = raw_line.rstrip("\r\n")
+            if not line.upper().startswith("JOINT"):
+                continue
+            pile_head_id = line[6:10].strip().upper() if len(line) >= 10 else ""
+            marker = line[54:60].strip().upper() if len(line) >= 60 else ""
+            if not pile_head_id or marker != "PILEHD":
+                continue
+            if pile_head_id in seen:
+                continue
+            seen.add(pile_head_id)
+            pile_heads.append(pile_head_id)
+        return pile_heads
+
+    def _read_current_model_pile_heads(self) -> List[str]:
+        facility_code = self._get_top_value("facility_code")
+        model_path = self._get_shared_current_model_file(facility_code) or self._find_best_inp_file(facility_code)
+        if not model_path:
+            return []
+        return self._parse_pile_heads_from_sacinp(model_path)
 
     def _parse_water_depth_from_ldopt(self, lines: List[str]) -> Optional[float]:
         """从 SeaInp/INP 的 LDOPT 卡片读取水深字段。"""

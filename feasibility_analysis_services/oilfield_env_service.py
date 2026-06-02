@@ -164,15 +164,18 @@ def ensure_oilfield_env_schema(mysql_url: str | None = None) -> None:
                     id BIGINT PRIMARY KEY AUTO_INCREMENT,
                     profile_id BIGINT NOT NULL,
                     facility_code VARCHAR(100) NOT NULL,
+                    pile_head_id VARCHAR(50) DEFAULT NULL,
                     scour_depth_m DECIMAL(10, 3) DEFAULT NULL,
                     compressive_capacity_t DECIMAL(10, 3) DEFAULT NULL,
                     uplift_capacity_t DECIMAL(10, 3) DEFAULT NULL,
                     submerged_weight_t DECIMAL(10, 3) DEFAULT NULL,
+                    is_display_row TINYINT(1) NOT NULL DEFAULT 0,
                     sort_order INT NOT NULL DEFAULT 0,
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     KEY idx_ps_pile_profile (profile_id),
                     KEY idx_ps_pile_facility (profile_id, facility_code),
+                    KEY idx_ps_pile_head (profile_id, facility_code, pile_head_id),
                     CONSTRAINT fk_ps_pile_profile
                         FOREIGN KEY (profile_id) REFERENCES oilfield_env_profile(id)
                         ON DELETE CASCADE
@@ -202,6 +205,88 @@ def ensure_oilfield_env_schema(mysql_url: str | None = None) -> None:
                         FOREIGN KEY (profile_id) REFERENCES oilfield_env_profile(id)
                         ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+        )
+        _ensure_platform_strength_pile_columns(conn)
+
+
+def _mysql_column_exists(conn, table_name: str, column_name: str) -> bool:
+    sql = text(
+        """
+        SELECT COUNT(*) AS count_value
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = :table_name
+          AND COLUMN_NAME = :column_name
+        """
+    )
+    return bool(
+        conn.execute(
+            sql,
+            {"table_name": table_name, "column_name": column_name},
+        ).scalar()
+    )
+
+
+def _mysql_table_exists(conn, table_name: str) -> bool:
+    sql = text(
+        """
+        SELECT COUNT(*) AS count_value
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = :table_name
+        """
+    )
+    return bool(conn.execute(sql, {"table_name": table_name}).scalar())
+
+
+def _mysql_index_exists(conn, table_name: str, index_name: str) -> bool:
+    sql = text(
+        """
+        SELECT COUNT(*) AS count_value
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = :table_name
+          AND INDEX_NAME = :index_name
+        """
+    )
+    return bool(
+        conn.execute(
+            sql,
+            {"table_name": table_name, "index_name": index_name},
+        ).scalar()
+    )
+
+
+def _ensure_platform_strength_pile_columns(conn) -> None:
+    table_name = "platform_strength_pile_info_item"
+    if not _mysql_table_exists(conn, table_name):
+        return
+    if not _mysql_column_exists(conn, table_name, "pile_head_id"):
+        conn.execute(
+            text(
+                """
+                ALTER TABLE platform_strength_pile_info_item
+                ADD COLUMN pile_head_id VARCHAR(50) DEFAULT NULL AFTER facility_code
+                """
+            )
+        )
+    if not _mysql_column_exists(conn, table_name, "is_display_row"):
+        conn.execute(
+            text(
+                """
+                ALTER TABLE platform_strength_pile_info_item
+                ADD COLUMN is_display_row TINYINT(1) NOT NULL DEFAULT 0 AFTER submerged_weight_t
+                """
+            )
+        )
+    if not _mysql_index_exists(conn, table_name, "idx_ps_pile_head"):
+        conn.execute(
+            text(
+                """
+                ALTER TABLE platform_strength_pile_info_item
+                ADD KEY idx_ps_pile_head (profile_id, facility_code, pile_head_id)
                 """
             )
         )
@@ -531,13 +616,21 @@ def load_platform_strength_pile_items(
     engine = _create_mysql_engine(mysql_url)
     sql = text(
         """
-        SELECT scour_depth_m, compressive_capacity_t, uplift_capacity_t, submerged_weight_t, sort_order
+        SELECT
+            pile_head_id,
+            scour_depth_m,
+            compressive_capacity_t,
+            uplift_capacity_t,
+            submerged_weight_t,
+            is_display_row,
+            sort_order
         FROM platform_strength_pile_info_item
         WHERE profile_id = :profile_id AND facility_code = :facility_code
         ORDER BY sort_order, id
         """
     )
     with engine.begin() as conn:
+        _ensure_platform_strength_pile_columns(conn)
         rows = conn.execute(
             sql,
             {
@@ -564,11 +657,11 @@ def replace_platform_strength_pile_items(
     insert_sql = text(
         """
         INSERT INTO platform_strength_pile_info_item (
-            profile_id, facility_code, scour_depth_m, compressive_capacity_t,
-            uplift_capacity_t, submerged_weight_t, sort_order
+            profile_id, facility_code, pile_head_id, scour_depth_m, compressive_capacity_t,
+            uplift_capacity_t, submerged_weight_t, is_display_row, sort_order
         ) VALUES (
-            :profile_id, :facility_code, :scour_depth_m, :compressive_capacity_t,
-            :uplift_capacity_t, :submerged_weight_t, :sort_order
+            :profile_id, :facility_code, :pile_head_id, :scour_depth_m, :compressive_capacity_t,
+            :uplift_capacity_t, :submerged_weight_t, :is_display_row, :sort_order
         )
         """
     )
@@ -577,15 +670,18 @@ def replace_platform_strength_pile_items(
         {
             "profile_id": int(profile_id),
             "facility_code": normalized_facility_code,
+            "pile_head_id": item.get("pile_head_id"),
             "scour_depth_m": item.get("scour_depth_m"),
             "compressive_capacity_t": item.get("compressive_capacity_t"),
             "uplift_capacity_t": item.get("uplift_capacity_t"),
             "submerged_weight_t": item.get("submerged_weight_t"),
+            "is_display_row": 1 if item.get("is_display_row") else 0,
             "sort_order": int(item.get("sort_order", 0) or 0),
         }
         for item in items
     ]
     with engine.begin() as conn:
+        _ensure_platform_strength_pile_columns(conn)
         conn.execute(
             delete_sql,
             {"profile_id": int(profile_id), "facility_code": normalized_facility_code},

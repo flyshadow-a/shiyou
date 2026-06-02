@@ -150,7 +150,10 @@ def _build_platform_evaluation_conclusion_section(
     return existing_section
 
 
-def build_analysis_results_for_ui(factor_path: str) -> dict[str, Any]:
+def build_analysis_results_for_ui(
+    factor_path: str,
+    pile_capacity_input_rows: list[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     factor_file = Path(factor_path)
     if not factor_file.exists():
         raise FileNotFoundError(
@@ -171,10 +174,11 @@ def build_analysis_results_for_ui(factor_path: str) -> dict[str, Any]:
     load_case_status = parse_load_case_status(lines)
     pile_head_forces = parse_pile_head_forces(lines)
     pile_axial_capacity = parse_pile_axial_capacity_summary(lines)
-    if pile_head_forces.get("rows"):
+    if pile_capacity_input_rows is not None or pile_head_forces.get("rows"):
         pile_axial_capacity_summary = build_pile_head_capacity_summary(
             pile_head_forces,
             pile_axial_capacity,
+            pile_capacity_input_rows=pile_capacity_input_rows,
             case_type_map=load_case_status.get("case_type_map", {}),
         )
     else:
@@ -208,6 +212,7 @@ def generate_report(
     template_path: str,
     output_path: str,
     chapter_1_3_sources: Mapping[str, Mapping[str, Any] | str] | None = None,
+    pile_capacity_input_rows: list[Mapping[str, Any]] | None = None,
 ) -> str:
     # 报告联调阶段优先给出更明确的 factor_path 诊断信息，
     # 便于区分“前端传参错误”和“后端进程看不到该文件”两类问题。
@@ -227,7 +232,10 @@ def generate_report(
     combo_case_desc_rows = parse_combo_case_desc(lines)
     combo_case_load_rows = parse_combo_case_loads(lines)
 
-    analysis_results = build_analysis_results_for_ui(factor_path)
+    analysis_results = build_analysis_results_for_ui(
+        factor_path,
+        pile_capacity_input_rows=pile_capacity_input_rows,
+    )
     analysis_summary = analysis_results["analysis_summary"]
     member_group_summary = analysis_results["member_group_summary"]
     member_summary = analysis_results["member_summary"]
@@ -290,6 +298,7 @@ def generate_report_with_project_defaults(
     factor_path: str | None = None,
     template_path: str | None = None,
     output_path: str | None = None,
+    pile_capacity_input_rows: list[Mapping[str, Any]] | None = None,
 ) -> str:
     defaults = get_report_defaults()
     if not factor_path:
@@ -301,4 +310,5 @@ def generate_report_with_project_defaults(
         template_path=str(template_path or defaults["template_path"]),
         output_path=str(output_path),
         chapter_1_3_sources=chapter_1_3_sources,
+        pile_capacity_input_rows=pile_capacity_input_rows,
     )
