@@ -1445,18 +1445,22 @@ class PlatformStrengthPage(BasePage):
 
             for row in range(edit_table.rowCount()):
                 pile_head_id = self._table_text(edit_table, row, 0).upper()
+                row_texts = [self._table_text(edit_table, row, col) for col in range(1, 5)]
+                if not pile_head_id and not any(row_texts):
+                    raise ValueError("请完整输入承载力和桩身重是数据")
                 if not pile_head_id:
                     raise ValueError(f"第 {row + 1} 行桩头ID不能为空。")
                 if pile_head_id in seen:
                     raise ValueError(f"桩头ID重复：{pile_head_id}")
                 seen.add(pile_head_id)
                 values = []
-                for col in range(1, 5):
-                    raw = self._table_text(edit_table, row, col)
+                for col, raw in enumerate(row_texts, start=1):
                     try:
                         values.append(self._parse_optional_float(raw))
                     except Exception:
                         raise ValueError(f"第 {row + 1} 行第 {col + 1} 列不是有效数字：{raw}") from None
+                if values[1] is None or values[2] is None or values[3] is None:
+                    raise ValueError("请完整输入承载力和桩身重是数据")
                 items.append({
                     "pile_head_id": pile_head_id,
                     "scour_depth_m": values[0],
@@ -1484,6 +1488,9 @@ class PlatformStrengthPage(BasePage):
                 items, _display_row = collect_items()
                 self._replace_pile_items_to_db(items)
                 self._apply_pile_items(items)
+            except ValueError as exc:
+                QMessageBox.warning(dialog, "桩基信息不完整", str(exc))
+                return
             except Exception as exc:
                 QMessageBox.critical(dialog, "更新失败", f"桩基信息更新到数据库失败：\n{exc}")
                 return
@@ -2838,12 +2845,14 @@ class PlatformStrengthPage(BasePage):
             self._refresh_layers_table()
 
     # ---------------- 左侧表格 ----------------
-    def _make_update_db_button(self, text_value: str = "更新到数据库") -> QPushButton:
+    def _make_update_db_button(self, text_value: str = "更新到数据库", target_name: str = "") -> QPushButton:
         btn = QPushButton(text_value)
         btn.setFont(self._songti_small_four_font(bold=True))
         btn.setCursor(Qt.PointingHandCursor)
         btn.setMinimumHeight(30)
-        btn.setMinimumWidth(126)
+        btn.setMinimumWidth(max(126, btn.fontMetrics().horizontalAdvance(text_value) + 34))
+        if target_name:
+            btn.setToolTip(f"将“{target_name}”更新到数据库")
         btn.setStyleSheet("""
             QPushButton {
                 background: #168bd0;
@@ -2860,13 +2869,13 @@ class PlatformStrengthPage(BasePage):
         """)
         return btn
 
-    def _make_update_button_row(self, callback) -> QWidget:
+    def _make_update_button_row(self, callback, target_name: str) -> QWidget:
         row = QWidget(self)
         lay = QHBoxLayout(row)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
         lay.addStretch(1)
-        btn = self._make_update_db_button()
+        btn = self._make_update_db_button(f"更新{target_name}", target_name)
         btn.clicked.connect(callback)
         lay.addWidget(btn, 0)
         return row
@@ -2878,7 +2887,7 @@ class PlatformStrengthPage(BasePage):
         lay.setSpacing(6)
         lay.addStretch(1)
 
-        btn_save = self._make_update_db_button("更新到数据库")
+        btn_save = self._make_update_db_button("更新海生物信息", "海生物信息")
         btn_save.clicked.connect(self._on_update_marine_table_to_db)
         lay.addWidget(btn_save, 0)
         return row
@@ -2941,7 +2950,7 @@ class PlatformStrengthPage(BasePage):
         box_layout.setSpacing(6)
 
         kv_tbl = self._build_structure_model_kv_table()
-        box_layout.addWidget(self._make_update_button_row(self._on_update_structure_model_info_to_db), 0)
+        box_layout.addWidget(self._make_update_button_row(self._on_update_structure_model_info_to_db, "结构模型信息"), 0)
         box_layout.addWidget(kv_tbl, 0)
 
         layer_row = QWidget(box)
@@ -2951,7 +2960,7 @@ class PlatformStrengthPage(BasePage):
         lab_layers = QLabel("水平层高程")
         lab_layers.setFont(self._songti_small_four_font(bold=True))
         lab_layers.setStyleSheet("color: #1d2b3a;")
-        btn_update_layers = self._make_update_db_button()
+        btn_update_layers = self._make_update_db_button("更新水平层高程", "水平层高程")
         btn_update_layers.clicked.connect(self._on_update_horizontal_levels_to_db)
         layer_lay.addWidget(lab_layers, 0)
         layer_lay.addStretch(1)
@@ -3051,7 +3060,7 @@ class PlatformStrengthPage(BasePage):
         splash_box.setStyleSheet(section_title_qss)
         splash_layout = QVBoxLayout(splash_box)
         splash_layout.setContentsMargins(8, 8, 8, 8)
-        splash_layout.addWidget(self._make_update_button_row(self._on_update_splash_table_to_db), 0)
+        splash_layout.addWidget(self._make_update_button_row(self._on_update_splash_table_to_db, "飞溅区腐蚀余量"), 0)
 
         tbl_splash = QTableWidget(1, 3, splash_box)
         self.tbl_splash = tbl_splash
@@ -3084,7 +3093,7 @@ class PlatformStrengthPage(BasePage):
         pile_box.setStyleSheet(section_title_qss)
         pile_layout = QVBoxLayout(pile_box)
         pile_layout.setContentsMargins(8, 8, 8, 8)
-        pile_layout.addWidget(self._make_update_button_row(self._on_update_pile_table_to_db), 0)
+        pile_layout.addWidget(self._make_update_button_row(self._on_update_pile_table_to_db, "桩基信息"), 0)
 
         tbl_pile = QTableWidget(1, 4, pile_box)
         self.tbl_pile = tbl_pile

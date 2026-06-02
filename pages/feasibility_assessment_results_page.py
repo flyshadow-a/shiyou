@@ -127,11 +127,18 @@ class AnalysisResultsWorker(QObject):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, project_root: Path, factor_path: str, pile_capacity_input_rows: List[dict] | None = None):
+    def __init__(
+        self,
+        project_root: Path,
+        factor_path: str,
+        pile_capacity_input_rows: List[dict] | None = None,
+        pile_capacity_input_error: str = "",
+    ):
         super().__init__()
         self._project_root = project_root
         self._factor_path = factor_path
         self._pile_capacity_input_rows = list(pile_capacity_input_rows or [])
+        self._pile_capacity_input_error = str(pile_capacity_input_error or "").strip()
 
     def run(self):
         try:
@@ -140,12 +147,13 @@ class AnalysisResultsWorker(QObject):
                 sys.path.insert(0, project_root_text)
             from src.report_service import build_analysis_results_for_ui
 
-            self.finished.emit(
-                build_analysis_results_for_ui(
-                    self._factor_path,
-                    pile_capacity_input_rows=self._pile_capacity_input_rows,
-                )
+            results = build_analysis_results_for_ui(
+                self._factor_path,
+                pile_capacity_input_rows=self._pile_capacity_input_rows,
             )
+            if self._pile_capacity_input_error:
+                results["pile_capacity_input_error"] = self._pile_capacity_input_error
+            self.finished.emit(results)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -354,6 +362,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._analysis_worker = None
         self._analysis_results = {}
         self._detail_table_rows = {}
+        self._pile_capacity_input_warning_shown = False
 
         # “生成评估报告”按钮专用：先导出/上传模型立面轮廓图，再生成评估报告。
         # 注意：三维图仍由结构强度/改造可行性评估页进入时自动保存，
@@ -1045,6 +1054,45 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._detail_table_rows[tab_name] = list(rows)
         self._render_pile_capacity_rows(table, rows)
 
+    def _set_pile_capacity_tables_message(self, message: str) -> None:
+        for tab_name in ("操作工况桩基承载力", "极端工况桩基承载力"):
+            table = self.detail_tables.get(tab_name) if hasattr(self, "detail_tables") else None
+            if table is None:
+                continue
+            table.setProperty("static_mode", True)
+            self._detail_table_rows[tab_name] = [{"pile_head_id": message}]
+            header_rows = int(table.property("header_rows") or 3)
+            table.setRowCount(header_rows + 1)
+            table.setRowHeight(header_rows, 32)
+            for column_index in range(table.columnCount()):
+                self._set_cell(
+                    table,
+                    header_rows,
+                    column_index,
+                    message if column_index == 0 else "-",
+                    editable=False,
+                    align_center=False,
+                )
+
+    def _clear_pile_capacity_summary_rows(self, message: str) -> None:
+        if not hasattr(self, "tbl_summary"):
+            return
+        target_names = {
+            "操作工况桩基抗压",
+            "操作工况桩基抗拔",
+            "极端工况桩基抗压",
+            "极端工况桩基抗拔",
+        }
+        for row in range(2, self.tbl_summary.rowCount()):
+            name_item = self.tbl_summary.item(row, 0)
+            name = name_item.text().strip() if name_item is not None else ""
+            if name not in target_names:
+                continue
+            self._set_cell(self.tbl_summary, row, 1, "-", editable=False)
+            self._set_cell(self.tbl_summary, row, 2, message, editable=False, align_center=False)
+            self._set_cell(self.tbl_summary, row, 3, "-", editable=False)
+            self._set_cell(self.tbl_summary, row, 4, "-", editable=False)
+
     def _fill_detail_tables_from_analysis(self, results: dict) -> None:
         member_rows = []
         member_source_rows = sorted(
@@ -1101,6 +1149,15 @@ class FeasibilityAssessmentResultsPage(BasePage):
             ])
         self._fill_standard_detail_table("桩应力", pile_rows)
 
+        pile_capacity_message = results.get("pile_capacity_input_error")
+        if pile_capacity_message:
+            self._set_pile_capacity_tables_message(str(pile_capacity_message))
+            self._clear_pile_capacity_summary_rows(str(pile_capacity_message))
+            if not self._pile_capacity_input_warning_shown:
+                self._pile_capacity_input_warning_shown = True
+                QMessageBox.warning(self, "桩基信息不完整", str(pile_capacity_message))
+            return
+
         pile_axial = results.get("pile_axial_capacity_summary", {})
         self._fill_pile_capacity_detail_table("操作工况桩基承载力", list(pile_axial.get("operation_table_rows", [])))
         self._fill_pile_capacity_detail_table("极端工况桩基承载力", list(pile_axial.get("extreme_table_rows", [])))
@@ -1113,13 +1170,18 @@ class FeasibilityAssessmentResultsPage(BasePage):
         try:
             factor_path = self._get_current_job_factor_path()
             project_root = self._get_wordtemplate_project_root()
-            pile_capacity_input_rows = self._load_pile_capacity_input_rows()
+            pile_capacity_input_rows, pile_capacity_input_error = self._load_pile_capacity_input_rows_for_analysis()
         except Exception:
             self._analysis_results = {}
             return
 
         thread = QThread(self)
-        worker = AnalysisResultsWorker(project_root, factor_path, pile_capacity_input_rows)
+        worker = AnalysisResultsWorker(
+            project_root,
+            factor_path,
+            pile_capacity_input_rows,
+            pile_capacity_input_error,
+        )
         worker.moveToThread(thread)
 
         thread.started.connect(worker.run)
@@ -1227,7 +1289,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _load_pile_capacity_input_rows(self) -> List[dict]:
         if not (self.mysql_url and self.env_branch and self.env_op_company and self.env_oilfield):
-            return []
+            raise ValueError("请完整输入承载力和桩身重是数据")
         profile_id = get_env_profile_id(
             branch=self.env_branch,
             op_company=self.env_op_company,
@@ -1236,16 +1298,29 @@ class FeasibilityAssessmentResultsPage(BasePage):
             create_if_missing=False,
         )
         if not profile_id:
-            return []
+            raise ValueError("请完整输入承载力和桩身重是数据")
         rows = load_platform_strength_pile_items(
             profile_id,
             self.facility_code,
             mysql_url=self.mysql_url,
         )
-        return [
+        input_rows = [
             dict(row) for row in rows
             if str(row.get("pile_head_id") or "").strip()
         ]
+        if not input_rows:
+            raise ValueError("请完整输入承载力和桩身重是数据")
+        required_fields = ("compressive_capacity_t", "uplift_capacity_t", "submerged_weight_t")
+        for row in input_rows:
+            if any(str(row.get(field) if row.get(field) is not None else "").strip() == "" for field in required_fields):
+                raise ValueError("请完整输入承载力和桩身重是数据")
+        return input_rows
+
+    def _load_pile_capacity_input_rows_for_analysis(self) -> Tuple[List[dict], str]:
+        try:
+            return self._load_pile_capacity_input_rows(), ""
+        except ValueError as exc:
+            return [], str(exc) or "请完整输入承载力和桩身重是数据"
 
     def _get_current_job_factor_path(self) -> str:
         runtime_dir = os.path.normpath(get_job_runtime_dir(self.job_name))
