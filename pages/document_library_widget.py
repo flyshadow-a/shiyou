@@ -54,8 +54,9 @@ QPushButton[class="DocumentNavButton"]:hover {
     color: #0f5ea5;
 }
 QPushButton[class="DocumentNavButton"][selected="true"] {
-    background-color: #1677c5;
-    color: #ffffff;
+    background-color: #d8ebff;
+    color: #12344d;
+    border: 1px solid #7fb8e8;
     font-weight: 700;
 }
 QTreeWidget#DocumentTree {
@@ -73,8 +74,9 @@ QTreeWidget#DocumentTree::item:hover {
     background-color: #e8f2ff;
 }
 QTreeWidget#DocumentTree::item:selected {
-    background-color: #1677c5;
-    color: #ffffff;
+    background-color: #d8ebff;
+    color: #12344d;
+    border: 1px solid #7fb8e8;
 }
 QFrame#DocumentContentCard {
     background-color: #ffffff;

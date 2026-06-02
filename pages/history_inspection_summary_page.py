@@ -800,7 +800,6 @@ class HistoryInspectionSummaryPage(BasePage):
         self.periodic_sampling_edit_btn.clicked.connect(self._edit_periodic_finding)
         self.periodic_sampling_edit_btn.setText("编辑记录")
         periodic_sampling_action_row.addWidget(self.periodic_sampling_edit_btn, 0, Qt.AlignRight)
-        layout.addLayout(periodic_sampling_action_row)
 
         self.periodic_sampling_table = QTableWidget(0, 3, page)
         self.periodic_sampling_table.setObjectName("PeriodicSamplingTable")
@@ -815,6 +814,7 @@ class HistoryInspectionSummaryPage(BasePage):
         self.periodic_sampling_table.setMinimumHeight(190)
         self.periodic_sampling_table.itemChanged.connect(self._on_periodic_sampling_item_changed)
         layout.addWidget(self.periodic_sampling_table, 1)
+        layout.addLayout(periodic_sampling_action_row)
 
         if self.periodic_demo_data:
             self.periodic_overview_table.selectRow(0)
@@ -937,7 +937,6 @@ class HistoryInspectionSummaryPage(BasePage):
         self.special_event_records_edit_btn.clicked.connect(self._edit_special_event_finding)
         self.special_event_records_edit_btn.setText("编辑记录")
         special_event_records_action_row.addWidget(self.special_event_records_edit_btn, 0, Qt.AlignRight)
-        layout.addLayout(special_event_records_action_row)
 
         self.special_event_records_table = QTableWidget(0, 3, page)
         self.special_event_records_table.setObjectName("SpecialEventRecordsTable")
@@ -952,6 +951,7 @@ class HistoryInspectionSummaryPage(BasePage):
         self.special_event_records_table.setMinimumHeight(190)
         self.special_event_records_table.itemChanged.connect(self._on_special_event_record_item_changed)
         layout.addWidget(self.special_event_records_table, 1)
+        layout.addLayout(special_event_records_action_row)
 
         if self.special_event_demo_data:
             self.special_event_overview_table.selectRow(0)
@@ -1870,11 +1870,12 @@ class HistoryInspectionSummaryPage(BasePage):
             QLabel#PeriodicSectionBanner {
                 min-height: 34px;
                 padding: 0 18px;
-                background-color: #0f5ea5;
-                color: #ffffff;
+                background-color: #e8f2ff;
+                color: #12344d;
                 font-size: 14px;
                 font-weight: bold;
                 border-radius: 4px;
+                border: 1px solid #b9d9f4;
             }
             QPushButton#OverviewActionButton {
                 min-height: 32px;

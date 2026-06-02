@@ -4,7 +4,7 @@ import os
 import shutil
 from typing import Callable, List, Optional
 
-from PyQt5.QtCore import QDateTime, QRect, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import QDateTime, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -19,8 +19,6 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QHeaderView,
     QSizePolicy,
-    QStyle,
-    QStyleOptionButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -123,33 +121,66 @@ class CheckBoxHeader(QHeaderView):
         super().__init__(orientation, parent)
         self._check_column = check_column
         self._checked = False
+        self._syncing_checkbox = False
         self.setSectionsClickable(True)
+        self._checkbox = QCheckBox(self)
+        self._checkbox.setFocusPolicy(Qt.NoFocus)
+        self._checkbox.setCursor(Qt.PointingHandCursor)
+        self._checkbox.setToolTip("全选/取消全选")
+        self._checkbox.stateChanged.connect(self._on_checkbox_state_changed)
+        self.sectionResized.connect(lambda *_args: self._sync_checkbox_geometry())
+        self.geometriesChanged.connect(self._sync_checkbox_geometry)
 
     def setChecked(self, checked: bool) -> None:
         checked = bool(checked)
+        if self._checked == checked and self._checkbox.isChecked() == checked:
+            return
+        self._checked = checked
+        self._syncing_checkbox = True
+        self._checkbox.setChecked(checked)
+        self._syncing_checkbox = False
+        self.updateSection(self._check_column)
+
+    def _on_checkbox_state_changed(self, state: int) -> None:
+        if self._syncing_checkbox:
+            return
+        checked = state == Qt.Checked
         if self._checked == checked:
             return
         self._checked = checked
         self.updateSection(self._check_column)
+        self.toggled.emit(checked)
 
-    def paintSection(self, painter, rect: QRect, logicalIndex: int) -> None:
-        super().paintSection(painter, rect, logicalIndex)
-        if logicalIndex != self._check_column:
+    def _sync_checkbox_geometry(self) -> None:
+        section_x = self.sectionViewportPosition(self._check_column)
+        section_w = self.sectionSize(self._check_column)
+        if section_x < 0 or section_w <= 0:
+            self._checkbox.hide()
             return
-        option = QStyleOptionButton()
-        size = self.style().pixelMetric(QStyle.PM_IndicatorWidth, option, self)
-        option.rect = QRect(
-            rect.x() + (rect.width() - size) // 2,
-            rect.y() + (rect.height() - size) // 2,
-            size,
-            size,
+        hint = self._checkbox.sizeHint()
+        width = max(18, hint.width())
+        height = max(18, hint.height())
+        self._checkbox.setGeometry(
+            section_x + (section_w - width) // 2,
+            (self.height() - height) // 2,
+            width,
+            height,
         )
-        option.state = QStyle.State_Enabled | (QStyle.State_On if self._checked else QStyle.State_Off)
-        self.style().drawControl(QStyle.CE_CheckBox, option, painter, self)
+        self._checkbox.show()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._sync_checkbox_geometry()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._sync_checkbox_geometry()
 
     def mousePressEvent(self, event) -> None:
         if self.logicalIndexAt(event.pos()) == self._check_column:
-            self.toggled.emit(not self._checked)
+            checked = not self._checked
+            self.setChecked(checked)
+            self.toggled.emit(checked)
             return
         super().mousePressEvent(event)
 
@@ -421,6 +452,7 @@ class DocManWidget(QFrame):
         self.table.cellDoubleClicked.connect(self._open_row_file)
 
         header = self.table.horizontalHeader()
+        header.setMinimumHeight(34)
         header.setStretchLastSection(False)
         header.setSectionResizeMode(self.COL_CHECK, header.Fixed)
         header.setSectionResizeMode(self.COL_INDEX, header.Fixed)
@@ -588,11 +620,11 @@ class DocManWidget(QFrame):
 
     def _apply_profile_headers(self) -> None:
         header_map = {
-            "generic": ["", "序号", "", "工况", "文件名", "文件格式", "修改时间", "类别", "备注", "操作"],
-            "design": ["", "序号", "", "编码", "名称", "设计阶段", "专业", "类别", "备注", "操作"],
-            "rebuild": ["", "序号", "", "编码", "名称", "设计阶段", "专业", "类别", "备注", "操作"],
-            "model": ["", "序号", "阶段", "名称", "分析类别", "文件格式", "修改时间", "模型类别", "备注", "操作"],
-            "inspection": ["", "序号", "", "检测项目名称", "文件名称", "文件格式", "修改时间", "类别", "备注", "操作"],
+            "generic": [" ", "序号", "", "工况", "文件名", "文件格式", "修改时间", "类别", "备注", "操作"],
+            "design": [" ", "序号", "", "编码", "名称", "设计阶段", "专业", "类别", "备注", "操作"],
+            "rebuild": [" ", "序号", "", "编码", "名称", "设计阶段", "专业", "类别", "备注", "操作"],
+            "model": [" ", "序号", "阶段", "名称", "分析类别", "文件格式", "修改时间", "模型类别", "备注", "操作"],
+            "inspection": [" ", "序号", "", "检测项目名称", "文件名称", "文件格式", "修改时间", "类别", "备注", "操作"],
         }
         self.table.setHorizontalHeaderLabels(header_map.get(self._display_profile, header_map["generic"]))
         self._apply_profile_column_widths()

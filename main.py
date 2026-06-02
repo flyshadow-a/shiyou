@@ -24,8 +24,6 @@ from core.auth import AuthService, UserSession
 from pages.nav_config import NAV_CONFIG
 
 # 业务页面 / 对话框
-from pages.new_special_inspection_page import NewSpecialInspectionPage
-from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
 from pages.home_page import HomePage
 from pages.personal_center_page import PersonalCenterPage
 from pages.login_dialog import LoginDialog
@@ -800,6 +798,8 @@ class MainWindow(QMainWindow):
 
     # ================== 业务：新增特检策略 ================== #
     def open_new_special_strategy_tab(self, facility_code: str):
+        from pages.new_special_inspection_page import NewSpecialInspectionPage
+
         # 切换到 Tab 区域
         if self.right_stack is not None and self.tab_widget is not None:
             self.right_stack.setCurrentWidget(self.tab_widget)
@@ -815,6 +815,8 @@ class MainWindow(QMainWindow):
 
     # ================== 业务：风险更新结果 ================== #
     def open_upgrade_special_inspection_result_tab(self, facility_code: str, run_id: int | None = None):
+        from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
+
         # 切换到 Tab 区域
         if self.right_stack is not None and self.tab_widget is not None:
             self.right_stack.setCurrentWidget(self.tab_widget)

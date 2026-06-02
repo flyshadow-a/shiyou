@@ -3,8 +3,9 @@
 
 import os
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
+    QAbstractItemDelegate,
     QAbstractItemView,
     QComboBox,
     QDialog,
@@ -19,6 +20,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QTreeWidget,
@@ -54,6 +56,65 @@ from services.inspection_business_db_adapter import (
     soft_delete_inspection_project_with_files,
     update_inspection_project,
 )
+
+
+INSPECTION_LEVELS = ["Ⅰ", "Ⅱ", "Ⅲ", "Ⅳ"]
+INSPECTION_LEVEL_COLUMN = 1
+INSPECTION_LEVEL_ALIASES = {
+    "1": "Ⅰ",
+    "I": "Ⅰ",
+    "Ⅰ": "Ⅰ",
+    "2": "Ⅱ",
+    "II": "Ⅱ",
+    "Ⅱ": "Ⅱ",
+    "3": "Ⅲ",
+    "III": "Ⅲ",
+    "Ⅲ": "Ⅲ",
+    "4": "Ⅳ",
+    "IV": "Ⅳ",
+    "Ⅳ": "Ⅳ",
+}
+
+
+def normalize_inspection_level(value: str) -> str:
+    text = str(value or "").strip()
+    return INSPECTION_LEVEL_ALIASES.get(text.upper(), text)
+
+
+class InspectionLevelDelegate(QStyledItemDelegate):
+    def createEditor(self, parent, option, index):
+        combo = QComboBox(parent)
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.NoInsert)
+        combo.addItems(INSPECTION_LEVELS)
+        font = combo.font()
+        font.setPointSize(max(font.pointSize(), 14))
+        combo.setFont(font)
+        line_edit = combo.lineEdit()
+        line_edit.setReadOnly(True)
+        line_edit.setAlignment(Qt.AlignCenter)
+        line_edit.setFrame(False)
+        line_edit.setCursor(Qt.ArrowCursor)
+        for row in range(combo.count()):
+            combo.setItemData(row, Qt.AlignCenter, Qt.TextAlignmentRole)
+        combo.activated.connect(lambda _index, editor=combo: self._commit_and_close(editor))
+        QTimer.singleShot(0, combo.showPopup)
+        return combo
+
+    def setEditorData(self, editor, index) -> None:
+        value = normalize_inspection_level(index.data(Qt.DisplayRole) or index.data(Qt.EditRole) or "")
+        selected = editor.findText(value)
+        editor.setCurrentIndex(selected if selected >= 0 else 0)
+
+    def setModelData(self, editor, model, index) -> None:
+        model.setData(index, editor.currentText(), Qt.EditRole)
+
+    def updateEditorGeometry(self, editor, option, index) -> None:
+        editor.setGeometry(option.rect)
+
+    def _commit_and_close(self, editor) -> None:
+        self.commitData.emit(editor)
+        self.closeEditor.emit(editor, QAbstractItemDelegate.NoHint)
 
 
 class _FacilityCodeMirror:
@@ -354,7 +415,6 @@ class HistoryEventsInspectionPage(BasePage):
         self.btn_edit_finding.setProperty("class", "DocManBlueButton")
         self.btn_edit_finding.clicked.connect(self._edit_finding)
         findings_action_row.addWidget(self.btn_edit_finding)
-        findings_layout.addLayout(findings_action_row)
 
         self.findings_table = QTableWidget(0, 3, findings_frame)
         self.findings_table.setHorizontalHeaderLabels(["节点号", "检验等级", "检验结论"])
@@ -362,12 +422,18 @@ class HistoryEventsInspectionPage(BasePage):
         self.findings_table.setAlternatingRowColors(False)
         self.findings_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.findings_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.findings_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
+        self.findings_table.setEditTriggers(QAbstractItemView.DoubleClicked)
         self.findings_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.findings_table.verticalHeader().setDefaultSectionSize(
+            self.findings_table.verticalHeader().defaultSectionSize() + 10
+        )
+        self._finding_level_delegate = InspectionLevelDelegate(self.findings_table)
+        self.findings_table.setItemDelegateForColumn(INSPECTION_LEVEL_COLUMN, self._finding_level_delegate)
         self.findings_table.setMinimumHeight(170)
         self.findings_table.itemChanged.connect(self._on_finding_item_changed)
         apply_docman_table_style(self.findings_table)
         findings_layout.addWidget(self.findings_table, 1)
+        findings_layout.addLayout(findings_action_row)
         right_layout.addWidget(findings_frame, 4)
 
         self._selected_project: dict | None = None
@@ -406,8 +472,9 @@ class HistoryEventsInspectionPage(BasePage):
                 min-height: 30px;
                 padding: 0 10px;
                 border-radius: 4px;
-                background-color: #1677c5;
-                color: #ffffff;
+                background-color: #e8f2ff;
+                color: #12344d;
+                border: 1px solid #b9d9f4;
                 font-size: 12pt;
                 font-weight: 600;
             }
@@ -442,8 +509,9 @@ class HistoryEventsInspectionPage(BasePage):
                 background-color: #e8f2ff;
             }
             QTreeWidget#HistoryInspectionTree::item:selected {
-                background-color: #1677c5;
-                color: #ffffff;
+                background-color: #d8ebff;
+                color: #12344d;
+                border: 1px solid #7fb8e8;
             }
             QPushButton[class="DocManBlueButton"] {
                 min-height: 32px;
@@ -691,28 +759,23 @@ class HistoryEventsInspectionPage(BasePage):
         self.findings_table.setRowCount(len(rows))
         for row, info in enumerate(rows):
             self._set_finding_text_item(row, 0, str(info.get("item_code") or ""))
-            self._set_risk_level_combo(row, str(info.get("risk_level") or ""))
+            self._set_finding_text_item(row, INSPECTION_LEVEL_COLUMN, str(info.get("risk_level") or ""))
             self._set_finding_text_item(row, 2, str(info.get("conclusion") or ""))
         self._loading_findings = False
 
     def _set_finding_text_item(self, row: int, col: int, text: str) -> None:
+        if col == INSPECTION_LEVEL_COLUMN:
+            text = normalize_inspection_level(text)
         item = QTableWidgetItem(text)
         item.setTextAlignment(Qt.AlignCenter)
+        if col == INSPECTION_LEVEL_COLUMN:
+            font = item.font()
+            font.setPointSize(max(font.pointSize(), 14))
+            item.setFont(font)
         item.setToolTip(item.text())
         self.findings_table.setItem(row, col, item)
 
-    def _set_risk_level_combo(self, row: int, value: str = "") -> None:
-        combo = QComboBox(self.findings_table)
-        combo.addItems(["Ⅰ", "Ⅱ", "Ⅲ", "Ⅳ"])
-        index = combo.findText(str(value or "").strip())
-        combo.setCurrentIndex(index if index >= 0 else 0)
-        combo.currentTextChanged.connect(lambda _text: self._on_finding_combo_changed())
-        self.findings_table.setCellWidget(row, 1, combo)
-
     def _finding_cell_text(self, row: int, col: int) -> str:
-        widget = self.findings_table.cellWidget(row, col)
-        if isinstance(widget, QComboBox):
-            return widget.currentText().strip()
         item = self.findings_table.item(row, col)
         return item.text().strip() if item else ""
 
@@ -744,7 +807,7 @@ class HistoryEventsInspectionPage(BasePage):
         row = self.findings_table.rowCount()
         self.findings_table.insertRow(row)
         self._set_finding_text_item(row, 0, "")
-        self._set_risk_level_combo(row, "Ⅰ")
+        self._set_finding_text_item(row, INSPECTION_LEVEL_COLUMN, "Ⅰ")
         self._set_finding_text_item(row, 2, "")
         self._loading_findings = False
         self._save_findings()
@@ -780,17 +843,12 @@ class HistoryEventsInspectionPage(BasePage):
         result = dialog.get_values()
         self._loading_findings = True
         self._set_finding_text_item(row, 0, result["item_code"])
-        self._set_risk_level_combo(row, result["risk_level"])
+        self._set_finding_text_item(row, INSPECTION_LEVEL_COLUMN, result["risk_level"])
         self._set_finding_text_item(row, 2, result["conclusion"])
         self._loading_findings = False
         self._save_findings()
 
     def _on_finding_item_changed(self, _item: QTableWidgetItem) -> None:
-        if self._loading_findings:
-            return
-        self._save_findings()
-
-    def _on_finding_combo_changed(self) -> None:
         if self._loading_findings:
             return
         self._save_findings()

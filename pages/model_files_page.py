@@ -455,8 +455,9 @@ class ModelFilesDocsWidget(QWidget):
                 color: #0f5ea5;
             }
             QPushButton[class="ModelFileNavButton"][selected="true"] {
-                background-color: #1677c5;
-                color: #ffffff;
+                background-color: #d8ebff;
+                color: #12344d;
+                border: 1px solid #7fb8e8;
                 font-weight: 700;
             }
             QTreeWidget#ModelFileTree {
@@ -474,8 +475,9 @@ class ModelFilesDocsWidget(QWidget):
                 background-color: #e8f2ff;
             }
             QTreeWidget#ModelFileTree::item:selected {
-                background-color: #1677c5;
-                color: #ffffff;
+                background-color: #d8ebff;
+                color: #12344d;
+                border: 1px solid #7fb8e8;
             }
             """
         )
