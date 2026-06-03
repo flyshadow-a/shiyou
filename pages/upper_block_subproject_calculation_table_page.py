@@ -28,6 +28,41 @@ def _main_center_writeback_column(source_col: Optional[int]) -> int:
     return 8 if source_col == 8 else 9
 
 
+def _primary_group_title(source_col: Optional[int]) -> str:
+    return "干重量重心" if source_col == 8 else "操作工况重量重心"
+
+
+def build_row_scoped_phases(
+    source_row: int,
+    source_row_data: Dict[int, str],
+    *,
+    data_start_row: int = 2,
+) -> List[Phase]:
+    data_index = max(0, source_row - data_start_row)
+    project_name = str((source_row_data or {}).get(1) or "").strip()
+    if data_index == 0:
+        label = f"{project_name or '原设计'}\n(详细设计或称重)"
+        return [Phase("build", label)]
+    return [Phase(f"rebuild_{data_index}", project_name or f"改造{data_index}")]
+
+
+def _upper_block_writeback_values(
+    *,
+    source_col: Optional[int],
+    op_weight: str,
+    op_center: str,
+) -> Dict[int, str]:
+    if source_col == 8:
+        return {
+            4: op_weight,
+            8: op_center,
+        }
+    return {
+        5: op_weight,
+        9: op_center,
+    }
+
+
 class UpperBlockSubprojectCalculationTablePage(BasePage):
     """
     11列结构（与你确认一致）：
@@ -79,6 +114,7 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
             Phase("rebuild_1", "改造1"),
             Phase("rebuild_2", "改造2"),
         ]
+        self.primary_group_title = _primary_group_title(self.source_col)
 
         # (分项名称, 默认操作系数, 默认极端系数)
         self.build_items: List[Tuple[str, str, str]] = [
@@ -106,6 +142,13 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         self.source_row = source_row
         self.source_col = source_col
         self.source_row_data = source_row_data or {}
+        self.phases = build_row_scoped_phases(source_row, self.source_row_data)
+        self.primary_group_title = _primary_group_title(source_col)
+        self._phase_total_row = {}
+        self._grand_total_row = None
+        self.table.clearSpans()
+        self.table.clearContents()
+        self._fill_skeleton()
         self._recalc_all()
 
     def get_table_data(self) -> dict:
@@ -227,7 +270,7 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         self._set_span_item(0, self.COL_ITEM,  3, 1, "日常作业", bg=bg_header)
         self._set_span_item(0, self.COL_COEF,  3, 1, "系数\n(操作/极端)", bg=bg_header)
 
-        self._set_span_item(0, self.COL_OP_W, 1, 4, "操作工况重量重心", bg=bg_header)
+        self._set_span_item(0, self.COL_OP_W, 1, 4, self.primary_group_title, bg=bg_header)
         self._set_span_item(0, self.COL_EX_W, 1, 4, "极端工况重量重心", bg=bg_header)
 
         self._set_span_item(1, self.COL_OP_W, 2, 1, "重量(t)", bg=bg_header)
@@ -368,10 +411,11 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
             "source_row": self.source_row,
             "source_col": self.source_col,
             "table_data": self.get_table_data(), # 必须导出明细数据
-            "write_back": {
-                5: op_w,
-                _main_center_writeback_column(self.source_col): f"{op_x},{op_y},{op_z}",
-            }
+            "write_back": _upper_block_writeback_values(
+                source_col=self.source_col,
+                op_weight=op_w,
+                op_center=f"{op_x},{op_y},{op_z}",
+            ),
         }
         self.saved.emit(payload)
         QMessageBox.information(self, "保存", "计算结果已回填。")
