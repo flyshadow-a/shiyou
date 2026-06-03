@@ -22,7 +22,7 @@ from core.app_paths import external_path, first_existing_path
 from pages.hover_tip_table import HoverTipTable
 from core.base_page import BasePage
 from services.inspection_business_db_adapter import (
-    list_facility_profiles,
+    load_platform_summary_snapshot,
     load_platform_load_information_items,
     save_platform_load_summary_snapshot,
 )
@@ -293,9 +293,9 @@ class SummaryInformationTablePage(BasePage):
         profiles = self._profiles_from_open_file_summary_page()
         if profiles is None:
             try:
-                profiles = list_facility_profiles()
+                profiles = self._profiles_from_saved_platform_summary_snapshot()
             except Exception as exc:
-                QMessageBox.warning(self, "读取失败", f"读取平台档案数据库失败：\n{exc}")
+                QMessageBox.warning(self, "读取失败", f"读取平台汇总信息快照失败：\n{exc}")
                 profiles = []
 
         rows = []
@@ -322,6 +322,49 @@ class SummaryInformationTablePage(BasePage):
         if isinstance(session_cache, list):
             return session_cache
         return None
+
+    def _profiles_from_saved_platform_summary_snapshot(self) -> List[Dict[str, Any]]:
+        snapshot = load_platform_summary_snapshot(snapshot_key="latest")
+        if not snapshot:
+            return []
+
+        columns = [str(col or "").strip() for col in (snapshot.get("columns") or [])]
+        rows = snapshot.get("rows") or []
+        if not columns or not rows:
+            return []
+
+        profiles: List[Dict[str, Any]] = []
+        for row in rows:
+            values = list(row) if isinstance(row, list) else []
+            source = {
+                columns[index]: str(values[index] or "").strip()
+                for index in range(min(len(columns), len(values)))
+            }
+            profile = {
+                "facility_code": self._snapshot_value(source, ["设施编码", "设施编号", "平台编码", "平台编号", "编码"]),
+                "facility_name": self._snapshot_value(source, ["设施名称", "平台名称"]),
+                "branch": self._snapshot_value(source, ["分公司", "所属分公司"]),
+                "op_company": self._snapshot_value(
+                    source,
+                    ["作业公司", "所属作业单元", "所属作业公司", "作业单元", "作业单位"],
+                ),
+                "oilfield": self._snapshot_value(source, ["油气田", "所属油（气）田", "所属油气田"]),
+                "facility_type": self._snapshot_value(source, ["设施类型", "平台类型"]),
+                "category": self._snapshot_value(source, ["分类", "平台分类"]),
+                "start_time": self._snapshot_value(source, ["投产时间", "投产日期", "投产年月"]),
+                "design_life": self._snapshot_value(source, ["设计年限", "设计寿命"]),
+            }
+            if any(str(value or "").strip() for value in profile.values()):
+                profiles.append(profile)
+        return profiles
+
+    @staticmethod
+    def _snapshot_value(source: Dict[str, str], aliases: List[str]) -> str:
+        for alias in aliases:
+            value = str(source.get(alias) or "").strip()
+            if value:
+                return value
+        return ""
 
     def _build_summary_row(self, profile: Dict[str, Any], index: int) -> List[str]:
         facility_code = str(profile.get("facility_code") or "").strip()

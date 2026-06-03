@@ -24,6 +24,10 @@ class Phase:
     label: str
 
 
+def _main_center_writeback_column(source_col: Optional[int]) -> int:
+    return 8 if source_col == 8 else 9
+
+
 class UpperBlockSubprojectCalculationTablePage(BasePage):
     """
     11列结构（与你确认一致）：
@@ -366,7 +370,7 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
             "table_data": self.get_table_data(), # 必须导出明细数据
             "write_back": {
                 5: op_w,
-                9: f"{op_x},{op_y},{op_z}",
+                _main_center_writeback_column(self.source_col): f"{op_x},{op_y},{op_z}",
             }
         }
         self.saved.emit(payload)
