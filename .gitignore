@@ -10,6 +10,7 @@ shiyou_db/shiyou_file_storage/
 .vscode/
 build/
 dist/
+logs/
 special_strategy_runtime/
 upload/
 img_test_*/

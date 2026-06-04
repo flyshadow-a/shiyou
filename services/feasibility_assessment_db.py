@@ -1,10 +1,33 @@
 from __future__ import annotations
 
+from threading import RLock
 from typing import Any
 
 from sqlalchemy import text
 
 from shiyou_db.database import build_engine_from_url
+
+_SCHEMA_ENSURE_LOCK = RLock()
+_SCHEMA_ENSURED: set[tuple[int, str]] = set()
+
+
+def _schema_cache_key(conn, schema_key: str) -> tuple[int, str]:
+    return (id(conn.engine), schema_key)
+
+
+def _schema_already_ensured(conn, schema_key: str) -> bool:
+    with _SCHEMA_ENSURE_LOCK:
+        return _schema_cache_key(conn, schema_key) in _SCHEMA_ENSURED
+
+
+def _mark_schema_ensured(conn, schema_key: str) -> None:
+    with _SCHEMA_ENSURE_LOCK:
+        _SCHEMA_ENSURED.add(_schema_cache_key(conn, schema_key))
+
+
+def _clear_feasibility_schema_ensure_cache_for_tests() -> None:
+    with _SCHEMA_ENSURE_LOCK:
+        _SCHEMA_ENSURED.clear()
 
 
 def _engine(mysql_url: str):
@@ -14,6 +37,10 @@ def _engine(mysql_url: str):
 
 
 def _ensure_input_tables(conn) -> None:
+    schema_key = "input_tables"
+    if _schema_already_ensured(conn, schema_key):
+        return
+
     ddl_list = [
         """
         CREATE TABLE IF NOT EXISTS well_slots (
@@ -83,6 +110,7 @@ def _ensure_input_tables(conn) -> None:
     ]
     for ddl in ddl_list:
         conn.execute(text(ddl))
+    _mark_schema_ensured(conn, schema_key)
 
 
 def replace_well_slots(

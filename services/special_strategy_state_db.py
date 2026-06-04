@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime
 from functools import lru_cache
@@ -16,6 +17,7 @@ PROJECT_PARENT = PROJECT_ROOT.parent
 REPO_DB_DIR = PROJECT_ROOT / "shiyou_db"
 LEGACY_DB_DIR = PROJECT_PARENT / "shiyou_db"
 DEFAULT_DB_CONFIG = resolve_config_path()
+_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class SpecialStrategyStateError(RuntimeError):
@@ -51,6 +53,51 @@ def is_strategy_state_db_configured(config_path: str | None = None) -> bool:
     return path.exists()
 
 
+def _validate_sql_identifier(value: str) -> str:
+    if not _SQL_IDENTIFIER_RE.fullmatch(value):
+        raise ValueError(f"Unsafe SQL identifier: {value}")
+    return value
+
+
+def _create_index_if_missing(
+    conn,
+    *,
+    table_name: str,
+    index_name: str,
+    columns: tuple[str, ...],
+) -> None:
+    table_name = _validate_sql_identifier(table_name)
+    index_name = _validate_sql_identifier(index_name)
+    safe_columns = tuple(_validate_sql_identifier(column) for column in columns)
+    if not safe_columns:
+        raise ValueError("Index columns must not be empty")
+
+    exists = conn.execute(
+        text(
+            """
+            SELECT COUNT(1)
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = :table_name
+              AND index_name = :index_name
+            """
+        ),
+        {
+            "table_name": table_name,
+            "index_name": index_name,
+        },
+    ).scalar()
+    if int(exists or 0) > 0:
+        return
+
+    conn.execute(
+        text(
+            f"CREATE INDEX {index_name} "
+            f"ON {table_name} ({', '.join(safe_columns)})"
+        )
+    )
+
+
 def ensure_strategy_run_table(config_path: str | None = None) -> None:
     engine = _get_engine(config_path)
     ddl = """
@@ -69,18 +116,19 @@ def ensure_strategy_run_table(config_path: str | None = None) -> None:
         report_generated_at DATETIME NULL
     )
     """
-    index_sql = [
-        "CREATE INDEX IF NOT EXISTS ix_special_strategy_runs_facility ON special_strategy_runs (facility_code)",
-        "CREATE INDEX IF NOT EXISTS ix_special_strategy_runs_facility_updated ON special_strategy_runs (facility_code, updated_at)",
+    index_specs = [
+        ("ix_special_strategy_runs_facility", ("facility_code",)),
+        ("ix_special_strategy_runs_facility_updated", ("facility_code", "updated_at")),
     ]
     with engine.begin() as conn:
         conn.execute(text(ddl))
-        for sql in index_sql:
-            try:
-                conn.execute(text(sql))
-            except Exception:
-                # Fallback for older MySQL versions without IF NOT EXISTS on indexes.
-                pass
+        for index_name, columns in index_specs:
+            _create_index_if_missing(
+                conn,
+                table_name="special_strategy_runs",
+                index_name=index_name,
+                columns=columns,
+            )
 
 
 def ensure_strategy_result_table(config_path: str | None = None) -> None:
@@ -95,18 +143,20 @@ def ensure_strategy_result_table(config_path: str | None = None) -> None:
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
     """
-    index_sql = [
-        "CREATE INDEX IF NOT EXISTS ix_special_strategy_result_facility ON special_strategy_result_snapshots (facility_code)",
-        "CREATE INDEX IF NOT EXISTS ix_special_strategy_result_facility_updated ON special_strategy_result_snapshots (facility_code, updated_at)",
-        "CREATE INDEX IF NOT EXISTS ix_special_strategy_result_run_id ON special_strategy_result_snapshots (run_id)",
+    index_specs = [
+        ("ix_special_strategy_result_facility", ("facility_code",)),
+        ("ix_special_strategy_result_facility_updated", ("facility_code", "updated_at")),
+        ("ix_special_strategy_result_run_id", ("run_id",)),
     ]
     with engine.begin() as conn:
         conn.execute(text(ddl))
-        for sql in index_sql:
-            try:
-                conn.execute(text(sql))
-            except Exception:
-                pass
+        for index_name, columns in index_specs:
+            _create_index_if_missing(
+                conn,
+                table_name="special_strategy_result_snapshots",
+                index_name=index_name,
+                columns=columns,
+            )
 
 
 def _json_dumps(value: Any) -> str | None:
@@ -403,19 +453,20 @@ def ensure_strategy_risk_image_table(config_path: str | None = None) -> None:
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
     """
-    index_sql = [
-        "CREATE INDEX IF NOT EXISTS ix_ss_risk_images_facility ON special_strategy_risk_images (facility_code)",
-        "CREATE INDEX IF NOT EXISTS ix_ss_risk_images_run ON special_strategy_risk_images (run_id)",
-        "CREATE INDEX IF NOT EXISTS ix_ss_risk_images_page ON special_strategy_risk_images (page_code)",
+    index_specs = [
+        ("ix_ss_risk_images_facility", ("facility_code",)),
+        ("ix_ss_risk_images_run", ("run_id",)),
+        ("ix_ss_risk_images_page", ("page_code",)),
     ]
     with engine.begin() as conn:
         conn.execute(text(ddl))
-        for sql in index_sql:
-            try:
-                conn.execute(text(sql))
-            except Exception:
-                # 兼容不支持 CREATE INDEX IF NOT EXISTS 的 MySQL 版本。
-                pass
+        for index_name, columns in index_specs:
+            _create_index_if_missing(
+                conn,
+                table_name="special_strategy_risk_images",
+                index_name=index_name,
+                columns=columns,
+            )
 
 
 def save_strategy_risk_image(

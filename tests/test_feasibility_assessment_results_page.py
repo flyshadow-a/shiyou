@@ -404,6 +404,57 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         self.assertEqual("OL12", table.item(3, 4).text())
         self.assertEqual("2.42", table.item(3, 8).text())
 
+    def test_fill_detail_tables_from_analysis_defers_non_current_tabs(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        tab_names = list(FeasibilityAssessmentResultsPage.DETAIL_HEADERS.keys())
+        page.current_tab = tab_names[0]
+        page._pile_capacity_input_warning_shown = False
+
+        rendered = []
+        deferred = []
+
+        def record_standard(tab_name, rows):
+            rendered.append(("standard", tab_name, rows))
+
+        def record_pile(tab_name, rows):
+            rendered.append(("pile", tab_name, rows))
+
+        page._fill_standard_detail_table = record_standard
+        page._fill_pile_capacity_detail_table = record_pile
+        page._sync_pile_capacity_head_column_width = lambda: rendered.append(("sync",))
+
+        results = {
+            "member_group_summary": {
+                "rows": [{"member": "M1", "unity_check": 0.8, "cond": "OL1"}],
+            },
+            "joint_can_summary": {
+                "rows": [{"joint": "J1", "design_load_uc": 0.7, "design_strn_uc": 0.9, "load_case": "OL2"}],
+            },
+            "pile_group_summary": {
+                "rows": [{"pile_head_id": "P1", "distance_from_pilehead": 1.2, "maximum_unity_check": 0.6, "critical_load_case": "OL3"}],
+            },
+            "pile_axial_capacity_summary": {
+                "operation_table_rows": [{"pile_head_id": "P1"}],
+                "extreme_table_rows": [{"pile_head_id": "P2"}],
+            },
+        }
+
+        with patch(
+            "pages.feasibility_assessment_results_page.QTimer.singleShot",
+            side_effect=lambda _delay, callback: deferred.append(callback),
+        ):
+            page._fill_detail_tables_from_analysis(results)
+
+        self.assertEqual([("standard", tab_names[0], rendered[0][2])], rendered)
+        self.assertEqual(4, len(deferred))
+
+        for callback in deferred:
+            callback()
+
+        rendered_tabs = [item[1] for item in rendered if item[0] in {"standard", "pile"}]
+        self.assertEqual(tab_names, rendered_tabs)
+        self.assertEqual(("sync",), rendered[-1])
+
     def test_pile_capacity_empty_cells_display_dash_and_export_dash(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
         page.HDR_BG = FeasibilityAssessmentResultsPage.HDR_BG
@@ -470,6 +521,7 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         page._analysis_results = {}
         page._get_current_job_factor_path = lambda: "factor-path"
         page._get_wordtemplate_project_root = lambda: PROJECT_ROOT / "pages" / "output_feasibility_analysis_report"
+        page._load_pile_capacity_input_rows_for_analysis = lambda: ([{"pile_head_id": "P1"}], "")
 
         with patch("pages.feasibility_assessment_results_page.QThread") as thread_cls, patch(
             "pages.feasibility_assessment_results_page.AnalysisResultsWorker"
@@ -478,7 +530,12 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
             worker = worker_cls.return_value
             page.start_analysis_results_loading()
 
-        worker_cls.assert_called_once_with(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report", "factor-path")
+        worker_cls.assert_called_once_with(
+            PROJECT_ROOT / "pages" / "output_feasibility_analysis_report",
+            "factor-path",
+            [{"pile_head_id": "P1"}],
+            "",
+        )
         worker.moveToThread.assert_called_once_with(thread)
         thread.start.assert_called_once()
 

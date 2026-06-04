@@ -4,6 +4,7 @@
 import sys
 import os
 import ctypes
+import threading
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QFontDatabase, QColor, QBrush
@@ -153,7 +154,9 @@ class MainWindow(QMainWindow):
         self.btn_login: QPushButton | None = None
         self.current_platform_label: QLabel | None = None
         self.current_platform_font_ratio: float = 0.0125
+        self._startup_preheat_started = False
         self.init_ui()
+        QTimer.singleShot(1200, self._schedule_startup_preheat)
 
     def require_login(self) -> bool:
         if self.logged_in and self.session is not None:
@@ -362,6 +365,33 @@ class MainWindow(QMainWindow):
         self.open_home_tab()
 
     # ================== 头部 ================== #
+    def _schedule_startup_preheat(self) -> None:
+        if self._startup_preheat_started:
+            return
+        self._startup_preheat_started = True
+
+        def worker() -> None:
+            try:
+                from services.preheat_scheduler import PreheatTask, run_preheat_tasks
+                from services.platform_load_preheat import preheat_platform_load_data
+                from pages.oilfield_water_level_page import preheat_oilfield_top_data
+
+                run_preheat_tasks(
+                    [
+                        PreheatTask("oilfield_top_data", preheat_oilfield_top_data),
+                        PreheatTask("platform_load_data", preheat_platform_load_data),
+                    ],
+                    pause_seconds=0.2,
+                )
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=worker,
+            name="startup-preheat-queue",
+            daemon=True,
+        ).start()
+
     def create_header(self) -> QWidget:
         header = QFrame()
         header.setStyleSheet("""

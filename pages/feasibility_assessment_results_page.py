@@ -963,15 +963,21 @@ class FeasibilityAssessmentResultsPage(BasePage):
             return float("-inf")
 
     def _fill_summary_table_from_analysis(self, analysis_summary: dict) -> None:
+        old_updates_enabled = self.tbl_summary.updatesEnabled()
+        self.tbl_summary.setUpdatesEnabled(False)
         rows = list((analysis_summary or {}).get("items", []))
-        for index, item in enumerate(rows, start=2):
-            if index >= self.tbl_summary.rowCount():
-                break
-            self._set_cell(self.tbl_summary, index, 0, self._display_table_value(item.get("check_item", "")), bg=self.HDR_BG, bold=False, align_center=False, editable=False)
-            self._set_cell(self.tbl_summary, index, 1, self._display_table_value(item.get("position", "")), editable=False)
-            self._set_cell(self.tbl_summary, index, 2, self._display_table_value(self._format_analysis_table_value(item.get("value", ""))), editable=False)
-            self._set_cell(self.tbl_summary, index, 3, self._display_table_value(item.get("case", "")), editable=False)
-            self._set_cell(self.tbl_summary, index, 4, self._display_table_value(item.get("is_pass", "")), editable=False)
+        try:
+            for index, item in enumerate(rows, start=2):
+                if index >= self.tbl_summary.rowCount():
+                    break
+                self._set_cell(self.tbl_summary, index, 0, self._display_table_value(item.get("check_item", "")), bg=self.HDR_BG, bold=False, align_center=False, editable=False)
+                self._set_cell(self.tbl_summary, index, 1, self._display_table_value(item.get("position", "")), editable=False)
+                self._set_cell(self.tbl_summary, index, 2, self._display_table_value(self._format_analysis_table_value(item.get("value", ""))), editable=False)
+                self._set_cell(self.tbl_summary, index, 3, self._display_table_value(item.get("case", "")), editable=False)
+                self._set_cell(self.tbl_summary, index, 4, self._display_table_value(item.get("is_pass", "")), editable=False)
+        finally:
+            self.tbl_summary.setUpdatesEnabled(old_updates_enabled)
+            self.tbl_summary.viewport().update()
 
     def _render_standard_detail_rows(self, table: QTableWidget, rows: List[List[str]]) -> None:
         display_rows = self._limited_detail_rows(rows)
@@ -1094,7 +1100,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             self._set_cell(self.tbl_summary, row, 3, "-", editable=False)
             self._set_cell(self.tbl_summary, row, 4, "-", editable=False)
 
-    def _fill_detail_tables_from_analysis(self, results: dict) -> None:
+    def _build_detail_render_jobs(self, results: dict) -> List[Tuple[str, str, list]]:
         member_rows = []
         member_source_rows = sorted(
             results.get("member_group_summary", {}).get("rows", []),
@@ -1110,7 +1116,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 str(row.get("cond", "")),
                 self._is_pass_text_for_uc(uc),
             ])
-        self._fill_standard_detail_table("构件", member_rows)
 
         joint_rows = []
         joint_source_rows = sorted(
@@ -1130,7 +1135,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 str(row.get("load_case", "")),
                 self._is_pass_text_for_uc(pass_value),
             ])
-        self._fill_standard_detail_table("节点冲剪", joint_rows)
 
         pile_rows = []
         pile_source_rows = sorted(
@@ -1148,7 +1152,62 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 str(row.get("critical_load_case", "")),
                 self._is_pass_text_for_uc(uc),
             ])
-        self._fill_standard_detail_table("桩应力", pile_rows)
+        pile_axial = results.get("pile_axial_capacity_summary", {})
+        return [
+            ("standard", "构件", member_rows),
+            ("standard", "节点冲剪", joint_rows),
+            ("standard", "桩应力", pile_rows),
+            ("pile", "操作工况桩基承载力", list(pile_axial.get("operation_table_rows", []))),
+            ("pile", "极端工况桩基承载力", list(pile_axial.get("extreme_table_rows", []))),
+        ]
+
+    def _render_detail_job(self, job: Tuple[str, str, list]) -> None:
+        kind, tab_name, rows = job
+        detail_tables = self.__dict__.get("detail_tables", {})
+        table = detail_tables.get(tab_name) if isinstance(detail_tables, dict) else None
+        old_updates_enabled = None
+        if table is not None:
+            old_updates_enabled = table.updatesEnabled()
+            table.setUpdatesEnabled(False)
+        try:
+            if kind == "pile":
+                self._fill_pile_capacity_detail_table(tab_name, rows)
+            else:
+                self._fill_standard_detail_table(tab_name, rows)
+        finally:
+            if table is not None and old_updates_enabled is not None:
+                table.setUpdatesEnabled(old_updates_enabled)
+                table.viewport().update()
+
+    def _render_deferred_detail_job(self, job: Tuple[str, str, list], *, sync_width: bool = False) -> None:
+        self._render_detail_job(job)
+        if sync_width:
+            self._sync_pile_capacity_head_column_width()
+
+    def _schedule_detail_render_jobs(self, jobs: List[Tuple[str, str, list]]) -> None:
+        current_tab = str(getattr(self, "current_tab", "") or "")
+        current_jobs = [job for job in jobs if job[1] == current_tab]
+        deferred_jobs = [job for job in jobs if job[1] != current_tab]
+
+        for job in current_jobs:
+            self._render_detail_job(job)
+
+        if not deferred_jobs:
+            self._sync_pile_capacity_head_column_width()
+            return
+
+        for index, job in enumerate(deferred_jobs):
+            is_last = index == len(deferred_jobs) - 1
+            QTimer.singleShot(
+                10 * (index + 1),
+                lambda current_job=job, sync_width=is_last: self._render_deferred_detail_job(
+                    current_job,
+                    sync_width=sync_width,
+                ),
+            )
+
+    def _fill_detail_tables_from_analysis(self, results: dict) -> None:
+        jobs = self._build_detail_render_jobs(results)
 
         pile_capacity_message = results.get("pile_capacity_input_error")
         if pile_capacity_message:
@@ -1159,10 +1218,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 QMessageBox.warning(self, "桩基信息不完整", str(pile_capacity_message))
             return
 
-        pile_axial = results.get("pile_axial_capacity_summary", {})
-        self._fill_pile_capacity_detail_table("操作工况桩基承载力", list(pile_axial.get("operation_table_rows", [])))
-        self._fill_pile_capacity_detail_table("极端工况桩基承载力", list(pile_axial.get("extreme_table_rows", [])))
-        self._sync_pile_capacity_head_column_width()
+        self._schedule_detail_render_jobs(jobs)
 
     def start_analysis_results_loading(self) -> None:
         if self._analysis_thread is not None and self._analysis_thread.isRunning():

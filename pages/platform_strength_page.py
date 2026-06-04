@@ -10,7 +10,7 @@ from pyvistaqt import QtInteractor
 
 from typing import Any, Dict, List, Tuple, Optional
 
-from PyQt5.QtCore import Qt, QRectF, QEvent, QTimer
+from PyQt5.QtCore import QObject, Qt, QRectF, QEvent, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -27,6 +27,8 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QGraphicsView,
     QGraphicsScene, QMessageBox, QPushButton, QHeaderView, QSlider, QDialog,
+    QApplication,
+    QProgressDialog,
 )
 
 from core.app_paths import first_existing_path
@@ -56,6 +58,7 @@ from services.platform_strength_db import (
     save_horizontal_levels,
     save_structure_model_info,
 )
+from services.platform_strength_quick_assessment import run_quick_assessment_preparation
 
 from pages.sacs_import_service import import_model_bundle_to_db
 
@@ -77,6 +80,22 @@ try:
         vtkLogger.SetStderrVerbosity(vtkLogger.VERBOSITY_OFF)
 except Exception:
     pass
+
+
+class QuickAssessmentPreparationWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, payload: dict[str, Any]):
+        super().__init__()
+        self._payload = dict(payload)
+
+    def run(self) -> None:
+        try:
+            self.finished.emit(run_quick_assessment_preparation(self._payload))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
 
 class PyVistaSacsView(QFrame):
     COLOR_SCHEME = {
@@ -573,6 +592,10 @@ class PlatformStrengthPage(BasePage):
         self._overall_export_seq = 0
         self._last_saved_overall_image_key = ""
         self._is_closing = False
+        self._quick_assessment_thread: QThread | None = None
+        self._quick_assessment_worker: QuickAssessmentPreparationWorker | None = None
+        self._quick_assessment_progress: QProgressDialog | None = None
+        self._quick_assessment_context: dict[str, Any] = {}
 
         self._build_ui()
         self._capture_default_strength_env_tables()
@@ -2251,14 +2274,12 @@ class PlatformStrengthPage(BasePage):
             self.edt_workpoint.editingFinished.connect(self._autoload_inp_to_view)
 
     def on_quick_evaluate(self):
+        if self._quick_assessment_thread is not None and self._quick_assessment_thread.isRunning():
+            QMessageBox.information(self, "提示", "快速评估准备中，请稍候。")
+            return
+
         facility_code = self._get_top_value("facility_code") or "XXXX"
         title = f"{facility_code}平台强度/改造可行性评估"
-
-        try:
-            self._save_strength_env_tables()
-        except Exception as e:
-            QMessageBox.critical(self, "保存失败", f"结构强度环境参数保存失败：\n{e}")
-            return
 
         # 当前页面动态水平层高程
         levels = self._compute_horizontal_levels()
@@ -2275,12 +2296,126 @@ class PlatformStrengthPage(BasePage):
 
         try:
             overall_model_image_path = self._export_overall_model_image(facility_code)
-
-            # 跳转前先把当前模型导入数据库
-            job_name = self._prepare_current_model_job(model_path, facility_code)
         except Exception as e:
-            QMessageBox.critical(self, "模型导入失败", f"导入当前 sacinp 到数据库失败：\n{e}")
+            QMessageBox.critical(self, "总图导出失败", f"导出当前三维总图失败：\n{e}")
             return
+
+        try:
+            payload = self._build_quick_assessment_payload(facility_code, model_path)
+        except Exception as e:
+            QMessageBox.critical(self, "准备失败", f"快速评估准备参数生成失败：\n{e}")
+            return
+
+        context = {
+            "facility_code": facility_code,
+            "title": title,
+            "elevations": elevations,
+            "overall_model_image_path": overall_model_image_path,
+            "env_branch": self._get_top_value("branch"),
+            "env_op_company": self._get_top_value("op_company"),
+            "env_oilfield": self._get_top_value("oilfield"),
+            "mysql_url": payload["mysql_url"],
+        }
+        self._start_quick_assessment_worker(payload, context)
+
+    def _collect_quick_assessment_splash_items(self) -> List[Dict[str, object]]:
+        return [{
+            "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 0)),
+            "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 1)),
+            "corrosion_allowance_mm_per_y": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 2)),
+            "sort_order": 1,
+        }]
+
+    def _collect_quick_assessment_marine_items(self) -> List[Dict[str, object]]:
+        items: List[Dict[str, object]] = []
+        density_text = self._table_text(self.tbl_marine, 4, 3)
+        density_value = self._parse_optional_float(density_text)
+        for i in range(9):
+            col = 3 + i
+            items.append({
+                "layer_no": i + 1,
+                "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 1, col)),
+                "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 2, col)),
+                "thickness_mm": self._parse_optional_float(self._table_text(self.tbl_marine, 3, col)),
+                "density_t_per_m3": density_value,
+                "sort_order": i + 1,
+            })
+        return items
+
+    def _build_quick_assessment_payload(self, facility_code: str, model_path: str) -> dict[str, Any]:
+        return {
+            "mysql_url": self._get_mysql_url(),
+            "facility_code": facility_code,
+            "branch": self._get_top_value("branch"),
+            "op_company": self._get_top_value("op_company"),
+            "oilfield": self._get_top_value("oilfield"),
+            "model_path": model_path,
+            "sea_file": self._find_matching_sea_file(model_path, facility_code) or "",
+            "workpoint": self._get_workpoint_value(),
+            "workpoint_m": self._parse_optional_float(
+                self.edt_workpoint.text() if hasattr(self, "edt_workpoint") else ""
+            ),
+            "mud_level": self._parse_optional_float(
+                self.edt_mud_level.text() if hasattr(self, "edt_mud_level") else ""
+            ),
+            "level_threshold": self._get_level_threshold(),
+            "splash_items": self._collect_quick_assessment_splash_items(),
+            "marine_items": self._collect_quick_assessment_marine_items(),
+        }
+
+    def _start_quick_assessment_worker(self, payload: dict[str, Any], context: dict[str, Any]) -> None:
+        progress = QProgressDialog("正在准备快速评估数据，请稍候...", None, 0, 0, self)
+        progress.setWindowTitle("快速评估")
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        QApplication.processEvents()
+
+        thread = QThread(self)
+        worker = QuickAssessmentPreparationWorker(payload)
+        worker.moveToThread(thread)
+
+        self._quick_assessment_context = dict(context)
+        self._quick_assessment_progress = progress
+        self._quick_assessment_thread = thread
+        self._quick_assessment_worker = worker
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_quick_assessment_prepared)
+        worker.failed.connect(self._on_quick_assessment_prepare_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._cleanup_quick_assessment_worker)
+        thread.start()
+
+    def _close_quick_assessment_progress(self) -> None:
+        progress = self._quick_assessment_progress
+        if progress is not None:
+            progress.close()
+
+    def _cleanup_quick_assessment_worker(self) -> None:
+        thread = self._quick_assessment_thread
+        if thread is not None:
+            thread.deleteLater()
+        self._quick_assessment_thread = None
+        self._quick_assessment_worker = None
+        self._quick_assessment_progress = None
+
+    def _on_quick_assessment_prepare_failed(self, error: str) -> None:
+        self._close_quick_assessment_progress()
+        QMessageBox.critical(self, "模型导入失败", f"导入当前 sacinp 到数据库失败：\n{error}")
+
+    def _on_quick_assessment_prepared(self, result: dict) -> None:
+        self._close_quick_assessment_progress()
+        context = dict(self._quick_assessment_context)
+        facility_code = str(context.get("facility_code") or "XXXX")
+        title = str(context.get("title") or f"{facility_code}平台强度/改造可行性评估")
+        elevations = list(context.get("elevations") or [])
+        overall_model_image_path = str(context.get("overall_model_image_path") or "")
+        job_name = str(result.get("job_name") or facility_code)
 
         mw = self.window()
         if hasattr(mw, "tab_widget"):
@@ -2298,14 +2433,14 @@ class PlatformStrengthPage(BasePage):
                 del mw.page_tab_map[key]
 
             page = FeasibilityAssessmentPage(mw, facility_code, elevations=elevations)
-            page.env_branch = self._get_top_value("branch")
-            page.env_op_company = self._get_top_value("op_company")
-            page.env_oilfield = self._get_top_value("oilfield")
+            page.env_branch = str(context.get("env_branch") or "")
+            page.env_op_company = str(context.get("env_op_company") or "")
+            page.env_oilfield = str(context.get("env_oilfield") or "")
             page.overall_model_image_path = overall_model_image_path
 
             # 保证保存按钮和后续创建新模型都用同一个 job_name / mysql_url
             page.job_name = job_name
-            page.mysql_url = self._get_mysql_url()
+            page.mysql_url = str(context.get("mysql_url") or "")
 
             page.model_files_root = self.model_files_root
 

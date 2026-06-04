@@ -32,7 +32,7 @@ from PyQt5.QtWidgets import (
     QHeaderView, QToolTip, QFileDialog, QGridLayout, QMenu, QSizePolicy, QFrame,
     QButtonGroup, QRadioButton, QCheckBox, QProgressDialog,
 )
-from PyQt5.QtCore import Qt, QEvent, QObject, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QEvent, QObject, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics
 
 from core.app_paths import existing_dirs, external_path, first_existing_path
@@ -47,6 +47,7 @@ from services.inspection_business_db_adapter import (
     load_platform_load_information_items,
     replace_platform_load_information_items,
 )
+import services.platform_load_preheat as platform_load_preheat
 
 # 上部组块分项目计算表页面（右键重量/重心单元格跳转编辑）
 try:
@@ -547,6 +548,24 @@ class ResultFactorReadWorker(QObject):
             self.finished.emit(self.row, self.path, values)
         except Exception as exc:
             self.failed.emit(self.row, self.path, str(exc))
+
+
+class PlatformLoadDataWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str, str)
+
+    def __init__(self, facility_code: str, defaults: Dict[str, str]):
+        super().__init__()
+        self.facility_code = facility_code
+        self.defaults = dict(defaults)
+
+    def run(self) -> None:
+        try:
+            payload = platform_load_preheat.load_platform_load_payload(self.facility_code, self.defaults)
+            platform_load_preheat.store_platform_load_data_cache(payload)
+            self.finished.emit(payload)
+        except Exception as exc:
+            self.failed.emit(self.facility_code, str(exc))
 
 def _setup_chinese_matplotlib_font():
     """为 matplotlib 设置中文字体（避免标题/坐标轴中文变成方块）。
@@ -1288,10 +1307,15 @@ class PlatformLoadInformationPage(BasePage):
         self._result_factor_thread: Optional[QThread] = None
         self._result_factor_worker: Optional[ResultFactorReadWorker] = None
         self._result_factor_progress: Optional[QProgressDialog] = None
+        self._platform_load_thread: Optional[QThread] = None
+        self._platform_load_worker: Optional[PlatformLoadDataWorker] = None
+        self._pending_platform_load_request: Optional[Tuple[str, Dict[str, str]]] = None
+        self._is_platform_data_loading = False
         self._switching_platform = False
         self._build_ui()
         self._ensure_demo_files()
-        self._load_current_platform_data()
+        self._show_platform_data_loading_placeholder()
+        self._start_async_current_platform_load()
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -1437,17 +1461,16 @@ class PlatformLoadInformationPage(BasePage):
 
         top_layout.setAlignment(Qt.AlignTop)
         platform_defaults = default_platform()
-        profile = load_facility_profile(platform_defaults["facility_code"], defaults=platform_defaults)
         fallback_defaults = {
-            "分公司": str(profile.get("branch") or self.TOP_FIELDS[0][1]),
-            "作业公司": str(profile.get("op_company") or self.TOP_FIELDS[1][1]),
-            "油气田": str(profile.get("oilfield") or self.TOP_FIELDS[2][1]),
-            "设施编码": str(profile.get("facility_code") or self.TOP_FIELDS[3][1]),
-            "设施名称": str(profile.get("facility_name") or self.TOP_FIELDS[4][1]),
-            "设施类型": str(profile.get("facility_type") or self.TOP_FIELDS[5][1]),
-            "分类": str(profile.get("category") or self.TOP_FIELDS[6][1]),
-            "投产时间": str(profile.get("start_time") or self.TOP_FIELDS[7][1]),
-            "设计年限": str(profile.get("design_life") or self.TOP_FIELDS[8][1]),
+            "分公司": str(platform_defaults.get("branch") or self.TOP_FIELDS[0][1]),
+            "作业公司": str(platform_defaults.get("op_company") or self.TOP_FIELDS[1][1]),
+            "油气田": str(platform_defaults.get("oilfield") or self.TOP_FIELDS[2][1]),
+            "设施编码": str(platform_defaults.get("facility_code") or self.TOP_FIELDS[3][1]),
+            "设施名称": str(platform_defaults.get("facility_name") or self.TOP_FIELDS[4][1]),
+            "设施类型": str(platform_defaults.get("facility_type") or self.TOP_FIELDS[5][1]),
+            "分类": str(platform_defaults.get("category") or self.TOP_FIELDS[6][1]),
+            "投产时间": str(platform_defaults.get("start_time") or self.TOP_FIELDS[7][1]),
+            "设计年限": str(platform_defaults.get("design_life") or self.TOP_FIELDS[8][1]),
         }
         stretch_map = {
             "branch": 1,
@@ -1722,28 +1745,169 @@ class PlatformLoadInformationPage(BasePage):
         if not hasattr(self, "dropdown_bar"):
             return
         platform = sync_platform_dropdowns(self.dropdown_bar, changed_key=changed_key)
-        profile = load_facility_profile(
-            platform["facility_code"],
-            defaults={
-                "branch": platform["branch"],
-                "op_company": platform["op_company"],
-                "oilfield": platform["oilfield"],
-                "facility_code": platform["facility_code"],
-                "facility_name": platform["facility_name"],
-                "facility_type": platform["facility_type"],
-                "category": platform["category"],
-                "start_time": platform["start_time"],
-                "design_life": platform["design_life"],
-            },
-        )
-        self.dropdown_bar.set_options("branch", [profile["branch"]], profile["branch"])
-        self.dropdown_bar.set_options("op_company", [profile["op_company"]], profile["op_company"])
-        self.dropdown_bar.set_options("oilfield", [profile["oilfield"]], profile["oilfield"])
-        self.dropdown_bar.set_options("facility_type", [profile["facility_type"]], profile["facility_type"])
-        self.dropdown_bar.set_options("category", [profile["category"]], profile["category"])
-        self.dropdown_bar.set_options("start_time", [profile["start_time"]], profile["start_time"])
-        self.dropdown_bar.set_options("design_life", [profile["design_life"]], profile["design_life"])
         self._sync_all_top_meta_values()
+        return platform
+
+    def _apply_profile_to_platform_ui(self, profile: Dict[str, object]) -> None:
+        if not hasattr(self, "dropdown_bar"):
+            return
+        current_code = self._get_top_value("设施编码").strip()
+        profile_code = str(profile.get("facility_code") or "").strip()
+        if profile_code and current_code and profile_code != current_code:
+            return
+
+        self._switching_platform = True
+        try:
+            for key in ("branch", "op_company", "oilfield", "facility_type", "category", "start_time", "design_life"):
+                value = str(profile.get(key) or "").strip()
+                if value:
+                    self.dropdown_bar.set_options(key, [value], value)
+        finally:
+            self._switching_platform = False
+        self._sync_all_top_meta_values()
+
+    def _platform_defaults_for_worker(self, facility_code: str) -> Dict[str, str]:
+        defaults = {
+            "branch": self._get_top_value("分公司"),
+            "op_company": self._get_top_value("作业公司"),
+            "oilfield": self._get_top_value("油气田"),
+            "facility_code": facility_code,
+            "facility_name": self._get_top_value("设施名称"),
+            "facility_type": self._get_top_value("设施类型"),
+            "category": self._get_top_value("分类"),
+            "start_time": self._get_top_value("投产时间"),
+            "design_life": self._get_top_value("设计年限"),
+        }
+        return {key: str(value or "") for key, value in defaults.items()}
+
+    def _set_platform_data_loading_state(self, loading: bool) -> None:
+        self._is_platform_data_loading = loading
+        for button in (getattr(self, "btn_save", None), getattr(self, "btn_export", None)):
+            if button is not None:
+                button.setEnabled(not loading)
+
+    def _show_platform_data_loading_placeholder(self) -> None:
+        row = self._blank_table_row()
+        if len(row) > 1:
+            row[1] = "正在加载平台载荷信息..."
+        self._apply_data([row])
+
+    def _is_platform_data_loading_placeholder(self) -> bool:
+        if not hasattr(self, "table"):
+            return False
+        data_start = self.DATA_START_ROW
+        data_end = self._find_data_end_row()
+        if data_end != data_start + 1:
+            return False
+        item = self.table.item(data_start, 1)
+        return bool(item and item.text().strip() == "正在加载平台载荷信息...")
+
+    def _show_platform_data_load_error(self, error: str) -> None:
+        row = self._blank_table_row()
+        if len(row) > 1:
+            row[1] = "加载失败"
+        if len(row) > 3:
+            detail = str(error or "").strip()
+            row[3] = f"平台载荷信息读取失败：{detail}" if detail else "平台载荷信息读取失败"
+        self._apply_data([row])
+
+    def _platform_data_empty_row(self, facility_code: str) -> List[str]:
+        row = self._blank_table_row()
+        code = str(facility_code or "").strip()
+        if len(row) > 1:
+            row[1] = "暂无数据"
+        if len(row) > 3:
+            row[3] = f"当前设施编码 {code} 未查询到平台载荷信息记录，请确认是否已保存或导入该设施的数据。"
+        return row
+
+    def _start_async_current_platform_load(self) -> None:
+        if not hasattr(self, "table"):
+            return
+        facility_code = self._get_top_value("设施编码").strip()
+        if not facility_code:
+            return
+        if self._apply_cached_current_platform_load(facility_code):
+            return
+        defaults = self._platform_defaults_for_worker(facility_code)
+        self._start_platform_load_worker(facility_code, defaults)
+
+    def _apply_cached_current_platform_load(self, facility_code: str) -> bool:
+        payload = platform_load_preheat.get_platform_load_data_cache(facility_code)
+        if payload is None:
+            return False
+        self._on_async_current_platform_loaded(payload)
+        return True
+
+    def _start_platform_load_worker(self, facility_code: str, defaults: Dict[str, str]) -> None:
+        if self._platform_load_thread is not None:
+            self._pending_platform_load_request = (facility_code, defaults)
+            return
+
+        self._pending_platform_load_request = None
+        self._set_platform_data_loading_state(True)
+        thread = QThread(self)
+        worker = PlatformLoadDataWorker(facility_code, defaults)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_async_current_platform_loaded)
+        worker.failed.connect(self._on_async_current_platform_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_platform_load_thread)
+
+        self._platform_load_thread = thread
+        self._platform_load_worker = worker
+        thread.start()
+
+    def _clear_platform_load_thread(self) -> None:
+        self._platform_load_thread = None
+        self._platform_load_worker = None
+        pending = self._pending_platform_load_request
+        if pending is not None:
+            self._pending_platform_load_request = None
+            facility_code, defaults = pending
+            if facility_code == self._get_top_value("设施编码").strip():
+                self._start_platform_load_worker(facility_code, defaults)
+
+    def _on_async_current_platform_loaded(self, payload: Dict[str, object]) -> None:
+        facility_code = str(payload.get("facility_code") or "").strip()
+        if facility_code != self._get_top_value("设施编码").strip():
+            self._set_platform_data_loading_state(False)
+            return
+
+        profile = payload.get("profile")
+        if isinstance(profile, dict):
+            self._apply_profile_to_platform_ui(profile)
+
+        rows = payload.get("rows")
+        table_rows = self._db_rows_to_table_rows(rows) if isinstance(rows, list) and rows else []
+        rebuild_projects = payload.get("rebuild_projects")
+        if isinstance(rebuild_projects, list) and rebuild_projects:
+            table_rows = _merge_history_rebuild_projects_into_load_rows(
+                table_rows or [self._blank_table_row()],
+                rebuild_projects,
+                column_count=len(self._columns()),
+            )
+
+        rebuild_error = str(payload.get("rebuild_error") or "").strip()
+        if rebuild_error:
+            QMessageBox.warning(
+                self,
+                "读取失败",
+                f"读取历次改造项目失败，平台载荷信息将保留已保存内容：\n{rebuild_error}",
+            )
+        self._apply_data(table_rows or [self._platform_data_empty_row(facility_code)])
+        self._set_platform_data_loading_state(False)
+
+    def _on_async_current_platform_failed(self, facility_code: str, error: str) -> None:
+        if facility_code == self._get_top_value("设施编码").strip():
+            if self._is_platform_data_loading_placeholder():
+                self._show_platform_data_load_error(error)
+            QMessageBox.warning(self, "读取失败", f"读取平台载荷信息数据库数据失败：\n{error}")
+        self._set_platform_data_loading_state(False)
 
     def _sync_all_top_meta_values(self):
         for field_cn in self.FIELD_TO_KEY.keys():
@@ -1781,13 +1945,15 @@ class PlatformLoadInformationPage(BasePage):
         """
         if key in {"branch", "op_company", "oilfield", "facility_code", "facility_name"}:
             self._sync_platform_ui(changed_key=key)
-            self._load_current_platform_data()
+            self._show_platform_data_loading_placeholder()
+            self._start_async_current_platform_load()
             return
 
         field = self.KEY_TO_FIELD.get(key, key)
         self._sync_meta_value(field, txt)
         if key == "facility_code":
-            self._load_current_platform_data()
+            self._show_platform_data_loading_placeholder()
+            self._start_async_current_platform_load()
 
     def _get_top_value(self, field: str) -> str:
         """获取顶部 DropdownBar 当前值（field 为中文表头名，如“设施编码”）。"""
@@ -2104,6 +2270,16 @@ class PlatformLoadInformationPage(BasePage):
                 return r
         return self.table.rowCount()
 
+    def _clear_data_area_artifacts(self) -> None:
+        if not hasattr(self, "table"):
+            return
+        for r in range(self.DATA_START_ROW, self.table.rowCount()):
+            for c in range(self.table.columnCount()):
+                if self.table.cellWidget(r, c) is not None:
+                    self.table.removeCellWidget(r, c)
+                if self.table.rowSpan(r, c) != 1 or self.table.columnSpan(r, c) != 1:
+                    self.table.setSpan(r, c, 1, 1)
+
     def _rebuild_row_checkbox_selectors(self, data_start: int, data_end: int):
         """在数据区每行首列放置复选框，用于批量操作。"""
         # 移除旧的 cellWidget
@@ -2211,6 +2387,7 @@ class PlatformLoadInformationPage(BasePage):
         ]
 
         try:
+            self._clear_data_area_artifacts()
             total = base_rows + len(rows) + len(explain)
             self.table.setRowCount(total)
 
@@ -3097,6 +3274,12 @@ class PlatformLoadInformationPage(BasePage):
 
         try:
             replace_platform_load_information_items(facility_code, self._collect_table_rows_for_db())
+            platform_load_preheat.store_platform_load_data_cache(
+                platform_load_preheat.load_platform_load_payload(
+                    facility_code,
+                    self._platform_defaults_for_worker(facility_code),
+                )
+            )
             self._notify_summary_pages_refresh()
             QMessageBox.information(self, "保存成功", "平台载荷信息已保存到数据库。")
         except Exception as exc:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 from collections import Counter, defaultdict
+from threading import RLock
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
@@ -20,6 +21,29 @@ from pages.sacs_storage_service import (
     stage_optional_from_same_dir,
     stage_support_files_for_job,
 )
+
+_SCHEMA_ENSURE_LOCK = RLock()
+_SCHEMA_ENSURED: set[tuple[int, str]] = set()
+
+
+def _schema_cache_key(engine, schema_key: str) -> tuple[int, str]:
+    return (id(engine), schema_key)
+
+
+def _schema_already_ensured(engine, schema_key: str) -> bool:
+    with _SCHEMA_ENSURE_LOCK:
+        return _schema_cache_key(engine, schema_key) in _SCHEMA_ENSURED
+
+
+def _mark_schema_ensured(engine, schema_key: str) -> None:
+    with _SCHEMA_ENSURE_LOCK:
+        _SCHEMA_ENSURED.add(_schema_cache_key(engine, schema_key))
+
+
+def _clear_sacs_schema_ensure_cache_for_tests() -> None:
+    with _SCHEMA_ENSURE_LOCK:
+        _SCHEMA_ENSURED.clear()
+
 # =========================
 # 通用工具
 # =========================
@@ -85,6 +109,10 @@ def normalize_spaces(s: str) -> str:
 # 建表：基础模型表
 # =========================
 def ensure_model_tables(engine) -> None:
+    schema_key = "model_tables"
+    if _schema_already_ensured(engine, schema_key):
+        return
+
     ddl_list = [
         """
         CREATE TABLE IF NOT EXISTS joints (
@@ -187,6 +215,7 @@ def ensure_model_tables(engine) -> None:
     with engine.begin() as conn:
         for ddl in ddl_list:
             conn.execute(text(ddl))
+    _mark_schema_ensured(engine, schema_key)
 
 
 def delete_model_job_data(conn, job_name: str) -> None:
@@ -211,6 +240,10 @@ def delete_model_job_data(conn, job_name: str) -> None:
 # 建表：dummy 禁连节点表
 # =========================
 def ensure_dummy_table(engine) -> None:
+    schema_key = "dummy_table"
+    if _schema_already_ensured(engine, schema_key):
+        return
+
     ddl = """
     CREATE TABLE IF NOT EXISTS forbidden_target_joints (
         id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -225,6 +258,7 @@ def ensure_dummy_table(engine) -> None:
     """
     with engine.begin() as conn:
         conn.execute(text(ddl))
+    _mark_schema_ensured(engine, schema_key)
 
 
 def delete_dummy_rows(conn, job_name: str) -> None:

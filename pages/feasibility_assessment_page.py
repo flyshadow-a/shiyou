@@ -791,7 +791,6 @@ class FeasibilityAssessmentPage(BasePage):
         col_count = table.columnCount()
         col_widths = [38] * col_count
 
-        print(f"\n=== 开始计算表格 {id(table)} 列宽 ===")
         for c in range(col_count):
             max_w = 38
             for r in range(table.rowCount()):
@@ -805,10 +804,6 @@ class FeasibilityAssessmentPage(BasePage):
                     lines = text.split('\n')
                     line_widths = [fm_cell.horizontalAdvance(line) for line in lines]
                     cell_width = max(line_widths) if line_widths else 0
-                    # 打印详细信息（针对OD/WT列）
-                    if r in (0, 1) and c in (3, 4, 5, 6):
-                        print(
-                            f"  调试: 表格 {id(table)} 行{r} 列{c} 文本='{text}' 使用字体加粗={font.bold()} 分割={lines} 行宽={line_widths} → 最大行宽={cell_width}")
                     max_w = max(max_w, cell_width + padding)
 
                 # 处理QComboBox
@@ -820,7 +815,6 @@ class FeasibilityAssessmentPage(BasePage):
 
             table.setColumnWidth(c, max_w)
             col_widths[c] = max_w
-            print(f"  列 {c} 最终宽度 = {max_w}")
 
         # 等宽分组
         if equal_width_groups:
@@ -830,7 +824,6 @@ class FeasibilityAssessmentPage(BasePage):
                     max_group_width = max(col_widths[c] for c in valid_group)
                     for c in valid_group:
                         table.setColumnWidth(c, max_group_width)
-                    print(f"  分组 {group} 最大宽度 = {max_group_width}，应用于列 {valid_group}")
 
         # 编号列统一适当加宽，避免数字过于紧凑
         if col_count > 0:
@@ -838,7 +831,6 @@ class FeasibilityAssessmentPage(BasePage):
             if table.columnWidth(0) < index_min_width:
                 table.setColumnWidth(0, index_min_width)
                 col_widths[0] = index_min_width
-                print(f"  编号列最小宽度修正: 列 0 现在 = {index_min_width}")
 
         # 对表1的OD/WT列额外增加宽度
         if hasattr(self, 'tbl1') and table is self.tbl1:
@@ -846,7 +838,6 @@ class FeasibilityAssessmentPage(BasePage):
             for col in (3, 4, 5, 6):
                 new_width = table.columnWidth(col) + extra
                 table.setColumnWidth(col, new_width)
-                print(f"  额外增加宽度: 列 {col} 现在 = {new_width}")
 
             # 垂向载荷列在小四字体下容易被压缩，设置更稳妥的最小宽度
             bold_font = QFont(table.font())
@@ -856,12 +847,9 @@ class FeasibilityAssessmentPage(BasePage):
             if table.columnWidth(7) < load_min_width:
                 table.setColumnWidth(7, load_min_width)
                 col_widths[7] = load_min_width
-                print(f"  垂向载荷列最小宽度修正: 列 7 现在 = {load_min_width}")
 
         total_width = sum(table.columnWidth(c) for c in range(col_count))
         table.setMinimumWidth(total_width)
-        print(f"表格 {id(table)} 总宽度 = {total_width}")
-        print("=== 列宽计算完成 ===\n")
 
     def _table_content_height(self, table: QTableWidget) -> int:
         return sum(table.rowHeight(r) for r in range(table.rowCount())) + table.frameWidth() * 2 + 6

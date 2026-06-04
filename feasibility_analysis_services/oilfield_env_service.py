@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from shiyou_db.database import build_engine_from_url
 from shiyou_db.runtime_db import get_mysql_url
 
 
@@ -14,7 +15,7 @@ def _create_mysql_engine(mysql_url: str | None = None):
     raw_url = (mysql_url or _default_mysql_url()).strip()
     if not raw_url:
         raise ValueError("sea_env 数据库连接未配置")
-    return create_engine(raw_url, future=True, pool_pre_ping=True)
+    return build_engine_from_url(raw_url)
 
 
 def ensure_oilfield_env_schema(mysql_url: str | None = None) -> None:
