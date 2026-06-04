@@ -60,9 +60,7 @@ from services.inspection_business_db_adapter import (
 )
 from services.file_db_adapter import (
     DOC_MAN_MODULE_CODE,
-    FileBackendError,
     is_file_db_configured,
-    load_docman_record_list,
 )
 
 # ✅ 直接复用 ConstructionDocsWidget 的文件夹布局样式
@@ -584,25 +582,21 @@ class HistoryInspectionSummaryPage(BasePage):
         if not is_file_db_configured():
             QMessageBox.information(self, "提示", "当前未配置文件数据库，无法跨分类搜索。")
             return
-        try:
-            records = load_docman_record_list([], facility_code=self.facility_code)
-        except FileBackendError as exc:
-            QMessageBox.warning(self, "搜索失败", str(exc))
-            return
-        matched = [rec for rec in records if self._record_matches_query(rec, code, name)]
         self._ensure_search_page()
         self.search_doc_widget.set_context(
-            [self.current_folder_key or "搜索结果"],
-            matched,
+            [],
+            [],
             ["未分类/其他", "其他"],
             facility_code=self.facility_code,
             overlay_from_db=False,
             hide_empty_templates=False,
-            db_list_mode=False,
+            db_list_mode=True,
             display_profile="rebuild",
             path_root_label="检测记录文件",
             display_path_segments=["搜索结果"],
-            path_hint=f"按文件编码/文件名搜索检测记录文件，共 {len(matched)} 条。",
+            path_hint="按文件编码/文件名搜索检测记录文件。",
+            document_code_query=code,
+            document_title_query=name,
         )
         self.stack.setCurrentWidget(self.pages["search"])
 
@@ -1701,6 +1695,7 @@ class HistoryInspectionSummaryPage(BasePage):
             facility_code=self.facility_code,
         )
         self._reload_database_backed_data()
+        QMessageBox.information(self, "删除成功", "删除成功")
 
     def _edit_special_event_project(self):
         project = self._selected_special_event_project()
@@ -1743,6 +1738,7 @@ class HistoryInspectionSummaryPage(BasePage):
             facility_code=self.facility_code,
         )
         self._reload_database_backed_data()
+        QMessageBox.information(self, "删除成功", "删除成功")
 
     def _edit_periodic_finding(self):
         project = self._selected_periodic_project()

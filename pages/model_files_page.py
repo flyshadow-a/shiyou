@@ -267,6 +267,7 @@ class ModelFilesDocsWidget(QWidget):
     def _build_sidebar_sections(self) -> List[Dict[str, Any]]:
         sections: List[Dict[str, Any]] = []
         for root_name, root_cfg in self.folder_tree.items():
+            sections.append({"label": root_name, "path": [root_name]})
             children = root_cfg.get("children", {}) if isinstance(root_cfg, dict) else {}
             for leaf_name, leaf_cfg in children.items():
                 if not isinstance(leaf_cfg, dict) or leaf_cfg.get("type") != "leaf":
@@ -279,8 +280,10 @@ class ModelFilesDocsWidget(QWidget):
         self._sidebar_items.clear()
         for root_name, root_cfg in self.folder_tree.items():
             root_item = QTreeWidgetItem([root_name])
-            root_item.setData(0, Qt.UserRole, None)
+            root_path = [root_name]
+            root_item.setData(0, Qt.UserRole, root_path)
             self.sidebar_tree.addTopLevelItem(root_item)
+            self._sidebar_items[root_name] = root_item
             children = root_cfg.get("children", {}) if isinstance(root_cfg, dict) else {}
             for leaf_name, leaf_cfg in children.items():
                 if not isinstance(leaf_cfg, dict) or leaf_cfg.get("type") != "leaf":
@@ -810,7 +813,8 @@ class ModelFilesDocsWidget(QWidget):
         self.row_paths_by_path.pop(path_key, None)
         self.row_db_records_by_path.pop(path_key, None)
         _records[:] = self._build_model_file_doc_records(path_key)
-        QMessageBox.information(self, "提示", f"已删除 {total} 个文件。")
+        if total:
+            QMessageBox.information(self, "删除成功", "删除成功")
 
     def _leaf_row_dir(self, path_key: str, row: int, create_dir: bool = True) -> str:
         segs = path_key.split("/") if path_key else []
@@ -821,37 +825,31 @@ class ModelFilesDocsWidget(QWidget):
         return d
     def _show_files_for_current_leaf(self):
         node = self._get_node_by_path(self.current_path)
-        if not node or node.get("type") != "leaf":
+        if not node:
             return
 
         path_key = self._current_path_key()
-        if path_key in self.doc_man_configs:
+        is_model_root = len(self.current_path) == 1 and node.get("type") == "folder"
+        is_model_leaf = node.get("type") == "leaf"
+        if is_model_root or is_model_leaf:
             self.current_leaf_key = path_key
-            if self.current_path and self.current_path[0] == "\u5f53\u524d\u6a21\u578b":
-                self.doc_man_widget.set_action_handlers(
-                    upload_handler=self._handle_model_doc_upload,
-                    new_upload_handler=self._handle_model_doc_new_upload,
-                    delete_handler=self._handle_model_doc_delete,
-                    download_handler=self._handle_model_doc_download,
-                )
-                records = self._build_model_file_doc_records(path_key)
-            else:
-                self.doc_man_widget.set_action_handlers(
-                    upload_handler=None,
-                    new_upload_handler=None,
-                    delete_handler=None,
-                    download_handler=None,
-                )
-                records = self.doc_man_records.setdefault(path_key, [])
+            self.doc_man_widget.set_action_handlers(
+                upload_handler=self._handle_model_doc_upload,
+                new_upload_handler=self._handle_model_doc_new_upload,
+                delete_handler=self._handle_model_doc_delete,
+                download_handler=self._handle_model_doc_download,
+            )
+            records = self._build_model_file_doc_records(path_key)
+            categories = self._model_categories_for_path(path_key)
             self.doc_man_widget.set_context(
                 self.current_path,
                 records,
-                self.doc_man_configs[path_key],
+                categories,
                 facility_code=self.facility_code,
-                overlay_from_db=not (self.current_path and self.current_path[0] == "\u5f53\u524d\u6a21\u578b"),
+                overlay_from_db=False,
                 hide_empty_templates=True,
-                db_list_mode=not (self.current_path and self.current_path[0] == "\u5f53\u524d\u6a21\u578b"),
-                show_work_condition=self._leaf_supports_work_condition(self.current_path),
+                db_list_mode=False,
+                show_work_condition=True,
                 display_profile="model",
                 path_root_label="模型文件",
                 display_path_segments=self.current_path,
@@ -945,6 +943,7 @@ class ModelFilesDocsWidget(QWidget):
             "remark": row.get("remark") or "",
             "record_id": row.get("id"),
             "logical_path": row.get("logical_path") or "",
+            "analysis_category": self._analysis_category_for_record("", row),
         }
 
     @staticmethod
@@ -1098,6 +1097,24 @@ class ModelFilesDocsWidget(QWidget):
         node = self._get_node_by_path(target_path)
         return bool(node and node.get("type") == "leaf" and node.get("model_key") in {"fatigue", "collapse"})
 
+    def _model_categories_for_path(self, path_key: str) -> List[str]:
+        parts = [part for part in str(path_key or "").split("/") if part]
+        if not parts:
+            return ["其他"]
+        if len(parts) >= 2:
+            categories = list(self.doc_man_configs.get("/".join(parts[:2])) or [])
+        else:
+            categories = []
+            root = parts[0]
+            children = self.folder_tree.get(root, {}).get("children", {})
+            for leaf_name in children:
+                for category in self.doc_man_configs.get(f"{root}/{leaf_name}", []):
+                    if category not in categories:
+                        categories.append(category)
+        if "其他" not in categories:
+            categories.append("其他")
+        return categories
+
     def _pick_category_option(self, categories: List[str], *keywords: str, fallback: str = "其他") -> str:
         for option in categories:
             if all(word in option for word in keywords):
@@ -1211,6 +1228,10 @@ class ModelFilesDocsWidget(QWidget):
         rec["record_id"] = result.get("id")
         rec["logical_path"] = str(result.get("logical_path") or logical_path)
         rec["work_condition"] = str(result.get("work_condition") or rec.get("work_condition") or "")
+        rec["analysis_category"] = self._analysis_category_for_record(
+            path_key,
+            {"logical_path": rec["logical_path"]},
+        )
         rec["_force_visible"] = True
 
         self.row_paths_by_path.pop(path_key, None)
@@ -1281,6 +1302,10 @@ class ModelFilesDocsWidget(QWidget):
                 "record_id": result.get("id"),
                 "logical_path": str(result.get("logical_path") or logical_path),
                 "work_condition": "",
+                "analysis_category": self._analysis_category_for_record(
+                    path_key,
+                    {"logical_path": str(result.get("logical_path") or logical_path)},
+                ),
                 "_force_visible": True,
             }
         )
@@ -1344,14 +1369,34 @@ class ModelFilesDocsWidget(QWidget):
             message += f"\n另有 {missing} 个文件不存在。"
         QMessageBox.information(self, "下载完成", message)
 
+    def _analysis_category_for_record(self, path_key: str, row: Dict[str, Any] | None = None) -> str:
+        parts = [part for part in str(path_key or "").split("/") if part]
+        if len(parts) >= 2:
+            return parts[1]
+
+        logical_path = str((row or {}).get("logical_path") or "").replace("\\", "/")
+        if "/地震分析/" in logical_path or "/地震/" in logical_path:
+            return "地震"
+        if "/疲劳分析/" in logical_path or "/疲劳/" in logical_path:
+            return "疲劳"
+        if "/倒塌分析/" in logical_path or "/倒塌/" in logical_path:
+            return "倒塌"
+        if "/其他模型/" in logical_path or "/其他/" in logical_path:
+            return "其他模型"
+        if "/结构模型/" in logical_path or "/静力/" in logical_path:
+            return "静力"
+        return ""
+
     def _current_model_prefixes(self, path_key: str) -> List[str]:
         if not self.facility_code or not path_key:
             return []
         parts = path_key.split("/")
         model_root = parts[0] if parts else "当前模型"
+        base = f"{self.facility_code}/{model_root}"
+        if len(parts) == 1:
+            return [base]
         node = self._get_node_by_path(parts)
         model_key = node.get("model_key") if node else ""
-        base = f"{self.facility_code}/{model_root}"
         alias_map = {
             "static": ["结构模型", "静力"],
             "seismic": ["地震分析", "地震"],
@@ -1417,6 +1462,7 @@ class ModelFilesDocsWidget(QWidget):
                         "path": resolve_storage_path(row),
                         "record_id": row.get("id"),
                         "logical_path": logical_path,
+                        "analysis_category": self._analysis_category_for_record(path_key, row),
                         "remark": str(row.get("remark") or ""),
                     }
                 )

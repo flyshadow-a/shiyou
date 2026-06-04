@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
 
 from pages.doc_man import DocManWidget
 from pages.file_management_ui_constants import FILE_MANAGEMENT_SIDEBAR_WIDTH
-from services.file_db_adapter import FileBackendError, is_file_db_configured, load_docman_record_list
+from services.file_db_adapter import is_file_db_configured
 
 
 DOCUMENT_LIBRARY_QSS = """
@@ -134,6 +134,7 @@ class DocumentLibraryWidget(QFrame):
         *,
         module_code: str = "doc_man",
         show_description: bool = False,
+        upload_path_resolver=None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -141,6 +142,7 @@ class DocumentLibraryWidget(QFrame):
         self.setStyleSheet(DOCUMENT_LIBRARY_QSS)
         self._sections = [dict(item) for item in sections]
         self._module_code = module_code
+        self._upload_path_resolver = upload_path_resolver
         self._selected_index = 0 if self._sections else -1
         self.facility_code = ""
         self.platform_name = ""
@@ -299,6 +301,7 @@ class DocumentLibraryWidget(QFrame):
             path_root_label="设计文件",
             display_path_segments=display_path_segments,
             path_hint=hint,
+            upload_path_resolver=self._upload_path_resolver,
         )
         self._current_context_signature = signature
         self.navigationStateChanged.emit(True)
@@ -315,40 +318,25 @@ class DocumentLibraryWidget(QFrame):
         if not is_file_db_configured():
             QMessageBox.information(self, "提示", "当前未配置文件数据库，无法跨分类搜索。")
             return
-        try:
-            records = load_docman_record_list(
-                [],
-                facility_code=self.facility_code,
-                document_code_query=code,
-                document_title_query=name,
-            )
-        except FileBackendError as exc:
-            QMessageBox.warning(self, "搜索失败", str(exc))
-            return
-
-        matched = records
-        upload_path_segments: list[str] = []
-        if 0 <= self._selected_index < len(self._sections):
-            current_section = self._sections[self._selected_index]
-            upload_path_segments = list(
-                current_section.get("path_segments") or [current_section.get("label") or "搜索结果"]
-            )
         self.content_title.setText("搜索结果")
-        self.content_hint.setText(f"按文件编码/文件名搜索全部文件，共 {len(matched)} 条。")
+        self.content_hint.setText("按文件编码/文件名搜索全部文件。")
         self.content_title.setVisible(False)
         self.content_hint.setVisible(False)
         self.doc_man_widget.set_context(
-            upload_path_segments,
-            matched,
+            [],
+            [],
             ["未分类/其他", "其他"],
             facility_code=self.facility_code,
             overlay_from_db=False,
             hide_empty_templates=False,
-            db_list_mode=False,
+            db_list_mode=True,
             display_profile="design",
             path_root_label="设计文件",
             display_path_segments=["搜索结果"],
-            path_hint=f"按文件编码/文件名搜索全部文件，共 {len(matched)} 条。",
+            path_hint="按文件编码/文件名搜索全部文件。",
+            upload_path_resolver=self._upload_path_resolver,
+            document_code_query=code,
+            document_title_query=name,
         )
 
     @staticmethod

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 # pages/construction_docs_page.py
 
+import os
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QWidget,
@@ -17,7 +19,7 @@ from core.base_page import BasePage
 from pages.document_library_widget import DocumentLibraryWidget
 from pages.file_management_filter_search_bar import FileManagementFilterSearchBar
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
-from shiyou_db.document_code_parser import OTHER_FILE_CLASS_NAMES
+from shiyou_db.document_code_parser import OTHER_FILE_CLASS_NAMES, parse_document_code_from_name
 from pages.file_management_header import build_platform_description
 from services.inspection_business_db_adapter import load_facility_profile, save_facility_profile
 
@@ -102,6 +104,24 @@ class ConstructionDocsPage(BasePage):
     - 上方：可复用的条件筛选下拉条（DropdownBar）
     - 下方：建设阶段完工文件内容区域（ConstructionDocsWidget）
     """
+
+    _STRUCTURAL_FOLDERS = {
+        "SPC": "规格书",
+        "RPT": "报告",
+        "DWG": "图纸",
+        "MAL": "料单",
+        "BOD": "设计基础",
+    }
+    _GENERAL_FOLDERS = {
+        "DWG": "图纸",
+        "SPC": "规格书",
+        "RPT": "报告",
+    }
+    _STAGE_BY_CODE = {
+        "DD": "详细设计",
+        "AB": "完工",
+        "MD(DD)": "详细设计",
+    }
 
     def __init__(self, parent=None):
         # ✅ 1) 传空标题：避免 BasePage 顶部显示“建设阶段完工文件”
@@ -202,6 +222,7 @@ class ConstructionDocsPage(BasePage):
             self._build_document_sections(),
             module_code="doc_man",
             show_description=True,
+            upload_path_resolver=self._resolve_design_upload_target,
             parent=content_widget,
         )
         content_layout.addWidget(self.docs_widget)
@@ -232,7 +253,40 @@ class ConstructionDocsPage(BasePage):
         ]
 
         sections: list[dict] = []
+        structural_categories = [category for _name, category, _hint in structural]
+        general_categories = [category for _name, category, _hint in general]
+        all_categories = list(
+            dict.fromkeys(
+                [
+                    *structural_categories,
+                    *general_categories,
+                    "未分类/其他",
+                    *OTHER_FILE_CLASS_NAMES,
+                    "其他",
+                ]
+            )
+        )
         for stage in ("详细设计", "完工"):
+            sections.append(
+                {
+                    "label": stage,
+                    "tree_path": [stage],
+                    "path_segments": [stage],
+                    "categories": all_categories,
+                    "hint": f"{stage}阶段全部设计文件，包含结构、总体及其他专业子目录文件。",
+                    "display_profile": "design",
+                }
+            )
+            sections.append(
+                {
+                    "label": f"{stage} / 结构(ST)",
+                    "tree_path": [stage, "结构(ST)"],
+                    "path_segments": [stage, "结构(ST)"],
+                    "categories": [*structural_categories, "其他"],
+                    "hint": f"{stage}阶段结构专业全部文件，包含规格书、报告、图纸、料单和设计基础数据。",
+                    "display_profile": "design",
+                }
+            )
             for name, category, hint in structural:
                 sections.append(
                     {
@@ -244,6 +298,16 @@ class ConstructionDocsPage(BasePage):
                         "display_profile": "design",
                     }
                 )
+            sections.append(
+                {
+                    "label": f"{stage} / 总体(GE)",
+                    "tree_path": [stage, "总体(GE)"],
+                    "path_segments": [stage, "总体(GE)"],
+                    "categories": [*general_categories, "其他"],
+                    "hint": f"{stage}阶段总体专业全部文件，包含图纸、规格书和报告。",
+                    "display_profile": "design",
+                }
+            )
             for name, category, hint in general:
                 sections.append(
                     {
@@ -266,6 +330,47 @@ class ConstructionDocsPage(BasePage):
                 }
             )
         return sections
+
+    def _resolve_design_upload_target(self, item: dict, current_path: list[str], category: str) -> dict:
+        meta = dict(item.get("meta") or {})
+        if not meta:
+            meta = parse_document_code_from_name(os.path.basename(str(item.get("path") or "")))
+
+        stage = self._stage_name_from_meta(meta, current_path)
+        discipline = str(meta.get("discipline_code") or "").strip().upper()
+        file_class = str(meta.get("file_class_code") or "").strip().upper()
+        is_unclassified = str(meta.get("recognition_status") or "").strip() == "unclassified"
+        category_name = "" if is_unclassified else str(meta.get("file_class_name") or category or "").strip()
+
+        if discipline == "ST":
+            folder = self._STRUCTURAL_FOLDERS.get(file_class)
+            if folder:
+                return {
+                    "path_segments": [stage, "结构(ST)", folder],
+                    "category": category_name or folder,
+                }
+
+        if discipline == "GE":
+            folder = self._GENERAL_FOLDERS.get(file_class)
+            if folder:
+                return {
+                    "path_segments": [stage, "总体(GE)", folder],
+                    "category": category_name or folder,
+                }
+
+        return {
+            "path_segments": [stage, "其他"],
+            "category": category_name or "未分类/其他",
+        }
+
+    def _stage_name_from_meta(self, meta: dict, current_path: list[str]) -> str:
+        stage_code = str(meta.get("design_stage_code") or "").strip().upper()
+        if stage_code in self._STAGE_BY_CODE:
+            return self._STAGE_BY_CODE[stage_code]
+        for part in current_path:
+            if part in {"详细设计", "完工"}:
+                return part
+        return "详细设计"
 
     def on_filter_changed(self, key: str, value: str):
         self._sync_platform_ui(changed_key=key)

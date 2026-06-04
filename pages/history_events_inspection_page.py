@@ -44,9 +44,7 @@ from pages.history_inspection_summary_page import (
 from pages.doc_man import DocManWidget, apply_docman_table_style
 from services.file_db_adapter import (
     DOC_MAN_MODULE_CODE,
-    FileBackendError,
     is_file_db_configured,
-    load_docman_record_list,
 )
 from services.inspection_business_db_adapter import (
     create_inspection_project,
@@ -731,6 +729,7 @@ class HistoryEventsInspectionPage(BasePage):
             QMessageBox.warning(self, "删除失败", str(exc))
             return
         self._reload_sidebar_projects(selected_type=project_type)
+        QMessageBox.information(self, "删除成功", "删除成功")
 
     def _set_findings_enabled(self, enabled: bool) -> None:
         self.btn_add_finding.setEnabled(enabled)
@@ -870,38 +869,22 @@ class HistoryEventsInspectionPage(BasePage):
         if not is_file_db_configured():
             QMessageBox.information(self, "提示", "当前未配置文件数据库，无法跨分类搜索。")
             return
-        try:
-            records = load_docman_record_list([], facility_code=self.dropdown_bar.get_value("facility_code"))
-        except FileBackendError as exc:
-            QMessageBox.warning(self, "搜索失败", str(exc))
-            return
-        matched = []
-        for rec in records:
-            logical_path = str(rec.get("logical_path") or "")
-            if not (logical_path.startswith("定期检测") or logical_path.startswith("特殊事件检测")):
-                continue
-            code_text = " ".join(str(rec.get(k) or "") for k in ("document_code", "logical_path", "filename")).lower()
-            name_text = " ".join(str(rec.get(k) or "") for k in ("document_title", "filename", "logical_path")).lower()
-            if code and code not in code_text:
-                continue
-            if name and name not in name_text:
-                continue
-            if not rec.get("work_condition"):
-                rec["work_condition"] = self._project_name_from_logical_path(logical_path) or "搜索结果"
-            matched.append(rec)
         self.doc_man_widget.set_context(
-            ["搜索结果"],
-            matched,
+            [],
+            [],
             self._file_categories(),
             facility_code=self.dropdown_bar.get_value("facility_code"),
             overlay_from_db=False,
             hide_empty_templates=False,
-            db_list_mode=False,
+            db_list_mode=True,
             display_profile="inspection",
             path_root_label=self._path_root_label(),
             display_path_segments=["搜索结果"],
-            path_hint=f"按文件编码/文件名搜索检测记录文件，共 {len(matched)} 条。",
+            path_hint="按文件编码/文件名搜索检测记录文件。",
             default_work_condition="搜索结果",
+            document_code_query=code,
+            document_title_query=name,
+            logical_path_prefixes=["定期检测", "特殊事件检测"],
         )
 
     def _sync_platform_ui(self, changed_key: str | None = None):

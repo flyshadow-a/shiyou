@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from services.special_strategy_image_service import build_strategy_image_path
 from services.special_strategy_runtime import _prune_runtime_artifacts, load_base_config, run_artifact_paths
 
 
@@ -106,6 +107,33 @@ class SpecialStrategyRuntimeConfigCleanupTests(unittest.TestCase):
         self.assertEqual(paths["output_report"], report_root / "special_strategy.docx")
         self.assertEqual(paths["report_metadata_json"], run_root / "report_metadata.json")
         self.assertEqual(paths["state_json"], run_root / "runtime_state.json")
+
+    def test_strategy_image_path_can_probe_without_creating_leaf_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            image_root = Path(tmp) / "special_strategy_images"
+            with patch("services.special_strategy_image_service.get_strategy_image_root", return_value=image_root):
+                probe_path = build_strategy_image_path(
+                    facility_code="WC19-1D",
+                    run_id=None,
+                    page_code="upgrade_special_inspection_result",
+                    image_type="elevation_risk",
+                    year_label="+5年",
+                    row_name="__probe__",
+                    create_dirs=False,
+                )
+
+                self.assertFalse(probe_path.parent.exists())
+
+                real_path = build_strategy_image_path(
+                    facility_code="WC19-1D",
+                    run_id=None,
+                    page_code="upgrade_special_inspection_result",
+                    image_type="elevation_risk",
+                    year_label="+5年",
+                    row_name="XZ 前",
+                )
+
+                self.assertTrue(real_path.parent.exists())
 
 
 if __name__ == "__main__":

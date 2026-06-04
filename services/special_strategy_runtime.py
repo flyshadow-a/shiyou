@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import sys
 from datetime import datetime
@@ -33,39 +34,53 @@ from services.special_strategy_state_db import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPO_SPECIAL_STRATEGY_INPUTS_DIR = REPO_ROOT / "special_strategy_inputs"
 OUTPUT_SPECIAL_STRATEGY_CODE_DIR = REPO_ROOT / "pages" / "output_special_strategy"
-try:
-    from pages.output_special_strategy.inspection_tool import (  # noqa: E402
-        finalize_prepared_run_state as finalize_inspection_pipeline,
-        prepare_run_state as prepare_inspection_pipeline,
-    )
-    from pages.output_special_strategy.report_jinja2_generator import (  # noqa: E402
-        build_context,
-        build_generated_appendix_plan,
-        build_appendix_pdf_plan,
-        build_appendix_sections,
-        insert_appendix_pdf_images,
-        load_context_from_workbook,
-        refresh_word_document_fields,
-        render_report,
-    )
-except ImportError:
-    if str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR) not in sys.path:
-        sys.path.insert(0, str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR))
+_INSPECTION_PIPELINE_FUNCS: tuple[Any, Any] | None = None
+_REPORT_FUNCS: dict[str, Any] | None = None
 
-    from inspection_tool import (  # type: ignore  # noqa: E402
-        finalize_prepared_run_state as finalize_inspection_pipeline,
-        prepare_run_state as prepare_inspection_pipeline,
-    )
-    from report_jinja2_generator import (  # type: ignore  # noqa: E402
-        build_context,
-        build_generated_appendix_plan,
-        build_appendix_pdf_plan,
-        build_appendix_sections,
-        insert_appendix_pdf_images,
-        load_context_from_workbook,
-        refresh_word_document_fields,
-        render_report,
-    )
+
+def _load_inspection_pipeline_funcs() -> tuple[Any, Any]:
+    global _INSPECTION_PIPELINE_FUNCS
+    if _INSPECTION_PIPELINE_FUNCS is not None:
+        return _INSPECTION_PIPELINE_FUNCS
+    try:
+        from pages.output_special_strategy.inspection_tool import (  # noqa: E402
+            finalize_prepared_run_state,
+            prepare_run_state,
+        )
+    except ImportError:
+        if str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR) not in sys.path:
+            sys.path.insert(0, str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR))
+        from inspection_tool import (  # type: ignore  # noqa: E402
+            finalize_prepared_run_state,
+            prepare_run_state,
+        )
+    _INSPECTION_PIPELINE_FUNCS = (prepare_run_state, finalize_prepared_run_state)
+    return _INSPECTION_PIPELINE_FUNCS
+
+
+def _load_report_funcs() -> dict[str, Any]:
+    global _REPORT_FUNCS
+    if _REPORT_FUNCS is not None:
+        return _REPORT_FUNCS
+    try:
+        from pages.output_special_strategy import report_jinja2_generator as report_module  # noqa: E402
+    except ImportError:
+        if str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR) not in sys.path:
+            sys.path.insert(0, str(OUTPUT_SPECIAL_STRATEGY_CODE_DIR))
+        import report_jinja2_generator as report_module  # type: ignore  # noqa: E402
+    _REPORT_FUNCS = {
+        "build_context": report_module.build_context,
+        "build_appendix_c_image_plan": report_module.build_appendix_c_image_plan,
+        "build_generated_appendix_plan": report_module.build_generated_appendix_plan,
+        "build_snapshot_appendix_plan": report_module.build_snapshot_appendix_plan,
+        "build_appendix_pdf_plan": report_module.build_appendix_pdf_plan,
+        "build_appendix_sections": report_module.build_appendix_sections,
+        "insert_appendix_pdf_images": report_module.insert_appendix_pdf_images,
+        "load_context_from_workbook": report_module.load_context_from_workbook,
+        "refresh_word_document_fields": report_module.refresh_word_document_fields,
+        "render_report": report_module.render_report,
+    }
+    return _REPORT_FUNCS
 
 
 COMMON_RUN_CONFIG_NAME = "special_strategy_run_config.json"
@@ -104,9 +119,10 @@ SHARED_SPECIAL_STRATEGY_INPUT_KEYS = {
 
 
 def special_strategy_inputs_dir() -> Path:
-    candidates = [
-        REPO_SPECIAL_STRATEGY_INPUTS_DIR,
-    ]
+    if REPO_SPECIAL_STRATEGY_INPUTS_DIR.exists():
+        return REPO_SPECIAL_STRATEGY_INPUTS_DIR
+
+    candidates = [REPO_SPECIAL_STRATEGY_INPUTS_DIR]
     shared_root = shared_storage_dir("special_strategy_inputs")
     if shared_root:
         candidates.append(Path(shared_root))
@@ -114,10 +130,10 @@ def special_strategy_inputs_dir() -> Path:
     for candidate in candidates:
         if candidate.exists():
             candidate.mkdir(parents=True, exist_ok=True)
-            return candidate.resolve()
+            return candidate
     candidate = candidates[0]
     candidate.mkdir(parents=True, exist_ok=True)
-    return candidate.resolve()
+    return candidate
 
 
 def _common_config_path() -> Path:
@@ -281,21 +297,30 @@ def _platform_profile(facility_code: str) -> dict[str, str]:
     return fallback
 
 
-def runtime_dir(facility_code: str) -> Path:
+def _runtime_dir_candidate(facility_code: str, *, create: bool) -> Path:
     code = normalize_facility_code(facility_code)
     shared_root = shared_storage_dir("special_strategy_runtime")
     if shared_root:
         candidate = Path(shared_root) / code
+        if not create:
+            return candidate
         try:
             candidate.mkdir(parents=True, exist_ok=True)
-            return candidate.resolve()
+            return candidate
         except Exception:
             pass
-    return Path(external_path("special_strategy_runtime", code)).resolve()
+    candidate = Path(external_path("special_strategy_runtime", code))
+    if create:
+        candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
+
+
+def runtime_dir(facility_code: str) -> Path:
+    return _runtime_dir_candidate(facility_code, create=True)
 
 
 def local_report_output_dir() -> Path:
-    return Path(external_path()).resolve()
+    return Path(external_path())
 
 
 def _safe_filename_component(value: Any, fallback: str) -> str:
@@ -397,8 +422,8 @@ def _resolve_runtime_output_path(facility_code: str, key: str, value: object) ->
     text = str(value or "").strip()
     if not text:
         return ""
-    base_dir = local_report_output_dir() if key == "output_report" else runtime_dir(facility_code)
-    return str((base_dir / Path(text).name).resolve())
+    base_dir = local_report_output_dir() if key == "output_report" else _runtime_dir_candidate(facility_code, create=False)
+    return str(base_dir / Path(text).name)
 
 
 def _normalize_config_paths(facility_code: str, config_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
@@ -761,11 +786,8 @@ def _existing_paths(paths: list[Any] | None) -> list[str]:
         text = str(value or "").strip()
         if not text:
             continue
-        try:
-            resolved = str(Path(text).resolve())
-        except Exception:
-            resolved = text
-        if Path(resolved).exists():
+        resolved = os.path.abspath(os.path.expanduser(text))
+        if os.path.exists(resolved):
             out.append(resolved)
     return out
 
@@ -784,14 +806,26 @@ def _apply_input_overrides(
         return merged
 
     model_path = str(input_overrides.get("model") or "").strip()
-    if model_path and Path(model_path).exists():
-        merged["model"] = str(Path(model_path).resolve())
+    if model_path:
+        normalized_model_path = os.path.abspath(os.path.expanduser(model_path))
+        if os.path.exists(normalized_model_path):
+            merged["model"] = normalized_model_path
 
     for key in ("clplog", "ftglst", "ftginp"):
         override_paths = _existing_paths(input_overrides.get(key))
         if override_paths:
             merged[key] = override_paths
     return merged
+
+
+def _input_overrides_are_complete(input_overrides: dict[str, Any] | None) -> bool:
+    if not input_overrides:
+        return False
+    model_path = str(input_overrides.get("model") or "").strip()
+    clplog_paths = input_overrides.get("clplog") or []
+    ftglst_paths = input_overrides.get("ftglst") or []
+    ftginp_paths = input_overrides.get("ftginp") or []
+    return bool(model_path) and bool(clplog_paths) and bool(ftglst_paths) and bool(ftginp_paths)
 
 
 def _should_override_fatigue_groups(
@@ -895,6 +929,7 @@ def merge_runtime_params(facility_code: str, overrides: dict[str, Any] | None = 
 
 
 def _context_from_workbook(workbook_path: Path, cfg: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    load_context_from_workbook = _load_report_funcs()["load_context_from_workbook"]
     context = load_context_from_workbook(
         workbook_path,
         metadata,
@@ -1173,6 +1208,7 @@ def _build_result_bundle_from_pipeline_outputs(
     node_risk_rows = _node_risk_records_from_df(final_outputs.get("joint_risk_df"))
     node_strategy_rows = _node_strategy_records_from_df(final_outputs.get("node_plan_df"))
 
+    build_context = _load_report_funcs()["build_context"]
     context = build_context(
         node_risk_rows,
         node_strategy_rows,
@@ -1275,6 +1311,28 @@ def _context_from_result_snapshot(
     return _merge_metadata_into_cached_context(context, metadata)
 
 
+def _detail_rows_from_result_snapshot(
+    *,
+    facility_code: str,
+    run_id: int | None,
+    state: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    code = normalize_facility_code(facility_code)
+    target_run_id = run_id or _state_db_run_id(state)
+    snapshot = None
+    if target_run_id is not None:
+        snapshot = load_strategy_result_snapshot_by_run(target_run_id)
+    if snapshot is None and run_id is None:
+        snapshot = load_latest_strategy_result_snapshot(code)
+    payload = (snapshot or {}).get("result_json")
+    if not isinstance(payload, dict):
+        return {"member": [], "node": []}
+    return {
+        "member": list(payload.get("member_risk_rows_full") or []),
+        "node": list(payload.get("node_risk_rows_full") or []),
+    }
+
+
 def _appendix_sources_from_config(cfg: dict[str, Any]) -> tuple[str, str, list[str]]:
     if not APPENDIX_PDF_INPUTS_ENABLED:
         return "", "", []
@@ -1302,22 +1360,30 @@ def prepare_special_strategy_calculation(
     if metadata:
         metadata_payload.update({k: v for k, v in metadata.items() if v not in ("", None)})
 
-    resolved_inputs = _apply_input_overrides(
-        resolve_current_model_inputs(code, cfg),
-        input_overrides,
+    base_inputs = (
+        {
+            "model": str(cfg["model"]),
+            "clplog": [str(x) for x in cfg.get("clplog", [])],
+            "ftglst": [str(x) for x in cfg.get("ftglst", [])],
+            "ftginp": [str(x) for x in cfg.get("ftginp", [])],
+        }
+        if _input_overrides_are_complete(input_overrides)
+        else resolve_current_model_inputs(code, cfg)
     )
-    config_xlsm = Path(str(cfg.get("config_xlsm") or cfg["template_xlsm"])).resolve()
+    resolved_inputs = _apply_input_overrides(base_inputs, input_overrides)
+    config_xlsm = Path(str(cfg.get("config_xlsm") or cfg["template_xlsm"]))
 
+    prepare_inspection_pipeline, _finalize_inspection_pipeline = _load_inspection_pipeline_funcs()
     prepared_pipeline = prepare_inspection_pipeline(
         template_xlsm=config_xlsm,
-        model_file=Path(str(resolved_inputs["model"])).resolve(),
-        clplog_file=[Path(str(x)).resolve() for x in resolved_inputs["clplog"]],
-        ftglst_file=[Path(str(x)).resolve() for x in resolved_inputs["ftglst"]],
+        model_file=Path(str(resolved_inputs["model"])),
+        clplog_file=[Path(str(x)) for x in resolved_inputs["clplog"]],
+        ftglst_file=[Path(str(x)) for x in resolved_inputs["ftglst"]],
         out_xlsx=paths["intermediate_workbook"],
         policy_mode=str(cfg.get("policy", "strict")),
         seed=int(cfg.get("seed", 42)),
         params_json=paths["params_json"],
-        ftginp_files=[Path(str(x)).resolve() for x in resolved_inputs["ftginp"]],
+        ftginp_files=[Path(str(x)) for x in resolved_inputs["ftginp"]],
         manual_fill_workbook=(str(cfg.get("manual_fill_workbook") or "").strip() or None),
         interactive_manual_fill=bool(cfg.get("interactive_manual_fill", False)),
         enable_topology_inference=bool(cfg.get("enable_topology_inference", False)),
@@ -1355,6 +1421,7 @@ def finalize_special_strategy_calculation(
         params["rule_overrides"] = rule_overrides
     _write_json(Path(paths["params_json"]), params)
 
+    _prepare_inspection_pipeline, finalize_inspection_pipeline = _load_inspection_pipeline_funcs()
     final_outputs = finalize_inspection_pipeline(
         prepared_pipeline,
         out_xlsx=paths["intermediate_workbook"],
@@ -1556,6 +1623,15 @@ def generate_special_strategy_report(
             )
         context = _context_from_workbook(workbook_path, cfg, metadata_payload)
     appendix_a_file, appendix_b_file, appendix_c_dirs = _appendix_sources_from_config(cfg)
+    report_funcs = _load_report_funcs()
+    build_appendix_sections = report_funcs["build_appendix_sections"]
+    build_appendix_pdf_plan = report_funcs["build_appendix_pdf_plan"]
+    build_generated_appendix_plan = report_funcs["build_generated_appendix_plan"]
+    build_snapshot_appendix_plan = report_funcs["build_snapshot_appendix_plan"]
+    build_appendix_c_image_plan = report_funcs["build_appendix_c_image_plan"]
+    render_report = report_funcs["render_report"]
+    insert_appendix_pdf_images = report_funcs["insert_appendix_pdf_images"]
+    refresh_word_document_fields = report_funcs["refresh_word_document_fields"]
     context["appendix_sections"] = build_appendix_sections(
         appendix_a_file=appendix_a_file,
         appendix_b_file=appendix_b_file,
@@ -1580,6 +1656,25 @@ def generate_special_strategy_report(
             run_id=state_run_id or run_id,
             scratch_dir=artifact_dir / "generated_appendices",
         )
+    else:
+        detail_rows = _detail_rows_from_result_snapshot(
+            facility_code=code,
+            run_id=state_run_id or run_id,
+            state=state,
+        )
+        snapshot_plan, snapshot_temp_files = build_snapshot_appendix_plan(
+            node_rows=detail_rows["node"],
+            member_rows=detail_rows["member"],
+            scratch_dir=artifact_dir / "generated_appendices",
+        )
+        appendix_generated_plan.extend(snapshot_plan)
+        appendix_generated_plan.extend(
+            build_appendix_c_image_plan(
+                facility_code=code,
+                run_id=state_run_id or run_id,
+            )
+        )
+        appendix_temp_files.extend(snapshot_temp_files)
     context["appendix_generated_plan"] = appendix_generated_plan
 
     paths = runtime_paths(code)
@@ -1595,9 +1690,18 @@ def generate_special_strategy_report(
     try:
         render_report(report_template, report_output_path, context)
         if context.get("appendix_pdf_plan") or context.get("appendix_generated_plan"):
-            insert_appendix_pdf_images(report_output_path, context)
+            appendix_insert_stats = insert_appendix_pdf_images(report_output_path, context)
+            planned_files = int(appendix_insert_stats.get("planned_files", 0) or 0)
+            inserted_images = int(appendix_insert_stats.get("inserted_images", 0) or 0)
+            if planned_files > 0 and inserted_images <= 0:
+                raise RuntimeError(
+                    "附件文件已生成，但没有任何附件图片被插入报告。"
+                    f" planned_files={planned_files}, stats={appendix_insert_stats}"
+                )
         if not refresh_word_document_fields(report_output_path, pdf_output_path=pdf_output_path):
             raise RuntimeError(f"Word COM 自动更新目录并导出 PDF 失败：{report_output_path}")
+        if not pdf_output_path.exists() or pdf_output_path.stat().st_size <= 0:
+            raise RuntimeError(f"PDF 导出后未生成有效文件：{pdf_output_path}")
 
     finally:
         for temp_path in appendix_temp_files:

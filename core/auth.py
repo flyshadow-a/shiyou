@@ -85,7 +85,8 @@ class AuthService:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        Base.metadata.create_all(self.engine)
+        for table in (AuthRole.__table__, AuthUser.__table__, AuthLoginLog.__table__):
+            table.create(self.engine, checkfirst=True)
         self._seed_roles()
 
     def _seed_roles(self) -> None:

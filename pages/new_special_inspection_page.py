@@ -43,8 +43,6 @@ from services.special_strategy_runtime import (
 )
 from services.special_strategy_history_overlay_service import load_history_detection_overlay
 
-from pages.special_inspection_model_preview import SpecialInspectionModelPreviewPanel
-from pages.output_special_strategy.inspection_tool import parse_sacinp
 from pages.special_strategy_rule_dialogs import (
     RULE_MODE_JOINT_CLASSIFICATION,
     RULE_MODE_JOINT_EXCLUSION,
@@ -399,6 +397,58 @@ class _SpecialStrategyCalculationWorker(QObject):
             self.failed.emit(str(exc))
 
 
+def _sacinp_fixed_sub(line: str, start: int, length: int) -> str:
+    return line[max(0, start - 1): max(0, start - 1) + length]
+
+
+def _parse_sacinp_rule_preview_file(model_path: str) -> tuple[list[str], list[tuple[str, str]]]:
+    joint_ids: list[str] = []
+    member_pairs: list[tuple[str, str]] = []
+    with open(model_path, "r", encoding="utf-8", errors="ignore") as file:
+        for raw in file:
+            line = raw.rstrip("\r\n")
+            if line.startswith("MEMBER"):
+                token8 = _sacinp_fixed_sub(line, 8, 8).strip()
+                token7 = _sacinp_fixed_sub(line, 8, 7).strip().upper()
+                if token8 == "" or token7 == "OFFSETS":
+                    continue
+                joint_a = _sacinp_fixed_sub(line, 8, 4).strip()
+                joint_b = _sacinp_fixed_sub(line, 12, 4).strip()
+                if joint_a and joint_b:
+                    member_pairs.append((joint_a, joint_b))
+                continue
+
+            if line.startswith("JOINT"):
+                token8 = _sacinp_fixed_sub(line, 7, 8).strip()
+                token7 = _sacinp_fixed_sub(line, 8, 7).strip().upper()
+                if token8 == "" or token7 == "OFFSETS":
+                    continue
+                joint_id = _sacinp_fixed_sub(line, 7, 4).strip()
+                if joint_id:
+                    joint_ids.append(joint_id)
+                continue
+
+            if any(token in line for token in ("CENTER", "SURFID", "WGTFP", "LOADCN")):
+                break
+    return joint_ids, member_pairs
+
+
+class _RulePreviewWorker(QObject):
+    finished = pyqtSignal(str, object, object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, model_path: str):
+        super().__init__()
+        self._model_path = os.path.normpath(str(model_path or "").strip())
+
+    def run(self) -> None:
+        try:
+            joint_ids, member_pairs = _parse_sacinp_rule_preview_file(self._model_path)
+            self.finished.emit(self._model_path, joint_ids, member_pairs)
+        except Exception as exc:
+            self.failed.emit(f"{self._model_path}: {exc}")
+
+
 class NewSpecialInspectionPage(BasePage):
     """
     新增检测策略打开的页面：
@@ -457,19 +507,24 @@ class NewSpecialInspectionPage(BasePage):
         self._risk_worker: _SpecialStrategyCalculationWorker | None = None
         self._active_worker_stage = ""
         self._pending_prepared_calculation: dict[str, Any] | None = None
+        self._auto_system_files_loaded = False
+        self._auto_system_files_load_scheduled = False
+        self._rule_preview_cache: dict[str, Any] | None = None
+        self._rule_preview_thread: QThread | None = None
+        self._rule_preview_worker: _RulePreviewWorker | None = None
+        self._rule_preview_loading_path = ""
 
         super().__init__("", parent)
         self._risk_progress_timer = QTimer(self)
         self._risk_progress_timer.setInterval(320)
         self._risk_progress_timer.timeout.connect(self._update_risk_progress_text)
         self._build_ui()
-        self._reload_system_files_from_backend()
 
     def showEvent(self, event):
         super().showEvent(event)
         QTimer.singleShot(0, self._apply_initial_splitter_sizes)
         QTimer.singleShot(0, self._adjust_files_table_widths)
-        # 每次显示页面时重置为空白状态，不自动加载任何文件
+        self._schedule_auto_system_files_load()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -504,6 +559,30 @@ class NewSpecialInspectionPage(BasePage):
         self._default_params = self._load_default_params()
         self._rule_overrides = normalize_rule_overrides((self._default_params or {}).get("rule_overrides"))
         self._apply_default_form_values()
+        self.model_files = []
+        self.collapse_files = []
+        self.fatigue_result_files = []
+        self.fatigue_input_files = []
+        self._file_meta_by_path.clear()
+        self._invalidate_rule_preview_cache()
+        self._refresh_files_table()
+        self._refresh_model_preview()
+        self._auto_system_files_loaded = False
+        self._auto_system_files_load_scheduled = False
+        self._schedule_auto_system_files_load()
+
+    def _schedule_auto_system_files_load(self) -> None:
+        if self._auto_system_files_loaded or self._auto_system_files_load_scheduled:
+            return
+        self._auto_system_files_load_scheduled = True
+        self._set_model_preview_placeholder("正在加载模型文件...")
+        QTimer.singleShot(120, self._auto_load_system_files_after_show)
+
+    def _auto_load_system_files_after_show(self) -> None:
+        self._auto_system_files_load_scheduled = False
+        if self._auto_system_files_loaded:
+            return
+        self._auto_system_files_loaded = True
         self._reload_system_files_from_backend()
 
     def _params_json_path(self) -> Path | None:
@@ -754,8 +833,9 @@ class NewSpecialInspectionPage(BasePage):
             for row, spec in enumerate(self._risk_param_specs):
                 key = str(spec.get("key", "")).strip()
                 if key in self.RISK_LEVEL_OPTIONS:
-                    spec["value"] = ""
-                    spec["description"] = ""
+                    value = str(spec.get("value") or "").strip()
+                    spec["value"] = value
+                    spec["description"] = self._risk_level_description(key, value)
                 label_item = self.risk_param_table.item(row, 0)
                 value_item = self.risk_param_table.item(row, 1)
                 desc_item = self.risk_param_table.item(row, 2)
@@ -763,9 +843,11 @@ class NewSpecialInspectionPage(BasePage):
                     label_item.setText(str(spec["label"]))
                 if value_item is not None:
                     value_item.setText(
-                        self._risk_level_cell_text("") if key in self.RISK_LEVEL_OPTIONS else str(spec["value"])
+                        self._risk_level_cell_text(str(spec["value"]))
+                        if key in self.RISK_LEVEL_OPTIONS
+                        else str(spec["value"])
                     )
-                    value_item.setData(Qt.UserRole, "" if key in self.RISK_LEVEL_OPTIONS else None)
+                    value_item.setData(Qt.UserRole, str(spec["value"]) if key in self.RISK_LEVEL_OPTIONS else None)
                 if desc_item is not None:
                     desc_item.setText(str(spec["description"]))
                 self.risk_param_table.setRowHeight(row, 38)
@@ -1194,8 +1276,9 @@ class NewSpecialInspectionPage(BasePage):
         for r, spec in enumerate(rows):
             key = str(spec.get("key", "")).strip()
             if key in self.RISK_LEVEL_OPTIONS:
-                spec["value"] = ""
-                spec["description"] = ""
+                value = str(spec.get("value") or "").strip()
+                spec["value"] = value
+                spec["description"] = self._risk_level_description(key, value)
 
             it0 = QTableWidgetItem(str(spec["label"]))
             it1 = QTableWidgetItem(str(spec["value"]))
@@ -1217,8 +1300,8 @@ class NewSpecialInspectionPage(BasePage):
             table.setItem(r, 2, it2)
 
             if key in self.RISK_LEVEL_OPTIONS:
-                it1.setText(self._risk_level_cell_text(""))
-                it1.setData(Qt.UserRole, "")
+                it1.setText(self._risk_level_cell_text(str(spec["value"])))
+                it1.setData(Qt.UserRole, str(spec["value"]))
                 it1.setFlags(it1.flags() & ~Qt.ItemIsEditable)
                 it1.setToolTip("点击选择")
 
@@ -1270,10 +1353,52 @@ class NewSpecialInspectionPage(BasePage):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.model_preview_panel = SpecialInspectionModelPreviewPanel(panel)
-        layout.addWidget(self.model_preview_panel, 1)
+        self._model_preview_host = panel
+        self._model_preview_layout = layout
+        self.model_preview_panel = None
+        self.model_preview_placeholder = QLabel("当前未加载模型文件", panel)
+        self.model_preview_placeholder.setAlignment(Qt.AlignCenter)
+        self.model_preview_placeholder.setStyleSheet(
+            """
+            QLabel {
+                background: #ffffff;
+                border: 1px solid #b9c6d6;
+                color: #506070;
+                font-size: 12pt;
+            }
+            """
+        )
+        layout.addWidget(self.model_preview_placeholder, 1)
 
         return panel
+
+    def _set_model_preview_placeholder(self, text: str) -> None:
+        placeholder = getattr(self, "model_preview_placeholder", None)
+        if placeholder is not None:
+            placeholder.setText(text)
+
+    def _ensure_model_preview_panel(self) -> bool:
+        if getattr(self, "model_preview_panel", None) is not None:
+            return True
+        layout = getattr(self, "_model_preview_layout", None)
+        host = getattr(self, "_model_preview_host", None)
+        if layout is None or host is None:
+            return False
+        try:
+            from pages.special_inspection_model_preview import SpecialInspectionModelPreviewPanel
+        except Exception as exc:
+            self._set_model_preview_placeholder(f"模型预览组件加载失败：\n{exc}")
+            return False
+
+        placeholder = getattr(self, "model_preview_placeholder", None)
+        if placeholder is not None:
+            layout.removeWidget(placeholder)
+            placeholder.deleteLater()
+            self.model_preview_placeholder = None
+
+        self.model_preview_panel = SpecialInspectionModelPreviewPanel(host)
+        layout.addWidget(self.model_preview_panel, 1)
+        return True
 
     def _resolve_db_storage_path(self, row: dict[str, Any]) -> str:
         return resolve_storage_path(row, config_path=str(DEFAULT_DB_CONFIG))
@@ -1294,6 +1419,8 @@ class NewSpecialInspectionPage(BasePage):
 
     def _on_extract_model_files(self):
         self.model_files = self._db_fetch_file_records(self.CATEGORY_MODEL)
+        self._invalidate_rule_preview_cache()
+        self._start_rule_preview_preload()
         self._refresh_model_files_table()
         self._refresh_model_preview()
         QMessageBox.information(self, "提取模型", "已从系统文件库提取并刷新模型文件。")
@@ -1496,36 +1623,74 @@ class NewSpecialInspectionPage(BasePage):
 
     # ---------------- 文件来源：后续数据库接入接口（先走 upload/model_files） ----------------
     def _current_model_path_for_rule_preview(self) -> str:
-        input_overrides = self._collect_runtime_input_overrides()
-        override_model = str(input_overrides.get("model") or "").strip()
-        if override_model:
-            return override_model
+        model_candidates = self._sorted_existing_paths(self.model_files, category=self.CATEGORY_MODEL)
+        if model_candidates:
+            return model_candidates[0]
+
         try:
             cfg = load_base_config(self.facility_code)
-            current_inputs = resolve_current_model_inputs(self.facility_code, cfg)
         except Exception:
             return ""
-        return str(current_inputs.get("model") or "").strip()
+        return str(cfg.get("model") or "").strip()
+
+    def _invalidate_rule_preview_cache(self) -> None:
+        self._rule_preview_cache = None
+
+    def _on_rule_preview_loaded(self, model_path: str, joint_ids: object, member_pairs: object) -> None:
+        normalized_path = os.path.normpath(str(model_path or "").strip())
+        self._rule_preview_cache = {
+            "model_path": normalized_path,
+            "joint_ids": list(joint_ids or []),
+            "member_pairs": list(member_pairs or []),
+        }
+
+    def _on_rule_preview_thread_finished(self) -> None:
+        self._rule_preview_thread = None
+        self._rule_preview_worker = None
+        self._rule_preview_loading_path = ""
+
+    def _start_rule_preview_preload(self, model_path: str | None = None) -> None:
+        path = os.path.normpath(str(model_path or self._current_model_path_for_rule_preview() or "").strip())
+        if not path or not os.path.exists(path):
+            return
+        cached = self._rule_preview_cache
+        if isinstance(cached, dict) and cached.get("model_path") == path:
+            return
+        if self._rule_preview_thread is not None and self._rule_preview_thread.isRunning():
+            if self._rule_preview_loading_path == path:
+                return
+            return
+
+        thread = QThread(self)
+        worker = _RulePreviewWorker(path)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_rule_preview_loaded)
+        worker.failed.connect(lambda message: print("[NewSpecialInspectionPage] rule preview preload failed:", message))
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._on_rule_preview_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._rule_preview_thread = thread
+        self._rule_preview_worker = worker
+        self._rule_preview_loading_path = path
+        thread.start()
 
     def _load_rule_preview_inputs(self) -> tuple[list[str], list[tuple[str, str]], bool]:
         model_path = self._current_model_path_for_rule_preview()
         if not model_path or not Path(model_path).exists():
             return [], [], False
-        try:
-            joints_df, _, members_df, _ = parse_sacinp(model_path)
-        except Exception:
-            return [], [], False
-        joint_ids = [
-            str(value or "").strip()
-            for value in joints_df.get("Joint", []).tolist()
-            if str(value or "").strip()
-        ]
-        member_pairs = [
-            (str(row.get("A") or "").strip(), str(row.get("B") or "").strip())
-            for _, row in members_df.iterrows()
-            if str(row.get("A") or "").strip() and str(row.get("B") or "").strip()
-        ]
-        return joint_ids, member_pairs, True
+        cached = self._rule_preview_cache
+        if isinstance(cached, dict) and cached.get("model_path") == os.path.normpath(model_path):
+            return (
+                list(cached.get("joint_ids") or []),
+                list(cached.get("member_pairs") or []),
+                True,
+            )
+        self._start_rule_preview_preload(model_path)
+        return [], [], False
 
     def _open_rule_dialog(
         self,
@@ -1579,15 +1744,17 @@ class NewSpecialInspectionPage(BasePage):
         member_risk_df = prepared_pipeline.get("member_risk_df")
         forecast_df = prepared_pipeline.get("forecast_df")
         try:
+            joint_a_values = member_risk_df["JointA"].astype(str).str.strip().tolist()
+            joint_b_values = member_risk_df["JointB"].astype(str).str.strip().tolist()
             member_pairs = [
-                (str(row.get("JointA") or "").strip(), str(row.get("JointB") or "").strip())
-                for _, row in member_risk_df.iterrows()
-                if str(row.get("JointA") or "").strip() and str(row.get("JointB") or "").strip()
+                (joint_a, joint_b)
+                for joint_a, joint_b in zip(joint_a_values, joint_b_values)
+                if joint_a and joint_b and joint_a.lower() != "nan" and joint_b.lower() != "nan"
             ]
             joint_ids = [
                 str(value or "").strip()
-                for value in forecast_df.get("JoitID", []).tolist()
-                if str(value or "").strip()
+                for value in forecast_df["JoitID"].astype(str).str.strip().tolist()
+                if str(value or "").strip() and str(value or "").strip().lower() != "nan"
             ]
         except Exception:
             return [], [], False
@@ -2608,6 +2775,8 @@ class NewSpecialInspectionPage(BasePage):
 
     def _reload_system_files_from_backend(self):
         self.model_files = self._db_fetch_file_records(self.CATEGORY_MODEL)
+        self._invalidate_rule_preview_cache()
+        self._start_rule_preview_preload()
         self.collapse_files = self._db_fetch_file_records(self.CATEGORY_COLLAPSE)
         self._set_fatigue_groups_from_candidates(
             self._db_fetch_file_records(self.CATEGORY_FATIGUE)
@@ -2796,6 +2965,8 @@ class NewSpecialInspectionPage(BasePage):
             source_label="本地导入",
         )
         self._append_unique_path(self.model_files, system_path)
+        self._invalidate_rule_preview_cache()
+        self._start_rule_preview_preload()
         self._refresh_model_files_table()
         self._refresh_model_preview()
         QMessageBox.information(self, "本地导入", f"文件已入系统库并显示：\n{system_path}")
@@ -2817,6 +2988,7 @@ class NewSpecialInspectionPage(BasePage):
             return
 
         failed = False
+        deleted_count = 0
         for idx in indexes:
             if 0 <= idx < len(self.model_files):
                 path = self.model_files[idx]
@@ -2825,11 +2997,15 @@ class NewSpecialInspectionPage(BasePage):
                     failed = True
                     continue
                 del self.model_files[idx]
+                deleted_count += 1
 
+        self._invalidate_rule_preview_cache()
         self._refresh_files_table()
         self._refresh_model_preview()
         if failed:
             QMessageBox.warning(self, "警告", "部分文件未能同步更新数据库删除状态，已保留在列表中。")
+        elif deleted_count:
+            QMessageBox.information(self, "删除成功", "删除成功")
 
     def _on_add_collapse_local(self):
         fp, _ = QFileDialog.getOpenFileName(self, "选择倒塌分析结果文件", "", "所有文件 (*.*)")
@@ -2869,6 +3045,7 @@ class NewSpecialInspectionPage(BasePage):
 
         rows_to_delete = sorted([idx.row() for idx in selected], reverse=True)
         failed = False
+        deleted_count = 0
         for r in rows_to_delete:
             if 1 <= r <= len(self.collapse_files):
                 path = self.collapse_files[r - 1]
@@ -2877,10 +3054,13 @@ class NewSpecialInspectionPage(BasePage):
                     failed = True
                     continue
                 del self.collapse_files[r - 1]
+                deleted_count += 1
 
         self._refresh_files_table()
         if failed:
             QMessageBox.warning(self, "警告", "部分文件未能同步更新数据库删除状态，已保留在列表中。")
+        elif deleted_count:
+            QMessageBox.information(self, "删除成功", "删除成功")
 
     def _fatigue_target_list(self, branch: str) -> List[str]:
         return self.fatigue_input_files if branch == "input" else self.fatigue_result_files
@@ -2942,6 +3122,7 @@ class NewSpecialInspectionPage(BasePage):
             return
 
         failed = False
+        deleted_count = 0
         target_list = self._fatigue_target_list(branch)
         for idx in indexes:
             if 0 <= idx < len(target_list):
@@ -2951,10 +3132,13 @@ class NewSpecialInspectionPage(BasePage):
                     failed = True
                     continue
                 del target_list[idx]
+                deleted_count += 1
 
         self._refresh_files_table()
         if failed:
             QMessageBox.warning(self, "警告", "部分疲劳文件未能同步更新数据库删除状态，已保留在列表中。")
+        elif deleted_count:
+            QMessageBox.information(self, "删除成功", "删除成功")
 
     def _on_add_fatigue_result_local(self):
         self._on_add_fatigue_local("result")
@@ -2975,7 +3159,7 @@ class NewSpecialInspectionPage(BasePage):
         self._on_del_fatigue("input")
 
     def _refresh_model_preview(self):
-        if not hasattr(self, "model_preview_panel"):
+        if not hasattr(self, "_model_preview_layout"):
             return
 
         model_path = ""
@@ -2990,9 +3174,14 @@ class NewSpecialInspectionPage(BasePage):
             history_overlay = {}
 
         if model_path and os.path.exists(model_path):
+            if not self._ensure_model_preview_panel():
+                return
             self.model_preview_panel.load_model(model_path, target_z=9.1, history_overlay=history_overlay)
         else:
-            self.model_preview_panel.clear_model("当前未加载模型文件")
+            if getattr(self, "model_preview_panel", None) is not None:
+                self.model_preview_panel.clear_model("当前未加载模型文件")
+            else:
+                self._set_model_preview_placeholder("当前未加载模型文件")
 
     def _create_title_row_widget(self, title_text: str, buttons_info: list) -> QWidget:
         """创建一个内嵌于表格标题行的自定义 Widget，包含标题文字和对应按钮"""

@@ -69,6 +69,15 @@ from pages.sacs_storage_service import (
     get_job_runtime_dir,
 )
 
+try:
+    from vtkmodules.vtkCommonCore import vtkLogger, vtkObject
+
+    vtkObject.GlobalWarningDisplayOff()
+    if hasattr(vtkLogger, "SetStderrVerbosity") and hasattr(vtkLogger, "VERBOSITY_OFF"):
+        vtkLogger.SetStderrVerbosity(vtkLogger.VERBOSITY_OFF)
+except Exception:
+    pass
+
 class PyVistaSacsView(QFrame):
     COLOR_SCHEME = {
         "background": "white",
@@ -80,6 +89,7 @@ class PyVistaSacsView(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        self._vtk_closed = False
         self._loaded_path = ""
         self._nodes = {}
         self._members = []
@@ -107,12 +117,71 @@ class PyVistaSacsView(QFrame):
         self.plotter.set_background(self.COLOR_SCHEME["background"])
         self.plotter.add_axes()
 
+    def _plotter_ready(self) -> bool:
+        return (not getattr(self, "_vtk_closed", False)) and getattr(self, "plotter", None) is not None
+
+    def _safe_render(self) -> bool:
+        if not self._plotter_ready():
+            return False
+        try:
+            self.plotter.render()
+            return True
+        except Exception:
+            return False
+
+    def _can_export_current_view(self) -> bool:
+        if not self._plotter_ready():
+            return False
+        try:
+            return bool(self.isVisible() and self.plotter.isVisible())
+        except Exception:
+            return False
+
+    def cleanup_vtk(self) -> None:
+        if getattr(self, "_vtk_closed", False):
+            return
+        self._vtk_closed = True
+        plotter = getattr(self, "plotter", None)
+        if plotter is None:
+            return
+        try:
+            plotter.removeEventFilter(self)
+        except Exception:
+            pass
+        try:
+            plotter.clear()
+        except Exception:
+            pass
+        try:
+            render_window = plotter.GetRenderWindow()
+            if render_window is not None:
+                render_window.Finalize()
+        except Exception:
+            pass
+        try:
+            plotter.close()
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        self.cleanup_vtk()
+        super().closeEvent(event)
+
+    def deleteLater(self):
+        self.cleanup_vtk()
+        super().deleteLater()
+
     def clear_view(self, message: str = ""):
-        self.plotter.clear()
-        self.plotter.set_background(self.COLOR_SCHEME["background"])
-        self.plotter.add_axes()
-        if message:
-            self.plotter.add_text(message, position="upper_left", font_size=10)
+        if not self._plotter_ready():
+            return
+        try:
+            self.plotter.clear()
+            self.plotter.set_background(self.COLOR_SCHEME["background"])
+            self.plotter.add_axes()
+            if message:
+                self.plotter.add_text(message, position="upper_left", font_size=10)
+        except Exception:
+            pass
 
     def eventFilter(self, obj, event):
         if obj is self.plotter and event.type() == QEvent.MouseButtonPress:
@@ -149,7 +218,7 @@ class PyVistaSacsView(QFrame):
             self._slider_v.setValue(0)
             self._slider_v.blockSignals(False)
 
-        self.plotter.render()
+        self._safe_render()
 
     def load_inp(self, file_path: str, target_z: float = 9.1):
         self._loaded_path = file_path
@@ -268,8 +337,14 @@ class PyVistaSacsView(QFrame):
         - 整个模型统一用黄色绘制；
         - 保留坐标轴与相机行为不变。
         """
-        self.plotter.clear()
-        self.plotter.set_background(self.COLOR_SCHEME["background"])
+        if not self._plotter_ready():
+            return
+
+        try:
+            self.plotter.clear()
+            self.plotter.set_background(self.COLOR_SCHEME["background"])
+        except Exception:
+            return
 
         node_list = list(nodes.keys())
         id_map = {nid: i for i, nid in enumerate(node_list)}
@@ -318,12 +393,12 @@ class PyVistaSacsView(QFrame):
         except Exception:
             self._initial_parallel_scale = None
 
-        self.plotter.render()
+        self._safe_render()
 
     def export_current_view(self, output_path: str, width: int = 3200, height: int = 3200, scale: int = 4) -> str:
         """导出当前三维视图为高清 PNG，页面显示尺寸不变。"""
         output = os.path.normpath(str(output_path or "").strip())
-        if not output:
+        if not output or not self._can_export_current_view():
             return ""
         folder = os.path.dirname(output)
         if folder:
@@ -333,10 +408,8 @@ class PyVistaSacsView(QFrame):
         height = max(int(height or 3200), 1200)
         scale = max(int(scale or 1), 1)
 
-        try:
-            self.plotter.render()
-        except Exception:
-            pass
+        if not self._safe_render():
+            return ""
 
         try:
             self.plotter.screenshot(output, scale=scale)
@@ -354,16 +427,13 @@ class PyVistaSacsView(QFrame):
                         self.plotter.window_size = [width, height]
                     except Exception:
                         pass
-                    try:
-                        self.plotter.render()
-                    except Exception:
-                        pass
+                    self._safe_render()
                     self.plotter.screenshot(output)
                 finally:
                     if old_size and len(old_size) == 2:
                         try:
                             self.plotter.window_size = list(old_size)
-                            self.plotter.render()
+                            self._safe_render()
                         except Exception:
                             pass
         except Exception:
@@ -382,6 +452,9 @@ class PyVistaSacsView(QFrame):
         self._last_pan_y = y_value
 
         if dx_slider == 0 and dy_slider == 0:
+            return
+
+        if not self._plotter_ready():
             return
 
         cam = self.plotter.camera
@@ -414,7 +487,7 @@ class PyVistaSacsView(QFrame):
         cam.position = tuple(pos + shift)
         cam.focal_point = tuple(focal + shift)
 
-        self.plotter.render()
+        self._safe_render()
 
     def reset_pan_state(self):
         self._last_pan_x = 0
@@ -499,6 +572,7 @@ class PlatformStrengthPage(BasePage):
         # 三维总图：打开结构强度页后自动保存；避免重复/过期导出。
         self._overall_export_seq = 0
         self._last_saved_overall_image_key = ""
+        self._is_closing = False
 
         self._build_ui()
         self._capture_default_strength_env_tables()
@@ -2248,6 +2322,8 @@ class PlatformStrengthPage(BasePage):
 
     def _schedule_export_overall_model_image(self, delay_ms: int = 1200):
         """三维图打开并渲染完成后延迟保存，避免刚加载完就截图为空。"""
+        if getattr(self, "_is_closing", False):
+            return
         facility_code = self._get_top_value("facility_code")
         if not facility_code:
             return
@@ -2260,14 +2336,27 @@ class PlatformStrengthPage(BasePage):
         )
 
     def _do_delayed_export_overall_model_image(self, seq: int, facility_code: str):
-        if seq != self._overall_export_seq:
+        if seq != self._overall_export_seq or getattr(self, "_is_closing", False):
+            return
+        try:
+            if not self.isVisible():
+                return
+        except Exception:
             return
         self._export_overall_model_image(facility_code)
 
     def _export_overall_model_image(self, facility_code: str, force: bool = False) -> str:
         """保存当前三维总图到统一特检图片目录。"""
         code = (facility_code or "").strip()
-        if not code or not hasattr(self, "inp_view"):
+        if not code or not hasattr(self, "inp_view") or getattr(self, "_is_closing", False):
+            return ""
+        if not force:
+            try:
+                if not self.isVisible():
+                    return ""
+            except Exception:
+                return ""
+        if getattr(self.inp_view, "_vtk_closed", False):
             return ""
 
         try:
@@ -2312,6 +2401,43 @@ class PlatformStrengthPage(BasePage):
         except Exception as exc:
             print("[PlatformStrengthPage] export overall model image failed:", exc)
             return ""
+
+    def _cleanup_inp_view(self) -> None:
+        view = getattr(self, "inp_view", None)
+        if view is not None and hasattr(view, "cleanup_vtk"):
+            try:
+                view.cleanup_vtk()
+            except Exception:
+                pass
+
+    def hideEvent(self, event):
+        self._overall_export_seq += 1
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if getattr(self, "_is_closing", False):
+            return
+        view = getattr(self, "inp_view", None)
+        loaded_path = ""
+        try:
+            loaded_path = str(getattr(view, "_loaded_path", "") or "").strip()
+        except Exception:
+            loaded_path = ""
+        if loaded_path and not self._last_saved_overall_image_key:
+            self._schedule_export_overall_model_image(delay_ms=600)
+
+    def closeEvent(self, event):
+        self._is_closing = True
+        self._overall_export_seq += 1
+        self._cleanup_inp_view()
+        super().closeEvent(event)
+
+    def deleteLater(self):
+        self._is_closing = True
+        self._overall_export_seq += 1
+        self._cleanup_inp_view()
+        super().deleteLater()
 
     def _build_custom_legend(self) -> QWidget:
         w = QWidget(self)
@@ -2475,7 +2601,13 @@ class PlatformStrengthPage(BasePage):
         full_view.load_inp(path, target_z=self._get_workpoint_value())
 
         dlg.showMaximized()
-        dlg.exec_()
+        try:
+            dlg.exec_()
+        finally:
+            try:
+                full_view.cleanup_vtk()
+            except Exception:
+                pass
 
     def _sacinp_name_score(self, file_name: str) -> int:
         """按文件名判断是否为 SACS 结构模型文件，并优先原模型 JKnew。"""

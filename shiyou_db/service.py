@@ -8,7 +8,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import inspect, or_, select
+from sqlalchemy import func, inspect, or_, select
 from sqlalchemy.orm import joinedload, sessionmaker
 
 from .config import AppSettings, load_settings
@@ -539,10 +539,13 @@ class FileMetadataService:
         module_code: str | None = None,
         logical_path: str | None = None,
         logical_path_prefix: str | None = None,
+        logical_path_prefixes: list[str] | None = None,
         facility_code: str | None = None,
         document_code_query: str | None = None,
         document_title_query: str | None = None,
         include_deleted: bool = False,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> list[dict]:
         with self.session_factory() as session:
             stmt = select(FileRecord).options(joinedload(FileRecord.file_type))
@@ -552,6 +555,17 @@ class FileMetadataService:
                 stmt = stmt.where(FileRecord.module_code == module_code)
             if logical_path:
                 stmt = stmt.where(FileRecord.logical_path == self._normalize_logical_path(logical_path))
+            elif logical_path_prefixes:
+                prefix_conditions = [
+                    condition
+                    for condition in (
+                        self._logical_path_prefix_condition(prefix)
+                        for prefix in logical_path_prefixes
+                    )
+                    if condition is not None
+                ]
+                if prefix_conditions:
+                    stmt = stmt.where(or_(*prefix_conditions))
             elif logical_path_prefix:
                 prefix = self._normalize_logical_path(logical_path_prefix)
                 prefix_condition = self._logical_path_prefix_condition(prefix)
@@ -580,8 +594,73 @@ class FileMetadataService:
             if not include_deleted:
                 stmt = stmt.where(FileRecord.is_deleted.is_(False))
             stmt = stmt.order_by(FileRecord.uploaded_at.desc(), FileRecord.updated_at.desc(), FileRecord.id.desc())
+            if offset is not None:
+                stmt = stmt.offset(max(0, int(offset)))
+            if limit is not None:
+                stmt = stmt.limit(max(0, int(limit)))
             rows = session.execute(stmt).scalars().all()
             return [self._record_to_dict(row) for row in rows]
+
+    def count_files(
+        self,
+        *,
+        file_type_code: str | None = None,
+        module_code: str | None = None,
+        logical_path: str | None = None,
+        logical_path_prefix: str | None = None,
+        logical_path_prefixes: list[str] | None = None,
+        facility_code: str | None = None,
+        document_code_query: str | None = None,
+        document_title_query: str | None = None,
+        include_deleted: bool = False,
+    ) -> int:
+        with self.session_factory() as session:
+            stmt = select(func.count(FileRecord.id))
+            if file_type_code:
+                stmt = stmt.join(FileRecord.file_type).where(FileType.code == file_type_code)
+            if module_code:
+                stmt = stmt.where(FileRecord.module_code == module_code)
+            if logical_path:
+                stmt = stmt.where(FileRecord.logical_path == self._normalize_logical_path(logical_path))
+            elif logical_path_prefixes:
+                prefix_conditions = [
+                    condition
+                    for condition in (
+                        self._logical_path_prefix_condition(prefix)
+                        for prefix in logical_path_prefixes
+                    )
+                    if condition is not None
+                ]
+                if prefix_conditions:
+                    stmt = stmt.where(or_(*prefix_conditions))
+            elif logical_path_prefix:
+                prefix = self._normalize_logical_path(logical_path_prefix)
+                prefix_condition = self._logical_path_prefix_condition(prefix)
+                if prefix_condition is not None:
+                    stmt = stmt.where(prefix_condition)
+            if facility_code:
+                stmt = stmt.where(FileRecord.facility_code == facility_code)
+            code_pattern = self._contains_like_pattern(document_code_query)
+            if code_pattern:
+                stmt = stmt.where(
+                    or_(
+                        FileRecord.document_code.like(code_pattern, escape="\\"),
+                        FileRecord.logical_path.like(code_pattern, escape="\\"),
+                        FileRecord.original_name.like(code_pattern, escape="\\"),
+                    )
+                )
+            title_pattern = self._contains_like_pattern(document_title_query)
+            if title_pattern:
+                stmt = stmt.where(
+                    or_(
+                        FileRecord.document_title.like(title_pattern, escape="\\"),
+                        FileRecord.original_name.like(title_pattern, escape="\\"),
+                        FileRecord.logical_path.like(title_pattern, escape="\\"),
+                    )
+                )
+            if not include_deleted:
+                stmt = stmt.where(FileRecord.is_deleted.is_(False))
+            return int(session.execute(stmt).scalar() or 0)
 
     def download_file(self, record_id: int, target_dir: str, *, download_name: str | None = None) -> str:
         with self.session_factory() as session:

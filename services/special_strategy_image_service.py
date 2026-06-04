@@ -150,6 +150,7 @@ def build_strategy_image_path(
     year_label: Optional[str],
     row_name: str,
     image_type: str = "elevation_risk",
+    create_dirs: bool = True,
 ) -> Path:
     """生成当前图片保存路径。
 
@@ -165,7 +166,8 @@ def build_strategy_image_path(
     )
     if year_label:
         root = root / _safe_name(year_label)
-    root.mkdir(parents=True, exist_ok=True)
+    if create_dirs:
+        root.mkdir(parents=True, exist_ok=True)
     return root / f"{_safe_name(row_name)}.png"
 
 

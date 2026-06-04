@@ -6,6 +6,7 @@ import io
 import json
 import math
 import re
+import time
 import uuid
 import zipfile
 from dataclasses import dataclass
@@ -1842,8 +1843,17 @@ def build_generated_appendix_plan(
     for heading, _, output_pdf in sheet_exports:
         plan.append({"heading": heading, "files": [output_pdf] if output_pdf.exists() else []})
 
-    plan.append({"heading": APPENDIX_C_MAIN_HEADING, "files": []})
+    plan.extend(build_appendix_c_image_plan(facility_code=facility_code, run_id=run_id))
 
+    return plan, temp_files
+
+
+def build_appendix_c_image_plan(
+    *,
+    facility_code: str = "",
+    run_id: int | None = None,
+) -> list[dict[str, Any]]:
+    plan: list[dict[str, Any]] = [{"heading": APPENDIX_C_MAIN_HEADING, "files": []}]
     if facility_code.strip():
         from services.special_strategy_image_service import build_strategy_image_path
         try:
@@ -1953,6 +1963,108 @@ def build_generated_appendix_plan(
         for _, heading in APPENDIX_C_YEAR_SECTION_MAP:
             plan.append({"heading": heading, "files": []})
 
+    return plan
+
+
+def _write_appendix_cell(worksheet: Any, row: int, col: int, value: Any, *, bold: bool = False) -> None:
+    from openpyxl.styles import Alignment, Font
+
+    cell = worksheet.cell(row=row, column=col, value="" if value is None else str(value))
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    cell.font = Font(name="SimSun", size=10, bold=bold)
+
+
+def _write_snapshot_sheet(
+    worksheet: Any,
+    *,
+    title: str,
+    headers: list[tuple[str, str]],
+    rows: list[dict[str, Any]],
+) -> None:
+    from openpyxl.styles import PatternFill
+
+    worksheet.title = title[:31]
+    header_fill = PatternFill(fill_type="solid", fgColor="DDEBF7")
+    for col, (header, _key) in enumerate(headers, start=1):
+        _write_appendix_cell(worksheet, 1, col, header, bold=True)
+        worksheet.cell(row=1, column=col).fill = header_fill
+        worksheet.column_dimensions[worksheet.cell(row=1, column=col).column_letter].width = max(12, min(24, len(header) + 4))
+
+    for row_index, item in enumerate(rows, start=2):
+        for col, (_header, key) in enumerate(headers, start=1):
+            _write_appendix_cell(worksheet, row_index, col, item.get(key, ""))
+
+    worksheet.freeze_panes = "A2"
+    worksheet.page_setup.orientation = "landscape"
+    worksheet.page_setup.fitToWidth = 1
+    worksheet.page_setup.fitToHeight = 0
+    worksheet.sheet_properties.pageSetUpPr.fitToPage = True
+
+
+def build_snapshot_appendix_plan(
+    *,
+    node_rows: list[dict[str, Any]] | None = None,
+    member_rows: list[dict[str, Any]] | None = None,
+    scratch_dir: Path | None = None,
+) -> tuple[list[dict[str, Any]], list[Path]]:
+    from openpyxl import Workbook
+
+    scratch_root = Path(scratch_dir or Path.cwd()).resolve()
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    workbook_path = scratch_root / f"snapshot_appendices_{uuid.uuid4().hex}.xlsx"
+
+    workbook = Workbook()
+    ws_node = workbook.active
+    member_sheet = workbook.create_sheet("构件失效风险等级")
+    _write_snapshot_sheet(
+        ws_node,
+        title="节点失效风险等级",
+        headers=[
+            ("Joint A", "joint_a"),
+            ("Joint B", "joint_b"),
+            ("WeldType", "weld_type"),
+            ("失效后果等级", "consequence_level"),
+            ("A", "a"),
+            ("B", "b"),
+            ("Rm", "rm"),
+            ("VR", "vr"),
+            ("Pf", "pf"),
+            ("失效概率等级", "collapse_prob_level"),
+            ("节点风险等级", "risk_level"),
+        ],
+        rows=list(node_rows or []),
+    )
+    _write_snapshot_sheet(
+        member_sheet,
+        title="构件失效风险等级",
+        headers=[
+            ("A", "joint_a"),
+            ("B", "joint_b"),
+            ("MemberType", "member_type"),
+            ("失效后果等级", "consequence_level"),
+            ("A", "a"),
+            ("B", "b"),
+            ("倒塌分析载荷系数Rm", "rm"),
+            ("VR", "vr"),
+            ("Pf", "pf"),
+            ("失效概率等级", "collapse_prob_level"),
+            ("构件风险等级", "risk_level"),
+        ],
+        rows=list(member_rows or []),
+    )
+    workbook.save(workbook_path)
+    workbook.close()
+
+    sheet_exports = [
+        (APPENDIX_A_HEADING, "节点失效风险等级", (scratch_root / "appendix_a_node_risk.pdf").resolve()),
+        (APPENDIX_B_HEADING, "构件失效风险等级", (scratch_root / "appendix_b_member_risk.pdf").resolve()),
+    ]
+    temp_files: list[Path] = [workbook_path]
+    temp_files.extend(export_workbook_sheets_to_pdf(workbook_path, sheet_exports))
+    plan = [
+        {"heading": heading, "files": [output_pdf] if output_pdf.exists() else []}
+        for heading, _sheet_name, output_pdf in sheet_exports
+    ]
     return plan, temp_files
 
 
@@ -2135,7 +2247,15 @@ def refresh_word_document_fields(
             document.ExportAsFixedFormat(
                 OutputFileName=str(pdf_target),
                 ExportFormat=17,  # wdExportFormatPDF
+                OpenAfterExport=False,
             )
+            deadline = time.monotonic() + max(5, min(timeout_seconds, 90))
+            while time.monotonic() < deadline:
+                if pdf_target.exists() and pdf_target.stat().st_size > 0:
+                    break
+                time.sleep(0.2)
+            if not pdf_target.exists() or pdf_target.stat().st_size <= 0:
+                return False
         return True
     except Exception:
         return False
@@ -2370,7 +2490,7 @@ def _normalize_appendix_file_entry(entry: Any) -> tuple[Path | None, str]:
     return None, ""
 
 
-def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None:
+def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> dict[str, int]:
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Inches
@@ -2379,7 +2499,14 @@ def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None
     sections.extend(context.get("appendix_pdf_plan", []) or [])
     sections.extend(context.get("appendix_generated_plan", []) or [])
     if not sections:
-        return
+        return {
+            "planned_files": 0,
+            "inserted_images": 0,
+            "missing_files": 0,
+            "unsupported_files": 0,
+            "pdf_render_failures": 0,
+            "missing_headings": 0,
+        }
 
     def find_heading_paragraph(document: Any, heading: str) -> Any | None:
         for paragraph in document.paragraphs:
@@ -2403,6 +2530,14 @@ def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None
     document = Document(docx_path)
     width = Inches(APPENDIX_IMAGE_WIDTH_INCHES)
     heading_set = {str(section.get("heading", "")).strip() for section in sections if str(section.get("heading", "")).strip()}
+    stats = {
+        "planned_files": 0,
+        "inserted_images": 0,
+        "missing_files": 0,
+        "unsupported_files": 0,
+        "pdf_render_failures": 0,
+        "missing_headings": 0,
+    }
 
     def insert_paragraph_after(paragraph: Any, text: str = "") -> Any:
         new_para = document.add_paragraph()
@@ -2410,6 +2545,11 @@ def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None
             new_para.add_run(text)
         paragraph._p.addnext(new_para._p)
         return new_para
+
+    def append_missing_heading(heading: str) -> Any:
+        if document.paragraphs and document.paragraphs[-1].text.strip():
+            document.add_page_break()
+        return document.add_paragraph(heading)
 
     def insert_image_after(paragraph: Any, image_path: Path, caption: str = "") -> Any:
         current = paragraph
@@ -2421,6 +2561,7 @@ def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None
         img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         img_para.add_run().add_picture(str(image_path), width=width)
         current._p.addnext(img_para._p)
+        stats["inserted_images"] += 1
         return img_para
 
     def clear_placeholder_paragraphs_after(anchor: Any) -> None:
@@ -2451,9 +2592,13 @@ def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None
         for section in sections:
             heading = str(section.get("heading", "")).strip()
             files = [_normalize_appendix_file_entry(item) for item in section.get("files", [])]
+            stats["planned_files"] += sum(1 for file_path, _caption in files if file_path is not None)
             anchor = find_heading_paragraph(document, heading)
-            if anchor is None or not files:
+            if not files:
                 continue
+            if anchor is None:
+                stats["missing_headings"] += 1
+                anchor = append_missing_heading(heading)
 
             clear_placeholder_paragraphs_after(anchor)
             current = anchor
@@ -2465,8 +2610,17 @@ def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None
                 if suffix in APPENDIX_IMAGE_SUFFIXES:
                     if file_path.exists():
                         current = insert_image_after(current, file_path, caption)
+                    else:
+                        stats["missing_files"] += 1
+                        current = insert_paragraph_after(current, f"附件图片文件不存在：{file_path}")
+                    continue
+                if not file_path.exists():
+                    stats["missing_files"] += 1
+                    current = insert_paragraph_after(current, f"附件文件不存在：{file_path}")
                     continue
                 if suffix != ".pdf":
+                    stats["unsupported_files"] += 1
+                    current = insert_paragraph_after(current, f"暂不支持直接插入的附件格式：{file_path.name}")
                     continue
                 if caption:
                     current = insert_paragraph_after(current, caption)
@@ -2475,12 +2629,14 @@ def insert_appendix_pdf_images(docx_path: Path, context: dict[str, Any]) -> None
                     image_paths = render_pdf_to_jpeg_pages(file_path, docx_path.parent)
                     temp_images.extend(image_paths)
                 except Exception as exc:
+                    stats["pdf_render_failures"] += 1
                     current = insert_paragraph_after(current, f"PDF渲染失败：{file_path.name} ({type(exc).__name__}: {exc})")
                     continue
 
                 for image_path in image_paths:
                     current = insert_image_after(current, image_path)
         document.save(docx_path)
+        return stats
     finally:
         for image_path in temp_images:
             try:

@@ -4,10 +4,11 @@ import os
 import shutil
 from typing import Callable, List, Optional
 
-from PyQt5.QtCore import QDateTime, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import QObject, QDateTime, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -17,6 +18,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QProgressDialog,
     QHeaderView,
     QSizePolicy,
     QTableWidget,
@@ -36,7 +38,7 @@ from services.file_db_adapter import (
     hard_delete_record,
     is_file_db_configured,
     load_docman_records,
-    load_docman_record_list,
+    load_docman_record_page,
     replace_docman_list_file,
     replace_docman_file,
     resolve_storage_path,
@@ -112,6 +114,49 @@ def apply_docman_table_style(table: QTableWidget) -> None:
     table.setFont(table_font)
     table.setAlternatingRowColors(False)
     table.setStyleSheet(DOC_MAN_TABLE_QSS)
+
+
+class _DocManRecordPageWorker(QObject):
+    finished = pyqtSignal(int, object)
+    failed = pyqtSignal(int, str)
+
+    def __init__(
+        self,
+        *,
+        token: int,
+        path_segments: List[str],
+        page: int,
+        page_size: int,
+        facility_code: str | None,
+        document_code_query: str,
+        document_title_query: str,
+        logical_path_prefixes: Optional[List[str]],
+    ):
+        super().__init__()
+        self._token = int(token)
+        self._path_segments = list(path_segments)
+        self._page = int(page)
+        self._page_size = int(page_size)
+        self._facility_code = facility_code
+        self._document_code_query = document_code_query
+        self._document_title_query = document_title_query
+        self._logical_path_prefixes = list(logical_path_prefixes or [])
+
+    def run(self) -> None:
+        try:
+            page_data = load_docman_record_page(
+                self._path_segments,
+                page=self._page,
+                page_size=self._page_size,
+                facility_code=self._facility_code,
+                document_code_query=self._document_code_query,
+                document_title_query=self._document_title_query,
+                logical_path_prefixes=self._logical_path_prefixes,
+            )
+        except Exception as exc:
+            self.failed.emit(self._token, str(exc))
+            return
+        self.finished.emit(self._token, page_data)
 
 
 class CheckBoxHeader(QHeaderView):
@@ -198,14 +243,20 @@ class UploadStagingDialog(QDialog):
         "模块",
         "图号",
         "状态",
-        "路径",
     ]
 
-    def __init__(self, *, default_category: str = "", parent=None):
+    def __init__(
+        self,
+        *,
+        default_category: str = "",
+        require_recognized: bool = False,
+        parent=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("待上传文件")
         self.resize(1180, 560)
         self._default_category = (default_category or "").strip()
+        self._require_recognized = bool(require_recognized)
         self._items: list[dict] = []
         self._build_ui()
 
@@ -228,11 +279,14 @@ class UploadStagingDialog(QDialog):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
-        hint = QLabel(
-            "选择文件后，系统会按“设计阶段-文件分类-单体(模块)-专业-图号(次级序列号)”解析文件名，"
-            "无法识别的文件会归入未分类/其他。",
-            self,
+        hint_text = (
+            "选择文件后，系统会按“设计阶段-文件分类-单体(模块)-专业-图号(次级序列号)”解析文件名。"
         )
+        if self._require_recognized:
+            hint_text += "未识别到标准文件编码的文件不能上传。"
+        else:
+            hint_text += "无法识别的文件会归入未分类/其他。"
+        hint = QLabel(hint_text, self)
         hint.setObjectName("UploadHint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -271,10 +325,14 @@ class UploadStagingDialog(QDialog):
         if not paths:
             return
         seen = {item["path"] for item in self._items}
+        rejected: list[str] = []
         for path in paths:
             if path in seen:
                 continue
             meta = parse_document_code_from_name(os.path.basename(path))
+            if self._require_recognized and self._is_unclassified_meta(meta):
+                rejected.append(os.path.basename(path))
+                continue
             category = str(meta.get("file_class_name") or "").strip()
             if not category:
                 category = self._default_category or "未分类/其他"
@@ -286,7 +344,17 @@ class UploadStagingDialog(QDialog):
                 }
             )
             seen.add(path)
+        if rejected:
+            QMessageBox.warning(
+                self,
+                "文件编码未识别",
+                "以下文件未识别到标准文件编码，不能上传：\n" + "\n".join(rejected),
+            )
         self._refresh_table()
+
+    @staticmethod
+    def _is_unclassified_meta(meta: dict) -> bool:
+        return str((meta or {}).get("recognition_status") or "").strip() == "unclassified"
 
     @staticmethod
     def _status_label(status: str) -> str:
@@ -313,11 +381,10 @@ class UploadStagingDialog(QDialog):
                 str(meta.get("module_unit_name") or "上部组块"),
                 str(meta.get("drawing_no") or ""),
                 self._status_label(str(meta.get("recognition_status") or "")),
-                item["path"],
             ]
             for col, value in enumerate(values):
                 table_item = QTableWidgetItem(value)
-                align = Qt.AlignLeft | Qt.AlignVCenter if col in {1, 11} else Qt.AlignCenter
+                align = Qt.AlignLeft | Qt.AlignVCenter if col == 1 else Qt.AlignCenter
                 table_item.setTextAlignment(int(align))
                 table_item.setToolTip(value)
                 self.table.setItem(row, col, table_item)
@@ -345,6 +412,7 @@ class DocManWidget(QFrame):
         super().__init__(parent)
         self._storage_dir_getter = storage_dir_getter
         self._path_segments: List[str] = []
+        self._upload_path_resolver = None
         self._records: List[dict] = []
         self._category_options: List[str] = []
         self._facility_code: str | None = None
@@ -356,14 +424,23 @@ class DocManWidget(QFrame):
         self._custom_new_upload_handler = None
         self._custom_delete_handler = None
         self._custom_download_handler = None
-        self._page_size = 20
+        self._page_size = 30
         self._current_page = 0
+        self._db_total_rows = 0
+        self._db_total_pages = 1
         self._display_profile = "generic"
         self._path_root_label = ""
         self._display_path_segments: List[str] = []
         self._path_hint = ""
         self._default_work_condition = ""
+        self._document_code_query = ""
+        self._document_title_query = ""
+        self._logical_path_prefixes: List[str] = []
+        self._context_project_name = ""
+        self._rebuild_project_labels: dict[str, str] = {}
         self._context_load_token = 0
+        self._db_loading = False
+        self._db_load_jobs: list[tuple[QThread, _DocManRecordPageWorker, int]] = []
         self._build_ui()
 
     def set_action_handlers(
@@ -449,7 +526,6 @@ class DocManWidget(QFrame):
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         apply_docman_table_style(self.table)
         self.table.itemChanged.connect(self._on_item_changed)
-        self.table.cellDoubleClicked.connect(self._open_row_file)
 
         header = self.table.horizontalHeader()
         header.setMinimumHeight(34)
@@ -527,8 +603,15 @@ class DocManWidget(QFrame):
         display_path_segments: Optional[List[str]] = None,
         path_hint: str = "",
         default_work_condition: str = "",
+        upload_path_resolver=None,
+        context_project_name: str = "",
+        rebuild_project_labels: Optional[dict] = None,
+        document_code_query: str = "",
+        document_title_query: str = "",
+        logical_path_prefixes: Optional[List[str]] = None,
     ):
         self._path_segments = list(path_segments)
+        self._upload_path_resolver = upload_path_resolver
         self._path_root_label = (path_root_label or "").strip()
         self._display_path_segments = (
             [str(part) for part in display_path_segments]
@@ -537,7 +620,18 @@ class DocManWidget(QFrame):
         )
         self._path_hint = (path_hint or "").strip()
         self._default_work_condition = (default_work_condition or "").strip()
+        self._document_code_query = (document_code_query or "").strip()
+        self._document_title_query = (document_title_query or "").strip()
+        self._logical_path_prefixes = [
+            str(item or "").replace("\\", "/").strip().strip("/")
+            for item in (logical_path_prefixes or [])
+            if str(item or "").replace("\\", "/").strip().strip("/")
+        ]
+        self._context_project_name = (context_project_name or "").strip()
+        self._rebuild_project_labels = self._normalize_project_label_map(rebuild_project_labels)
         self._db_list_mode = bool(db_list_mode)
+        self._db_total_rows = 0
+        self._db_total_pages = 1
         self._records = [dict(rec) for rec in records] if not self._db_list_mode else [
             dict(rec) for rec in records if self._record_has_content(rec)
         ]
@@ -552,6 +646,8 @@ class DocManWidget(QFrame):
         self._normalize_records()
         self._update_path_label()
         self.refresh()
+        if self._db_list_mode:
+            self._set_db_loading(True)
         if self._db_list_mode or overlay_from_db:
             QTimer.singleShot(0, lambda token=token: self._finish_deferred_context_load(token))
 
@@ -559,9 +655,9 @@ class DocManWidget(QFrame):
         if token != self._context_load_token:
             return
         if self._db_list_mode:
-            self._load_record_list_from_db()
-        else:
-            self._overlay_records_from_db()
+            self._start_record_page_load(token)
+            return
+        self._overlay_records_from_db()
         self._normalize_records()
         self.refresh()
 
@@ -622,8 +718,8 @@ class DocManWidget(QFrame):
         header_map = {
             "generic": [" ", "序号", "", "工况", "文件名", "文件格式", "修改时间", "类别", "备注", "操作"],
             "design": [" ", "序号", "", "编码", "名称", "设计阶段", "专业", "类别", "备注", "操作"],
-            "rebuild": [" ", "序号", "", "编码", "名称", "设计阶段", "专业", "类别", "备注", "操作"],
-            "model": [" ", "序号", "阶段", "名称", "分析类别", "文件格式", "修改时间", "模型类别", "备注", "操作"],
+            "rebuild": [" ", "序号", "项目名称", "编码", "名称", "设计阶段", "专业", "类别", "备注", "操作"],
+            "model": [" ", "", "阶段", "分析类别", "工况", "名称", "", "模型类别", "备注", "操作"],
             "inspection": [" ", "序号", "", "检测项目名称", "文件名称", "文件格式", "修改时间", "类别", "备注", "操作"],
         }
         self.table.setHorizontalHeaderLabels(header_map.get(self._display_profile, header_map["generic"]))
@@ -634,17 +730,22 @@ class DocManWidget(QFrame):
         self.table.setColumnWidth(self.COL_INDEX, 64)
         self.table.setColumnWidth(self.COL_DETAIL, 80)
         self.table.setColumnWidth(self.COL_STAGE, 130)
-        if self._display_profile in {"design", "rebuild"}:
+        if self._display_profile == "rebuild":
+            self.table.setColumnWidth(self.COL_STAGE, 170)
+            self.table.setColumnWidth(self.COL_WORK_CONDITION, 190)
+            self.table.setColumnWidth(self.COL_FMT, 150)
+            self.table.setColumnWidth(self.COL_MTIME, 120)
+            self.table.setColumnWidth(self.COL_CATEGORY, 140)
+        elif self._display_profile == "design":
             self.table.setColumnWidth(self.COL_WORK_CONDITION, 210)
             self.table.setColumnWidth(self.COL_FMT, 170)
             self.table.setColumnWidth(self.COL_MTIME, 140)
             self.table.setColumnWidth(self.COL_CATEGORY, 140)
         elif self._display_profile == "model":
             self.table.setColumnWidth(self.COL_STAGE, 150)
-            self.table.setColumnWidth(self.COL_WORK_CONDITION, 240)
-            self.table.setColumnWidth(self.COL_FILENAME, 110)
-            self.table.setColumnWidth(self.COL_FMT, 110)
-            self.table.setColumnWidth(self.COL_MTIME, 150)
+            self.table.setColumnWidth(self.COL_WORK_CONDITION, 150)
+            self.table.setColumnWidth(self.COL_FILENAME, 120)
+            self.table.setColumnWidth(self.COL_FMT, 260)
             self.table.setColumnWidth(self.COL_CATEGORY, 160)
         elif self._display_profile == "inspection":
             self.table.setColumnWidth(self.COL_WORK_CONDITION, 180)
@@ -671,16 +772,92 @@ class DocManWidget(QFrame):
         if not is_file_db_configured():
             return
         try:
-            self._records = load_docman_record_list(
+            page_data = load_docman_record_page(
                 self._path_segments,
+                page=self._current_page,
+                page_size=self._page_size,
                 facility_code=self._facility_code,
+                document_code_query=self._document_code_query,
+                document_title_query=self._document_title_query,
+                logical_path_prefixes=self._logical_path_prefixes,
             )
+            self._records = list(page_data.get("records") or [])
+            self._db_total_rows = int(page_data.get("total") or 0)
+            self._current_page = int(page_data.get("page") or 0)
+            self._db_total_pages = max(1, (self._db_total_rows + self._page_size - 1) // self._page_size)
         except FileBackendError:
             pass
 
+    def _start_record_page_load(self, token: int | None = None) -> None:
+        if not is_file_db_configured():
+            return
+        load_token = self._context_load_token if token is None else int(token)
+        self._set_db_loading(True)
+        thread = QThread(self)
+        worker = _DocManRecordPageWorker(
+            token=load_token,
+            path_segments=list(self._path_segments),
+            page=self._current_page,
+            page_size=self._page_size,
+            facility_code=self._facility_code,
+            document_code_query=self._document_code_query,
+            document_title_query=self._document_title_query,
+            logical_path_prefixes=self._logical_path_prefixes,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_record_page_loaded)
+        worker.failed.connect(self._on_record_page_load_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda t=thread: self._forget_db_load_thread(t))
+        self._db_load_jobs.append((thread, worker, load_token))
+        thread.start()
+
+    def _forget_db_load_thread(self, thread: QThread) -> None:
+        self._db_load_jobs = [job for job in self._db_load_jobs if job[0] is not thread]
+
+    def _on_record_page_loaded(self, token: int, page_data: object) -> None:
+        if int(token) != self._context_load_token:
+            return
+        if isinstance(page_data, dict):
+            self._records = list(page_data.get("records") or [])
+            self._db_total_rows = int(page_data.get("total") or 0)
+            self._current_page = int(page_data.get("page") or 0)
+            self._db_total_pages = max(1, (self._db_total_rows + self._page_size - 1) // self._page_size)
+        self._set_db_loading(False)
+        self._normalize_records()
+        self.refresh()
+
+    def _on_record_page_load_failed(self, token: int, message: str) -> None:
+        if int(token) != self._context_load_token:
+            return
+        self._set_db_loading(False)
+        self.refresh()
+        if message:
+            QMessageBox.warning(self, "加载失败", message)
+
+    def _set_db_loading(self, loading: bool) -> None:
+        self._db_loading = bool(loading)
+        if not hasattr(self, "page_label"):
+            return
+        if loading:
+            self.page_label.setText("正在加载...")
+            self.btn_prev_page.setEnabled(False)
+            self.btn_next_page.setEnabled(False)
+
     def _normalize_records(self):
         for index, rec in enumerate(self._records, start=1):
-            rec["index"] = index
+            if self._db_list_mode and rec.get("index"):
+                try:
+                    rec["index"] = int(rec.get("index") or index)
+                except Exception:
+                    rec["index"] = index
+            else:
+                rec["index"] = index
             rec.setdefault("checked", False)
             rec.setdefault("category", "")
             rec.setdefault("work_condition", "")
@@ -690,6 +867,7 @@ class DocManWidget(QFrame):
             rec.setdefault("path", "")
             rec.setdefault("remark", "")
             rec.setdefault("logical_path", "")
+            rec.setdefault("project_name", "")
             rec.setdefault("document_code", "")
             rec.setdefault("document_title", "")
             rec.setdefault("design_stage_name", "")
@@ -701,6 +879,8 @@ class DocManWidget(QFrame):
                 rec["work_condition"] = self._default_work_condition
             if not rec.get("filename") and rec.get("path"):
                 rec["filename"] = os.path.basename(rec["path"])
+            if self._display_profile == "rebuild" and not rec.get("project_name"):
+                rec["project_name"] = self._rebuild_project_text(rec)
 
     @staticmethod
     def _record_has_content(rec: dict) -> bool:
@@ -720,11 +900,18 @@ class DocManWidget(QFrame):
             if not self._hide_empty_templates or self._record_has_content(rec) or rec.get("_force_visible"):
                 all_visible_row_indices.append(idx)
 
-        total_pages = max(1, (len(all_visible_row_indices) + self._page_size - 1) // self._page_size)
-        self._current_page = max(0, min(self._current_page, total_pages - 1))
-        start = self._current_page * self._page_size
-        end = start + self._page_size
-        self._visible_row_indices = all_visible_row_indices[start:end]
+        if self._db_list_mode:
+            total_rows = self._db_total_rows if self._db_total_rows else len(all_visible_row_indices)
+            total_pages = max(1, (total_rows + self._page_size - 1) // self._page_size)
+            self._db_total_pages = total_pages
+            self._visible_row_indices = all_visible_row_indices
+        else:
+            total_rows = len(all_visible_row_indices)
+            total_pages = max(1, (total_rows + self._page_size - 1) // self._page_size)
+            self._current_page = max(0, min(self._current_page, total_pages - 1))
+            start = self._current_page * self._page_size
+            end = start + self._page_size
+            self._visible_row_indices = all_visible_row_indices[start:end]
 
         self._apply_profile_headers()
         self._apply_column_visibility()
@@ -736,18 +923,27 @@ class DocManWidget(QFrame):
             for row, record_index in enumerate(self._visible_row_indices):
                 rec = self._records[record_index]
                 self._set_check_cell(row, rec)
-                self._set_index_item(row, row + 1)
+                display_index = int(rec.get("index") or (row + 1)) if self._db_list_mode else row + 1
+                self._set_index_item(row, display_index)
                 self._set_profile_cells(row, rec)
                 self._set_detail_button(row, rec)
                 self._set_remark_item(row, rec.get("remark", ""))
         finally:
             self.table.blockSignals(False)
         self._update_header_check_state()
-        self._update_pagination_controls(len(all_visible_row_indices), total_pages)
+        self._update_pagination_controls(total_rows, total_pages)
 
     def _apply_column_visibility(self):
         force_show = self._display_profile in {"design", "rebuild", "model"}
-        self.table.setColumnHidden(self.COL_STAGE, self._display_profile != "model")
+        self.table.setColumnHidden(self.COL_STAGE, self._display_profile not in {"rebuild", "model"})
+        if self._display_profile == "model":
+            self.table.setColumnHidden(self.COL_INDEX, True)
+            self.table.setColumnHidden(self.COL_WORK_CONDITION, False)
+            self.table.setColumnHidden(self.COL_FILENAME, False)
+            self.table.setColumnHidden(self.COL_FMT, False)
+            self.table.setColumnHidden(self.COL_MTIME, True)
+            return
+        self.table.setColumnHidden(self.COL_INDEX, False)
         if self._display_profile == "inspection":
             self.table.setColumnHidden(self.COL_WORK_CONDITION, False)
             self.table.setColumnHidden(self.COL_FMT, True)
@@ -761,6 +957,8 @@ class DocManWidget(QFrame):
         self._set_category_cell(row, rec)
 
         if self._display_profile in {"design", "rebuild"}:
+            if self._display_profile == "rebuild":
+                self._set_readonly_item(row, self.COL_STAGE, self._rebuild_project_text(rec), Qt.AlignCenter)
             self._set_readonly_item(
                 row,
                 self.COL_WORK_CONDITION,
@@ -784,15 +982,9 @@ class DocManWidget(QFrame):
 
         if self._display_profile == "model":
             self._set_readonly_item(row, self.COL_STAGE, self._model_stage_text(rec), Qt.AlignCenter)
-            self._set_readonly_item(
-                row,
-                self.COL_WORK_CONDITION,
-                rec.get("filename", ""),
-                Qt.AlignVCenter | Qt.AlignLeft,
-            )
-            self._set_readonly_item(row, self.COL_FILENAME, self._model_analysis_text(rec), Qt.AlignCenter)
-            self._set_readonly_item(row, self.COL_FMT, rec.get("fmt", ""), Qt.AlignCenter)
-            self._set_readonly_item(row, self.COL_MTIME, rec.get("mtime", ""), Qt.AlignCenter)
+            self._set_readonly_item(row, self.COL_WORK_CONDITION, self._model_analysis_text(rec), Qt.AlignCenter)
+            self._set_editable_item(row, self.COL_FILENAME, rec.get("work_condition", ""), Qt.AlignCenter)
+            self._set_readonly_item(row, self.COL_FMT, rec.get("filename", ""), Qt.AlignVCenter | Qt.AlignLeft)
             return
 
         if self._display_profile == "inspection":
@@ -827,6 +1019,42 @@ class DocManWidget(QFrame):
         return root[:-2] if root.endswith("模型") else root
 
     @staticmethod
+    def _normalize_project_label_map(raw: Optional[dict]) -> dict[str, str]:
+        labels: dict[str, str] = {}
+        for key, value in (raw or {}).items():
+            label = str(value or "").strip()
+            normalized_key = "/".join(
+                part.strip()
+                for part in str(key or "").replace("\\", "/").strip("/").split("/")
+                if part.strip()
+            )
+            if normalized_key and label:
+                labels[normalized_key] = label
+        return labels
+
+    def _rebuild_project_text(self, rec: dict | None = None) -> str:
+        rec = rec or {}
+        explicit = str(rec.get("project_name") or "").strip()
+        if explicit:
+            return explicit
+
+        logical_path = str(rec.get("logical_path") or "").replace("\\", "/").strip("/")
+        parts = [part.strip() for part in logical_path.split("/") if part.strip()]
+        for length in range(len(parts), 0, -1):
+            key = "/".join(parts[:length])
+            label = self._rebuild_project_labels.get(key)
+            if label:
+                return label
+
+        if self._context_project_name:
+            return self._context_project_name
+
+        for part in parts:
+            if part.startswith("directory_"):
+                return part
+        return ""
+
+    @staticmethod
     def _document_code_text(rec: dict) -> str:
         return str(rec.get("document_code") or "").strip()
 
@@ -843,6 +1071,9 @@ class DocManWidget(QFrame):
         return "未分类" if status == "unclassified" else ""
 
     def _model_analysis_text(self, rec: dict) -> str:
+        explicit = str(rec.get("analysis_category") or "").strip()
+        if explicit:
+            return explicit
         text = " ".join(
             [
                 " ".join(self._path_segments),
@@ -924,6 +1155,12 @@ class DocManWidget(QFrame):
         item.setToolTip(item.text())
         self.table.setItem(row, col, item)
 
+    def _set_editable_item(self, row: int, col: int, text: str, align: Qt.AlignmentFlag):
+        item = QTableWidgetItem(text)
+        item.setTextAlignment(int(align))
+        item.setToolTip(item.text())
+        self.table.setItem(row, col, item)
+
     def _on_checked_changed(self, row: int, state: int):
         record_index = self._record_index_for_row(row)
         if record_index is not None:
@@ -990,45 +1227,119 @@ class DocManWidget(QFrame):
             self.refresh()
             return
 
-        dialog = UploadStagingDialog(default_category=self._default_category(), parent=self)
+        dialog = UploadStagingDialog(
+            default_category=self._default_category(),
+            require_recognized=self._requires_standard_document_code(),
+            parent=self,
+        )
         if dialog.exec_() != QDialog.Accepted:
             return
         items = dialog.selected_items()
         if not items:
             return
+        rejected = self._unclassified_upload_names(items)
+        if rejected:
+            self._warn_unclassified_uploads(rejected)
+            items = [
+                item
+                for item in items
+                if not self._is_unclassified_meta(dict(item.get("meta") or {}))
+            ]
+            if not items:
+                return
 
         ok_count = 0
         first_error = ""
-        for item in items:
+        canceled = False
+        progress = self._create_upload_progress(len(items))
+        for index, item in enumerate(items, start=1):
+            if progress.wasCanceled():
+                canceled = True
+                break
+            self._update_upload_progress(progress, index - 1, f"正在上传 {index}/{len(items)}：{os.path.basename(str(item.get('path') or ''))}")
             try:
                 self._upload_staged_file(item)
                 ok_count += 1
             except Exception as exc:
                 if not first_error:
                     first_error = str(exc)
+            self._update_upload_progress(progress, index, f"已完成 {index}/{len(items)}")
+        progress.close()
 
         if self._db_list_mode and is_file_db_configured():
+            self._current_page = 0
             self._load_record_list_from_db()
         self._normalize_records()
         self.refresh()
         if first_error:
             QMessageBox.warning(self, "上传完成但存在失败", f"成功上传 {ok_count} 个文件。\n首个失败原因：{first_error}")
+        elif canceled:
+            QMessageBox.information(self, "上传已取消", f"已取消上传，成功上传 {ok_count} 个文件。")
         else:
             QMessageBox.information(self, "上传成功", f"成功上传 {ok_count} 个文件。")
+
+    def _create_upload_progress(self, total_steps: int) -> QProgressDialog:
+        total = max(1, int(total_steps or 1))
+        progress = QProgressDialog("准备上传...", "取消", 0, total, self)
+        progress.setWindowTitle("上传进度")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+        progress.show()
+        QApplication.processEvents()
+        return progress
+
+    @staticmethod
+    def _update_upload_progress(progress: QProgressDialog, value: int, text: str) -> None:
+        progress.setLabelText(text)
+        progress.setValue(value)
+        QApplication.processEvents()
+
+    def _requires_standard_document_code(self) -> bool:
+        return self._display_profile in {"design", "rebuild"}
+
+    @staticmethod
+    def _is_unclassified_meta(meta: dict) -> bool:
+        return str((meta or {}).get("recognition_status") or "").strip() == "unclassified"
+
+    def _unclassified_upload_names(self, items: list[dict]) -> list[str]:
+        if not self._requires_standard_document_code():
+            return []
+        names: list[str] = []
+        for item in items:
+            meta = dict(item.get("meta") or {})
+            if self._is_unclassified_meta(meta):
+                names.append(os.path.basename(str(item.get("path") or "")) or "未命名文件")
+        return names
+
+    def _warn_unclassified_uploads(self, filenames: list[str]) -> None:
+        if not filenames:
+            return
+        QMessageBox.warning(
+            self,
+            "文件编码未识别",
+            "以下文件未识别到标准文件编码，不能上传：\n" + "\n".join(filenames),
+        )
 
     def _upload_staged_file(self, item: dict) -> None:
         file_path = str(item.get("path") or "").strip()
         if not file_path or not os.path.exists(file_path):
             raise FileNotFoundError(file_path or "文件不存在")
+        meta = dict(item.get("meta") or {})
+        if self._requires_standard_document_code() and self._is_unclassified_meta(meta):
+            raise ValueError(f"{os.path.basename(file_path)} 未识别到标准文件编码，不能上传")
         category = str(item.get("category") or "").strip() or self._default_category()
         if self._display_profile in {"design", "rebuild"} and category == self._default_category():
             meta = item.get("meta") or {}
             category = str(meta.get("file_class_name") or category or "").strip()
+        target_path_segments, category = self._resolve_upload_target(item, category)
 
         if self._db_list_mode and is_file_db_configured():
             append_docman_file(
                 file_path,
-                path_segments=self._path_segments,
+                path_segments=target_path_segments,
                 category=category,
                 work_condition=self._default_work_condition,
                 remark="",
@@ -1040,7 +1351,7 @@ class DocManWidget(QFrame):
             row_index = len(self._records) + 1
             result = replace_docman_file(
                 file_path,
-                path_segments=self._path_segments,
+                path_segments=target_path_segments,
                 row_index=row_index,
                 category=category,
                 work_condition=self._default_work_condition,
@@ -1050,11 +1361,26 @@ class DocManWidget(QFrame):
             self._records.append(self._record_from_upload_result(result, file_path, category))
             return
 
-        target_path = self._copy_local_upload(file_path)
-        self._records.append(self._record_from_local_upload(target_path, item, category))
+        target_path = self._copy_local_upload(file_path, target_path_segments)
+        self._records.append(self._record_from_local_upload(target_path, item, category, target_path_segments))
 
-    def _copy_local_upload(self, file_path: str) -> str:
-        target_dir = self._storage_dir_getter(self._path_segments)
+    def _resolve_upload_target(self, item: dict, category: str) -> tuple[List[str], str]:
+        path_segments = list(self._path_segments)
+        resolved_category = str(category or "").strip()
+        if self._upload_path_resolver is None:
+            return path_segments, resolved_category
+        result = self._upload_path_resolver(dict(item), list(self._path_segments), resolved_category)
+        if isinstance(result, dict):
+            raw_segments = result.get("path_segments")
+            if raw_segments:
+                path_segments = [str(part).strip() for part in raw_segments if str(part).strip()]
+            resolved_category = str(result.get("category") or resolved_category).strip()
+        elif isinstance(result, (list, tuple)):
+            path_segments = [str(part).strip() for part in result if str(part).strip()]
+        return path_segments, resolved_category
+
+    def _copy_local_upload(self, file_path: str, path_segments: Optional[List[str]] = None) -> str:
+        target_dir = self._storage_dir_getter(path_segments or self._path_segments)
         os.makedirs(target_dir, exist_ok=True)
         filename = os.path.basename(file_path)
         target_path = os.path.join(target_dir, filename)
@@ -1097,7 +1423,13 @@ class DocManWidget(QFrame):
             rec[key] = result.get(key) or ""
         return rec
 
-    def _record_from_local_upload(self, target_path: str, item: dict, category: str) -> dict:
+    def _record_from_local_upload(
+        self,
+        target_path: str,
+        item: dict,
+        category: str,
+        path_segments: Optional[List[str]] = None,
+    ) -> dict:
         meta = item.get("meta") or {}
         return {
             "index": len(self._records) + 1,
@@ -1109,7 +1441,7 @@ class DocManWidget(QFrame):
             "mtime": QDateTime.currentDateTime().toString("yyyy/M/d HH:mm"),
             "path": target_path,
             "remark": "",
-            "logical_path": "",
+            "logical_path": "/".join(path_segments or self._path_segments),
             "document_code": meta.get("document_code") or "",
             "document_title": meta.get("document_title") or "",
             "design_stage_name": meta.get("design_stage_name") or "",
@@ -1130,10 +1462,18 @@ class DocManWidget(QFrame):
         if self._current_page <= 0:
             return
         self._current_page -= 1
+        if self._db_list_mode:
+            self._start_record_page_load()
+            return
         self.refresh()
 
     def _go_next_page(self) -> None:
+        if self._db_list_mode and self._current_page >= self._db_total_pages - 1:
+            return
         self._current_page += 1
+        if self._db_list_mode:
+            self._start_record_page_load()
+            return
         self.refresh()
 
     def _delete_checked_rows(self):
@@ -1177,10 +1517,14 @@ class DocManWidget(QFrame):
                 kept.append(rec)
 
         self._records[:] = kept
+        if self._db_list_mode and not failures:
+            self._load_record_list_from_db()
         self._normalize_records()
         self.refresh()
         if failures:
             QMessageBox.warning(self, "警告", failures[0])
+        else:
+            QMessageBox.information(self, "删除成功", "删除成功")
 
     def _upload_or_modify(self, row: int):
         record_index = self._record_index_for_row(row)
@@ -1206,36 +1550,67 @@ class DocManWidget(QFrame):
         file_path, _ = QFileDialog.getOpenFileName(self, title, "", "所有文件 (*.*)")
         if not file_path:
             return
+        meta = parse_document_code_from_name(os.path.basename(file_path))
+        if self._requires_standard_document_code() and self._is_unclassified_meta(meta):
+            self._warn_unclassified_uploads([os.path.basename(file_path)])
+            return
+        progress = self._create_upload_progress(1)
+        self._update_upload_progress(progress, 0, f"正在上传：{os.path.basename(file_path)}")
+
+        target_path_segments, resolved_category = self._resolve_upload_target(
+            {
+                "path": file_path,
+                "meta": meta,
+                "record": dict(rec),
+                "logical_path": rec.get("logical_path") or "",
+            },
+            upload_category,
+        )
 
         if self._db_list_mode and is_file_db_configured():
             try:
                 record_id = rec.get("record_id")
                 logical_path = rec.get("logical_path") or ""
-                if record_id and logical_path:
+                target_logical_path = "/".join(target_path_segments)
+                keep_existing_path = bool(
+                    record_id
+                    and logical_path
+                    and (
+                        not target_logical_path
+                        or str(logical_path).replace("\\", "/").strip("/").startswith(f"{target_logical_path}/")
+                    )
+                )
+                if keep_existing_path:
                     replace_docman_list_file(
                         file_path,
                         logical_path=logical_path,
                         record_id=int(record_id),
-                        category=upload_category,
+                        category=resolved_category,
                         work_condition=rec.get("work_condition", "") or self._default_work_condition,
                         remark=rec.get("remark", ""),
                         facility_code=self._facility_code,
                     )
                 else:
+                    if record_id:
+                        hard_delete_record(int(record_id))
                     append_docman_file(
                         file_path,
-                        path_segments=self._path_segments,
-                        category=upload_category,
+                        path_segments=target_path_segments,
+                        category=resolved_category,
                         work_condition=rec.get("work_condition", "") or self._default_work_condition,
                         remark=rec.get("remark", ""),
                         facility_code=self._facility_code,
                     )
+                self._current_page = 0
                 self._load_record_list_from_db()
                 self._normalize_records()
                 self.refresh()
+                self._update_upload_progress(progress, 1, "上传完成")
+                progress.close()
                 QMessageBox.information(self, "上传成功", "上传成功")
                 return
             except FileBackendError as exc:
+                progress.close()
                 QMessageBox.warning(self, "上传失败", str(exc))
                 return
 
@@ -1243,18 +1618,18 @@ class DocManWidget(QFrame):
             try:
                 result = replace_docman_file(
                     file_path,
-                    path_segments=self._path_segments,
-                        row_index=record_index + 1,
-                        category=upload_category,
-                        work_condition=rec.get("work_condition", "") or self._default_work_condition,
-                        remark=rec.get("remark", ""),
+                    path_segments=target_path_segments,
+                    row_index=record_index + 1,
+                    category=resolved_category,
+                    work_condition=rec.get("work_condition", "") or self._default_work_condition,
+                    remark=rec.get("remark", ""),
                     facility_code=self._facility_code,
                 )
                 rec["record_id"] = result.get("id")
                 rec["path"] = resolve_storage_path(result)
                 rec["fmt"] = (result.get("file_ext") or "").upper()
                 rec["filename"] = result.get("original_name") or os.path.basename(file_path)
-                rec["category"] = result.get("category_name") or upload_category or current_category
+                rec["category"] = result.get("category_name") or resolved_category or current_category
                 rec["work_condition"] = result.get("work_condition") or rec.get("work_condition", "")
                 rec["logical_path"] = result.get("logical_path") or rec.get("logical_path", "")
                 for key in (
@@ -1270,13 +1645,16 @@ class DocManWidget(QFrame):
                 dt = result.get("uploaded_at") or result.get("source_modified_at") or result.get("updated_at")
                 rec["mtime"] = dt.strftime("%Y/%m/%d %H:%M") if dt else QDateTime.currentDateTime().toString("yyyy/M/d HH:mm")
                 self.refresh()
+                self._update_upload_progress(progress, 1, "上传完成")
+                progress.close()
                 QMessageBox.information(self, "上传成功", "上传成功")
                 return
             except FileBackendError as exc:
+                progress.close()
                 QMessageBox.warning(self, "错误", str(exc))
                 return
 
-        target_dir = self._storage_dir_getter(self._path_segments)
+        target_dir = self._storage_dir_getter(target_path_segments)
         os.makedirs(target_dir, exist_ok=True)
         filename = os.path.basename(file_path)
         target_path = os.path.join(target_dir, filename)
@@ -1289,6 +1667,7 @@ class DocManWidget(QFrame):
         try:
             shutil.copy2(file_path, target_path)
         except Exception as exc:
+            progress.close()
             QMessageBox.warning(self, "错误", f"复制文件失败：{exc}")
             return
         try:
@@ -1300,7 +1679,21 @@ class DocManWidget(QFrame):
         rec["fmt"] = self._format_label_from_path(target_path)
         rec["filename"] = filename
         rec["mtime"] = QDateTime.currentDateTime().toString("yyyy/M/d HH:mm")
+        rec["logical_path"] = "/".join(target_path_segments)
+        rec["category"] = resolved_category or current_category
+        for key in (
+            "document_code",
+            "document_title",
+            "design_stage_name",
+            "discipline_name",
+            "file_class_name",
+            "recognition_status",
+            "recognition_message",
+        ):
+            rec[key] = meta.get(key) or rec.get(key, "")
         self.refresh()
+        self._update_upload_progress(progress, 1, "上传完成")
+        progress.close()
         QMessageBox.information(self, "上传成功", "上传成功")
 
     @staticmethod
@@ -1317,6 +1710,22 @@ class DocManWidget(QFrame):
 
         record = self._records[record_index]
         record_id = record.get("record_id")
+        if self._display_profile == "model" and item.column() == self.COL_FILENAME:
+            work_condition = item.text().strip()
+            record["work_condition"] = work_condition
+            item.setToolTip(work_condition)
+            if record_id is not None and is_file_db_configured():
+                try:
+                    updated = update_file_record(
+                        int(record_id),
+                        work_condition=work_condition,
+                        expected_updated_at=record.get("_lock_updated_at"),
+                    )
+                    record["_lock_updated_at"] = updated.get("lock_updated_at")
+                except FileBackendError as exc:
+                    QMessageBox.warning(self, "保存失败", str(exc))
+            return
+
         if item.column() == self.COL_CATEGORY:
             category = item.text().strip()
             record["category"] = category

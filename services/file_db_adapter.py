@@ -91,6 +91,7 @@ def _get_service(config_path: str | None = None):
         raise FileBackendError(f"Cannot initialize file database service: {exc}") from exc
 
 
+@lru_cache(maxsize=8)
 def configured_storage_root(config_path: str | None = None) -> str:
     path = Path(config_path) if config_path else DEFAULT_DB_CONFIG
     if not path.exists():
@@ -100,16 +101,17 @@ def configured_storage_root(config_path: str | None = None) -> str:
         value = str(raw.get("storage_root") or "").strip()
         if not value:
             return ""
-        return str(Path(value).resolve())
+        return os.path.abspath(os.path.expanduser(value))
     except Exception:
         return ""
 
 
+@lru_cache(maxsize=32)
 def shared_storage_dir(name: str, *, config_path: str | None = None) -> str:
     storage_root = configured_storage_root(config_path)
     if not storage_root:
         return ""
-    return str((Path(storage_root).parent / name).resolve())
+    return os.path.abspath(os.path.join(os.path.dirname(storage_root), name))
 
 
 def _safe_segment(text: str) -> str:
@@ -187,12 +189,20 @@ def list_files(
     module_code: str | None = None,
     logical_path: str | None = None,
     logical_path_prefix: str | None = None,
+    logical_path_prefixes: list[str] | None = None,
     facility_code: str | None = None,
     document_code_query: str | None = None,
     document_title_query: str | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
     config_path: str | None = None,
 ) -> list[dict[str, Any]]:
     prefix = str(logical_path_prefix or "").replace("\\", "/").strip().strip("/")
+    prefixes = tuple(
+        str(item or "").replace("\\", "/").strip().strip("/")
+        for item in (logical_path_prefixes or [])
+        if str(item or "").replace("\\", "/").strip().strip("/")
+    )
     code_query = str(document_code_query or "").strip()
     title_query = str(document_title_query or "").strip()
     key = (
@@ -201,9 +211,12 @@ def list_files(
         module_code or "",
         logical_path or "",
         prefix,
+        prefixes,
         facility_code or "",
         code_query,
         title_query,
+        "" if limit is None else int(limit),
+        "" if offset is None else int(offset),
     )
     cached = _LIST_FILES_CACHE.get(key)
     if cached is not None:
@@ -214,9 +227,12 @@ def list_files(
         module_code=module_code,
         logical_path=logical_path,
         logical_path_prefix=prefix or None,
+        logical_path_prefixes=list(prefixes) or None,
         facility_code=facility_code,
         document_code_query=code_query or None,
         document_title_query=title_query or None,
+        limit=limit,
+        offset=offset,
     )
     _LIST_FILES_CACHE[key] = _copy_rows(rows)
     return _copy_rows(rows)
@@ -253,10 +269,69 @@ def list_files_by_prefix(
     facility_code: str | None = None,
     document_code_query: str | None = None,
     document_title_query: str | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
     config_path: str | None = None,
 ) -> list[dict[str, Any]]:
     prefix = str(logical_path_prefix or "").replace("\\", "/").strip().strip("/")
     return list_files(
+        file_type_code=file_type_code,
+        module_code=module_code,
+        logical_path_prefix=prefix or None,
+        facility_code=facility_code,
+        document_code_query=document_code_query,
+        document_title_query=document_title_query,
+        limit=limit,
+        offset=offset,
+        config_path=config_path,
+    )
+
+
+def count_files(
+    *,
+    file_type_code: str | None = None,
+    module_code: str | None = None,
+    logical_path: str | None = None,
+    logical_path_prefix: str | None = None,
+    logical_path_prefixes: list[str] | None = None,
+    facility_code: str | None = None,
+    document_code_query: str | None = None,
+    document_title_query: str | None = None,
+    config_path: str | None = None,
+) -> int:
+    prefix = str(logical_path_prefix or "").replace("\\", "/").strip().strip("/")
+    prefixes = [
+        str(item or "").replace("\\", "/").strip().strip("/")
+        for item in (logical_path_prefixes or [])
+        if str(item or "").replace("\\", "/").strip().strip("/")
+    ]
+    return int(
+        _get_service(config_path).count_files(
+            file_type_code=file_type_code,
+            module_code=module_code,
+            logical_path=logical_path,
+            logical_path_prefix=prefix or None,
+            logical_path_prefixes=prefixes or None,
+            facility_code=facility_code,
+            document_code_query=(document_code_query or None),
+            document_title_query=(document_title_query or None),
+        )
+        or 0
+    )
+
+
+def count_files_by_prefix(
+    *,
+    file_type_code: str | None = None,
+    module_code: str | None = None,
+    logical_path_prefix: str | None = None,
+    facility_code: str | None = None,
+    document_code_query: str | None = None,
+    document_title_query: str | None = None,
+    config_path: str | None = None,
+) -> int:
+    prefix = str(logical_path_prefix or "").replace("\\", "/").strip().strip("/")
+    return count_files(
         file_type_code=file_type_code,
         module_code=module_code,
         logical_path_prefix=prefix or None,
@@ -647,34 +722,115 @@ def load_docman_record_list(
     )
     records: list[dict[str, Any]] = []
     for index, row in enumerate(ordered, start=1):
-        dt = row.get("uploaded_at") or row.get("source_modified_at") or row.get("updated_at")
-        records.append(
-            {
-                "index": index,
-                "checked": False,
-                "category": row.get("category_name") or row.get("file_type_name") or "",
-                "work_condition": row.get("work_condition") or "",
-                "fmt": str(row.get("file_ext") or "").upper(),
-                "filename": row.get("original_name") or "",
-                "mtime": dt.strftime("%Y/%m/%d %H:%M") if dt else "",
-                "path": resolve_storage_path(row, config_path=config_path),
-                "remark": row.get("remark") or "",
-                "record_id": row.get("id"),
-                "logical_path": row.get("logical_path") or "",
-                "document_code": row.get("document_code") or "",
-                "document_title": row.get("document_title") or "",
-                "design_stage_code": row.get("design_stage_code") or "",
-                "design_stage_name": row.get("design_stage_name") or "",
-                "discipline_code": row.get("discipline_code") or "",
-                "discipline_name": row.get("discipline_name") or "",
-                "file_class_code": row.get("file_class_code") or "",
-                "file_class_name": row.get("file_class_name") or "",
-                "recognition_status": row.get("recognition_status") or "",
-                "recognition_message": row.get("recognition_message") or "",
-                "_lock_updated_at": row.get("lock_updated_at"),
-            }
-        )
+        records.append(_docman_record_from_file_row(row, index, config_path=config_path))
     return records
+
+
+def load_docman_record_page(
+    path_segments: list[str],
+    *,
+    page: int = 0,
+    page_size: int = 30,
+    facility_code: str | None = None,
+    document_code_query: str | None = None,
+    document_title_query: str | None = None,
+    logical_path_prefixes: list[str] | None = None,
+    config_path: str | None = None,
+) -> dict[str, Any]:
+    prefix = build_docman_logical_prefix(path_segments)
+    prefixes = [
+        str(item or "").replace("\\", "/").strip().strip("/")
+        for item in (logical_path_prefixes or [])
+        if str(item or "").replace("\\", "/").strip().strip("/")
+    ]
+    safe_page = max(0, int(page or 0))
+    safe_page_size = max(1, int(page_size or 30))
+    if prefixes:
+        total = count_files(
+            module_code=DOC_MAN_MODULE_CODE,
+            logical_path_prefixes=prefixes,
+            facility_code=facility_code,
+            document_code_query=document_code_query,
+            document_title_query=document_title_query,
+            config_path=config_path,
+        )
+    else:
+        total = count_files_by_prefix(
+            module_code=DOC_MAN_MODULE_CODE,
+            logical_path_prefix=prefix,
+            facility_code=facility_code,
+            document_code_query=document_code_query,
+            document_title_query=document_title_query,
+            config_path=config_path,
+        )
+    max_page = max(0, (total - 1) // safe_page_size) if total else 0
+    safe_page = min(safe_page, max_page)
+    offset = safe_page * safe_page_size
+    if prefixes:
+        rows = list_files(
+            module_code=DOC_MAN_MODULE_CODE,
+            logical_path_prefixes=prefixes,
+            facility_code=facility_code,
+            document_code_query=document_code_query,
+            document_title_query=document_title_query,
+            limit=safe_page_size,
+            offset=offset,
+            config_path=config_path,
+        )
+    else:
+        rows = list_files_by_prefix(
+            module_code=DOC_MAN_MODULE_CODE,
+            logical_path_prefix=prefix,
+            facility_code=facility_code,
+            document_code_query=document_code_query,
+            document_title_query=document_title_query,
+            limit=safe_page_size,
+            offset=offset,
+            config_path=config_path,
+        )
+    records = [
+        _docman_record_from_file_row(row, offset + index, config_path=config_path)
+        for index, row in enumerate(rows, start=1)
+    ]
+    return {
+        "records": records,
+        "total": total,
+        "page": safe_page,
+        "page_size": safe_page_size,
+    }
+
+
+def _docman_record_from_file_row(
+    row: dict[str, Any],
+    index: int,
+    *,
+    config_path: str | None = None,
+) -> dict[str, Any]:
+    dt = row.get("uploaded_at") or row.get("source_modified_at") or row.get("updated_at")
+    return {
+        "index": index,
+        "checked": False,
+        "category": row.get("category_name") or row.get("file_type_name") or "",
+        "work_condition": row.get("work_condition") or "",
+        "fmt": str(row.get("file_ext") or "").upper(),
+        "filename": row.get("original_name") or "",
+        "mtime": dt.strftime("%Y/%m/%d %H:%M") if dt else "",
+        "path": resolve_storage_path(row, config_path=config_path),
+        "remark": row.get("remark") or "",
+        "record_id": row.get("id"),
+        "logical_path": row.get("logical_path") or "",
+        "document_code": row.get("document_code") or "",
+        "document_title": row.get("document_title") or "",
+        "design_stage_code": row.get("design_stage_code") or "",
+        "design_stage_name": row.get("design_stage_name") or "",
+        "discipline_code": row.get("discipline_code") or "",
+        "discipline_name": row.get("discipline_name") or "",
+        "file_class_code": row.get("file_class_code") or "",
+        "file_class_name": row.get("file_class_name") or "",
+        "recognition_status": row.get("recognition_status") or "",
+        "recognition_message": row.get("recognition_message") or "",
+        "_lock_updated_at": row.get("lock_updated_at"),
+    }
 
 
 def append_docman_file(

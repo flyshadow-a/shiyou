@@ -19,6 +19,16 @@ def test_parse_detail_design_general_drawing_code():
     assert result["document_title"] == ""
 
 
+def test_parse_completion_stage_general_drawing_code():
+    result = parse_document_code_from_name("AB-DWG-DPPA-GE-1001.pdf")
+
+    assert result["recognition_status"] == "recognized"
+    assert result["design_stage_code"] == "AB"
+    assert result["design_stage_name"] == "完工"
+    assert result["discipline_code"] == "GE"
+    assert result["file_class_code"] == "DWG"
+
+
 def test_parse_document_title_after_code():
     result = parse_document_code_from_name("DD-DWG-DPPA-GE-1001 平台总图.pdf")
 

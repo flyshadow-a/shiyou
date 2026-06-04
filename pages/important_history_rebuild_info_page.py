@@ -35,13 +35,11 @@ from services.file_db_adapter import (
     DOC_MAN_MODULE_CODE,
     create_rebuild_directory,
     delete_rebuild_directory_with_files,
-    FileBackendError,
     is_file_db_configured,
     list_rebuild_directories,
-    load_docman_record_list,
     update_rebuild_directory,
 )
-from shiyou_db.document_code_parser import OTHER_FILE_CLASS_NAMES
+from shiyou_db.document_code_parser import OTHER_FILE_CLASS_NAMES, parse_document_code_from_name
 from .file_management_filter_search_bar import FileManagementFilterSearchBar
 from .file_management_ui_constants import FILE_MANAGEMENT_SIDEBAR_WIDTH
 from .file_management_platforms import default_platform, sync_platform_dropdowns
@@ -202,6 +200,19 @@ class InspectionProjectDialog(QDialog):
 
 class ImportantHistoryDetailWidget(QWidget):
     homeClicked = pyqtSignal()
+
+    _STRUCTURAL_FOLDERS = {
+        "SPC": "规格书",
+        "RPT": "报告",
+        "DWG": "图纸",
+        "MAL": "料单",
+        "BOD": "设计基础",
+    }
+    _GENERAL_FOLDERS = {
+        "DWG": "图纸",
+        "SPC": "规格书",
+        "RPT": "报告",
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -378,7 +389,9 @@ class ImportantHistoryDetailWidget(QWidget):
         self.project_tree.setObjectName("HistoryProjectTree")
         self.project_tree.setHeaderHidden(True)
         self.project_tree.setIndentation(18)
+        self.project_tree.setExpandsOnDoubleClick(False)
         self.project_tree.itemClicked.connect(self._on_project_tree_item_clicked)
+        self.project_tree.itemDoubleClicked.connect(self._on_project_tree_item_double_clicked)
         sidebar_layout.addWidget(self.project_tree, 1)
 
         sidebar_actions = QHBoxLayout()
@@ -778,10 +791,43 @@ class ImportantHistoryDetailWidget(QWidget):
             return digits[:4]
         return text.replace("\u5e74", "").strip()
 
+    def _project_display_name(self, project: dict | None) -> str:
+        if not project:
+            return ""
+        name = str(project.get("name") or "改造项目").strip()
+        year = self._project_year_label(str(project.get("year") or ""))
+        return f"{name}\uff08{year}\uff09" if year else name
+
+    def _rebuild_project_label_map(self) -> dict[str, str]:
+        labels: dict[str, str] = {}
+        for project in self._current_projects:
+            label = self._project_display_name(project)
+            if not label:
+                continue
+            segments = self._project_storage_segments(project)
+            keys = [
+                segments,
+                segments[1:],
+                [project.get("name") or ""],
+            ]
+            project_id = project.get("id")
+            if project_id:
+                keys.append([f"directory_{project_id}"])
+            for parts in keys:
+                key = "/".join(str(part).strip("/\\") for part in parts if str(part).strip("/\\"))
+                if key:
+                    labels[key] = label
+        return labels
+
     def _on_project_tree_item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         data = item.data(0, Qt.UserRole)
         if isinstance(data, dict):
             self._select_project_row(int(data.get("row", 0)), section=data.get("section"))
+
+    @staticmethod
+    def _on_project_tree_item_double_clicked(item: QTreeWidgetItem, _column: int) -> None:
+        if item and item.childCount() > 0:
+            item.setExpanded(not item.isExpanded())
 
     def _select_project_row(self, row: int, *, update_table: bool = True, section: dict | None = None):
         if row < 0 or row >= len(self._current_projects):
@@ -883,6 +929,7 @@ class ImportantHistoryDetailWidget(QWidget):
             QMessageBox.warning(self, "删除失败", str(exc))
             return
         self._reload_current_folder()
+        QMessageBox.information(self, "删除成功", "删除成功")
 
     def set_facility_code(self, code: str):
         self.facility_code = (code or "").strip()
@@ -962,7 +1009,7 @@ class ImportantHistoryDetailWidget(QWidget):
         path_segments = self._project_storage_segments(project)
         display_path_segments: list[str] = []
         if project:
-            display_path_segments.append(str(project.get("name") or "改造项目"))
+            display_path_segments.append(self._project_display_name(project))
         if section:
             path_segments = path_segments + list(section.get("path_segments") or [])
             display_path_segments.extend(str(x) for x in section.get("tree_path") or [])
@@ -990,7 +1037,69 @@ class ImportantHistoryDetailWidget(QWidget):
             path_root_label="历次改造文件",
             display_path_segments=display_path_segments,
             path_hint="历次改造文件按改造项目、专业和文件类别归档。",
+            upload_path_resolver=self._resolve_rebuild_upload_target,
+            context_project_name=self._project_display_name(project),
+            rebuild_project_labels=self._rebuild_project_label_map(),
         )
+
+    def _project_for_upload(self, item: dict, current_path: list[str]) -> dict | None:
+        raw_logical = (
+            item.get("logical_path")
+            or (item.get("record") or {}).get("logical_path")
+            or "/".join(str(part) for part in current_path)
+        )
+        logical = str(raw_logical or "").replace("\\", "/").strip("/")
+        for project in self._current_projects:
+            prefix = "/".join(self._project_storage_segments(project))
+            if logical == prefix or logical.startswith(f"{prefix}/"):
+                return project
+        current = getattr(self, "_current_file_project", None)
+        if current:
+            prefix = "/".join(self._project_storage_segments(current))
+            current_text = "/".join(str(part) for part in current_path).replace("\\", "/").strip("/")
+            if current_text == prefix or current_text.startswith(f"{prefix}/"):
+                return current
+        return current
+
+    def _resolve_rebuild_upload_target(self, item: dict, current_path: list[str], current_category: str) -> dict:
+        project = self._project_for_upload(item, current_path)
+        project_segments = self._project_storage_segments(project) if project else list(current_path)
+        file_path = str(item.get("path") or "").strip()
+        meta = dict(item.get("meta") or {})
+        if not meta and file_path:
+            meta = parse_document_code_from_name(os.path.basename(file_path))
+
+        status = str(meta.get("recognition_status") or "").strip()
+        file_class = str(meta.get("file_class_code") or "").strip().upper()
+        discipline = str(meta.get("discipline_code") or "").strip().upper()
+        file_class_name = str(meta.get("file_class_name") or "").strip()
+        category = file_class_name or str(current_category or "").strip()
+
+        if status == "unclassified" or not file_class or not discipline:
+            return {
+                "path_segments": project_segments + ["其他"],
+                "category": "未分类/其他",
+            }
+
+        if discipline == "ST":
+            folder = self._STRUCTURAL_FOLDERS.get(file_class)
+            if folder:
+                return {
+                    "path_segments": project_segments + ["结构(ST)", folder],
+                    "category": category or "其他",
+                }
+        elif discipline == "GE":
+            folder = self._GENERAL_FOLDERS.get(file_class)
+            if folder:
+                return {
+                    "path_segments": project_segments + ["总体(GE)", folder],
+                    "category": category or "其他",
+                }
+
+        return {
+            "path_segments": project_segments + ["其他"],
+            "category": category or "未分类/其他",
+        }
 
     def search_all_documents(self, code_query: str = "", name_query: str = "") -> None:
         code = (code_query or "").strip().lower()
@@ -1001,30 +1110,23 @@ class ImportantHistoryDetailWidget(QWidget):
         if not is_file_db_configured():
             QMessageBox.information(self, "提示", "当前未配置文件数据库，无法跨分类搜索。")
             return
-        try:
-            records = load_docman_record_list(
-                [],
-                facility_code=self.facility_code,
-                document_code_query=code,
-                document_title_query=name,
-            )
-        except FileBackendError as exc:
-            QMessageBox.warning(self, "搜索失败", str(exc))
-            return
-        matched = records
-        self.file_title.setText(f"搜索结果（{len(matched)}）")
+        self.file_title.setText("搜索结果")
         self.doc_man_widget.set_context(
-            self._project_storage_segments(getattr(self, "_current_file_project", None)),
-            matched,
+            self._project_storage_segments(None),
+            [],
             ["未分类/其他", "其他"],
             facility_code=self.facility_code,
             overlay_from_db=False,
             hide_empty_templates=False,
-            db_list_mode=False,
+            db_list_mode=True,
             display_profile="rebuild",
             path_root_label="历次改造文件",
             display_path_segments=["搜索结果"],
-            path_hint=f"按文件编码/文件名搜索历次改造文件，共 {len(matched)} 条。",
+            path_hint="按文件编码/文件名搜索历次改造文件。",
+            upload_path_resolver=self._resolve_rebuild_upload_target,
+            rebuild_project_labels=self._rebuild_project_label_map(),
+            document_code_query=code,
+            document_title_query=name,
         )
 
     @staticmethod

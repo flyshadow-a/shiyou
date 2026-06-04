@@ -7,6 +7,7 @@ from typing import Any
 
 DESIGN_STAGE_MAP = {
     "DD": "详细设计",
+    "AB": "完工",
     "MD(DD)": "改造项目详细设计",
 }
 
@@ -155,7 +156,7 @@ MODULE_MAP = {
 }
 
 DOCUMENT_CODE_RE = re.compile(
-    r"(?P<stage>MD\(DD\)|DD)"
+    r"(?P<stage>MD\(DD\)|DD|AB)"
     r"[-_]"
     r"(?P<class>[A-Z]{2,4})"
     r"[-_]"
