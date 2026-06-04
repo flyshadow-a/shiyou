@@ -56,6 +56,58 @@ class _SpecialStrategyReportWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class _SpecialStrategyResultLoadWorker(QObject):
+    finished = pyqtSignal(int, object, object)
+    failed = pyqtSignal(int, str)
+
+    def __init__(self, token: int, facility_code: str, run_id: int | None, display_year: str):
+        super().__init__()
+        self._token = int(token)
+        self._facility_code = facility_code
+        self._run_id = run_id
+        self._display_year = display_year
+
+    def run(self) -> None:
+        try:
+            service = SpecialStrategyResultService()
+            bundle = service.load_result_bundle(self._facility_code, self._run_id) or {}
+            overlay = {}
+            if bundle:
+                overlay = load_strategy_inspection_overlay(
+                    self._facility_code,
+                    run_id=self._run_id,
+                    display_year=self._display_year,
+                )
+        except Exception as exc:
+            self.failed.emit(self._token, str(exc))
+            return
+        self.finished.emit(self._token, bundle, overlay)
+
+
+class _SpecialStrategyOverlayLoadWorker(QObject):
+    finished = pyqtSignal(int, str, object)
+    failed = pyqtSignal(int, str, str)
+
+    def __init__(self, token: int, facility_code: str, run_id: int | None, display_year: str):
+        super().__init__()
+        self._token = int(token)
+        self._facility_code = facility_code
+        self._run_id = run_id
+        self._display_year = display_year
+
+    def run(self) -> None:
+        try:
+            overlay = load_strategy_inspection_overlay(
+                self._facility_code,
+                run_id=self._run_id,
+                display_year=self._display_year,
+            )
+        except Exception as exc:
+            self.failed.emit(self._token, self._display_year, str(exc))
+            return
+        self.finished.emit(self._token, self._display_year, overlay)
+
+
 class PlanDiagram(QWidget):
     """右侧黑底平面示意图占位：绿线框架 + 红点/绿点节点（示例）。"""
 
@@ -153,17 +205,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
     def _on_year_changed(self, year: str):
         self.current_year = (year or "").strip() or self._year_mapper.default_display_label()
-        try:
-            self._overlay_bundle = load_strategy_inspection_overlay(
-                self.facility_code,
-                run_id=self.run_id,
-                display_year=self.current_year,
-            )
-        except Exception as exc:
-            print("[UpgradeSpecialInspectionResultPage] load overlay failed:", exc)
-            self._overlay_bundle = {}
-
-        self._refresh_elevation_view()
+        self._start_overlay_load(self.current_year)
 
     def _apply_elevation_level_visibility(self):
         if hasattr(self, "btn_toggle_level_ii") and self.btn_toggle_level_ii is not None:
@@ -217,6 +259,10 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._report_progress_timer = QTimer(self)
         self._report_progress_timer.setInterval(320)
         self._report_progress_timer.timeout.connect(self._update_report_progress_text)
+        self._result_load_token = 0
+        self._result_load_jobs = []
+        self._overlay_load_token = 0
+        self._overlay_load_jobs = []
 
         # run_id 为 None 时，表示从“特检策略”主页右上角“查看结果”进入：
         # 优先读取“生成特检策略报告”时已经上传到服务器的最新风险等级缓存图。
@@ -227,7 +273,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._is_refreshing_elevation = False
 
         self._build_ui()
-        self._load_result_data()
+        self._start_result_data_load()
 
     def _build_ui(self):
         self.setStyleSheet("""
@@ -1309,8 +1355,99 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         if self._pending_report_after_risk_export:
             QTimer.singleShot(0, self._do_generate_report_after_risk_export)
 
+    def _forget_result_load_thread(self, thread: QThread) -> None:
+        self._result_load_jobs = [job for job in self._result_load_jobs if job[0] is not thread]
+
+    def _forget_overlay_load_thread(self, thread: QThread) -> None:
+        self._overlay_load_jobs = [job for job in self._overlay_load_jobs if job[0] is not thread]
+
+    def _set_result_loading(self, loading: bool) -> None:
+        if hasattr(self, "btn_report") and self.btn_report is not None:
+            self.btn_report.setEnabled(not loading)
+        if loading and hasattr(self, "elevation_view"):
+            self.elevation_view._draw_message("正在加载特检结果...")
+
+    def _start_result_data_load(self) -> None:
+        self._result_load_token += 1
+        token = self._result_load_token
+        self._set_result_loading(True)
+        thread = QThread(self)
+        worker = _SpecialStrategyResultLoadWorker(
+            token,
+            self.facility_code,
+            self.run_id,
+            self.current_year,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_result_data_loaded)
+        worker.failed.connect(self._on_result_data_load_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda t=thread: self._forget_result_load_thread(t))
+        self._result_load_jobs.append((thread, worker, token))
+        thread.start()
+
+    def _on_result_data_loaded(self, token: int, bundle: object, overlay: object) -> None:
+        if int(token) != self._result_load_token:
+            return
+        self._set_result_loading(False)
+        self._apply_result_data(bundle if isinstance(bundle, dict) else {}, overlay if isinstance(overlay, dict) else {})
+
+    def _on_result_data_load_failed(self, token: int, message: str) -> None:
+        if int(token) != self._result_load_token:
+            return
+        self._set_result_loading(False)
+        self._apply_result_data({}, {})
+        QMessageBox.warning(self, "加载失败", message or "特检结果加载失败。")
+
+    def _start_overlay_load(self, display_year: str) -> None:
+        self._overlay_load_token += 1
+        token = self._overlay_load_token
+        thread = QThread(self)
+        worker = _SpecialStrategyOverlayLoadWorker(
+            token,
+            self.facility_code,
+            self.run_id,
+            display_year,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_overlay_loaded)
+        worker.failed.connect(self._on_overlay_load_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda t=thread: self._forget_overlay_load_thread(t))
+        self._overlay_load_jobs.append((thread, worker, token))
+        thread.start()
+
+    def _on_overlay_loaded(self, token: int, display_year: str, overlay: object) -> None:
+        if int(token) != self._overlay_load_token:
+            return
+        if str(display_year or "").strip() != self.current_year:
+            return
+        self._overlay_bundle = overlay if isinstance(overlay, dict) else {}
+        self._refresh_elevation_view()
+
+    def _on_overlay_load_failed(self, token: int, display_year: str, message: str) -> None:
+        if int(token) != self._overlay_load_token:
+            return
+        if str(display_year or "").strip() != self.current_year:
+            return
+        print("[UpgradeSpecialInspectionResultPage] load overlay failed:", message)
+        self._overlay_bundle = {}
+        self._refresh_elevation_view()
+
     def _load_result_data(self):
-        bundle = self._result_service.load_result_bundle(self.facility_code, self.run_id)
+        self._start_result_data_load()
+
+    def _apply_result_data(self, bundle: dict, overlay: dict | None = None):
         self._result_bundle = bundle or {}
 
         if not bundle:
@@ -1331,11 +1468,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._fill_node_summary(context)
         self._apply_row_limit()
 
-        self._overlay_bundle = load_strategy_inspection_overlay(
-            self.facility_code,
-            run_id=self.run_id,
-            display_year=self.current_year,
-        )
+        self._overlay_bundle = overlay or {}
         self._refresh_elevation_view()
         # 页面浏览阶段不再批量导出检验等级图；报告图片统一在“生成特检策略报告”按钮中处理。
 

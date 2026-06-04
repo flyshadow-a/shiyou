@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -39,9 +39,19 @@ class DatabaseSettings:
 
 
 @dataclass(frozen=True)
+class DatabasePoolSettings:
+    pool_size: int = 2
+    max_overflow: int = 3
+    pool_recycle: int = 1800
+    pool_timeout: int = 30
+    connect_timeout: int = 10
+
+
+@dataclass(frozen=True)
 class AppSettings:
     database: DatabaseSettings
     storage_root: str
+    pool: DatabasePoolSettings = field(default_factory=DatabasePoolSettings)
     echo_sql: bool = False
     enable_3d_preview: bool = True
 
@@ -74,6 +84,7 @@ def load_settings(config_path: str | None = None) -> AppSettings:
 
     raw = json.loads(path.read_text(encoding="utf-8-sig"))
     db = raw["database"]
+    pool_raw = raw.get("database_pool") or db.get("pool") or {}
 
     storage_root_raw = str(raw.get("storage_root") or DEFAULT_STORAGE_ROOT).strip()
 
@@ -87,6 +98,13 @@ def load_settings(config_path: str | None = None) -> AppSettings:
             charset=db.get("charset", "utf8mb4"),
         ),
         storage_root=os.path.normpath(storage_root_raw),
+        pool=DatabasePoolSettings(
+            pool_size=max(1, int(pool_raw.get("pool_size", 2))),
+            max_overflow=max(0, int(pool_raw.get("max_overflow", 3))),
+            pool_recycle=max(60, int(pool_raw.get("pool_recycle", 1800))),
+            pool_timeout=max(1, int(pool_raw.get("pool_timeout", 30))),
+            connect_timeout=max(1, int(pool_raw.get("connect_timeout", 10))),
+        ),
         echo_sql=bool(raw.get("echo_sql", False)),
         enable_3d_preview=bool(raw.get("enable_3d_preview", True)),
         sacs_analysis_engine_exe=str(raw.get("sacs_analysis_engine_exe", "") or "").strip(),

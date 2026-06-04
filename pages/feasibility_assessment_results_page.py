@@ -56,6 +56,7 @@ from core.base_page import BasePage
 from pages.sacs_compare_view import SacsComparePanel
 
 from shiyou_db.runtime_db import get_mysql_url
+from shiyou_db.database import build_engine_from_url
 
 from core.dropdown_bar import DropdownBar
 from feasibility_analysis_services.history_rebuild_service import build_history_rebuild_summary, \
@@ -1285,7 +1286,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
     def _get_engine(self):
         if not self.mysql_url:
             raise ValueError("MYSQL_URL 未配置")
-        return create_engine(self.mysql_url, future=True, pool_pre_ping=True)
+        return build_engine_from_url(self.mysql_url)
 
     def _load_pile_capacity_input_rows(self) -> List[dict]:
         if not (self.mysql_url and self.env_branch and self.env_op_company and self.env_oilfield):

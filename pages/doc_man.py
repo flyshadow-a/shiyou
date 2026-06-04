@@ -159,6 +159,243 @@ class _DocManRecordPageWorker(QObject):
         self.finished.emit(self._token, page_data)
 
 
+class _DocManUploadWorker(QObject):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(int, object)
+    failed = pyqtSignal(int, str)
+
+    def __init__(self, *, token: int, tasks: list[dict]):
+        super().__init__()
+        self._token = int(token)
+        self._tasks = [dict(task) for task in tasks]
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        results: list[dict] = []
+        ok_count = 0
+        first_error = ""
+        canceled = False
+        total = len(self._tasks)
+        for index, task in enumerate(self._tasks, start=1):
+            if self._cancelled:
+                canceled = True
+                break
+            file_path = str(task.get("file_path") or "").strip()
+            self.progress.emit(index - 1, f"正在上传 {index}/{total}：{os.path.basename(file_path)}")
+            try:
+                result = self._run_task(task)
+                results.append(result)
+                ok_count += 1
+            except Exception as exc:
+                if not first_error:
+                    first_error = str(exc)
+            self.progress.emit(index, f"已完成 {index}/{total}")
+
+        self.finished.emit(
+            self._token,
+            {
+                "results": results,
+                "ok_count": ok_count,
+                "first_error": first_error,
+                "canceled": canceled,
+                "total": total,
+            },
+        )
+
+    def _run_task(self, task: dict) -> dict:
+        kind = str(task.get("kind") or "")
+        file_path = str(task.get("file_path") or "").strip()
+        if not file_path or not os.path.exists(file_path):
+            raise FileNotFoundError(file_path or "文件不存在")
+
+        if kind == "docman_append":
+            uploaded = append_docman_file(
+                file_path,
+                path_segments=list(task.get("path_segments") or []),
+                category=task.get("category"),
+                work_condition=task.get("work_condition"),
+                remark=task.get("remark"),
+                facility_code=task.get("facility_code"),
+            )
+            return {"kind": kind, "file_path": file_path, "category": task.get("category"), "result": uploaded}
+
+        if kind == "docman_replace":
+            uploaded = replace_docman_file(
+                file_path,
+                path_segments=list(task.get("path_segments") or []),
+                row_index=int(task.get("row_index") or 1),
+                category=task.get("category"),
+                work_condition=task.get("work_condition"),
+                remark=task.get("remark"),
+                facility_code=task.get("facility_code"),
+            )
+            return {
+                "kind": kind,
+                "file_path": file_path,
+                "category": task.get("category"),
+                "record_index": task.get("record_index"),
+                "result": uploaded,
+            }
+
+        if kind == "docman_list_replace":
+            if task.get("keep_existing_path"):
+                uploaded = replace_docman_list_file(
+                    file_path,
+                    logical_path=str(task.get("logical_path") or ""),
+                    record_id=task.get("record_id"),
+                    category=task.get("category"),
+                    work_condition=task.get("work_condition"),
+                    remark=task.get("remark"),
+                    facility_code=task.get("facility_code"),
+                )
+            else:
+                record_id = task.get("record_id")
+                if record_id:
+                    hard_delete_record(int(record_id))
+                uploaded = append_docman_file(
+                    file_path,
+                    path_segments=list(task.get("path_segments") or []),
+                    category=task.get("category"),
+                    work_condition=task.get("work_condition"),
+                    remark=task.get("remark"),
+                    facility_code=task.get("facility_code"),
+                )
+            return {"kind": kind, "file_path": file_path, "category": task.get("category"), "result": uploaded}
+
+        if kind == "local_copy":
+            target_dir = str(task.get("target_dir") or "").strip()
+            if not target_dir:
+                raise ValueError("上传目录为空")
+            os.makedirs(target_dir, exist_ok=True)
+            filename = os.path.basename(file_path)
+            target_path = os.path.join(target_dir, filename)
+            root, ext = os.path.splitext(target_path)
+            suffix = 1
+            while os.path.exists(target_path):
+                target_path = f"{root} ({suffix}){ext}"
+                suffix += 1
+            shutil.copy2(file_path, target_path)
+            try:
+                os.utime(target_path, None)
+            except OSError:
+                pass
+            return {
+                "kind": kind,
+                "file_path": file_path,
+                "target_path": target_path,
+                "category": task.get("category"),
+                "path_segments": list(task.get("path_segments") or []),
+                "item": dict(task.get("item") or {}),
+                "record_index": task.get("record_index"),
+            }
+
+        raise ValueError(f"未知上传任务类型：{kind}")
+
+
+class _DocManDeleteWorker(QObject):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(int, object)
+    failed = pyqtSignal(int, str)
+
+    def __init__(self, *, token: int, record_ids: list[int]):
+        super().__init__()
+        self._token = int(token)
+        self._record_ids = [int(item) for item in record_ids]
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        deleted_ids: list[int] = []
+        failed_ids: list[int] = []
+        failures: list[str] = []
+        total = len(self._record_ids)
+        try:
+            for index, record_id in enumerate(self._record_ids, start=1):
+                if self._cancelled:
+                    break
+                self.progress.emit(index - 1, f"正在删除 {index}/{total}")
+                try:
+                    hard_delete_record(int(record_id))
+                    deleted_ids.append(int(record_id))
+                except Exception as exc:
+                    failed_ids.append(int(record_id))
+                    failures.append(str(exc))
+                self.progress.emit(index, f"已完成 {index}/{total}")
+        except Exception as exc:
+            self.failed.emit(self._token, str(exc))
+            return
+        self.finished.emit(
+            self._token,
+            {
+                "deleted_ids": deleted_ids,
+                "failed_ids": failed_ids,
+                "failures": failures,
+                "canceled": self._cancelled,
+            },
+        )
+
+
+class _DocManDownloadWorker(QObject):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(int, object)
+    failed = pyqtSignal(int, str)
+
+    def __init__(self, *, token: int, tasks: list[dict]):
+        super().__init__()
+        self._token = int(token)
+        self._tasks = [dict(task) for task in tasks]
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        downloaded = 0
+        failures: list[str] = []
+        total = len(self._tasks)
+        try:
+            for index, task in enumerate(self._tasks, start=1):
+                if self._cancelled:
+                    break
+                src_path = str(task.get("src_path") or "").strip()
+                filename = str(task.get("filename") or os.path.basename(src_path)).strip()
+                self.progress.emit(index - 1, f"正在下载 {index}/{total}：{filename}")
+                try:
+                    if not src_path or not os.path.exists(src_path):
+                        raise FileNotFoundError(src_path or "文件不存在")
+                    target_path = str(task.get("target_path") or "").strip()
+                    target_dir = str(task.get("target_dir") or "").strip()
+                    if not target_path:
+                        if not target_dir:
+                            raise ValueError("下载目录为空")
+                        target_path = unique_download_target_path(target_dir, filename)
+                    else:
+                        folder = os.path.dirname(target_path)
+                        if folder:
+                            os.makedirs(folder, exist_ok=True)
+                    shutil.copy2(src_path, target_path)
+                    downloaded += 1
+                except Exception as exc:
+                    failures.append(str(exc))
+                self.progress.emit(index, f"已完成 {index}/{total}")
+        except Exception as exc:
+            self.failed.emit(self._token, str(exc))
+            return
+        self.finished.emit(
+            self._token,
+            {
+                "downloaded": downloaded,
+                "failures": failures,
+                "canceled": self._cancelled,
+            },
+        )
+
+
 class CheckBoxHeader(QHeaderView):
     toggled = pyqtSignal(bool)
 
@@ -441,6 +678,16 @@ class DocManWidget(QFrame):
         self._context_load_token = 0
         self._db_loading = False
         self._db_load_jobs: list[tuple[QThread, _DocManRecordPageWorker, int]] = []
+        self._upload_token = 0
+        self._upload_thread: QThread | None = None
+        self._upload_worker: _DocManUploadWorker | None = None
+        self._upload_progress: QProgressDialog | None = None
+        self._upload_context: dict = {}
+        self._file_operation_token = 0
+        self._file_operation_thread: QThread | None = None
+        self._file_operation_worker: QObject | None = None
+        self._file_operation_progress: QProgressDialog | None = None
+        self._file_operation_context: dict = {}
         self._build_ui()
 
     def set_action_handlers(
@@ -1248,35 +1495,19 @@ class DocManWidget(QFrame):
             if not items:
                 return
 
-        ok_count = 0
+        tasks: list[dict] = []
         first_error = ""
-        canceled = False
-        progress = self._create_upload_progress(len(items))
         for index, item in enumerate(items, start=1):
-            if progress.wasCanceled():
-                canceled = True
-                break
-            self._update_upload_progress(progress, index - 1, f"正在上传 {index}/{len(items)}：{os.path.basename(str(item.get('path') or ''))}")
             try:
-                self._upload_staged_file(item)
-                ok_count += 1
+                tasks.append(self._build_staged_upload_task(item, len(self._records) + len(tasks) + 1))
             except Exception as exc:
                 if not first_error:
                     first_error = str(exc)
-            self._update_upload_progress(progress, index, f"已完成 {index}/{len(items)}")
-        progress.close()
-
-        if self._db_list_mode and is_file_db_configured():
-            self._current_page = 0
-            self._load_record_list_from_db()
-        self._normalize_records()
-        self.refresh()
-        if first_error:
-            QMessageBox.warning(self, "上传完成但存在失败", f"成功上传 {ok_count} 个文件。\n首个失败原因：{first_error}")
-        elif canceled:
-            QMessageBox.information(self, "上传已取消", f"已取消上传，成功上传 {ok_count} 个文件。")
-        else:
-            QMessageBox.information(self, "上传成功", f"成功上传 {ok_count} 个文件。")
+        if not tasks:
+            if first_error:
+                QMessageBox.warning(self, "上传准备失败", first_error)
+            return
+        self._start_upload_worker(tasks, context={"mode": "batch", "prepare_error": first_error})
 
     def _create_upload_progress(self, total_steps: int) -> QProgressDialog:
         total = max(1, int(total_steps or 1))
@@ -1322,6 +1553,349 @@ class DocManWidget(QFrame):
             "文件编码未识别",
             "以下文件未识别到标准文件编码，不能上传：\n" + "\n".join(filenames),
         )
+
+    def _build_staged_upload_task(self, item: dict, row_index: int) -> dict:
+        file_path = str(item.get("path") or "").strip()
+        if not file_path or not os.path.exists(file_path):
+            raise FileNotFoundError(file_path or "文件不存在")
+        meta = dict(item.get("meta") or {})
+        if self._requires_standard_document_code() and self._is_unclassified_meta(meta):
+            raise ValueError(f"{os.path.basename(file_path)} 未识别到标准文件编码，不能上传")
+        category = str(item.get("category") or "").strip() or self._default_category()
+        if self._display_profile in {"design", "rebuild"} and category == self._default_category():
+            category = str(meta.get("file_class_name") or category or "").strip()
+        target_path_segments, category = self._resolve_upload_target(item, category)
+
+        if self._db_list_mode and is_file_db_configured():
+            kind = "docman_append"
+            target_dir = ""
+        elif is_file_db_configured():
+            kind = "docman_replace"
+            target_dir = ""
+        else:
+            kind = "local_copy"
+            target_dir = self._storage_dir_getter(target_path_segments)
+
+        return {
+            "kind": kind,
+            "file_path": file_path,
+            "path_segments": list(target_path_segments),
+            "row_index": int(row_index),
+            "category": category,
+            "work_condition": self._default_work_condition,
+            "remark": "",
+            "facility_code": self._facility_code,
+            "target_dir": target_dir,
+            "item": dict(item),
+        }
+
+    def _start_upload_worker(self, tasks: list[dict], *, context: dict) -> None:
+        if not tasks:
+            return
+        if self._upload_thread is not None:
+            QMessageBox.information(self, "提示", "当前已有上传任务正在执行，请稍后再试。")
+            return
+        self._upload_token += 1
+        token = self._upload_token
+        self._upload_context = dict(context or {})
+        progress = self._create_upload_progress(len(tasks))
+        self._upload_progress = progress
+        thread = QThread(self)
+        worker = _DocManUploadWorker(token=token, tasks=tasks)
+        worker.moveToThread(thread)
+        progress.canceled.connect(worker.cancel)
+        thread.started.connect(worker.run)
+        worker.progress.connect(lambda value, text: self._update_upload_progress(progress, value, text))
+        worker.finished.connect(self._on_upload_finished)
+        worker.failed.connect(self._on_upload_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_upload_worker)
+        self._upload_thread = thread
+        self._upload_worker = worker
+        self._set_action_buttons_enabled(False)
+        thread.start()
+
+    def _clear_upload_worker(self) -> None:
+        self._upload_thread = None
+        self._upload_worker = None
+        self._set_action_buttons_enabled(True)
+
+    def _set_action_buttons_enabled(self, enabled: bool) -> None:
+        for attr in ("btn_add", "btn_delete", "btn_download", "btn_prev_page", "btn_next_page"):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                widget.setEnabled(bool(enabled))
+
+    def _create_file_operation_progress(self, title: str, label: str, total_steps: int) -> QProgressDialog:
+        total = max(1, int(total_steps or 1))
+        progress = QProgressDialog(label, "取消", 0, total, self)
+        progress.setWindowTitle(title)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+        progress.show()
+        QApplication.processEvents()
+        return progress
+
+    @staticmethod
+    def _update_file_operation_progress(progress: QProgressDialog, value: int, text: str) -> None:
+        progress.setLabelText(text)
+        progress.setValue(value)
+        QApplication.processEvents()
+
+    def _start_delete_worker(self, record_ids: list[int], *, context: dict) -> None:
+        if not record_ids:
+            return
+        if self._file_operation_thread is not None:
+            QMessageBox.information(self, "提示", "当前已有文件操作正在执行，请稍后再试。")
+            return
+        self._file_operation_token += 1
+        token = self._file_operation_token
+        self._file_operation_context = dict(context or {})
+        progress = self._create_file_operation_progress("删除进度", "准备删除...", len(record_ids))
+        self._file_operation_progress = progress
+        thread = QThread(self)
+        worker = _DocManDeleteWorker(token=token, record_ids=record_ids)
+        worker.moveToThread(thread)
+        progress.canceled.connect(worker.cancel)
+        thread.started.connect(worker.run)
+        worker.progress.connect(lambda value, text: self._update_file_operation_progress(progress, value, text))
+        worker.finished.connect(self._on_delete_finished)
+        worker.failed.connect(self._on_file_operation_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_file_operation_worker)
+        self._file_operation_thread = thread
+        self._file_operation_worker = worker
+        self._set_action_buttons_enabled(False)
+        thread.start()
+
+    def _start_download_worker(self, tasks: list[dict], *, context: dict) -> None:
+        if not tasks:
+            return
+        if self._file_operation_thread is not None:
+            QMessageBox.information(self, "提示", "当前已有文件操作正在执行，请稍后再试。")
+            return
+        self._file_operation_token += 1
+        token = self._file_operation_token
+        self._file_operation_context = dict(context or {})
+        progress = self._create_file_operation_progress("下载进度", "准备下载...", len(tasks))
+        self._file_operation_progress = progress
+        thread = QThread(self)
+        worker = _DocManDownloadWorker(token=token, tasks=tasks)
+        worker.moveToThread(thread)
+        progress.canceled.connect(worker.cancel)
+        thread.started.connect(worker.run)
+        worker.progress.connect(lambda value, text: self._update_file_operation_progress(progress, value, text))
+        worker.finished.connect(self._on_download_finished)
+        worker.failed.connect(self._on_file_operation_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_file_operation_worker)
+        self._file_operation_thread = thread
+        self._file_operation_worker = worker
+        self._set_action_buttons_enabled(False)
+        thread.start()
+
+    def _clear_file_operation_worker(self) -> None:
+        self._file_operation_thread = None
+        self._file_operation_worker = None
+        self._set_action_buttons_enabled(True)
+
+    def _on_file_operation_failed(self, token: int, message: str) -> None:
+        if int(token) != self._file_operation_token:
+            return
+        if self._file_operation_progress is not None:
+            self._file_operation_progress.close()
+            self._file_operation_progress = None
+        QMessageBox.warning(self, "操作失败", message or "文件操作失败。")
+
+    def _on_delete_finished(self, token: int, payload: object) -> None:
+        if int(token) != self._file_operation_token:
+            return
+        if self._file_operation_progress is not None:
+            self._file_operation_progress.close()
+            self._file_operation_progress = None
+        data = payload if isinstance(payload, dict) else {}
+        failed_ids = {int(item) for item in data.get("failed_ids") or []}
+        if data.get("canceled"):
+            requested_ids = {int(item) for item in self._file_operation_context.get("record_ids") or []}
+            deleted_ids = {int(item) for item in data.get("deleted_ids") or []}
+            failed_ids.update(requested_ids - deleted_ids)
+        failures = list(data.get("failures") or [])
+        self._apply_checked_delete_result(failed_ids)
+        if failures:
+            QMessageBox.warning(self, "警告", str(failures[0]))
+        elif data.get("canceled"):
+            QMessageBox.information(self, "删除已取消", "删除已取消")
+        else:
+            QMessageBox.information(self, "删除成功", "删除成功")
+        self._file_operation_context = {}
+
+    def _on_download_finished(self, token: int, payload: object) -> None:
+        if int(token) != self._file_operation_token:
+            return
+        if self._file_operation_progress is not None:
+            self._file_operation_progress.close()
+            self._file_operation_progress = None
+        data = payload if isinstance(payload, dict) else {}
+        downloaded = int(data.get("downloaded") or 0)
+        missing = int(self._file_operation_context.get("missing") or 0)
+        target_label = str(self._file_operation_context.get("target_label") or "")
+        message = f"已下载 {downloaded} 个文件。"
+        if target_label:
+            message = f"已下载 {downloaded} 个文件到：\n{target_label}"
+        if missing:
+            message += f"\n另有 {missing} 个文件不存在。"
+        if data.get("canceled"):
+            message = "下载已取消。\n" + message
+        QMessageBox.information(self, "下载完成", message)
+        self._file_operation_context = {}
+
+    def _on_upload_failed(self, token: int, message: str) -> None:
+        if int(token) != self._upload_token:
+            return
+        if self._upload_progress is not None:
+            self._upload_progress.close()
+            self._upload_progress = None
+        QMessageBox.warning(self, "上传失败", message or "上传失败。")
+
+    def _on_upload_finished(self, token: int, payload: object) -> None:
+        if int(token) != self._upload_token:
+            return
+        if self._upload_progress is not None:
+            try:
+                self._upload_progress.close()
+            except Exception:
+                pass
+            self._upload_progress = None
+        data = payload if isinstance(payload, dict) else {}
+        results = list(data.get("results") or [])
+        mode = str(self._upload_context.get("mode") or "batch")
+
+        if mode == "single":
+            self._apply_single_upload_results(results)
+        else:
+            self._apply_batch_upload_results(results)
+
+        ok_count = int(data.get("ok_count") or 0)
+        first_error = str(data.get("first_error") or self._upload_context.get("prepare_error") or "")
+        canceled = bool(data.get("canceled"))
+        if first_error:
+            QMessageBox.warning(self, "上传完成但存在失败", f"成功上传 {ok_count} 个文件。\n首个失败原因：{first_error}")
+        elif canceled:
+            QMessageBox.information(self, "上传已取消", f"已取消上传，成功上传 {ok_count} 个文件。")
+        else:
+            QMessageBox.information(self, "上传成功", "上传成功" if ok_count == 1 else f"成功上传 {ok_count} 个文件。")
+        self._upload_context = {}
+
+    def _apply_batch_upload_results(self, results: list[dict]) -> None:
+        db_list_uploaded = False
+        for item in results:
+            kind = str(item.get("kind") or "")
+            if kind == "docman_append":
+                db_list_uploaded = True
+            elif kind == "docman_replace":
+                result = dict(item.get("result") or {})
+                self._records.append(self._record_from_upload_result(result, str(item.get("file_path") or ""), str(item.get("category") or "")))
+            elif kind == "local_copy":
+                self._records.append(
+                    self._record_from_local_upload(
+                        str(item.get("target_path") or ""),
+                        dict(item.get("item") or {}),
+                        str(item.get("category") or ""),
+                        list(item.get("path_segments") or []),
+                    )
+                )
+        if db_list_uploaded:
+            self._current_page = 0
+            self._start_record_page_load()
+        self._normalize_records()
+        self.refresh()
+
+    def _apply_single_upload_results(self, results: list[dict]) -> None:
+        if not results:
+            self._normalize_records()
+            self.refresh()
+            return
+        item = results[0]
+        kind = str(item.get("kind") or "")
+        record_index = self._upload_context.get("record_index")
+        rec = self._records[int(record_index)] if record_index is not None and int(record_index) < len(self._records) else None
+        if kind == "docman_list_replace":
+            self._current_page = 0
+            self._start_record_page_load()
+        elif kind == "docman_replace" and rec is not None:
+            self._apply_upload_result_to_record(rec, dict(item.get("result") or {}), str(item.get("file_path") or ""), str(item.get("category") or ""))
+        elif kind == "local_copy" and rec is not None:
+            self._apply_local_upload_result_to_record(
+                rec,
+                str(item.get("target_path") or ""),
+                str(item.get("category") or ""),
+                list(item.get("path_segments") or []),
+                dict(item.get("item") or {}),
+            )
+        self._normalize_records()
+        self.refresh()
+
+    def _apply_upload_result_to_record(self, rec: dict, result: dict, file_path: str, category: str) -> None:
+        rec["record_id"] = result.get("id")
+        rec["path"] = resolve_storage_path(result)
+        rec["fmt"] = (result.get("file_ext") or "").upper()
+        rec["filename"] = result.get("original_name") or os.path.basename(file_path)
+        rec["category"] = result.get("category_name") or category or rec.get("category", "")
+        rec["work_condition"] = result.get("work_condition") or rec.get("work_condition", "")
+        rec["logical_path"] = result.get("logical_path") or rec.get("logical_path", "")
+        for key in (
+            "document_code",
+            "document_title",
+            "design_stage_name",
+            "discipline_name",
+            "file_class_name",
+            "recognition_status",
+            "recognition_message",
+        ):
+            rec[key] = result.get(key) or rec.get(key, "")
+        dt = result.get("uploaded_at") or result.get("source_modified_at") or result.get("updated_at")
+        rec["mtime"] = dt.strftime("%Y/%m/%d %H:%M") if dt else QDateTime.currentDateTime().toString("yyyy/M/d HH:mm")
+
+    def _apply_local_upload_result_to_record(
+        self,
+        rec: dict,
+        target_path: str,
+        category: str,
+        path_segments: list[str],
+        item: dict,
+    ) -> None:
+        meta = dict(item.get("meta") or {})
+        rec["path"] = target_path
+        rec["fmt"] = self._format_label_from_path(target_path)
+        rec["filename"] = os.path.basename(target_path)
+        rec["mtime"] = QDateTime.currentDateTime().toString("yyyy/M/d HH:mm")
+        rec["logical_path"] = "/".join(path_segments)
+        rec["category"] = category or rec.get("category", "")
+        for key in (
+            "document_code",
+            "document_title",
+            "design_stage_name",
+            "discipline_name",
+            "file_class_name",
+            "recognition_status",
+            "recognition_message",
+        ):
+            rec[key] = meta.get(key) or rec.get(key, "")
 
     def _upload_staged_file(self, item: dict) -> None:
         file_path = str(item.get("path") or "").strip()
@@ -1488,19 +2062,18 @@ class DocManWidget(QFrame):
             self.refresh()
             return
 
-        failures: list[str] = []
-        failed_ids: set[int] = set()
-        if is_file_db_configured():
-            for rec in checked_records:
-                record_id = rec.get("record_id")
-                if record_id is None:
-                    continue
-                try:
-                    hard_delete_record(int(record_id))
-                except FileBackendError as exc:
-                    failures.append(str(exc))
-                    failed_ids.add(int(record_id))
+        record_ids = [
+            int(rec.get("record_id"))
+            for rec in checked_records
+            if rec.get("record_id") is not None and is_file_db_configured()
+        ]
+        if record_ids:
+            self._start_delete_worker(record_ids, context={"record_ids": record_ids})
+            return
+        self._apply_checked_delete_result(set())
+        QMessageBox.information(self, "删除成功", "删除成功")
 
+    def _apply_checked_delete_result(self, failed_ids: set[int]) -> None:
         kept = []
         for rec in self._records:
             if not rec.get("checked"):
@@ -1517,14 +2090,10 @@ class DocManWidget(QFrame):
                 kept.append(rec)
 
         self._records[:] = kept
-        if self._db_list_mode and not failures:
-            self._load_record_list_from_db()
+        if self._db_list_mode and not failed_ids:
+            self._start_record_page_load()
         self._normalize_records()
         self.refresh()
-        if failures:
-            QMessageBox.warning(self, "警告", failures[0])
-        else:
-            QMessageBox.information(self, "删除成功", "删除成功")
 
     def _upload_or_modify(self, row: int):
         record_index = self._record_index_for_row(row)
@@ -1554,9 +2123,6 @@ class DocManWidget(QFrame):
         if self._requires_standard_document_code() and self._is_unclassified_meta(meta):
             self._warn_unclassified_uploads([os.path.basename(file_path)])
             return
-        progress = self._create_upload_progress(1)
-        self._update_upload_progress(progress, 0, f"正在上传：{os.path.basename(file_path)}")
-
         target_path_segments, resolved_category = self._resolve_upload_target(
             {
                 "path": file_path,
@@ -1567,134 +2133,54 @@ class DocManWidget(QFrame):
             upload_category,
         )
 
+        task: dict
         if self._db_list_mode and is_file_db_configured():
-            try:
-                record_id = rec.get("record_id")
-                logical_path = rec.get("logical_path") or ""
-                target_logical_path = "/".join(target_path_segments)
-                keep_existing_path = bool(
-                    record_id
-                    and logical_path
-                    and (
-                        not target_logical_path
-                        or str(logical_path).replace("\\", "/").strip("/").startswith(f"{target_logical_path}/")
-                    )
+            record_id = rec.get("record_id")
+            logical_path = rec.get("logical_path") or ""
+            target_logical_path = "/".join(target_path_segments)
+            keep_existing_path = bool(
+                record_id
+                and logical_path
+                and (
+                    not target_logical_path
+                    or str(logical_path).replace("\\", "/").strip("/").startswith(f"{target_logical_path}/")
                 )
-                if keep_existing_path:
-                    replace_docman_list_file(
-                        file_path,
-                        logical_path=logical_path,
-                        record_id=int(record_id),
-                        category=resolved_category,
-                        work_condition=rec.get("work_condition", "") or self._default_work_condition,
-                        remark=rec.get("remark", ""),
-                        facility_code=self._facility_code,
-                    )
-                else:
-                    if record_id:
-                        hard_delete_record(int(record_id))
-                    append_docman_file(
-                        file_path,
-                        path_segments=target_path_segments,
-                        category=resolved_category,
-                        work_condition=rec.get("work_condition", "") or self._default_work_condition,
-                        remark=rec.get("remark", ""),
-                        facility_code=self._facility_code,
-                    )
-                self._current_page = 0
-                self._load_record_list_from_db()
-                self._normalize_records()
-                self.refresh()
-                self._update_upload_progress(progress, 1, "上传完成")
-                progress.close()
-                QMessageBox.information(self, "上传成功", "上传成功")
-                return
-            except FileBackendError as exc:
-                progress.close()
-                QMessageBox.warning(self, "上传失败", str(exc))
-                return
-
-        if is_file_db_configured():
-            try:
-                result = replace_docman_file(
-                    file_path,
-                    path_segments=target_path_segments,
-                    row_index=record_index + 1,
-                    category=resolved_category,
-                    work_condition=rec.get("work_condition", "") or self._default_work_condition,
-                    remark=rec.get("remark", ""),
-                    facility_code=self._facility_code,
-                )
-                rec["record_id"] = result.get("id")
-                rec["path"] = resolve_storage_path(result)
-                rec["fmt"] = (result.get("file_ext") or "").upper()
-                rec["filename"] = result.get("original_name") or os.path.basename(file_path)
-                rec["category"] = result.get("category_name") or resolved_category or current_category
-                rec["work_condition"] = result.get("work_condition") or rec.get("work_condition", "")
-                rec["logical_path"] = result.get("logical_path") or rec.get("logical_path", "")
-                for key in (
-                    "document_code",
-                    "document_title",
-                    "design_stage_name",
-                    "discipline_name",
-                    "file_class_name",
-                    "recognition_status",
-                    "recognition_message",
-                ):
-                    rec[key] = result.get(key) or rec.get(key, "")
-                dt = result.get("uploaded_at") or result.get("source_modified_at") or result.get("updated_at")
-                rec["mtime"] = dt.strftime("%Y/%m/%d %H:%M") if dt else QDateTime.currentDateTime().toString("yyyy/M/d HH:mm")
-                self.refresh()
-                self._update_upload_progress(progress, 1, "上传完成")
-                progress.close()
-                QMessageBox.information(self, "上传成功", "上传成功")
-                return
-            except FileBackendError as exc:
-                progress.close()
-                QMessageBox.warning(self, "错误", str(exc))
-                return
-
-        target_dir = self._storage_dir_getter(target_path_segments)
-        os.makedirs(target_dir, exist_ok=True)
-        filename = os.path.basename(file_path)
-        target_path = os.path.join(target_dir, filename)
-        root, ext = os.path.splitext(target_path)
-        suffix = 1
-        while os.path.exists(target_path):
-            target_path = f"{root} ({suffix}){ext}"
-            suffix += 1
-
-        try:
-            shutil.copy2(file_path, target_path)
-        except Exception as exc:
-            progress.close()
-            QMessageBox.warning(self, "错误", f"复制文件失败：{exc}")
-            return
-        try:
-            os.utime(target_path, None)
-        except OSError:
-            pass
-
-        rec["path"] = target_path
-        rec["fmt"] = self._format_label_from_path(target_path)
-        rec["filename"] = filename
-        rec["mtime"] = QDateTime.currentDateTime().toString("yyyy/M/d HH:mm")
-        rec["logical_path"] = "/".join(target_path_segments)
-        rec["category"] = resolved_category or current_category
-        for key in (
-            "document_code",
-            "document_title",
-            "design_stage_name",
-            "discipline_name",
-            "file_class_name",
-            "recognition_status",
-            "recognition_message",
-        ):
-            rec[key] = meta.get(key) or rec.get(key, "")
-        self.refresh()
-        self._update_upload_progress(progress, 1, "上传完成")
-        progress.close()
-        QMessageBox.information(self, "上传成功", "上传成功")
+            )
+            task = {
+                "kind": "docman_list_replace",
+                "file_path": file_path,
+                "path_segments": list(target_path_segments),
+                "logical_path": logical_path,
+                "record_id": int(record_id) if record_id else None,
+                "keep_existing_path": keep_existing_path,
+                "category": resolved_category,
+                "work_condition": rec.get("work_condition", "") or self._default_work_condition,
+                "remark": rec.get("remark", ""),
+                "facility_code": self._facility_code,
+            }
+        elif is_file_db_configured():
+            task = {
+                "kind": "docman_replace",
+                "file_path": file_path,
+                "path_segments": list(target_path_segments),
+                "row_index": record_index + 1,
+                "record_index": record_index,
+                "category": resolved_category,
+                "work_condition": rec.get("work_condition", "") or self._default_work_condition,
+                "remark": rec.get("remark", ""),
+                "facility_code": self._facility_code,
+            }
+        else:
+            task = {
+                "kind": "local_copy",
+                "file_path": file_path,
+                "path_segments": list(target_path_segments),
+                "target_dir": self._storage_dir_getter(target_path_segments),
+                "record_index": record_index,
+                "category": resolved_category or current_category,
+                "item": {"path": file_path, "meta": meta},
+            }
+        self._start_upload_worker(tasks=[task], context={"mode": "single", "record_index": record_index})
 
     @staticmethod
     def _format_label_from_path(file_path: str) -> str:
@@ -1806,34 +2292,21 @@ class DocManWidget(QFrame):
             if not save_path:
                 return
             save_path = normalize_download_save_path(save_path, fallback_name=safe_default_name)
-            try:
-                shutil.copy2(src_path, save_path)
-            except Exception as exc:
-                QMessageBox.warning(self, "下载失败", str(exc))
-                return
-            message = "已下载 1 个文件。"
-            if missing:
-                message += f"\n另有 {missing} 个文件不存在。"
-            QMessageBox.information(self, "下载完成", message)
+            self._start_download_worker(
+                [{"src_path": src_path, "target_path": save_path, "filename": safe_default_name}],
+                context={"missing": missing, "target_label": save_path},
+            )
             return
 
         target_dir = QFileDialog.getExistingDirectory(self, "选择下载文件夹")
         if not target_dir:
             return
 
-        downloaded = 0
-        for src_path, filename in available:
-            target_path = unique_download_target_path(target_dir, filename)
-            try:
-                shutil.copy2(src_path, target_path)
-                downloaded += 1
-            except Exception:
-                continue
-
-        message = f"已下载 {downloaded} 个文件到：\n{target_dir}"
-        if missing:
-            message += f"\n另有 {missing} 个文件不存在。"
-        QMessageBox.information(self, "下载完成", message)
+        tasks = [
+            {"src_path": src_path, "target_dir": target_dir, "filename": filename}
+            for src_path, filename in available
+        ]
+        self._start_download_worker(tasks, context={"missing": missing, "target_label": target_dir})
 
     def _open_row_file(self, row: int, col: int) -> None:
         if col in {self.COL_CHECK, self.COL_INDEX, self.COL_STAGE, self.COL_CATEGORY, self.COL_REMARK}:

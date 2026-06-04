@@ -6,14 +6,14 @@ import shutil
 import datetime
 from typing import Any, Dict, List
 
-from PyQt5.QtCore import Qt, QUrl, pyqtSignal
+from PyQt5.QtCore import QObject, Qt, QThread, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices, QFontMetrics
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QSizePolicy, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QScrollArea, QStackedWidget, QMessageBox, QFileDialog, QWidget,
     QPushButton, QTreeWidget, QTreeWidgetItem, QComboBox, QDialog,
-    QDialogButtonBox, QFormLayout,
+    QDialogButtonBox, QFormLayout, QProgressDialog,
 )
 
 from core.base_page import BasePage
@@ -38,6 +38,198 @@ from services.file_db_adapter import (
 
 # ✅ 直接复用 ConstructionDocsWidget 的文件夹UI与交互（FolderButton / folder_grid / PathBar 等）
 from .construction_docs_widget import ConstructionDocsWidget
+
+
+class _ModelFilesDbLoadWorker(QObject):
+    finished = pyqtSignal(int, str, str, object)
+    failed = pyqtSignal(int, str, str)
+
+    def __init__(
+        self,
+        *,
+        token: int,
+        mode: str,
+        path_key: str,
+        facility_code: str,
+        prefixes: List[str] | None = None,
+        document_code_query: str = "",
+        document_title_query: str = "",
+    ):
+        super().__init__()
+        self._token = int(token)
+        self._mode = str(mode or "")
+        self._path_key = str(path_key or "")
+        self._facility_code = str(facility_code or "").strip()
+        self._prefixes = list(prefixes or [])
+        self._document_code_query = str(document_code_query or "")
+        self._document_title_query = str(document_title_query or "")
+
+    def run(self) -> None:
+        try:
+            rows: List[Dict[str, Any]] = []
+            seen_ids: set[int] = set()
+            if self._mode == "search":
+                sources = [
+                    list_files_by_prefix(
+                        module_code="model_files",
+                        logical_path_prefix="",
+                        facility_code=self._facility_code,
+                        document_code_query=self._document_code_query,
+                        document_title_query=self._document_title_query,
+                    )
+                ]
+            else:
+                sources = [
+                    list_files_by_prefix(
+                        module_code="model_files",
+                        logical_path_prefix=prefix,
+                        facility_code=self._facility_code,
+                    )
+                    for prefix in self._prefixes
+                ]
+
+            for source_rows in sources:
+                for row in source_rows:
+                    row_id = row.get("id")
+                    if row_id is not None and row_id in seen_ids:
+                        continue
+                    rows.append(dict(row))
+                    if row_id is not None:
+                        seen_ids.add(row_id)
+        except Exception as exc:
+            self.failed.emit(self._token, self._mode, str(exc))
+            return
+        self.finished.emit(self._token, self._mode, self._path_key, rows)
+
+
+class _ModelFileUploadWorker(QObject):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(int, object)
+    failed = pyqtSignal(int, str)
+
+    def __init__(self, *, token: int, task: dict):
+        super().__init__()
+        self._token = int(token)
+        self._task = dict(task)
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        try:
+            if self._cancelled:
+                self.finished.emit(self._token, {"canceled": True})
+                return
+            file_path = str(self._task.get("file_path") or "").strip()
+            self.progress.emit(0, f"正在上传：{os.path.basename(file_path)}")
+            delete_record_id = self._task.get("delete_record_id")
+            if delete_record_id is not None:
+                hard_delete_record(int(delete_record_id))
+            result = upload_file(
+                file_path,
+                file_type_code=str(self._task.get("file_type_code") or "model"),
+                module_code="model_files",
+                logical_path=str(self._task.get("logical_path") or ""),
+                facility_code=str(self._task.get("facility_code") or "").strip() or None,
+                category_name=str(self._task.get("category") or "").strip(),
+                work_condition=str(self._task.get("work_condition") or ""),
+                remark=str(self._task.get("remark") or ""),
+            )
+            self.progress.emit(1, "上传完成")
+        except Exception as exc:
+            self.failed.emit(self._token, str(exc))
+            return
+        self.finished.emit(self._token, {"task": self._task, "result": result, "canceled": False})
+
+
+class _ModelFileDeleteWorker(QObject):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(int, object)
+    failed = pyqtSignal(int, str)
+
+    def __init__(self, *, token: int, record_ids: list[int], path_key: str):
+        super().__init__()
+        self._token = int(token)
+        self._record_ids = [int(item) for item in record_ids]
+        self._path_key = str(path_key or "")
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        deleted_ids: list[int] = []
+        failures: list[str] = []
+        total = len(self._record_ids)
+        try:
+            for index, record_id in enumerate(self._record_ids, start=1):
+                if self._cancelled:
+                    break
+                self.progress.emit(index - 1, f"正在删除 {index}/{total}")
+                try:
+                    hard_delete_record(int(record_id))
+                    deleted_ids.append(int(record_id))
+                except Exception as exc:
+                    failures.append(str(exc))
+                self.progress.emit(index, f"已完成 {index}/{total}")
+        except Exception as exc:
+            self.failed.emit(self._token, str(exc))
+            return
+        self.finished.emit(
+            self._token,
+            {"path_key": self._path_key, "deleted_ids": deleted_ids, "failures": failures, "canceled": self._cancelled},
+        )
+
+
+class _ModelFileDownloadWorker(QObject):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(int, object)
+    failed = pyqtSignal(int, str)
+
+    def __init__(self, *, token: int, tasks: list[dict]):
+        super().__init__()
+        self._token = int(token)
+        self._tasks = [dict(task) for task in tasks]
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        downloaded = 0
+        failures: list[str] = []
+        total = len(self._tasks)
+        try:
+            for index, task in enumerate(self._tasks, start=1):
+                if self._cancelled:
+                    break
+                src_path = str(task.get("src_path") or "").strip()
+                filename = str(task.get("filename") or os.path.basename(src_path)).strip()
+                self.progress.emit(index - 1, f"正在下载 {index}/{total}：{filename}")
+                try:
+                    if not src_path or not os.path.exists(src_path):
+                        raise FileNotFoundError(src_path or "文件不存在")
+                    target_path = str(task.get("target_path") or "").strip()
+                    target_dir = str(task.get("target_dir") or "").strip()
+                    if not target_path:
+                        if not target_dir:
+                            raise ValueError("下载目录为空")
+                        target_path = unique_download_target_path(target_dir, filename)
+                    else:
+                        folder = os.path.dirname(target_path)
+                        if folder:
+                            os.makedirs(folder, exist_ok=True)
+                    shutil.copy2(src_path, target_path)
+                    downloaded += 1
+                except Exception as exc:
+                    failures.append(str(exc))
+                self.progress.emit(index, f"已完成 {index}/{total}")
+        except Exception as exc:
+            self.failed.emit(self._token, str(exc))
+            return
+        self.finished.emit(self._token, {"downloaded": downloaded, "failures": failures, "canceled": self._cancelled})
+
 
 # ============================================================
 # 1) Widget：文件夹UI = ConstructionDocsWidget；叶子表格页 = 旧逻辑表格
@@ -80,6 +272,17 @@ class ModelFilesDocsWidget(QWidget):
         self.current_row_configs: List[Dict] = []
         self.current_table_rows: List[Dict[str, Any]] = []
         self._sidebar_items: Dict[str, QTreeWidgetItem] = {}
+        self._db_load_token = 0
+        self._db_load_jobs: list[tuple[QThread, _ModelFilesDbLoadWorker, int]] = []
+        self._upload_token = 0
+        self._upload_thread: QThread | None = None
+        self._upload_worker: _ModelFileUploadWorker | None = None
+        self._upload_progress: QProgressDialog | None = None
+        self._file_operation_token = 0
+        self._file_operation_thread: QThread | None = None
+        self._file_operation_worker: QObject | None = None
+        self._file_operation_progress: QProgressDialog | None = None
+        self._file_operation_context: dict = {}
 
         # 上传根目录：项目根目录/upload/model_files（沿用你旧代码的 upload 路径）
         self.upload_root = self._get_upload_root()
@@ -802,19 +1005,17 @@ class ModelFilesDocsWidget(QWidget):
         return os.path.splitext(original_name or "")[1].lstrip(".").upper()
 
     def _handle_model_doc_delete(self, selected: List[Dict[str, Any]], _records: List[Dict[str, Any]]):
-        total = 0
+        record_ids: list[int] = []
         for rec in selected:
             record_id = rec.get("record_id")
             if record_id is None:
                 continue
-            hard_delete_record(int(record_id))
-            total += 1
+            record_ids.append(int(record_id))
         path_key = self.current_leaf_key
-        self.row_paths_by_path.pop(path_key, None)
-        self.row_db_records_by_path.pop(path_key, None)
-        _records[:] = self._build_model_file_doc_records(path_key)
-        if total:
-            QMessageBox.information(self, "删除成功", "删除成功")
+        if not record_ids:
+            QMessageBox.information(self, "提示", "未找到可删除的文件记录。")
+            return
+        self._start_model_delete_worker(record_ids, path_key)
 
     def _leaf_row_dir(self, path_key: str, row: int, create_dir: bool = True) -> str:
         segs = path_key.split("/") if path_key else []
@@ -823,6 +1024,163 @@ class ModelFilesDocsWidget(QWidget):
         if create_dir:
             os.makedirs(d, exist_ok=True)
         return d
+
+    def _forget_db_load_thread(self, thread: QThread) -> None:
+        self._db_load_jobs = [job for job in self._db_load_jobs if job[0] is not thread]
+
+    def _apply_model_doc_context(
+        self,
+        *,
+        path_segments: List[str],
+        records: List[Dict[str, Any]],
+        categories: List[str],
+        path_hint: str,
+        use_handlers: bool,
+        hide_empty_templates: bool = True,
+    ) -> None:
+        if use_handlers:
+            self.doc_man_widget.set_action_handlers(
+                upload_handler=self._handle_model_doc_upload,
+                new_upload_handler=self._handle_model_doc_new_upload,
+                delete_handler=self._handle_model_doc_delete,
+                download_handler=self._handle_model_doc_download,
+            )
+        else:
+            self.doc_man_widget.set_action_handlers(upload_handler=None, delete_handler=None, download_handler=None)
+        self.doc_man_widget.set_context(
+            path_segments,
+            records,
+            categories,
+            facility_code=self.facility_code,
+            overlay_from_db=False,
+            hide_empty_templates=hide_empty_templates,
+            db_list_mode=False,
+            show_work_condition=True,
+            display_profile="model",
+            path_root_label="模型文件",
+            display_path_segments=path_segments,
+            path_hint=path_hint,
+        )
+
+    def _start_model_records_load(self, path_key: str) -> None:
+        categories = self._model_categories_for_path(path_key)
+        path_segments = list(self.current_path)
+        hint = self.section_hint.text() if hasattr(self, "section_hint") else ""
+        self._db_load_token += 1
+        token = self._db_load_token
+        self._apply_model_doc_context(
+            path_segments=path_segments,
+            records=[],
+            categories=categories,
+            path_hint="正在加载模型文件...",
+            use_handlers=True,
+        )
+
+        if not is_file_db_configured() or not self.facility_code:
+            records = self._build_model_file_doc_records(path_key) if self.facility_code and is_file_db_configured() else []
+            self._apply_model_doc_context(
+                path_segments=path_segments,
+                records=records,
+                categories=categories,
+                path_hint=hint,
+                use_handlers=True,
+            )
+            return
+
+        worker = _ModelFilesDbLoadWorker(
+            token=token,
+            mode="records",
+            path_key=path_key,
+            facility_code=self.facility_code,
+            prefixes=self._current_model_prefixes(path_key),
+        )
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_model_db_load_finished)
+        worker.failed.connect(self._on_model_db_load_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda t=thread: self._forget_db_load_thread(t))
+        self._db_load_jobs.append((thread, worker, token))
+        thread.start()
+
+    def _start_model_search_load(self, code_query: str, name_query: str) -> None:
+        self._db_load_token += 1
+        token = self._db_load_token
+        self.section_title.setText("搜索结果")
+        self.section_hint.setText("正在搜索模型文件...")
+        self._apply_model_doc_context(
+            path_segments=["搜索结果"],
+            records=[],
+            categories=["其他"],
+            path_hint="正在搜索模型文件...",
+            use_handlers=False,
+            hide_empty_templates=False,
+        )
+        worker = _ModelFilesDbLoadWorker(
+            token=token,
+            mode="search",
+            path_key="搜索结果",
+            facility_code=self.facility_code,
+            document_code_query=code_query,
+            document_title_query=name_query,
+        )
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_model_db_load_finished)
+        worker.failed.connect(self._on_model_db_load_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda t=thread: self._forget_db_load_thread(t))
+        self._db_load_jobs.append((thread, worker, token))
+        thread.start()
+
+    def _on_model_db_load_finished(self, token: int, mode: str, path_key: str, db_rows: object) -> None:
+        if int(token) != self._db_load_token:
+            return
+        rows = list(db_rows or []) if isinstance(db_rows, list) else []
+        if mode == "search":
+            records = [self._model_db_row_to_doc_record(row, index) for index, row in enumerate(rows, start=1)]
+            hint = f"按文件编码/文件名搜索模型文件，共 {len(records)} 条。"
+            self.section_hint.setText(hint)
+            self._apply_model_doc_context(
+                path_segments=["搜索结果"],
+                records=records,
+                categories=["其他"],
+                path_hint=hint,
+                use_handlers=False,
+                hide_empty_templates=False,
+            )
+            return
+
+        if path_key != self._current_path_key():
+            return
+        categories = self._model_categories_for_path(path_key)
+        records = self._model_db_rows_to_doc_records(path_key, categories, rows)
+        hint = self.section_hint.text() if hasattr(self, "section_hint") else ""
+        self._apply_model_doc_context(
+            path_segments=list(self.current_path),
+            records=records,
+            categories=categories,
+            path_hint=hint,
+            use_handlers=True,
+        )
+
+    def _on_model_db_load_failed(self, token: int, mode: str, message: str) -> None:
+        if int(token) != self._db_load_token:
+            return
+        if mode == "search":
+            self.section_hint.setText("搜索失败")
+        QMessageBox.warning(self, "加载失败", message or "模型文件加载失败。")
+
     def _show_files_for_current_leaf(self):
         node = self._get_node_by_path(self.current_path)
         if not node:
@@ -833,28 +1191,7 @@ class ModelFilesDocsWidget(QWidget):
         is_model_leaf = node.get("type") == "leaf"
         if is_model_root or is_model_leaf:
             self.current_leaf_key = path_key
-            self.doc_man_widget.set_action_handlers(
-                upload_handler=self._handle_model_doc_upload,
-                new_upload_handler=self._handle_model_doc_new_upload,
-                delete_handler=self._handle_model_doc_delete,
-                download_handler=self._handle_model_doc_download,
-            )
-            records = self._build_model_file_doc_records(path_key)
-            categories = self._model_categories_for_path(path_key)
-            self.doc_man_widget.set_context(
-                self.current_path,
-                records,
-                categories,
-                facility_code=self.facility_code,
-                overlay_from_db=False,
-                hide_empty_templates=True,
-                db_list_mode=False,
-                show_work_condition=True,
-                display_profile="model",
-                path_root_label="模型文件",
-                display_path_segments=self.current_path,
-                path_hint=self.section_hint.text() if hasattr(self, "section_hint") else "",
-            )
+            self._start_model_records_load(path_key)
             return
 
         model_key = node.get("model_key")
@@ -903,31 +1240,7 @@ class ModelFilesDocsWidget(QWidget):
         if not is_file_db_configured():
             QMessageBox.information(self, "提示", "当前未配置文件数据库，无法跨分类搜索。")
             return
-        rows = list_files_by_prefix(
-            module_code="model_files",
-            logical_path_prefix="",
-            facility_code=self.facility_code,
-            document_code_query=code,
-            document_title_query=name,
-        )
-        records = [self._model_db_row_to_doc_record(row, index) for index, row in enumerate(rows, start=1)]
-        matched = records
-        self.section_title.setText("搜索结果")
-        self.section_hint.setText(f"按文件编码/文件名搜索模型文件，共 {len(matched)} 条。")
-        self.doc_man_widget.set_action_handlers(upload_handler=None, delete_handler=None, download_handler=None)
-        self.doc_man_widget.set_context(
-            self.current_path or ["搜索结果"],
-            matched,
-            ["其他"],
-            facility_code=self.facility_code,
-            overlay_from_db=False,
-            hide_empty_templates=False,
-            db_list_mode=False,
-            display_profile="model",
-            path_root_label="模型文件",
-            display_path_segments=["搜索结果"],
-            path_hint=f"按文件编码/文件名搜索模型文件，共 {len(matched)} 条。",
-        )
+        self._start_model_search_load(code, name)
 
     def _model_db_row_to_doc_record(self, row: Dict[str, Any], index: int) -> Dict[str, Any]:
         dt = row.get("uploaded_at") or row.get("source_modified_at") or row.get("updated_at")
@@ -1191,6 +1504,199 @@ class ModelFilesDocsWidget(QWidget):
             return "model"
         return "other"
 
+    def _create_model_upload_progress(self) -> QProgressDialog:
+        progress = QProgressDialog("准备上传...", "取消", 0, 1, self)
+        progress.setWindowTitle("上传进度")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+        progress.show()
+        return progress
+
+    def _start_model_upload_worker(self, task: Dict[str, Any]) -> None:
+        if self._upload_thread is not None:
+            QMessageBox.information(self, "提示", "当前已有上传任务正在执行，请稍后再试。")
+            return
+        self._upload_token += 1
+        token = self._upload_token
+        progress = self._create_model_upload_progress()
+        self._upload_progress = progress
+        thread = QThread(self)
+        worker = _ModelFileUploadWorker(token=token, task=task)
+        worker.moveToThread(thread)
+        progress.canceled.connect(worker.cancel)
+        thread.started.connect(worker.run)
+        worker.progress.connect(lambda value, text: self._update_model_upload_progress(progress, value, text))
+        worker.finished.connect(self._on_model_upload_finished)
+        worker.failed.connect(self._on_model_upload_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_model_upload_worker)
+        self._upload_thread = thread
+        self._upload_worker = worker
+        thread.start()
+
+    @staticmethod
+    def _update_model_upload_progress(progress: QProgressDialog, value: int, text: str) -> None:
+        progress.setLabelText(text)
+        progress.setValue(value)
+
+    def _clear_model_upload_worker(self) -> None:
+        self._upload_thread = None
+        self._upload_worker = None
+
+    def _on_model_upload_failed(self, token: int, message: str) -> None:
+        if int(token) != self._upload_token:
+            return
+        if self._upload_progress is not None:
+            self._upload_progress.close()
+            self._upload_progress = None
+        QMessageBox.warning(self, "上传失败", message or "上传失败。")
+
+    def _on_model_upload_finished(self, token: int, payload: object) -> None:
+        if int(token) != self._upload_token:
+            return
+        if self._upload_progress is not None:
+            self._upload_progress.close()
+            self._upload_progress = None
+        data = payload if isinstance(payload, dict) else {}
+        if data.get("canceled"):
+            QMessageBox.information(self, "上传已取消", "上传已取消")
+            return
+        task = dict(data.get("task") or {})
+        path_key = str(task.get("path_key") or self.current_leaf_key)
+        self.row_paths_by_path.pop(path_key, None)
+        self.row_db_records_by_path.pop(path_key, None)
+        if path_key == self.current_leaf_key:
+            self._start_model_records_load(path_key)
+        QMessageBox.information(self, "上传成功", "上传成功")
+
+    def _create_model_file_operation_progress(self, title: str, label: str, total_steps: int) -> QProgressDialog:
+        progress = QProgressDialog(label, "取消", 0, max(1, int(total_steps or 1)), self)
+        progress.setWindowTitle(title)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+        progress.show()
+        return progress
+
+    @staticmethod
+    def _update_model_file_operation_progress(progress: QProgressDialog, value: int, text: str) -> None:
+        progress.setLabelText(text)
+        progress.setValue(value)
+
+    def _start_model_delete_worker(self, record_ids: list[int], path_key: str) -> None:
+        if self._file_operation_thread is not None:
+            QMessageBox.information(self, "提示", "当前已有文件操作正在执行，请稍后再试。")
+            return
+        self._file_operation_token += 1
+        token = self._file_operation_token
+        progress = self._create_model_file_operation_progress("删除进度", "准备删除...", len(record_ids))
+        self._file_operation_progress = progress
+        thread = QThread(self)
+        worker = _ModelFileDeleteWorker(token=token, record_ids=record_ids, path_key=path_key)
+        worker.moveToThread(thread)
+        progress.canceled.connect(worker.cancel)
+        thread.started.connect(worker.run)
+        worker.progress.connect(lambda value, text: self._update_model_file_operation_progress(progress, value, text))
+        worker.finished.connect(self._on_model_delete_finished)
+        worker.failed.connect(self._on_model_file_operation_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_model_file_operation_worker)
+        self._file_operation_thread = thread
+        self._file_operation_worker = worker
+        thread.start()
+
+    def _start_model_download_worker(self, tasks: list[dict], *, context: dict) -> None:
+        if self._file_operation_thread is not None:
+            QMessageBox.information(self, "提示", "当前已有文件操作正在执行，请稍后再试。")
+            return
+        self._file_operation_token += 1
+        token = self._file_operation_token
+        self._file_operation_context = dict(context or {})
+        progress = self._create_model_file_operation_progress("下载进度", "准备下载...", len(tasks))
+        self._file_operation_progress = progress
+        thread = QThread(self)
+        worker = _ModelFileDownloadWorker(token=token, tasks=tasks)
+        worker.moveToThread(thread)
+        progress.canceled.connect(worker.cancel)
+        thread.started.connect(worker.run)
+        worker.progress.connect(lambda value, text: self._update_model_file_operation_progress(progress, value, text))
+        worker.finished.connect(self._on_model_download_finished)
+        worker.failed.connect(self._on_model_file_operation_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_model_file_operation_worker)
+        self._file_operation_thread = thread
+        self._file_operation_worker = worker
+        thread.start()
+
+    def _clear_model_file_operation_worker(self) -> None:
+        self._file_operation_thread = None
+        self._file_operation_worker = None
+
+    def _on_model_file_operation_failed(self, token: int, message: str) -> None:
+        if int(token) != self._file_operation_token:
+            return
+        if self._file_operation_progress is not None:
+            self._file_operation_progress.close()
+            self._file_operation_progress = None
+        QMessageBox.warning(self, "操作失败", message or "文件操作失败。")
+
+    def _on_model_delete_finished(self, token: int, payload: object) -> None:
+        if int(token) != self._file_operation_token:
+            return
+        if self._file_operation_progress is not None:
+            self._file_operation_progress.close()
+            self._file_operation_progress = None
+        data = payload if isinstance(payload, dict) else {}
+        path_key = str(data.get("path_key") or self.current_leaf_key)
+        self.row_paths_by_path.pop(path_key, None)
+        self.row_db_records_by_path.pop(path_key, None)
+        if path_key == self.current_leaf_key:
+            self._start_model_records_load(path_key)
+        failures = list(data.get("failures") or [])
+        if failures:
+            QMessageBox.warning(self, "警告", str(failures[0]))
+        elif data.get("canceled"):
+            QMessageBox.information(self, "删除已取消", "删除已取消")
+        else:
+            QMessageBox.information(self, "删除成功", "删除成功")
+
+    def _on_model_download_finished(self, token: int, payload: object) -> None:
+        if int(token) != self._file_operation_token:
+            return
+        if self._file_operation_progress is not None:
+            self._file_operation_progress.close()
+            self._file_operation_progress = None
+        data = payload if isinstance(payload, dict) else {}
+        downloaded = int(data.get("downloaded") or 0)
+        missing = int(self._file_operation_context.get("missing") or 0)
+        target_label = str(self._file_operation_context.get("target_label") or "")
+        message = f"已下载 {downloaded} 个文件。"
+        if target_label:
+            message = f"已下载 {downloaded} 个文件到：\n{target_label}"
+        if missing:
+            message += f"\n另有 {missing} 个文件不存在。"
+        if data.get("canceled"):
+            message = "下载已取消。\n" + message
+        QMessageBox.information(self, "下载完成", message)
+        self._file_operation_context = {}
+
     def _handle_model_doc_upload(self, row: int, rec: Dict[str, Any], _records: List[Dict[str, Any]]):
         path_key = self.current_leaf_key
         current_category = str(rec.get("category") or "").strip()
@@ -1205,38 +1711,25 @@ class ModelFilesDocsWidget(QWidget):
 
         logical_path = rec.get("logical_path") or self._upload_logical_path_for_category(path_key, current_category)
         record_id = rec.get("record_id")
-        if record_id is not None and not self._category_allows_multiple_files(current_category):
-            hard_delete_record(int(record_id))
-        result = upload_file(
-            file_path,
-            file_type_code=self._doc_category_to_file_type_code(current_category),
-            module_code="model_files",
-            logical_path=logical_path,
-            facility_code=self.facility_code,
-            category_name=current_category,
-            work_condition=rec.get("work_condition") or "",
-            remark=rec.get("remark") or "",
+        delete_record_id = (
+            int(record_id)
+            if record_id is not None and not self._category_allows_multiple_files(current_category)
+            else None
         )
-        dt = result.get("uploaded_at") or result.get("source_modified_at") or result.get("updated_at")
-        resolved_path = resolve_storage_path(result)
         rec["checked"] = False
-        rec["category"] = current_category
-        rec["fmt"] = self._format_from_original_name(str(result.get("original_name") or os.path.basename(file_path)))
-        rec["filename"] = str(result.get("original_name") or os.path.basename(file_path))
-        rec["mtime"] = dt.strftime("%Y/%m/%d") if dt else ""
-        rec["path"] = resolved_path
-        rec["record_id"] = result.get("id")
-        rec["logical_path"] = str(result.get("logical_path") or logical_path)
-        rec["work_condition"] = str(result.get("work_condition") or rec.get("work_condition") or "")
-        rec["analysis_category"] = self._analysis_category_for_record(
-            path_key,
-            {"logical_path": rec["logical_path"]},
+        self._start_model_upload_worker(
+            {
+                "path_key": path_key,
+                "file_path": file_path,
+                "file_type_code": self._doc_category_to_file_type_code(current_category),
+                "logical_path": logical_path,
+                "facility_code": self.facility_code,
+                "category": current_category,
+                "work_condition": rec.get("work_condition") or "",
+                "remark": rec.get("remark") or "",
+                "delete_record_id": delete_record_id,
+            }
         )
-        rec["_force_visible"] = True
-
-        self.row_paths_by_path.pop(path_key, None)
-        self.row_db_records_by_path.pop(path_key, None)
-        QMessageBox.information(self, "上传成功", "上传成功")
 
     def _handle_model_doc_new_upload(self, records: List[Dict[str, Any]]) -> None:
         path_key = self.current_leaf_key
@@ -1279,40 +1772,19 @@ class ModelFilesDocsWidget(QWidget):
             return
 
         logical_path = self._upload_logical_path_for_category(path_key, category)
-        result = upload_file(
-            file_path,
-            file_type_code=self._doc_category_to_file_type_code(category),
-            module_code="model_files",
-            logical_path=logical_path,
-            facility_code=self.facility_code,
-            category_name=category,
-            work_condition="",
-            remark="",
-        )
-        dt = result.get("uploaded_at") or result.get("source_modified_at") or result.get("updated_at")
-        original_name = str(result.get("original_name") or os.path.basename(file_path))
-        records.append(
+        self._start_model_upload_worker(
             {
-                "checked": False,
+                "path_key": path_key,
+                "file_path": file_path,
+                "file_type_code": self._doc_category_to_file_type_code(category),
+                "logical_path": logical_path,
+                "facility_code": self.facility_code,
                 "category": category,
-                "fmt": self._format_from_original_name(original_name),
-                "filename": original_name,
-                "mtime": dt.strftime("%Y/%m/%d") if dt else "",
-                "path": resolve_storage_path(result),
-                "record_id": result.get("id"),
-                "logical_path": str(result.get("logical_path") or logical_path),
                 "work_condition": "",
-                "analysis_category": self._analysis_category_for_record(
-                    path_key,
-                    {"logical_path": str(result.get("logical_path") or logical_path)},
-                ),
-                "_force_visible": True,
+                "remark": "",
+                "delete_record_id": None,
             }
         )
-
-        self.row_paths_by_path.pop(path_key, None)
-        self.row_db_records_by_path.pop(path_key, None)
-        QMessageBox.information(self, "上传成功", "上传成功")
 
     def _handle_model_doc_download(self, selected: List[Dict[str, Any]], _records: List[Dict[str, Any]]):
         available: list[tuple[str, str]] = []
@@ -1340,34 +1812,21 @@ class ModelFilesDocsWidget(QWidget):
             if not save_path:
                 return
             save_path = normalize_download_save_path(save_path, fallback_name=safe_default_name)
-            try:
-                shutil.copy2(src_path, save_path)
-            except Exception as exc:
-                QMessageBox.warning(self, "下载失败", str(exc))
-                return
-            message = "已下载 1 个文件。"
-            if missing:
-                message += f"\n另有 {missing} 个文件不存在。"
-            QMessageBox.information(self, "下载完成", message)
+            self._start_model_download_worker(
+                [{"src_path": src_path, "target_path": save_path, "filename": safe_default_name}],
+                context={"missing": missing, "target_label": save_path},
+            )
             return
 
         target_dir = QFileDialog.getExistingDirectory(self, "选择下载文件夹")
         if not target_dir:
             return
 
-        downloaded = 0
-        for src_path, filename in available:
-            target_path = unique_download_target_path(target_dir, filename)
-            try:
-                shutil.copy2(src_path, target_path)
-                downloaded += 1
-            except Exception:
-                continue
-
-        message = f"已下载 {downloaded} 个文件到：\n{target_dir}"
-        if missing:
-            message += f"\n另有 {missing} 个文件不存在。"
-        QMessageBox.information(self, "下载完成", message)
+        tasks = [
+            {"src_path": src_path, "target_dir": target_dir, "filename": filename}
+            for src_path, filename in available
+        ]
+        self._start_model_download_worker(tasks, context={"missing": missing, "target_label": target_dir})
 
     def _analysis_category_for_record(self, path_key: str, row: Dict[str, Any] | None = None) -> str:
         parts = [part for part in str(path_key or "").split("/") if part]
@@ -1431,6 +1890,50 @@ class ModelFilesDocsWidget(QWidget):
             branch = "结果" if "结果" in category else "模型"
             return f"{base}/倒塌分析/{branch}/用户上传/{category}"
         return f"{base}/其他/用户上传/{category}"
+
+    def _model_db_rows_to_doc_records(
+        self,
+        path_key: str,
+        categories: List[str],
+        db_rows: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        for row in db_rows:
+            row_id = row.get("id")
+            if row_id is not None and row_id in seen_ids:
+                continue
+            logical_path = str(row.get("logical_path") or "")
+            if row_id is not None:
+                seen_ids.add(row_id)
+            dt = row.get("uploaded_at") or row.get("source_modified_at") or row.get("updated_at")
+            rows.append(
+                {
+                    "index": len(rows) + 1,
+                    "checked": False,
+                    "category": str(row.get("category_name") or "").strip() or self._category_from_db_row(row, categories),
+                    "work_condition": str(row.get("work_condition") or "").strip(),
+                    "fmt": self._format_from_original_name(str(row.get("original_name") or "")),
+                    "filename": str(row.get("original_name") or ""),
+                    "mtime": dt.strftime("%Y/%m/%d") if dt else "",
+                    "path": resolve_storage_path(row),
+                    "record_id": row.get("id"),
+                    "logical_path": logical_path,
+                    "analysis_category": self._analysis_category_for_record(path_key, row),
+                    "remark": str(row.get("remark") or ""),
+                }
+            )
+        rows.sort(
+            key=lambda item: (
+                str(item.get("category") or ""),
+                str(item.get("work_condition") or ""),
+                str(item.get("logical_path") or ""),
+                str(item.get("filename") or ""),
+            )
+        )
+        for index, row in enumerate(rows, start=1):
+            row["index"] = index
+        return rows
 
     def _build_model_file_doc_records(self, path_key: str) -> List[Dict[str, Any]]:
         if not self.facility_code:
