@@ -52,6 +52,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core.base_page import BasePage
+from core.message_boxes import ask_yes_no
 
 from pages.sacs_compare_view import SacsComparePanel
 
@@ -1484,14 +1485,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
         normalized_name = str(output_filename or "").strip() or f"{self.facility_code}_可行性评估报告.pdf"
         output_path = (Path(save_dir) / normalized_name).with_suffix(".pdf")
         if output_path.exists():
-            reply = QMessageBox.question(
+            if not ask_yes_no(
                 self,
                 "文件已存在",
                 f"目标目录已存在同名文件：\n{output_path}\n\n是否替换？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
+            ):
                 return ""
         return str(output_path)
 
@@ -1503,14 +1501,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
         normalized_name = str(output_filename or "").strip() or f"{self.facility_code}_快速评估结果.xlsx"
         output_path = (Path(save_dir) / normalized_name).with_suffix(".xlsx")
         if output_path.exists():
-            reply = QMessageBox.question(
+            if not ask_yes_no(
                 self,
                 "文件已存在",
                 f"目标目录已存在同名文件：\n{output_path}\n\n是否替换？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
+            ):
                 return ""
         return str(output_path)
 
@@ -1918,15 +1913,37 @@ class FeasibilityAssessmentResultsPage(BasePage):
     def _format_basis_data_file_paragraph(file_names: List[str]) -> str:
         if not file_names:
             return "暂无文件。"
-        return "；".join(f"（{index}）{name}" for index, name in enumerate(file_names, start=1)) + "。"
+        return "\n".join(f"（{index}）{name}" for index, name in enumerate(file_names, start=1))
 
     def _load_platform_evaluation_statistics(self) -> dict:
         if not self.mysql_url or not self.job_name:
             return empty_platform_evaluation_statistics()
-        return load_platform_evaluation_statistics(
-            self.mysql_url,
-            job_name=self.job_name,
-        )
+
+        candidate_job_names = [str(self.job_name or "").strip()]
+        facility_code = str(getattr(self, "facility_code", "") or "").strip()
+        if facility_code and facility_code not in candidate_job_names:
+            candidate_job_names.append(facility_code)
+
+        fallback_statistics = empty_platform_evaluation_statistics()
+        for job_name in candidate_job_names:
+            if not job_name:
+                continue
+            statistics = load_platform_evaluation_statistics(
+                self.mysql_url,
+                job_name=job_name,
+            )
+            if (
+                statistics.get("well_slot_rows")
+                or statistics.get("riser_rows")
+                or statistics.get("topside_weight_rows")
+                or int(statistics.get("well_slot_count") or 0) > 0
+                or int(statistics.get("riser_count") or 0) > 0
+                or float(statistics.get("topside_weight_sum_t") or 0.0) > 0.0
+            ):
+                return statistics
+            fallback_statistics = statistics
+
+        return fallback_statistics
 
     def _build_latest_inspection_record_summary(self) -> str:
         projects = []

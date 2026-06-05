@@ -675,14 +675,11 @@ class FeasibilityAssessmentPage(BasePage):
         if not (header_rows <= row < table.rowCount()):
             return
 
-        reply = QMessageBox.question(
+        if not ask_yes_no(
             self,
             "确认删除",
             f"确定删除第 {row - header_rows + 1} 行吗？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
+        ):
             return
 
         table.removeRow(row)
@@ -1272,22 +1269,11 @@ class FeasibilityAssessmentPage(BasePage):
         点击“是”才继续保存；
         点击“否”直接取消保存，用户可以继续修改表格。
         """
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Warning)
-        msg.setWindowTitle("确认保存")
-        msg.setText(f"{data_name}保存之后将无法修改，是否确认保存？")
-        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        msg.setDefaultButton(QMessageBox.No)
-
-        # 强制按钮显示为中文“是 / 否”
-        yes_btn = msg.button(QMessageBox.Yes)
-        no_btn = msg.button(QMessageBox.No)
-        if yes_btn is not None:
-            yes_btn.setText("是")
-        if no_btn is not None:
-            no_btn.setText("否")
-
-        return msg.exec_() == QMessageBox.Yes
+        return ask_yes_no(
+            self,
+            "确认保存",
+            f"{data_name}保存之后将无法修改，是否确认保存？",
+        )
 
     def _on_save_table1(self):
         if not self._confirm_save_locked("新增井槽信息"):

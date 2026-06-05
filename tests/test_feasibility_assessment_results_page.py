@@ -25,7 +25,7 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         result = FeasibilityAssessmentResultsPage._format_basis_data_file_paragraph(
             ["完工文件A.pdf", "完工文件B.docx"]
         )
-        self.assertEqual("（1）完工文件A.pdf；（2）完工文件B.docx。", result)
+        self.assertEqual("（1）完工文件A.pdf\n（2）完工文件B.docx", result)
 
     def test_format_basis_data_file_paragraph_handles_empty(self) -> None:
         result = FeasibilityAssessmentResultsPage._format_basis_data_file_paragraph([])
@@ -80,9 +80,9 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
             result = page._build_basis_data_section()
 
         self.assertEqual("replace_region", result["mode"])
-        self.assertEqual("（1）完工文件A.pdf。", result["blocks"][0]["text"])
-        self.assertEqual("（1）改造文件A.pdf。", result["blocks"][1]["text"])
-        self.assertEqual("（1）定期检测A.pdf；（2）特殊事件检测B.pdf。", result["blocks"][2]["text"])
+        self.assertEqual("（1）完工文件A.pdf", result["blocks"][0]["text"])
+        self.assertEqual("（1）改造文件A.pdf", result["blocks"][1]["text"])
+        self.assertEqual("（1）定期检测A.pdf\n（2）特殊事件检测B.pdf", result["blocks"][2]["text"])
 
         self.assertEqual(
             [
@@ -624,11 +624,11 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir, patch(
             "pages.feasibility_assessment_results_page.QFileDialog.getExistingDirectory",
             return_value=tmp_dir,
-        ), patch("pages.feasibility_assessment_results_page.QMessageBox.question") as question:
+        ), patch("pages.feasibility_assessment_results_page.ask_yes_no") as ask_yes_no:
             result = page._select_report_output_path("WC19-1D_可行性评估报告.pdf")
 
         self.assertEqual(str(Path(tmp_dir) / "WC19-1D_可行性评估报告.pdf"), result)
-        question.assert_not_called()
+        ask_yes_no.assert_not_called()
 
     def test_select_report_output_path_returns_empty_when_existing_file_not_replaced(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
@@ -640,8 +640,8 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
                 "pages.feasibility_assessment_results_page.QFileDialog.getExistingDirectory",
                 return_value=tmp_dir,
             ), patch(
-                "pages.feasibility_assessment_results_page.QMessageBox.question",
-                return_value=0,
+                "pages.feasibility_assessment_results_page.ask_yes_no",
+                return_value=False,
             ):
                 result = page._select_report_output_path(output_path.name)
 
@@ -657,8 +657,8 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
                 "pages.feasibility_assessment_results_page.QFileDialog.getExistingDirectory",
                 return_value=tmp_dir,
             ), patch(
-                "pages.feasibility_assessment_results_page.QMessageBox.question",
-                return_value=QMessageBox.Yes,
+                "pages.feasibility_assessment_results_page.ask_yes_no",
+                return_value=True,
             ):
                 result = page._select_report_output_path(output_path.name)
 
@@ -714,6 +714,41 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         self.assertEqual([{"slot_no": 1, "x": 10}], result["well_slot_rows"])
         self.assertEqual([{"riser_no": 2, "batter_y": 0.2}], result["riser_rows"])
         self.assertEqual([{"weight_no": 3, "weight_t": 4.5}], result["topside_weight_rows"])
+
+    def test_load_platform_evaluation_statistics_falls_back_to_facility_code(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page.mysql_url = "mysql://example"
+        page.job_name = "runtime-job"
+        page.facility_code = "WC19-1D"
+
+        empty_statistics = {
+            "well_slot_count": 0,
+            "riser_count": 0,
+            "topside_weight_sum_t": 0.0,
+            "well_slot_rows": [],
+            "riser_rows": [],
+            "topside_weight_rows": [],
+        }
+        facility_statistics = {
+            "well_slot_count": 1,
+            "riser_count": 1,
+            "topside_weight_sum_t": 2.5,
+            "well_slot_rows": [{"slot_no": 1}],
+            "riser_rows": [{"riser_no": 1}],
+            "topside_weight_rows": [{"weight_no": 1}],
+        }
+
+        with patch(
+            "pages.feasibility_assessment_results_page.load_platform_evaluation_statistics",
+            side_effect=[empty_statistics, facility_statistics],
+        ) as mocked_load:
+            result = page._load_platform_evaluation_statistics()
+
+        self.assertEqual(facility_statistics, result)
+        self.assertEqual(
+            ["runtime-job", "WC19-1D"],
+            [call.kwargs["job_name"] for call in mocked_load.call_args_list],
+        )
 
 
 if __name__ == "__main__":

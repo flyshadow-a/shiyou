@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core.base_page import BasePage
+from core.message_boxes import ask_yes_no
 from services.special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService
 from pages.sacs_elevation_risk_view import SacsElevationRiskView
 from services.special_strategy_inspection_overlay_service import load_strategy_inspection_overlay
@@ -1676,14 +1677,11 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         existing_paths = [path for path in (output_path, output_path.with_suffix(".pdf")) if path.exists()]
         if existing_paths:
             existing_text = "\n".join(str(path) for path in existing_paths)
-            reply = QMessageBox.question(
+            if not ask_yes_no(
                 self,
                 "文件已存在",
                 f"目标位置已存在同名输出文件：\n{existing_text}\n\n是否替换？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
+            ):
                 return ""
         return str(output_path)
 

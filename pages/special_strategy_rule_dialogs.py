@@ -20,6 +20,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from core.message_boxes import ask_yes_no
+
 
 RULE_MODE_JOINT_CLASSIFICATION = "joint_classification"
 RULE_MODE_MEMBER_CLASSIFICATION = "member_classification"
@@ -758,14 +760,11 @@ class SpecialStrategyRuleDialog(QDialog):
             conflict_count = 0
 
         if conflict_count > 0:
-            reply = QMessageBox.question(
+            if not ask_yes_no(
                 self,
                 "规则冲突确认",
                 f"当前规则存在 {conflict_count} 条分类冲突，系统将按“主腿优先于 X 撑”处理。\n仍要继续吗？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
+            ):
                 return
 
         self._result_rules = rules

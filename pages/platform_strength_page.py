@@ -82,6 +82,383 @@ except Exception:
     pass
 
 
+def read_lines_with_fallback(file_path: str) -> List[str]:
+    encodings = ["utf-8", "utf-8-sig", "gb18030", "gbk", "latin-1"]
+    for enc in encodings:
+        try:
+            with open(file_path, "r", encoding=enc) as f:
+                return f.readlines()
+        except UnicodeDecodeError:
+            continue
+        except Exception:
+            break
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.readlines()
+
+
+def parse_sacs_full_robust_file(filepath: str) -> tuple[dict[str, list[float]], list[tuple[str, str, str]], dict[str, float]]:
+    nodes: dict[str, list[float]] = {}
+    members: list[tuple[str, str, str]] = []
+    groups_od: dict[str, float] = {}
+
+    for line in read_lines_with_fallback(filepath):
+        if line.startswith("GRUP"):
+            gid = line[5:8].strip()
+            try:
+                od_str = line[14:24].strip()
+                od = float(od_str) if od_str else 0.0
+                groups_od[gid] = od
+            except Exception:
+                groups_od[gid] = 0.0
+
+        elif line.startswith("JOINT"):
+            try:
+                nid = line[6:10].strip()
+                x = float(line[11:18].strip())
+                y = float(line[18:25].strip())
+                z = float(line[25:32].strip())
+                nodes[nid] = [x, y, z]
+            except Exception:
+                continue
+
+        elif line.startswith("MEMBER"):
+            try:
+                na = line[7:11].strip()
+                nb = line[11:15].strip()
+                gid = line[15:18].strip()
+                members.append((na, nb, gid))
+            except Exception:
+                continue
+
+    return nodes, members, groups_od
+
+
+def classify_sacs_model_joints(
+    nodes: dict[str, list[float]],
+    members: list[tuple[str, str, str]],
+    groups_od: dict[str, float],
+    target_z: float = 8.5,
+) -> tuple[list[list[float]], list[list[float]]]:
+    graph = {nid: [] for nid in nodes}
+    node_to_max_od = {nid: 0.0 for nid in nodes}
+
+    for na, nb, gid in members:
+        if na in nodes and nb in nodes:
+            od = groups_od.get(gid, 0.0)
+            node_to_max_od[na] = max(node_to_max_od[na], od)
+            node_to_max_od[nb] = max(node_to_max_od[nb], od)
+            graph[na].append(nb)
+            graph[nb].append(na)
+
+    tolerance = 1.0
+    elevation_nodes = {
+        nid: od for nid, od in node_to_max_od.items()
+        if abs(nodes[nid][2] - target_z) < tolerance
+    }
+
+    leg_joints: list[list[float]] = []
+    tubular_joints: list[list[float]] = []
+
+    if elevation_nodes:
+        local_max_od = max(elevation_nodes.values())
+        for nid in elevation_nodes:
+            if node_to_max_od[nid] >= local_max_od * 0.95:
+                leg_joints.append(nodes[nid])
+
+    for nid, neighbors in graph.items():
+        if len(neighbors) >= 3:
+            tubular_joints.append(nodes[nid])
+
+    return leg_joints, tubular_joints
+
+
+def parse_mud_level_from_sacinp_file(file_path: str) -> Optional[str]:
+    """从 SACS INP 文件读取 LDOPT 卡片的泥面高程字段。"""
+    for line in read_lines_with_fallback(file_path):
+        if line.upper().startswith("LDOPT"):
+            if len(line) >= 40:
+                val_str = line[32:40].strip()
+                try:
+                    val_float = float(val_str)
+                    return f"{val_float:.3f}"
+                except ValueError:
+                    pass
+    return None
+
+
+def _model_db_row_time(row: dict[str, Any]) -> float:
+    for key in ("source_modified_at", "uploaded_at", "updated_at"):
+        value = row.get(key)
+        if hasattr(value, "timestamp"):
+            try:
+                return float(value.timestamp())
+            except Exception:
+                pass
+    return 0.0
+
+
+def _model_row_logical_path(row: dict[str, Any]) -> str:
+    return str(row.get("logical_path") or "").replace("\\", "/").strip().strip("/")
+
+
+def _model_row_storage_path(row: dict[str, Any]) -> str:
+    try:
+        path = resolve_storage_path(row)
+    except Exception:
+        path = str(row.get("storage_path") or "").strip()
+    path = os.path.normpath(str(path or "").strip())
+    return path if path and os.path.exists(path) else ""
+
+
+def _sacinp_name_score_for_preview(file_name: str) -> int:
+    name = (file_name or "").strip().lower()
+    if not name:
+        return 0
+
+    stem, ext = os.path.splitext(name)
+    if stem == "sacinp" and ext == ".jknew":
+        return 1200
+    if stem == "sacinp" and ext == ".m1":
+        return 100
+    if stem.startswith("sacinp"):
+        return 300
+    if ext == ".sacinp":
+        return 220
+    tokens = [t for t in re.split(r"[^a-z0-9]+", stem) if t]
+    if "sacinp" in tokens:
+        return 160
+    return 0
+
+
+def _file_has_model_signature_for_preview(file_path: str) -> bool:
+    markers_joint = False
+    markers_member = False
+    try:
+        lines = read_lines_with_fallback(file_path)
+    except Exception:
+        return False
+    for raw in lines:
+        line = raw.strip().upper()
+        if not line:
+            continue
+        if line.startswith("JOINT"):
+            markers_joint = True
+        elif line.startswith("MEMBER"):
+            markers_member = True
+        if markers_joint and markers_member:
+            return True
+    return False
+
+
+def _query_model_file_rows_for_preview(facility_code: str, prefixes: list[str]) -> list[dict[str, Any]]:
+    if not is_file_db_configured():
+        return []
+
+    rows: list[dict[str, Any]] = []
+    seen_ids = set()
+    code = (facility_code or "").strip() or None
+
+    for prefix in prefixes:
+        try:
+            current_rows = list_files_by_prefix(
+                module_code="model_files",
+                logical_path_prefix=prefix,
+                facility_code=code,
+            )
+        except FileBackendError:
+            current_rows = []
+        except Exception:
+            current_rows = []
+
+        if not current_rows:
+            try:
+                current_rows = list_files_by_prefix(
+                    module_code="model_files",
+                    logical_path_prefix=prefix,
+                    facility_code=None,
+                )
+            except Exception:
+                current_rows = []
+
+        for row in current_rows:
+            row_id = row.get("id")
+            sig = row_id if row_id is not None else (
+                str(row.get("stored_name") or ""),
+                str(row.get("storage_path") or ""),
+                _model_row_logical_path(row),
+            )
+            if sig in seen_ids:
+                continue
+            seen_ids.add(sig)
+            rows.append(dict(row))
+
+    return rows
+
+
+def _find_current_model_file_from_db_for_preview(facility_code: str) -> str:
+    code = (facility_code or "").strip()
+    if not code:
+        return ""
+
+    prefixes = [
+        f"{code}/当前模型/结构模型",
+        f"{code}/当前模型/结构模型/用户上传",
+    ]
+
+    candidates: list[tuple[int, float, str]] = []
+    for row in _query_model_file_rows_for_preview(code, prefixes):
+        path = _model_row_storage_path(row)
+        if not path:
+            continue
+
+        name = os.path.basename(path)
+        name_score = _sacinp_name_score_for_preview(name)
+        if name_score <= 0:
+            continue
+        if name.lower().startswith("seainp"):
+            continue
+        if not _file_has_model_signature_for_preview(path):
+            continue
+
+        logical = _model_row_logical_path(row)
+        path_low = path.lower()
+        score = name_score
+        if "当前模型" in logical:
+            score += 300
+        if "结构模型" in logical:
+            score += 220
+        if "用户上传" in logical:
+            score += 50
+        if "海况" in logical:
+            score -= 500
+        if code.lower() in path_low:
+            score += 80
+        if path_low.endswith("sacinp.jknew"):
+            score += 800
+        if path_low.endswith("sacinp.m1"):
+            score -= 600
+
+        candidates.append((score, _model_db_row_time(row), path))
+
+    if not candidates:
+        return ""
+
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates[0][2]
+
+
+def _find_best_inp_file_for_preview(facility_code: str, model_files_root: str, upload_dir: str) -> str:
+    roots = [model_files_root, upload_dir]
+    code = (facility_code or "").strip().lower()
+
+    candidates: list[tuple[int, float, str]] = []
+    seen = set()
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+
+        for dir_path, _, file_names in os.walk(root):
+            for fn in file_names:
+                name_score = _sacinp_name_score_for_preview(fn)
+                if name_score <= 0:
+                    continue
+
+                full = os.path.normpath(os.path.join(dir_path, fn))
+                if full in seen:
+                    continue
+                seen.add(full)
+
+                name_low = fn.lower()
+                path_low = full.lower()
+                score = 0
+                if code and code in name_low:
+                    score += 200
+                if "model_files" in path_low:
+                    score += 60
+                if ("静力" in full) or ("static" in path_low):
+                    score += 25
+                if "demo_platform_jacket" in name_low:
+                    score -= 200
+                if path_low.endswith("sacinp.jknew"):
+                    score += 800
+                if path_low.endswith("sacinp.m1"):
+                    score -= 400
+                if "当前模型" in path_low:
+                    score += 300
+                if not _file_has_model_signature_for_preview(full):
+                    continue
+
+                score += name_score + 120
+                try:
+                    mtime = os.path.getmtime(full)
+                except OSError:
+                    mtime = 0.0
+                candidates.append((score, mtime, full))
+
+    if not candidates:
+        return ""
+
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return candidates[0][2]
+
+
+def resolve_model_preview_file(payload: dict[str, Any]) -> str:
+    facility_code = str(payload.get("facility_code") or "").strip()
+    if not facility_code:
+        return ""
+
+    db_model = _find_current_model_file_from_db_for_preview(facility_code)
+    if db_model:
+        return db_model
+
+    runtime_dir = os.path.normpath(get_job_runtime_dir(facility_code))
+    for candidate in (
+        os.path.join(runtime_dir, "sacinp.JKnew"),
+        os.path.join(runtime_dir, "sacinp.M1"),
+    ):
+        if os.path.exists(candidate):
+            return candidate
+
+    return _find_best_inp_file_for_preview(
+        facility_code,
+        str(payload.get("model_files_root") or "").strip(),
+        str(payload.get("upload_dir") or "").strip(),
+    )
+
+
+def load_model_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    raw_path = str(payload.get("path") or "").strip()
+    file_path = os.path.normpath(raw_path) if raw_path else ""
+    if not file_path:
+        file_path = resolve_model_preview_file(payload)
+    target_z = float(payload.get("target_z") or 9.1)
+    if not file_path:
+        return {
+            "seq": payload.get("seq"),
+            "path": "",
+            "target_z": target_z,
+            "nodes": {},
+            "members": [],
+            "groups_od": {},
+            "leg_joints": [],
+            "tubular_joints": [],
+            "mud_level": None,
+        }
+    nodes, members, groups_od = parse_sacs_full_robust_file(file_path)
+    leg_joints, tubular_joints = classify_sacs_model_joints(nodes, members, groups_od, target_z=target_z)
+    return {
+        "seq": payload.get("seq"),
+        "path": file_path,
+        "target_z": target_z,
+        "nodes": nodes,
+        "members": members,
+        "groups_od": groups_od,
+        "leg_joints": leg_joints,
+        "tubular_joints": tubular_joints,
+        "mud_level": parse_mud_level_from_sacinp_file(file_path),
+    }
+
+
 class QuickAssessmentPreparationWorker(QObject):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
@@ -95,6 +472,99 @@ class QuickAssessmentPreparationWorker(QObject):
             self.finished.emit(run_quick_assessment_preparation(self._payload))
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class StrengthEnvLoadWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, payload: dict[str, Any]):
+        super().__init__()
+        self._payload = dict(payload)
+
+    def run(self) -> None:
+        try:
+            self.finished.emit(load_strength_env_payload(self._payload))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class ModelPreviewLoadWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, payload: dict[str, Any]):
+        super().__init__()
+        self._payload = dict(payload)
+
+    def run(self) -> None:
+        try:
+            self.finished.emit(load_model_preview_payload(self._payload))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+def load_strength_env_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Load structure-strength environment data without touching Qt widgets."""
+    branch = str(payload.get("branch") or "").strip()
+    op_company = str(payload.get("op_company") or "").strip()
+    oilfield = str(payload.get("oilfield") or "").strip()
+    facility_code = str(payload.get("facility_code") or "").strip()
+    mysql_url = str(payload.get("mysql_url") or "").strip()
+
+    result: dict[str, Any] = {
+        "seq": payload.get("seq"),
+        "branch": branch,
+        "op_company": op_company,
+        "oilfield": oilfield,
+        "facility_code": facility_code,
+        "profile_id": None,
+        "splash_items": [],
+        "pile_items": [],
+        "marine_items": [],
+        "structure_model_info": None,
+        "horizontal_levels": [],
+    }
+    if not (branch and op_company and oilfield and facility_code):
+        return result
+
+    profile_id = get_env_profile_id(
+        branch=branch,
+        op_company=op_company,
+        oilfield=oilfield,
+        create_if_missing=False,
+    )
+    if not profile_id:
+        return result
+
+    result["profile_id"] = int(profile_id)
+    result["splash_items"] = load_platform_strength_splash_items(
+        int(profile_id),
+        facility_code,
+        mysql_url=mysql_url or None,
+    )
+    result["pile_items"] = load_platform_strength_pile_items(
+        int(profile_id),
+        facility_code,
+        mysql_url=mysql_url or None,
+    )
+    result["marine_items"] = load_platform_strength_marine_items(
+        int(profile_id),
+        facility_code,
+        mysql_url=mysql_url or None,
+    )
+    if mysql_url:
+        result["structure_model_info"] = load_structure_model_info(
+            mysql_url,
+            profile_id=int(profile_id),
+            facility_code=facility_code,
+        )
+        result["horizontal_levels"] = load_horizontal_levels(
+            mysql_url,
+            profile_id=int(profile_id),
+            facility_code=facility_code,
+        )
+    return result
 
 
 class PyVistaSacsView(QFrame):
@@ -240,59 +710,28 @@ class PyVistaSacsView(QFrame):
         self._safe_render()
 
     def load_inp(self, file_path: str, target_z: float = 9.1):
-        self._loaded_path = file_path
+        payload = load_model_preview_payload({"path": file_path, "target_z": target_z})
+        self.apply_model_preview_payload(payload)
 
-        nodes, members, groups_od = self.parse_sacs_full_robust(file_path)
-        self._nodes = nodes
-        self._members = members
-        self._groups_od = groups_od
+    def apply_model_preview_payload(self, payload: dict[str, Any]) -> None:
+        self._loaded_path = str(payload.get("path") or "")
+        self._nodes = dict(payload.get("nodes") or {})
+        self._members = list(payload.get("members") or [])
+        self._groups_od = dict(payload.get("groups_od") or {})
 
         if not self._nodes or not self._members:
             self.clear_view("未解析到有效的 SACS JOINT/MEMBER 数据")
             return
 
-        leg_joints, tubular_joints = self.apply_pdf_logic_diagnostic(
-            self._nodes, self._members, self._groups_od, target_z=target_z
+        self.render_structure(
+            self._nodes,
+            self._members,
+            list(payload.get("leg_joints") or []),
+            list(payload.get("tubular_joints") or []),
         )
 
-        self.render_structure(self._nodes, self._members, leg_joints, tubular_joints)
-
     def parse_sacs_full_robust(self, filepath):
-        nodes = {}
-        members = []
-        groups_od = {}
-
-        lines = self._read_lines_with_fallback(filepath)
-        for line in lines:
-            if line.startswith('GRUP'):
-                gid = line[5:8].strip()
-                try:
-                    od_str = line[14:24].strip()
-                    od = float(od_str) if od_str else 0.0
-                    groups_od[gid] = od
-                except Exception:
-                    groups_od[gid] = 0.0
-
-            elif line.startswith('JOINT'):
-                try:
-                    nid = line[6:10].strip()
-                    x = float(line[11:18].strip())
-                    y = float(line[18:25].strip())
-                    z = float(line[25:32].strip())
-                    nodes[nid] = [x, y, z]
-                except Exception:
-                    continue
-
-            elif line.startswith('MEMBER'):
-                try:
-                    na = line[7:11].strip()
-                    nb = line[11:15].strip()
-                    gid = line[15:18].strip()
-                    members.append((na, nb, gid))
-                except Exception:
-                    continue
-
-        return nodes, members, groups_od
+        return parse_sacs_full_robust_file(filepath)
 
     def _get_shared_preferred_model_file(self, facility_code: str) -> str:
         code = (facility_code or "").strip()
@@ -316,37 +755,7 @@ class PyVistaSacsView(QFrame):
             return shared
         return self._find_best_inp_file(facility_code)
     def apply_pdf_logic_diagnostic(self, nodes, members, groups_od, target_z=8.5):
-        graph = {nid: [] for nid in nodes}
-        node_to_max_od = {nid: 0.0 for nid in nodes}
-
-        for na, nb, gid in members:
-            if na in nodes and nb in nodes:
-                od = groups_od.get(gid, 0.0)
-                node_to_max_od[na] = max(node_to_max_od[na], od)
-                node_to_max_od[nb] = max(node_to_max_od[nb], od)
-                graph[na].append(nb)
-                graph[nb].append(na)
-
-        tolerance = 1.0
-        elevation_nodes = {
-            nid: od for nid, od in node_to_max_od.items()
-            if abs(nodes[nid][2] - target_z) < tolerance
-        }
-
-        leg_joints = []
-        tubular_joints = []
-
-        if elevation_nodes:
-            local_max_od = max(elevation_nodes.values())
-            for nid in elevation_nodes:
-                if node_to_max_od[nid] >= local_max_od * 0.95:
-                    leg_joints.append(nodes[nid])
-
-        for nid, neighbors in graph.items():
-            if len(neighbors) >= 3:
-                tubular_joints.append(nodes[nid])
-
-        return leg_joints, tubular_joints
+        return classify_sacs_model_joints(nodes, members, groups_od, target_z=target_z)
 
     def render_structure(self, nodes, members, leg_joints, tubular_joints):
         """渲染当前模型。
@@ -596,11 +1005,19 @@ class PlatformStrengthPage(BasePage):
         self._quick_assessment_worker: QuickAssessmentPreparationWorker | None = None
         self._quick_assessment_progress: QProgressDialog | None = None
         self._quick_assessment_context: dict[str, Any] = {}
+        self._strength_env_thread: QThread | None = None
+        self._strength_env_worker: StrengthEnvLoadWorker | None = None
+        self._strength_env_jobs: list[tuple[QThread, StrengthEnvLoadWorker]] = []
+        self._strength_env_load_seq = 0
+        self._model_autoload_seq = 0
+        self._model_preview_thread: QThread | None = None
+        self._model_preview_worker: ModelPreviewLoadWorker | None = None
+        self._model_preview_jobs: list[tuple[QThread, ModelPreviewLoadWorker]] = []
+        self._model_preview_load_seq = 0
 
         self._build_ui()
         self._capture_default_strength_env_tables()
-        self._load_strength_env_tables()
-        self._autoload_inp_to_view()
+        self._schedule_initial_page_load()
 
     # ---------------- 顶部下拉 ----------------
     def _normalize_top_value(self, value: object) -> str:
@@ -799,12 +1216,12 @@ class PlatformStrengthPage(BasePage):
         self.dropdown_bar.set_options("start_time", [profile["start_time"]], profile["start_time"])
         self.dropdown_bar.set_options("design_life", [profile["design_life"]], profile["design_life"])
         if hasattr(self, "tbl_splash") and hasattr(self, "tbl_pile") and hasattr(self, "tbl_marine"):
-            self._load_strength_env_tables()
+            self._start_async_strength_env_load()
 
     def _on_top_key_changed(self, key: str, txt: str):
         if key in {"branch", "op_company", "oilfield", "facility_code", "facility_name"}:
             self._sync_platform_ui(changed_key=key)
-            self._autoload_inp_to_view()
+            self._schedule_autoload_inp_to_view()
 
     def _get_top_value(self, key: str) -> str:
         if not hasattr(self, "dropdown_bar"):
@@ -924,6 +1341,230 @@ class PlatformStrengthPage(BasePage):
             if not density_text:
                 density_text = self._format_optional_number(source.get("density_t_per_m3"))
         self._set_table_text(self.tbl_marine, 4, 3, density_text)
+
+    def _schedule_initial_page_load(self) -> None:
+        QTimer.singleShot(0, self._start_async_strength_env_load)
+        self._schedule_autoload_inp_to_view(delay_ms=600)
+
+    def _schedule_autoload_inp_to_view(self, delay_ms: int = 80) -> None:
+        self._overall_export_seq += 1
+        self._model_autoload_seq += 1
+        self._model_preview_load_seq += 1
+        seq = self._model_autoload_seq
+        QTimer.singleShot(
+            int(delay_ms),
+            lambda s=seq: self._do_scheduled_autoload_inp_to_view(s),
+        )
+
+    def _do_scheduled_autoload_inp_to_view(self, seq: int) -> None:
+        if seq != self._model_autoload_seq or getattr(self, "_is_closing", False):
+            return
+        self._autoload_inp_to_view()
+
+    def _build_strength_env_payload(self) -> dict[str, Any]:
+        self._strength_env_load_seq += 1
+        return {
+            "seq": self._strength_env_load_seq,
+            "branch": self._get_top_value("branch"),
+            "op_company": self._get_top_value("op_company"),
+            "oilfield": self._get_top_value("oilfield"),
+            "facility_code": self._get_top_value("facility_code"),
+            "mysql_url": self._get_mysql_url(),
+        }
+
+    def _start_async_strength_env_load(self) -> None:
+        if getattr(self, "_is_closing", False):
+            return
+        payload = self._build_strength_env_payload()
+        thread = QThread(self)
+        worker = StrengthEnvLoadWorker(payload)
+        worker.moveToThread(thread)
+
+        self._strength_env_thread = thread
+        self._strength_env_worker = worker
+        self._strength_env_jobs.append((thread, worker))
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_strength_env_loaded)
+        worker.failed.connect(self._on_strength_env_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_strength_env_worker)
+        thread.start()
+
+    def _clear_strength_env_worker(self) -> None:
+        sender = self.sender()
+        if sender is not None:
+            self._strength_env_jobs = [
+                (thread, worker)
+                for thread, worker in self._strength_env_jobs
+                if thread is not sender
+            ]
+        if sender is not None and sender is not self._strength_env_thread:
+            return
+        self._strength_env_thread = None
+        self._strength_env_worker = None
+
+    def _payload_matches_current_strength_context(self, payload: dict[str, Any]) -> bool:
+        if payload.get("seq") != self._strength_env_load_seq:
+            return False
+        return (
+            str(payload.get("branch") or "").strip() == self._get_top_value("branch")
+            and str(payload.get("op_company") or "").strip() == self._get_top_value("op_company")
+            and str(payload.get("oilfield") or "").strip() == self._get_top_value("oilfield")
+            and str(payload.get("facility_code") or "").strip() == self._get_top_value("facility_code")
+        )
+
+    def _apply_structure_model_info_row(self, row: dict[str, Any] | None) -> None:
+        if not row:
+            return
+        if hasattr(self, "edt_mud_level") and row.get("mud_level_m") not in (None, ""):
+            self.edt_mud_level.setText(self._format_optional_number(row.get("mud_level_m")))
+        if hasattr(self, "edt_workpoint") and row.get("workpoint_m") not in (None, ""):
+            self.edt_workpoint.setText(self._format_optional_number(row.get("workpoint_m")))
+        if row.get("level_threshold") not in (None, ""):
+            try:
+                self._horizontal_level_threshold = int(float(row.get("level_threshold")))
+            except Exception:
+                self._horizontal_level_threshold = 40
+
+    def _apply_horizontal_level_rows(self, rows: list[dict[str, Any]]) -> None:
+        levels: List[Tuple[float, int, bool]] = []
+        for row in rows or []:
+            z = self._safe_db_float(row.get("z_m"))
+            if z is None:
+                continue
+            try:
+                occ = int(row.get("node_count") or 0)
+            except Exception:
+                occ = 0
+            selected = bool(row.get("selected") if row.get("selected") is not None else 1)
+            levels.append((z, occ, selected))
+        self._horizontal_levels = levels
+        self._refresh_layers_table()
+
+    def _on_strength_env_loaded(self, payload: dict) -> None:
+        if getattr(self, "_is_closing", False) or not self._payload_matches_current_strength_context(payload):
+            return
+        self._apply_splash_items(list(payload.get("splash_items") or []))
+        self._apply_pile_items(list(payload.get("pile_items") or []))
+        self._apply_marine_items(list(payload.get("marine_items") or []))
+        self._apply_structure_model_info_row(payload.get("structure_model_info"))
+        self._apply_horizontal_level_rows(list(payload.get("horizontal_levels") or []))
+
+    def _on_strength_env_failed(self, error: str) -> None:
+        if getattr(self, "_is_closing", False):
+            return
+        print("[PlatformStrengthPage] async load strength env failed:", error)
+        self._apply_splash_items([])
+        self._apply_pile_items([])
+        self._apply_marine_items([])
+        self._horizontal_levels = []
+        self._refresh_layers_table()
+
+    def _start_async_model_preview_load(self, facility_code: str, target_z: float) -> None:
+        if getattr(self, "_is_closing", False):
+            return
+        self._model_preview_load_seq += 1
+        payload = {
+            "seq": self._model_preview_load_seq,
+            "facility_code": str(facility_code or "").strip(),
+            "path": "",
+            "target_z": float(target_z or 9.1),
+            "model_files_root": self.model_files_root,
+            "upload_dir": self.upload_dir,
+        }
+        thread = QThread(self)
+        worker = ModelPreviewLoadWorker(payload)
+        worker.moveToThread(thread)
+
+        self._model_preview_thread = thread
+        self._model_preview_worker = worker
+        self._model_preview_jobs.append((thread, worker))
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_model_preview_loaded)
+        worker.failed.connect(self._on_model_preview_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_model_preview_worker)
+        thread.start()
+
+    def _clear_model_preview_worker(self) -> None:
+        sender = self.sender()
+        if sender is not None:
+            self._model_preview_jobs = [
+                (thread, worker)
+                for thread, worker in self._model_preview_jobs
+                if thread is not sender
+            ]
+        if sender is not None and sender is not self._model_preview_thread:
+            return
+        self._model_preview_thread = None
+        self._model_preview_worker = None
+
+    def _reset_model_preview_pan_controls(self) -> None:
+        if getattr(self, "inp_view", None) is not None:
+            self.inp_view.reset_pan_state()
+
+        if hasattr(self, "slider_h"):
+            self.slider_h.blockSignals(True)
+            self.slider_h.setValue(0)
+            self.slider_h.blockSignals(False)
+
+        if hasattr(self, "slider_v"):
+            self.slider_v.blockSignals(True)
+            self.slider_v.setValue(0)
+            self.slider_v.blockSignals(False)
+
+    def _on_model_preview_loaded(self, payload: dict) -> None:
+        if getattr(self, "_is_closing", False):
+            return
+        if payload.get("seq") != self._model_preview_load_seq:
+            return
+        try:
+            if not payload.get("path"):
+                self.inp_path_label.setText("未找到可解析的 SACS 结构模型文件")
+                self._set_inp_view_placeholder_text(
+                    "未找到可解析的 SACS 结构模型文件\n"
+                    "请先上传文件名以 sacinp 开头（或扩展名为 .sacinp）的模型文件"
+                )
+                self._refresh_layers_table()
+                return
+
+            if not self._ensure_inp_view_created():
+                return
+            self.inp_view.apply_model_preview_payload(payload)
+            self._reset_model_preview_pan_controls()
+            self.inp_path_label.setText(f"当前模型文件：{payload.get('path') or ''}")
+
+            mud_level = payload.get("mud_level")
+            if mud_level and hasattr(self, "edt_mud_level"):
+                self.edt_mud_level.setText(str(mud_level))
+
+            self._refresh_layers_table()
+
+            try:
+                self._schedule_export_overall_model_image(delay_ms=1200)
+            except Exception as export_exc:
+                print("[PlatformStrengthPage] schedule overall model export failed:", export_exc)
+        except Exception as exc:
+            self.inp_path_label.setText("模型加载失败")
+            self.inp_view.clear_view(f"INP 加载失败：\n{exc}")
+            self._refresh_layers_table()
+
+    def _on_model_preview_failed(self, error: str) -> None:
+        if getattr(self, "_is_closing", False):
+            return
+        self.inp_path_label.setText("模型加载失败")
+        self._set_inp_view_placeholder_text(f"INP 加载失败：\n{error}")
+        self._refresh_layers_table()
 
     def _load_strength_env_tables(self):
         branch = self._get_top_value("branch")
@@ -2483,7 +3124,8 @@ class PlatformStrengthPage(BasePage):
     def _export_overall_model_image(self, facility_code: str, force: bool = False) -> str:
         """保存当前三维总图到统一特检图片目录。"""
         code = (facility_code or "").strip()
-        if not code or not hasattr(self, "inp_view") or getattr(self, "_is_closing", False):
+        view = getattr(self, "inp_view", None)
+        if not code or view is None or getattr(self, "_is_closing", False):
             return ""
         if not force:
             try:
@@ -2491,7 +3133,7 @@ class PlatformStrengthPage(BasePage):
                     return ""
             except Exception:
                 return ""
-        if getattr(self.inp_view, "_vtk_closed", False):
+        if getattr(view, "_vtk_closed", False):
             return ""
 
         try:
@@ -2511,7 +3153,7 @@ class PlatformStrengthPage(BasePage):
             if (not force) and export_key == self._last_saved_overall_image_key and os.path.exists(target_path):
                 return target_path
 
-            saved_path = self.inp_view.export_current_view(target_path)
+            saved_path = view.export_current_view(target_path)
             saved_path = os.path.normpath(str(saved_path or ""))
             if not saved_path or not os.path.exists(saved_path):
                 return ""
@@ -2544,6 +3186,7 @@ class PlatformStrengthPage(BasePage):
                 view.cleanup_vtk()
             except Exception:
                 pass
+        self.inp_view = None
 
     def hideEvent(self, event):
         self._overall_export_seq += 1
@@ -2652,15 +3295,33 @@ class PlatformStrengthPage(BasePage):
         view_row.setContentsMargins(0, 0, 0, 0)
         view_row.setSpacing(6)
 
-        self.inp_view = PyVistaSacsView(frame)
-        self.inp_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        view_row.addWidget(self.inp_view, 1)
+        self.inp_view = None
+        self.inp_view_container = QFrame(frame)
+        self.inp_view_container.setFrameShape(QFrame.NoFrame)
+        self.inp_view_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.inp_view_layout = QVBoxLayout(self.inp_view_container)
+        self.inp_view_layout.setContentsMargins(0, 0, 0, 0)
+        self.inp_view_layout.setSpacing(0)
+
+        self.inp_view_placeholder = QLabel("模型预览正在准备...")
+        self.inp_view_placeholder.setAlignment(Qt.AlignCenter)
+        self.inp_view_placeholder.setStyleSheet("""
+            QLabel {
+                color: #5d6f85;
+                font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
+                font-size: 12pt;
+                background: #ffffff;
+            }
+        """)
+        self.inp_view_layout.addWidget(self.inp_view_placeholder, 1)
+        view_row.addWidget(self.inp_view_container, 1)
 
         self.slider_v = QSlider(Qt.Vertical)
         self.slider_v.setRange(-100, 100)
         self.slider_v.setValue(0)
         self.slider_v.valueChanged.connect(
             lambda v: self.inp_view.pan_view(self.slider_h.value(), v)
+            if getattr(self, "inp_view", None) is not None else None
         )
         view_row.addWidget(self.slider_v, 0)
 
@@ -2671,16 +3332,46 @@ class PlatformStrengthPage(BasePage):
         self.slider_h.setValue(0)
         self.slider_h.valueChanged.connect(
             lambda v: self.inp_view.pan_view(v, self.slider_v.value())
+            if getattr(self, "inp_view", None) is not None else None
         )
         outer.addWidget(self.slider_h, 0)
-        self.inp_view.bind_sliders(self.slider_h, self.slider_v)
 
         return frame
+
+    def _ensure_inp_view_created(self) -> bool:
+        if getattr(self, "_is_closing", False):
+            return False
+        if getattr(self, "inp_view", None) is not None:
+            return True
+        if not hasattr(self, "inp_view_layout"):
+            return False
+
+        placeholder = getattr(self, "inp_view_placeholder", None)
+        if placeholder is not None:
+            try:
+                self.inp_view_layout.removeWidget(placeholder)
+                placeholder.deleteLater()
+            except Exception:
+                pass
+            self.inp_view_placeholder = None
+
+        self.inp_view = PyVistaSacsView(getattr(self, "inp_view_container", self))
+        self.inp_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.inp_view_layout.addWidget(self.inp_view, 1)
+        if hasattr(self, "slider_h") and hasattr(self, "slider_v"):
+            self.inp_view.bind_sliders(self.slider_h, self.slider_v)
+        return True
+
+    def _set_inp_view_placeholder_text(self, text: str) -> None:
+        placeholder = getattr(self, "inp_view_placeholder", None)
+        if placeholder is not None:
+            placeholder.setText(text)
 
     def _open_inp_fullscreen_view(self):
         path = ""
         try:
-            path = os.path.normpath(str(getattr(self.inp_view, "_loaded_path", "") or "").strip())
+            view = getattr(self, "inp_view", None)
+            path = os.path.normpath(str(getattr(view, "_loaded_path", "") or "").strip())
         except Exception:
             path = ""
         if not path or not os.path.isfile(path):
@@ -2892,7 +3583,7 @@ class PlatformStrengthPage(BasePage):
 
     def _parse_mud_level_from_sacinp(self, file_path: str) -> Optional[str]:
         """从 SACS INP 文件读取 LDOPT 卡片的泥面高程字段。"""
-        lines = self.inp_view._read_lines_with_fallback(file_path)
+        lines = read_lines_with_fallback(file_path)
         for line in lines:
             if line.upper().startswith("LDOPT"):
                 # 根据 SACS 固定格式，泥面高程通常在 33-40 列 (index 32-40)
@@ -2907,7 +3598,7 @@ class PlatformStrengthPage(BasePage):
 
     def _parse_pile_heads_from_sacinp(self, file_path: str) -> List[str]:
         """按 SACINP JOINT 固定列读取桩头 ID。"""
-        lines = self.inp_view._read_lines_with_fallback(file_path)
+        lines = read_lines_with_fallback(file_path)
         pile_heads: List[str] = []
         seen = set()
         for raw_line in lines:
@@ -2993,7 +3684,7 @@ class PlatformStrengthPage(BasePage):
         MGROV 固定列：起始深度、结束深度、厚度、阻力系数、密度。
         使用水深把深度转换为模型高程；厚度按 SeaInp 原值写入表格。
         """
-        lines = self.inp_view._read_lines_with_fallback(file_path)
+        lines = read_lines_with_fallback(file_path)
         water_depth = self._parse_water_depth_from_ldopt(lines)
 
         raw_rows: List[Tuple[float, float, float, Optional[float]]] = []
@@ -3062,53 +3753,29 @@ class PlatformStrengthPage(BasePage):
             QMessageBox.critical(self, "读取失败", f"SeaInp 海生物信息读取失败：\n{exc}")
 
     def _autoload_inp_to_view(self):
-        if not hasattr(self, "inp_view"):
+        if not hasattr(self, "inp_path_label"):
             return
 
         facility_code = self._get_top_value("facility_code")
-        path = self._resolve_current_preview_model_file(facility_code)
-
-        if not path:
+        if not facility_code:
             self.inp_path_label.setText("未找到可解析的 SACS 结构模型文件")
-            self.inp_view.clear_view(
-                "未找到可解析的 SACS 结构模型文件\n"
-                "请先上传文件名以 sacinp 开头（或扩展名为 .sacinp）的模型文件"
-            )
+            if self._ensure_inp_view_created():
+                self.inp_view.clear_view(
+                    "未找到可解析的 SACS 结构模型文件\n"
+                    "请先上传文件名以 sacinp 开头（或扩展名为 .sacinp）的模型文件"
+                )
             self._refresh_layers_table()
             return
 
         try:
             target_z = self._get_workpoint_value()
-            self.inp_view.load_inp(path, target_z=target_z)
-            self.inp_view.reset_pan_state()
-
-            if hasattr(self, "slider_h"):
-                self.slider_h.blockSignals(True)
-                self.slider_h.setValue(0)
-                self.slider_h.blockSignals(False)
-
-            if hasattr(self, "slider_v"):
-                self.slider_v.blockSignals(True)
-                self.slider_v.setValue(0)
-                self.slider_v.blockSignals(False)
-
-            self.inp_path_label.setText(f"当前模型文件：{path}")
-
-            mud_level = self._parse_mud_level_from_sacinp(path)
-            if mud_level and hasattr(self, "edt_mud_level"):
-                self.edt_mud_level.setText(mud_level)
-
-            self._refresh_layers_table()
-
-            # 三维图按需求：打开页面绘制完成后自动保存到服务器。
-            try:
-                self._schedule_export_overall_model_image(delay_ms=1200)
-            except Exception as export_exc:
-                print("[PlatformStrengthPage] schedule overall model export failed:", export_exc)
+            self.inp_path_label.setText("正在查找并加载 SACS 结构模型文件...")
+            self._start_async_model_preview_load(facility_code, target_z)
 
         except Exception as e:
             self.inp_path_label.setText("模型加载失败")
-            self.inp_view.clear_view(f"INP 加载失败：\n{e}")
+            if self._ensure_inp_view_created():
+                self.inp_view.clear_view(f"INP 加载失败：\n{e}")
             self._refresh_layers_table()
 
     # ---------------- 左侧表格 ----------------

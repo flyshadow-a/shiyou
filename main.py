@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core.auth import AuthService, UserSession
+from core.message_boxes import ask_yes_no
 from pages.nav_config import NAV_CONFIG
 
 # 业务页面 / 对话框
@@ -747,7 +748,7 @@ class MainWindow(QMainWindow):
                 self.open_personal_center_page()
             return
 
-        if QMessageBox.question(self, "确认退出", "确定要退出当前账号吗？") != QMessageBox.Yes:
+        if not ask_yes_no(self, "确认退出", "确定要退出当前账号吗？"):
             return
         self._clear_open_tabs()
         self.logged_in = False

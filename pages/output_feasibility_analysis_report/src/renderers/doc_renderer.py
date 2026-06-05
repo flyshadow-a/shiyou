@@ -803,6 +803,9 @@ def _normalize_chapter_section(section: Any) -> dict[str, Any]:
             "blocks": normalized_blocks,
             "placeholders": placeholders,
             "table_rows": list(section.get("table_rows", [])),
+            "well_slot_rows": list(section.get("well_slot_rows", [])),
+            "riser_rows": list(section.get("riser_rows", [])),
+            "topside_weight_rows": list(section.get("topside_weight_rows", [])),
             "overall_model_image_path": str(section.get("overall_model_image_path", "")).strip(),
             "coordinate_system_image_path": str(section.get("coordinate_system_image_path", "")).strip(),
             "load_information_meta": dict(section.get("load_information_meta", {})),
@@ -821,6 +824,9 @@ def _normalize_chapter_section(section: Any) -> dict[str, Any]:
         "blocks": ([{"kind": "generated_paragraph", "text": text}] if text else []),
         "placeholders": {},
         "table_rows": [],
+        "well_slot_rows": [],
+        "riser_rows": [],
+        "topside_weight_rows": [],
         "overall_model_image_path": "",
         "coordinate_system_image_path": "",
         "load_information_meta": {},
@@ -1428,6 +1434,14 @@ def render_1_3_chapter_paragraphs(
         has_load_information = bool(section.get("load_information_meta")) or bool(
             section.get("load_information_rows")
         )
+        has_platform_evaluation_rows = any(
+            bool(section.get(table_key))
+            for table_key in (
+                "well_slot_rows",
+                "riser_rows",
+                "topside_weight_rows",
+            )
+        )
         has_analysis_model_images = bool(section.get("overall_model_image_path")) or bool(
             section.get("coordinate_system_image_path")
         )
@@ -1436,6 +1450,7 @@ def render_1_3_chapter_paragraphs(
             and not section.get("placeholders")
             and not has_table_rows
             and not has_load_information
+            and not has_platform_evaluation_rows
             and not has_environment_rows
             and not has_analysis_model_images
         ):
@@ -1510,19 +1525,95 @@ def _move_table_after_block(document: DocxDocument, block_element, rows: int, co
     return table
 
 
+def _reset_paragraph_character_indents(paragraph: Paragraph) -> None:
+    p_pr = paragraph._p.get_or_add_pPr()
+    ind = p_pr.find(qn("w:ind"))
+    if ind is None:
+        ind = OxmlElement("w:ind")
+        p_pr.append(ind)
+
+    for attr_name in ("firstLineChars", "leftChars", "rightChars", "hangingChars"):
+        ind.set(qn(f"w:{attr_name}"), "0")
+
+
 def _write_platform_evaluation_table_cell(cell, value: str) -> None:
     write_cell(cell, value)
     cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    _set_platform_evaluation_cell_margins(cell)
     for paragraph in cell.paragraphs:
+        _reset_paragraph_character_indents(paragraph)
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         paragraph.paragraph_format.left_indent = Pt(0)
         paragraph.paragraph_format.right_indent = Pt(0)
         paragraph.paragraph_format.first_line_indent = Pt(0)
         paragraph.paragraph_format.space_before = Pt(0)
         paragraph.paragraph_format.space_after = Pt(0)
+        paragraph.paragraph_format.line_spacing = Pt(10)
         for run in paragraph.runs:
-            run.font.size = Pt(12)
+            run.font.size = Pt(9)
+            run.font.name = "Times New Roman"
+            if run._element.rPr is not None:
+                run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+                run._element.rPr.rFonts.set(qn("w:ascii"), "Times New Roman")
+                run._element.rPr.rFonts.set(qn("w:hAnsi"), "Times New Roman")
+                run._element.rPr.rFonts.set(qn("w:cs"), "Times New Roman")
             run.bold = False
+
+
+def _set_platform_evaluation_cell_margins(cell, margin_twips: int = 40) -> None:
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_mar = tc_pr.first_child_found_in("w:tcMar")
+    if tc_mar is None:
+        tc_mar = OxmlElement("w:tcMar")
+        tc_pr.append(tc_mar)
+
+    for name in ("top", "left", "bottom", "right"):
+        node = tc_mar.find(qn(f"w:{name}"))
+        if node is None:
+            node = OxmlElement(f"w:{name}")
+            tc_mar.append(node)
+        node.set(qn("w:w"), str(margin_twips))
+        node.set(qn("w:type"), "dxa")
+
+
+def _set_table_property(tbl_pr, tag_name: str, attrs: Mapping[str, str]) -> None:
+    node = tbl_pr.find(qn(tag_name))
+    if node is None:
+        node = OxmlElement(tag_name)
+        tbl_pr.append(node)
+    for attr_name, attr_value in attrs.items():
+        node.set(qn(attr_name), attr_value)
+
+
+def _set_platform_evaluation_table_layout(table, column_widths_cm: Sequence[float]) -> None:
+    table.autofit = False
+    tbl_pr = table._tbl.tblPr
+    if tbl_pr is None:
+        tbl_pr = OxmlElement("w:tblPr")
+        table._tbl.insert(0, tbl_pr)
+
+    _set_table_property(tbl_pr, "w:tblW", {"w:w": "8800", "w:type": "dxa"})
+    _set_table_property(tbl_pr, "w:tblInd", {"w:w": "0", "w:type": "dxa"})
+    _set_table_property(tbl_pr, "w:tblLayout", {"w:type": "fixed"})
+
+    for row in table.rows:
+        tr_pr = row._tr.get_or_add_trPr()
+        cant_split = tr_pr.find(qn("w:cantSplit"))
+        if cant_split is None:
+            tr_pr.append(OxmlElement("w:cantSplit"))
+        for index, width_cm in enumerate(column_widths_cm):
+            if index < len(row.cells):
+                row.cells[index].width = Cm(width_cm)
+
+
+def _platform_evaluation_column_widths(column_count: int) -> list[float]:
+    if column_count == 8:
+        return [1.05, 1.35, 1.35, 1.95, 1.95, 1.95, 1.95, 1.90]
+    if column_count == 9:
+        return [0.85, 1.10, 1.10, 2.05, 2.05, 1.65, 1.65, 1.05, 1.05]
+    if column_count == 5:
+        return [1.20, 2.00, 2.00, 2.00, 2.00]
+    return [15.5 / max(1, column_count)] * max(1, column_count)
 
 
 def _build_platform_evaluation_detail_table(
@@ -1536,11 +1627,14 @@ def _build_platform_evaluation_detail_table(
     title_template: Paragraph,
 ):
     title_paragraph = _move_paragraph_after_block(document, anchor_element, title, copy_from=title_template)
+    title_paragraph.paragraph_format.keep_with_next = True
+    title_paragraph.paragraph_format.space_before = Pt(3)
+    title_paragraph.paragraph_format.space_after = Pt(2)
     for run in title_paragraph.runs:
         run.bold = False
 
     table = _move_table_after_block(document, title_paragraph._element, rows=1 + len(rows), cols=len(headers))
-    table.autofit = True
+    _set_platform_evaluation_table_layout(table, _platform_evaluation_column_widths(len(headers)))
     for column_index, header in enumerate(headers):
         _write_platform_evaluation_table_cell(table.cell(0, column_index), header)
     for row_index, row in enumerate(rows, start=1):
@@ -1631,14 +1725,7 @@ def _set_load_information_cell_margins(cell, margin_twips: int = 0) -> None:
 
 
 def _reset_load_information_paragraph_character_indents(paragraph: Paragraph) -> None:
-    p_pr = paragraph._p.get_or_add_pPr()
-    ind = p_pr.find(qn("w:ind"))
-    if ind is None:
-        ind = OxmlElement("w:ind")
-        p_pr.append(ind)
-
-    for attr_name in ("firstLineChars", "leftChars", "rightChars", "hangingChars"):
-        ind.set(qn(f"w:{attr_name}"), "0")
+    _reset_paragraph_character_indents(paragraph)
 
 
 def _write_load_information_cell(
