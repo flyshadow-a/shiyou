@@ -42,6 +42,154 @@ except Exception:
     pd = None
 
 
+def read_sacs_elevation_lines(file_path: str) -> List[str]:
+    encodings = ["utf-8", "utf-8-sig", "gb18030", "gbk", "latin-1"]
+    for enc in encodings:
+        try:
+            with open(file_path, "r", encoding=enc) as f:
+                return f.readlines()
+        except UnicodeDecodeError:
+            continue
+        except Exception:
+            break
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.readlines()
+
+
+def parse_sacs_elevation_model(filepath: str):
+    nodes = {}
+    members = []
+    groups_od = {}
+
+    for line in read_sacs_elevation_lines(filepath):
+        if line.startswith("GRUP"):
+            gid = line[5:8].strip()
+            try:
+                od_str = line[14:24].strip()
+                od = float(od_str) if od_str else 0.0
+                groups_od[gid] = od
+            except Exception:
+                groups_od[gid] = 0.0
+
+        elif line.startswith("JOINT"):
+            try:
+                nid = line[6:10].strip()
+                x = float(line[11:18].strip())
+                y = float(line[18:25].strip())
+                z = float(line[25:32].strip())
+                nodes[nid] = (x, y, z)
+            except Exception:
+                continue
+
+        elif line.startswith("MEMBER"):
+            try:
+                body = line[6:].strip()
+                if body.startswith("OFFSETS"):
+                    continue
+                na = line[7:11].strip()
+                nb = line[11:15].strip()
+                gid = line[15:18].strip()
+                if na and nb:
+                    members.append((na, nb, gid))
+            except Exception:
+                continue
+
+    return nodes, members, groups_od
+
+
+def _score_elevation_model_path(path: str, facility_code: str = "") -> int:
+    if not path:
+        return 0
+    name = os.path.basename(path).lower()
+    path_low = path.lower()
+    score = 0
+    if name.startswith("sacinp"):
+        score += 300
+    if name.endswith(".sacinp"):
+        score += 220
+    if "褰撳墠妯″瀷" in path:
+        score += 80
+    if "缁撴瀯妯″瀷" in path:
+        score += 60
+    if facility_code and facility_code.lower() in path_low:
+        score += 200
+    if "user" in path_low or "鐢ㄦ埛涓婁紶" in path_low:
+        score += 20
+    return score
+
+
+def resolve_elevation_model_path(facility_code: str) -> str:
+    code = (facility_code or "").strip() or None
+    candidates: List[str] = []
+
+    if is_file_db_configured():
+        query_specs = [
+            ("model_files", f"{facility_code}/褰撳墠妯″瀷/缁撴瀯妯″瀷"),
+            ("model_files", f"{facility_code}/褰撳墠妯″瀷/缁撴瀯妯″瀷/鐢ㄦ埛涓婁紶"),
+            ("special_strategy", f"{facility_code}/褰撳墠妯″瀷/缁撴瀯妯″瀷"),
+            ("special_strategy", f"{facility_code}/褰撳墠妯″瀷/缁撴瀯妯″瀷/鐢ㄦ埛涓婁紶"),
+        ]
+
+        for module_code, logical_prefix in query_specs:
+            try:
+                rows = list_storage_paths_by_prefix(
+                    file_type_code="model",
+                    module_code=module_code,
+                    logical_path_prefix=logical_prefix,
+                    facility_code=code,
+                )
+                if rows:
+                    candidates.extend(rows)
+            except FileBackendError:
+                pass
+
+        if not candidates:
+            for module_code, logical_prefix in query_specs:
+                try:
+                    rows = list_storage_paths_by_prefix(
+                        file_type_code="model",
+                        module_code=module_code,
+                        logical_path_prefix=logical_prefix,
+                        facility_code=None,
+                    )
+                    if rows:
+                        candidates.extend(rows)
+                except FileBackendError:
+                    pass
+
+        if not candidates:
+            for module_code in ("model_files", "special_strategy"):
+                try:
+                    rows = list_storage_paths(
+                        file_type_code="model",
+                        module_code=module_code,
+                        facility_code=code,
+                    )
+                    if rows:
+                        candidates.extend(rows)
+                except FileBackendError:
+                    pass
+
+    if not candidates:
+        roots = [
+            external_path("upload", "model_files"),
+            first_existing_path("upload", "model_files"),
+        ]
+        for root in roots:
+            if not root or not os.path.isdir(root):
+                continue
+            for dir_path, _, file_names in os.walk(root):
+                for file_name in file_names:
+                    if file_name.lower().startswith("sacinp") or file_name.lower().endswith(".sacinp"):
+                        candidates.append(os.path.join(dir_path, file_name))
+
+    usable = [os.path.normpath(path) for path in candidates if path and os.path.isfile(path)]
+    if not usable:
+        return ""
+    usable.sort(key=lambda p: (_score_elevation_model_path(p, facility_code), os.path.getmtime(p)), reverse=True)
+    return usable[0]
+
+
 class RiskNodeItem(QGraphicsEllipseItem):
     def __init__(self, rect: QRectF, tooltip: str = "", hover_callback=None, *args, **kwargs):
         super().__init__(rect, *args, **kwargs)
@@ -552,6 +700,16 @@ class SacsElevationRiskView(QGraphicsView):
         self._cached_groups_od = dict(self._groups_od)
 
         # 模型变了，立面缓存必须清掉
+        self._clear_render_cache()
+
+    def prime_model_cache(self, model_path: str, nodes, members, groups_od) -> None:
+        normalized_path = os.path.normpath(str(model_path or "").strip())
+        if not normalized_path:
+            return
+        self._cached_model_path = normalized_path
+        self._cached_nodes = dict(nodes or {})
+        self._cached_members = list(members or [])
+        self._cached_groups_od = dict(groups_od or {})
         self._clear_render_cache()
 
     # ---------------- 外部入口 ----------------

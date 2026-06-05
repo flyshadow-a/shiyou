@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Any
 import os
 import json
+import sys
 import time
 
-from PyQt5.QtCore import QObject, Qt, pyqtSignal, QThread, QTimer
+from PyQt5.QtCore import QObject, Qt, pyqtSignal, QThread, QTimer, QProcess
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -15,11 +16,14 @@ from PyQt5.QtWidgets import (
     QComboBox, QTabWidget, QSizePolicy, QMessageBox, QSlider, QApplication,
     QDialog, QProgressBar, QProgressDialog, QFileDialog,
 )
-
 from core.base_page import BasePage
 from core.message_boxes import ask_yes_no
 from services.special_strategy_services import NodeYearLabelMapper, SpecialStrategyResultService
-from pages.sacs_elevation_risk_view import SacsElevationRiskView
+from pages.sacs_elevation_risk_view import (
+    SacsElevationRiskView,
+    parse_sacs_elevation_model,
+    resolve_elevation_model_path,
+)
 from services.special_strategy_inspection_overlay_service import load_strategy_inspection_overlay
 from services.special_strategy_image_service import build_strategy_image_path, save_strategy_image_record
 from services.special_strategy_state_db import list_strategy_risk_images
@@ -376,6 +380,15 @@ NODE_SUMMARY_CONTEXT_MAP = {
 }
 
 
+def _decode_process_output(raw: bytes) -> str:
+    for encoding in ("utf-8", "gbk", "mbcs"):
+        try:
+            return raw.decode(encoding)
+        except Exception:
+            continue
+    return raw.decode("utf-8", errors="ignore")
+
+
 class _SpecialStrategyReportWorker(QObject):
     finished = pyqtSignal(str)
     failed = pyqtSignal(str)
@@ -452,6 +465,47 @@ class _SpecialStrategyOverlayLoadWorker(QObject):
             self.failed.emit(self._token, self._display_year, str(exc))
             return
         self.finished.emit(self._token, self._display_year, overlay)
+
+
+class _ElevationModelLoadWorker(QObject):
+    finished = pyqtSignal(int, str, object, object, object)
+    failed = pyqtSignal(int, str)
+
+    def __init__(self, token: int, facility_code: str, context: dict):
+        super().__init__()
+        self._token = int(token)
+        self._facility_code = str(facility_code or "").strip()
+        self._context = dict(context or {})
+
+    @staticmethod
+    def _context_model_path(context: dict) -> str:
+        for key in ("model", "model_path", "current_model", "sacinp"):
+            value = context.get(key)
+            if isinstance(value, str):
+                path = os.path.normpath(value.strip())
+                if path and os.path.isfile(path):
+                    return path
+            if isinstance(value, dict):
+                for sub_key in ("storage_path", "path", "file_path", "absolute_path"):
+                    raw = value.get(sub_key)
+                    if raw:
+                        path = os.path.normpath(str(raw).strip())
+                        if path and os.path.isfile(path):
+                            return path
+        return ""
+
+    def run(self) -> None:
+        try:
+            model_path = self._context_model_path(self._context)
+            if not model_path:
+                model_path = resolve_elevation_model_path(self._facility_code)
+            if not model_path or not os.path.isfile(model_path):
+                raise FileNotFoundError("未找到结构模型文件")
+            nodes, members, groups_od = parse_sacs_elevation_model(model_path)
+        except Exception as exc:
+            self.failed.emit(self._token, str(exc))
+            return
+        self.finished.emit(self._token, model_path, nodes, members, groups_od)
 
 
 class PlanDiagram(QWidget):
@@ -604,6 +658,9 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._report_progress_tick = 0
         self._report_thread = None
         self._report_worker = None
+        self._risk_export_process = None
+        self._risk_export_stdout_buffer = ""
+        self._risk_export_stderr_buffer = ""
         self._report_progress_timer = QTimer(self)
         self._report_progress_timer.setInterval(320)
         self._report_progress_timer.timeout.connect(self._update_report_progress_text)
@@ -611,6 +668,11 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._result_load_jobs = []
         self._overlay_load_token = 0
         self._overlay_load_jobs = []
+        self._elevation_model_load_token = 0
+        self._elevation_model_thread = None
+        self._elevation_model_worker = None
+        self._elevation_model_loaded_path = ""
+        self._pending_elevation_context = {}
 
         # run_id 为 None 时，表示从“特检策略”主页右上角“查看结果”进入：
         # 优先读取“生成特检策略报告”时已经上传到服务器的最新风险等级缓存图。
@@ -1413,7 +1475,6 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 )
             return True
         return False
-
     @staticmethod
     def _is_existing_file(path: str) -> bool:
         text = str(path or "").strip()
@@ -1423,9 +1484,11 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         """C/S 模式下，结果页右侧立面图必须使用客户端下载缓存文件。"""
         if not _use_fastapi_backend():
             return ""
+
         cached = os.path.normpath(str(getattr(self, "_remote_elevation_model_path", "") or ""))
         if (not force) and self._is_existing_file(cached):
             return cached
+
         try:
             path = _RemoteBackendClient().download_latest_model_file(self.facility_code)
             path = os.path.normpath(str(path or "").strip())
@@ -1435,6 +1498,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 return path
         except Exception as exc:
             print("[UpgradeSpecialInspectionResultPage] download latest model for elevation failed:", exc)
+
         return cached if self._is_existing_file(cached) else ""
 
     def _model_override_for_elevation(self) -> str:
@@ -1442,61 +1506,92 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             return self._download_latest_model_for_elevation()
         return ""
 
-    def _refresh_elevation_view(self):
-        if not hasattr(self, "elevation_view"):
+    def _forget_elevation_model_thread(self) -> None:
+        self._elevation_model_thread = None
+        self._elevation_model_worker = None
+
+    def _start_elevation_model_load(self, context: dict) -> None:
+        if self._elevation_model_thread is not None and self._elevation_model_thread.isRunning():
             return
+
+        self._elevation_model_load_token += 1
+        token = self._elevation_model_load_token
+        self._pending_elevation_context = dict(context or {})
+        self.elevation_view._draw_message("正在加载立面图...")
+
+        thread = QThread(self)
+        worker = _ElevationModelLoadWorker(token, self.facility_code, context)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_elevation_model_loaded)
+        worker.failed.connect(self._on_elevation_model_load_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._forget_elevation_model_thread)
+        thread.finished.connect(thread.deleteLater)
+
+        self._elevation_model_thread = thread
+        self._elevation_model_worker = worker
+        thread.start()
+
+    def _on_elevation_model_loaded(
+        self,
+        token: int,
+        model_path: str,
+        nodes: object,
+        members: object,
+        groups_od: object,
+    ) -> None:
+        if int(token) != self._elevation_model_load_token:
+            return
+
+        self._elevation_model_loaded_path = os.path.normpath(str(model_path or "").strip())
+
+        if hasattr(self.elevation_view, "prime_model_cache"):
+            self.elevation_view.prime_model_cache(
+                self._elevation_model_loaded_path,
+                nodes,
+                members,
+                groups_od,
+            )
+
+        context = self._pending_elevation_context or ((self._result_bundle or {}).get("context") or {})
+        self._draw_elevation_view(context, self._elevation_model_loaded_path)
+
+    def _on_elevation_model_load_failed(self, token: int, message: str) -> None:
+        if int(token) != self._elevation_model_load_token:
+            return
+
+        print("[UpgradeSpecialInspectionResultPage] elevation model load failed:", message)
+        self.elevation_view._draw_message(f"立面图加载失败：{message}")
+
+    def _draw_elevation_view(self, context: dict, model_path: str = "") -> None:
+        if not context:
+            self.elevation_view._draw_message("当前没有可用的特检结果")
+            return
+
         if getattr(self, "_is_refreshing_elevation", False):
             return
 
         self._is_refreshing_elevation = True
         try:
-            bundle = self._result_bundle or {}
-            context = self._context_from_bundle(bundle)
-            if not context:
-                context = self._context_from_overlay(getattr(self, "_overlay_bundle", {}) or {})
-            if not context:
-                # 结果接口暂时没有 context 时，仍允许用模型文件 + overlay 实时绘图；
-                # 这样不会因为服务端返回字段不完整导致右侧立面图空白。
-                context = {"workpoint_z": 10, "level_threshold": 2}
+            self.elevation_view.load_for_facility(
+                facility_code=self.facility_code,
+                context=context,
+                year_label=self.current_year,
+                row_name=self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前",
+                model_path_override=model_path,
+            )
 
-            # 当前页面需要支持“默认只看 III/IV，按钮切换是否显示 II”的交互能力，
-            # 因此这里统一实时绘制，不再直接显示旧缓存图片。
-            busy = self._show_realtime_draw_busy_dialog()
+            self._sync_dynamic_row_combo_from_view()
 
-            try:
-                QApplication.setOverrideCursor(Qt.WaitCursor)
-                QApplication.processEvents()
+            if hasattr(self.elevation_view, "set_inspection_overlay"):
+                self.elevation_view.set_inspection_overlay(self._overlay_bundle)
 
-                model_override = self._model_override_for_elevation()
-                self.elevation_view.load_for_facility(
-                    facility_code=self.facility_code,
-                    context=context,
-                    year_label=self.current_year,
-                    row_name=self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前",
-                    model_path_override=model_override,
-                )
-
-                # 先同步立面下拉
-                self._sync_dynamic_row_combo_from_view()
-
-                # 再叠加检验等级
-                if hasattr(self.elevation_view, "set_inspection_overlay"):
-                    self.elevation_view.set_inspection_overlay(self._overlay_bundle)
-                self._apply_elevation_level_visibility()
-
-                # 页面浏览阶段不再导出/上传检验等级图；报告图片统一在“生成特检策略报告”时处理。
-
-            finally:
-                try:
-                    QApplication.restoreOverrideCursor()
-                except Exception:
-                    pass
-                try:
-                    busy.close()
-                    busy.deleteLater()
-                except Exception:
-                    pass
-                QApplication.processEvents()
+            self._apply_elevation_level_visibility()
 
         except Exception as exc:
             print("[UpgradeSpecialInspectionResultPage] refresh elevation failed:", exc)
@@ -1504,6 +1599,37 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         finally:
             self._is_refreshing_elevation = False
 
+    def _refresh_elevation_view(self):
+        if not hasattr(self, "elevation_view"):
+            return
+
+        bundle = self._result_bundle or {}
+        context = self._context_from_bundle(bundle)
+
+        if not context:
+            context = self._context_from_overlay(getattr(self, "_overlay_bundle", {}) or {})
+
+        if not context:
+            # 结果接口暂时没有 context 时，仍允许用模型文件 + overlay 实时绘图；
+            # 避免服务端返回字段不完整导致右侧立面图空白。
+            context = {"workpoint_z": 10, "level_threshold": 2}
+
+        self._pending_elevation_context = dict(context)
+
+        # C/S 远程模式：优先使用客户端下载缓存的模型文件。
+        model_override = self._model_override_for_elevation()
+        if model_override:
+            self._elevation_model_loaded_path = os.path.normpath(model_override)
+            self._draw_elevation_view(context, self._elevation_model_loaded_path)
+            return
+
+        # 本地模式：如果异步模型已经加载过，直接绘制。
+        if self._elevation_model_loaded_path:
+            self._draw_elevation_view(context, self._elevation_model_loaded_path)
+            return
+
+        # 本地模式：首次加载时走异步线程，避免 UI 卡死。
+        self._start_elevation_model_load(context)
     def _save_current_elevation_image(self):
         """导出当前右侧模型立面检验等级图，并把图片路径写入数据库。"""
         if not hasattr(self, "elevation_view"):
@@ -2170,10 +2296,20 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             self._report_progress = progress
         else:
             progress.setLabelText(message)
+            progress.setRange(0, 0)
         progress.show()
         if not self._report_progress_timer.isActive():
             self._report_progress_timer.start()
         QApplication.processEvents()
+
+    def _set_report_progress_value(self, value: int, maximum: int) -> None:
+        progress = self._report_progress
+        if progress is None:
+            return
+        maximum = max(1, int(maximum))
+        value = max(0, min(int(value), maximum))
+        progress.setRange(0, maximum)
+        progress.setValue(value)
 
     def _update_report_progress_text(self) -> None:
         if self._report_progress is None or not self._report_progress_base_text:
@@ -2193,6 +2329,155 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             self._report_progress = None
         self._report_progress_base_text = ""
         self._report_progress_tick = 0
+
+    def _is_risk_export_process_running(self) -> bool:
+        process = self._risk_export_process
+        return process is not None and process.state() != QProcess.NotRunning
+
+    def _build_report_image_export_command(self) -> tuple[str, list[str], str]:
+        root_dir = Path(__file__).resolve().parents[1]
+        args = ["--report-image-export-worker"]
+        if not getattr(sys, "frozen", False):
+            args.insert(0, str(root_dir / "main.py"))
+        args.extend([
+            "--facility-code",
+            str(self.facility_code or ""),
+            "--mode",
+            "risk",
+        ])
+        if self.run_id is not None:
+            args.extend(["--run-id", str(self.run_id)])
+        return sys.executable, args, str(root_dir)
+
+    def _start_report_risk_image_export_process(self) -> None:
+        if self._is_risk_export_process_running():
+            QMessageBox.information(self, "提示", "检验等级图正在导出，请稍候。")
+            return
+
+        program, args, work_dir = self._build_report_image_export_command()
+        process = QProcess(self)
+        process.setWorkingDirectory(work_dir)
+        process.readyReadStandardOutput.connect(self._read_report_image_export_stdout)
+        process.readyReadStandardError.connect(self._read_report_image_export_stderr)
+        process.finished.connect(self._on_report_image_export_finished)
+        process.errorOccurred.connect(self._on_report_image_export_error)
+
+        self._risk_export_process = process
+        self._risk_export_stdout_buffer = ""
+        self._risk_export_stderr_buffer = ""
+        self._show_report_progress("正在启动检验等级图导出进程")
+        process.start(program, args)
+
+    def _read_report_image_export_stdout(self) -> None:
+        process = self._risk_export_process
+        if process is None:
+            return
+        text = _decode_process_output(bytes(process.readAllStandardOutput()))
+        if not text:
+            return
+        self._risk_export_stdout_buffer += text
+        while "\n" in self._risk_export_stdout_buffer:
+            line, self._risk_export_stdout_buffer = self._risk_export_stdout_buffer.split("\n", 1)
+            self._handle_report_image_export_stdout_line(line)
+
+    def _read_report_image_export_stderr(self) -> None:
+        process = self._risk_export_process
+        if process is None:
+            return
+        text = _decode_process_output(bytes(process.readAllStandardError()))
+        if text:
+            self._risk_export_stderr_buffer += text
+            print(text, end="")
+
+    def _handle_report_image_export_stdout_line(self, line: str) -> None:
+        line = str(line or "").strip()
+        if not line:
+            return
+        print(line)
+
+        marker = "[ReportImageExporter] progress "
+        if marker in line:
+            tail = line.split(marker, 1)[1]
+            count_text, _, detail = tail.partition(":")
+            done_text, _, total_text = count_text.strip().partition("/")
+            try:
+                done = int(done_text)
+                total = int(total_text)
+            except Exception:
+                done = 0
+                total = 0
+            detail = detail.strip()
+            if done > 0 and total > 0:
+                message = f"正在导出检验等级图 {done}/{total}"
+                if detail:
+                    message = f"{message}：{detail}"
+                self._show_report_progress(message)
+                self._set_report_progress_value(done, total)
+            return
+
+        if "[ReportImageExporter] start export" in line:
+            self._show_report_progress("正在导出检验等级图")
+        elif "[ReportImageExporter] finished" in line:
+            self._show_report_progress("检验等级图导出完成，正在生成报告")
+
+    def _reset_pending_report_after_risk_export(self) -> None:
+        self._pending_report_after_risk_export = False
+        self._pending_report_output_path = ""
+
+    def _fail_report_image_export(self, message: str) -> None:
+        process = self._risk_export_process
+        self._risk_export_process = None
+        if process is not None:
+            try:
+                if process.state() != QProcess.NotRunning:
+                    process.kill()
+            except Exception:
+                pass
+            process.deleteLater()
+        self._reset_pending_report_after_risk_export()
+        self._set_report_button_busy(False)
+        QMessageBox.warning(
+            self,
+            "生成报告失败",
+            f"检验等级图导出失败，已中止生成报告。\n{message}",
+        )
+
+    def _on_report_image_export_error(self, _error) -> None:
+        process = self._risk_export_process
+        message = process.errorString() if process is not None else "无法启动导出进程"
+        self._fail_report_image_export(message)
+
+    def _on_report_image_export_finished(self, exit_code: int, exit_status) -> None:
+        process = self._risk_export_process
+        if process is None:
+            return
+
+        self._read_report_image_export_stdout()
+        if self._risk_export_stdout_buffer.strip():
+            self._handle_report_image_export_stdout_line(self._risk_export_stdout_buffer)
+        self._risk_export_stdout_buffer = ""
+
+        self._read_report_image_export_stderr()
+        stderr_text = self._risk_export_stderr_buffer.strip()
+        self._risk_export_stderr_buffer = ""
+
+        process.deleteLater()
+        self._risk_export_process = None
+
+        if exit_status != QProcess.NormalExit or int(exit_code) != 0:
+            detail = stderr_text[-1200:] if stderr_text else f"子进程退出码：{exit_code}"
+            self._reset_pending_report_after_risk_export()
+            self._set_report_button_busy(False)
+            QMessageBox.warning(
+                self,
+                "生成报告失败",
+                f"检验等级图导出失败，已中止生成报告。\n{detail}",
+            )
+            return
+
+        self._show_report_progress("检验等级图导出完成，正在生成报告")
+        if self._pending_report_after_risk_export:
+            QTimer.singleShot(0, self._do_generate_report_after_risk_export)
 
     def _on_report_thread_finished(self) -> None:
         self._report_thread = None
@@ -2253,7 +2538,14 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             QMessageBox.warning(self, "生成报告失败", "当前没有可用的特检策略结果，无法导出检验等级图。")
             return
 
-        if self._export_timer.isActive() or (self._remote_export_thread is not None and self._remote_export_thread.isRunning()):
+        if (
+            self._export_timer.isActive()
+            or (
+                self._remote_export_thread is not None
+                and self._remote_export_thread.isRunning()
+            )
+            or self._is_risk_export_process_running()
+        ):
             QMessageBox.information(self, "提示", "检验等级图正在导出，请稍候。")
             return
 
@@ -2268,7 +2560,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._pending_report_after_risk_export = True
         self._pending_report_output_path = output_path
         self._set_report_button_busy(True, "正在导出检验等级图...")
-        self._schedule_export_all_elevation_images(context, force=True)
+        self._start_report_risk_image_export_process()
 
     def _do_generate_report_after_risk_export(self):
         self._pending_report_after_risk_export = False

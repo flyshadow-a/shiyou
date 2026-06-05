@@ -15,6 +15,58 @@ from PyQt5.QtWidgets import (
 )
 
 
+def read_sacs_lines_with_fallback(file_path: str) -> List[str]:
+    encodings = ["utf-8", "utf-8-sig", "gb18030", "gbk", "latin-1"]
+    for enc in encodings:
+        try:
+            with open(file_path, "r", encoding=enc) as f:
+                return f.readlines()
+        except UnicodeDecodeError:
+            continue
+        except Exception:
+            break
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.readlines()
+
+
+def parse_sacs_preview_data(file_path: str):
+    nodes = {}
+    members = []
+    groups_od = {}
+
+    for line in read_sacs_lines_with_fallback(file_path):
+        if line.startswith("GRUP"):
+            gid = line[5:8].strip()
+            try:
+                od_str = line[14:24].strip()
+                od = float(od_str) if od_str else 0.0
+                groups_od[gid] = od
+            except Exception:
+                groups_od[gid] = 0.0
+
+        elif line.startswith("JOINT"):
+            try:
+                nid = line[6:10].strip()
+                x = float(line[11:18].strip())
+                y = float(line[18:25].strip())
+                z = float(line[25:32].strip())
+                nodes[nid] = [x, y, z]
+            except Exception:
+                continue
+
+        elif line.startswith("MEMBER"):
+            try:
+                na = line[7:11].strip()
+                nb = line[11:15].strip()
+                gid = line[15:18].strip()
+                if na and nb:
+                    members.append((na, nb, gid))
+            except Exception:
+                continue
+
+    return nodes, members, groups_od
+
+
 class SpecialInspectionSacsView(QFrame):
     COLOR_SCHEME = {
         "background": "white",
@@ -144,54 +196,10 @@ class SpecialInspectionSacsView(QFrame):
         self.plotter.render()
 
     def _read_lines_with_fallback(self, file_path: str) -> List[str]:
-        encodings = ["utf-8", "utf-8-sig", "gb18030", "gbk", "latin-1"]
-        for enc in encodings:
-            try:
-                with open(file_path, "r", encoding=enc) as f:
-                    return f.readlines()
-            except UnicodeDecodeError:
-                continue
-            except Exception:
-                break
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            return f.readlines()
+        return read_sacs_lines_with_fallback(file_path)
 
     def parse_sacs_full_robust(self, filepath: str):
-        nodes = {}
-        members = []
-        groups_od = {}
-
-        lines = self._read_lines_with_fallback(filepath)
-        for line in lines:
-            if line.startswith("GRUP"):
-                gid = line[5:8].strip()
-                try:
-                    od_str = line[14:24].strip()
-                    od = float(od_str) if od_str else 0.0
-                    groups_od[gid] = od
-                except Exception:
-                    groups_od[gid] = 0.0
-
-            elif line.startswith("JOINT"):
-                try:
-                    nid = line[6:10].strip()
-                    x = float(line[11:18].strip())
-                    y = float(line[18:25].strip())
-                    z = float(line[25:32].strip())
-                    nodes[nid] = [x, y, z]
-                except Exception:
-                    continue
-
-            elif line.startswith("MEMBER"):
-                try:
-                    na = line[7:11].strip()
-                    nb = line[11:15].strip()
-                    gid = line[15:18].strip()
-                    members.append((na, nb, gid))
-                except Exception:
-                    continue
-
-        return nodes, members, groups_od
+        return parse_sacs_preview_data(filepath)
 
     def apply_pdf_logic_diagnostic(self, nodes, members, groups_od, target_z=8.5):
         graph = {nid: [] for nid in nodes}
@@ -325,6 +333,10 @@ class SpecialInspectionSacsView(QFrame):
         self._loaded_path = file_path
 
         nodes, members, groups_od = self.parse_sacs_full_robust(file_path)
+        self.load_parsed_data(file_path, nodes, members, groups_od, history_overlay=history_overlay)
+
+    def load_parsed_data(self, file_path: str, nodes, members, groups_od, history_overlay=None):
+        self._loaded_path = file_path
         self._nodes = nodes
         self._members = members
         self._groups_od = groups_od
@@ -635,6 +647,42 @@ class SpecialInspectionModelPreviewPanel(QFrame):
 
             self.view.reset_pan_state()
             self.view.load_inp(self._current_path, target_z=target_z, history_overlay=history_overlay)
+        except Exception as exc:
+            self.view.clear_view(f"模型预览失败：\n{exc}")
+
+    def load_parsed_model(
+        self,
+        file_path: str,
+        nodes,
+        members,
+        groups_od,
+        target_z: float = 9.1,
+        history_overlay=None,
+    ):
+        self._current_path = os.path.normpath(str(file_path or "").strip())
+        self._current_target_z = target_z
+        self._current_history_overlay = dict(history_overlay or {})
+        legend_entries = [("Structure", SpecialInspectionSacsView.COLOR_SCHEME["main_structure"])]
+        legend_entries.extend(self._history_legend_entries(history_overlay))
+        self._set_legend_entries(legend_entries)
+        self._set_path_text(self._current_path)
+
+        try:
+            self.slider_h.blockSignals(True)
+            self.slider_v.blockSignals(True)
+            self.slider_h.setValue(0)
+            self.slider_v.setValue(0)
+            self.slider_h.blockSignals(False)
+            self.slider_v.blockSignals(False)
+
+            self.view.reset_pan_state()
+            self.view.load_parsed_data(
+                self._current_path,
+                nodes,
+                members,
+                groups_od,
+                history_overlay=history_overlay,
+            )
         except Exception as exc:
             self.view.clear_view(f"模型预览失败：\n{exc}")
 

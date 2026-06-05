@@ -867,6 +867,49 @@ class _RulePreviewWorker(QObject):
             self.failed.emit(f"{self._model_path}: {exc}")
 
 
+class _SystemFilesLoadWorker(QObject):
+    finished = pyqtSignal(int, object)
+    failed = pyqtSignal(int, str)
+
+    def __init__(self, token: int, fetcher):
+        super().__init__()
+        self._token = int(token)
+        self._fetcher = fetcher
+
+    def run(self) -> None:
+        try:
+            payload = self._fetcher()
+        except Exception as exc:
+            self.failed.emit(self._token, str(exc))
+            return
+        self.finished.emit(self._token, payload)
+
+
+class _ModelPreviewParseWorker(QObject):
+    finished = pyqtSignal(int, str, object, object, object, object)
+    failed = pyqtSignal(int, str, str)
+
+    def __init__(self, token: int, model_path: str, facility_code: str):
+        super().__init__()
+        self._token = int(token)
+        self._model_path = os.path.normpath(str(model_path or "").strip())
+        self._facility_code = str(facility_code or "").strip()
+
+    def run(self) -> None:
+        try:
+            from pages.special_inspection_model_preview import parse_sacs_preview_data
+
+            nodes, members, groups_od = parse_sacs_preview_data(self._model_path)
+            try:
+                history_overlay = load_history_detection_overlay(self._facility_code) or {}
+            except Exception:
+                history_overlay = {}
+        except Exception as exc:
+            self.failed.emit(self._token, self._model_path, str(exc))
+            return
+        self.finished.emit(self._token, self._model_path, nodes, members, groups_od, history_overlay)
+
+
 class NewSpecialInspectionPage(BasePage):
     """
     新增检测策略打开的页面：
@@ -934,6 +977,15 @@ class NewSpecialInspectionPage(BasePage):
         self._remote_preview_model_path = ""
         self._remote_preview_sea_path = ""
 
+        self._system_files_load_token = 0
+        self._system_files_load_thread: QThread | None = None
+        self._system_files_load_worker: _SystemFilesLoadWorker | None = None
+        self._model_preview_parse_token = 0
+        self._model_preview_parse_thread: QThread | None = None
+        self._model_preview_parse_worker: _ModelPreviewParseWorker | None = None
+        self._model_preview_loading_path = ""
+        self._model_preview_loaded_path = ""
+
         super().__init__("", parent)
         self._risk_progress_timer = QTimer(self)
         self._risk_progress_timer.setInterval(320)
@@ -991,6 +1043,10 @@ class NewSpecialInspectionPage(BasePage):
         self.fatigue_input_files = []
         self._file_meta_by_path.clear()
         self._invalidate_rule_preview_cache()
+        self._system_files_load_token += 1
+        self._model_preview_parse_token += 1
+        self._model_preview_loading_path = ""
+        self._model_preview_loaded_path = ""
         self._refresh_files_table()
         self._refresh_model_preview()
         self._auto_system_files_loaded = False
@@ -3377,10 +3433,10 @@ class NewSpecialInspectionPage(BasePage):
             or ""
         ).strip())
 
-    def _apply_remote_strategy_input_rows(self, payload: dict[str, Any]) -> bool:
+    def _build_remote_system_files_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         files = payload.get("files") if isinstance(payload, dict) else {}
         if not isinstance(files, dict):
-            return False
+            return {}
 
         def rows_for(key: str) -> list[dict[str, Any]]:
             rows = files.get(key) or []
@@ -3391,67 +3447,187 @@ class NewSpecialInspectionPage(BasePage):
         fatigue_result_rows = rows_for("fatigue_result")
         fatigue_input_rows = rows_for("fatigue_input")
 
-        all_rows: list[dict[str, Any]] = []
         for row in model_rows:
             row.setdefault("category_name", self._default_category_label(self.CATEGORY_MODEL))
             row.setdefault("format_label", self._path_format_label(self._remote_row_path(row)))
             row.setdefault("source_label", "服务端当前模型")
-            all_rows.append(row)
+
         for row in collapse_rows:
             row.setdefault("category_name", self._default_category_label(self.CATEGORY_COLLAPSE))
             row.setdefault("format_label", self._path_format_label(self._remote_row_path(row)))
             row.setdefault("source_label", "服务端倒塌分析结果")
-            all_rows.append(row)
+
         for row in fatigue_result_rows:
             row.setdefault("category_name", self._default_category_label(self.CATEGORY_FATIGUE, "result"))
             row.setdefault("branch_label", "疲劳结果文件")
             row.setdefault("format_label", self._path_format_label(self._remote_row_path(row)))
             row.setdefault("source_label", "服务端疲劳结果")
-            all_rows.append(row)
+
         for row in fatigue_input_rows:
             row.setdefault("category_name", self._default_category_label(self.CATEGORY_FATIGUE, "input"))
             row.setdefault("branch_label", "疲劳输入文件")
             row.setdefault("format_label", self._path_format_label(self._remote_row_path(row)))
             row.setdefault("source_label", "服务端疲劳输入")
-            all_rows.append(row)
 
-        self._remember_file_rows(all_rows)
+        fatigue_rows = [*fatigue_result_rows, *fatigue_input_rows]
 
-        self.model_files = [self._remote_row_path(row) for row in model_rows if self._remote_row_path(row)]
-        self.collapse_files = [self._remote_row_path(row) for row in collapse_rows if self._remote_row_path(row)]
-        self.fatigue_result_files = [self._remote_row_path(row) for row in fatigue_result_rows if self._remote_row_path(row)]
-        self.fatigue_input_files = [self._remote_row_path(row) for row in fatigue_input_rows if self._remote_row_path(row)]
+        model_files = [self._remote_row_path(row) for row in model_rows if self._remote_row_path(row)]
+        collapse_files = [self._remote_row_path(row) for row in collapse_rows if self._remote_row_path(row)]
+        fatigue_result_files = [
+            self._remote_row_path(row)
+            for row in fatigue_result_rows
+            if self._remote_row_path(row)
+        ]
+        fatigue_input_files = [
+            self._remote_row_path(row)
+            for row in fatigue_input_rows
+            if self._remote_row_path(row)
+        ]
 
-        return bool(self.model_files or self.collapse_files or self.fatigue_result_files or self.fatigue_input_files)
+        return {
+            "model_rows": model_rows,
+            "collapse_rows": collapse_rows,
+            "fatigue_rows": fatigue_rows,
+            "model_files": model_files,
+            "collapse_files": collapse_files,
+            "fatigue_files": [*fatigue_result_files, *fatigue_input_files],
+            "fatigue_result_files": fatigue_result_files,
+            "fatigue_input_files": fatigue_input_files,
+        }
 
-    def _reload_system_files_from_backend(self):
+    def _runtime_paths_from_rows(
+        self,
+        rows: List[dict[str, Any]],
+        category: str,
+        branch: str | None = None,
+    ) -> List[str]:
+        ordered: List[tuple[tuple[str, str, str], str]] = []
+        seen: set[str] = set()
+
+        for row in rows or []:
+            path = os.path.normpath(str(row.get("storage_path") or "").strip())
+            if not path or path in seen or not os.path.exists(path):
+                continue
+            if not self._is_runtime_supported_row(row, category, branch):
+                continue
+
+            seen.add(path)
+            ordered.append(
+                (
+                    (
+                        str(row.get("work_condition") or "").strip().lower(),
+                        str(row.get("logical_path") or "").replace("\\", "/").strip().lower(),
+                        str(row.get("original_name") or os.path.basename(path)).strip().lower(),
+                    ),
+                    path,
+                )
+            )
+
+        return [path for _, path in sorted(ordered, key=lambda item: item[0])]
+
+    def _load_system_files_payload_sync(self) -> dict[str, Any]:
         if _use_fastapi_backend():
             try:
                 payload = _RemoteStrategyApiClient().load_strategy_input_files(self.facility_code)
-                if self._apply_remote_strategy_input_rows(payload):
-                    print(
-                        "[NewSpecialInspectionPage] remote strategy input files loaded:",
-                        "model=", len(self.model_files),
-                        "collapse=", len(self.collapse_files),
-                        "ftglst=", len(self.fatigue_result_files),
-                        "ftginp=", len(self.fatigue_input_files),
-                    )
-                    self._refresh_files_table()
-                    self._refresh_model_preview()
-                    return
+                remote_payload = self._build_remote_system_files_payload(payload)
+                if any(
+                    remote_payload.get(key)
+                    for key in ("model_files", "collapse_files", "fatigue_files")
+                ):
+                    return remote_payload
             except Exception as exc:
                 print("[NewSpecialInspectionPage] load remote strategy input files failed:", exc)
 
-        self.model_files = self._db_fetch_file_records(self.CATEGORY_MODEL)
-        self._invalidate_rule_preview_cache()
-        self._start_rule_preview_preload()
-        self.collapse_files = self._db_fetch_file_records(self.CATEGORY_COLLAPSE)
-        self._set_fatigue_groups_from_candidates(
-            self._db_fetch_file_records(self.CATEGORY_FATIGUE)
-        )
+        model_rows = self._db_fetch_file_rows(self.CATEGORY_MODEL)
+        collapse_rows = self._db_fetch_file_rows(self.CATEGORY_COLLAPSE)
+        fatigue_rows = self._db_fetch_file_rows(self.CATEGORY_FATIGUE)
+
+        return {
+            "model_rows": model_rows,
+            "collapse_rows": collapse_rows,
+            "fatigue_rows": fatigue_rows,
+            "model_files": self._runtime_paths_from_rows(model_rows, self.CATEGORY_MODEL),
+            "collapse_files": self._runtime_paths_from_rows(collapse_rows, self.CATEGORY_COLLAPSE),
+            "fatigue_files": self._runtime_paths_from_rows(fatigue_rows, self.CATEGORY_FATIGUE),
+            "fatigue_result_files": self._runtime_paths_from_rows(
+                fatigue_rows,
+                self.CATEGORY_FATIGUE,
+                "result",
+            ),
+            "fatigue_input_files": self._runtime_paths_from_rows(
+                fatigue_rows,
+                self.CATEGORY_FATIGUE,
+                "input",
+            ),
+        }
+
+    def _forget_system_files_load_thread(self) -> None:
+        self._system_files_load_thread = None
+        self._system_files_load_worker = None
+
+    def _start_system_files_load(self) -> None:
+        if self._system_files_load_thread is not None and self._system_files_load_thread.isRunning():
+            return
+
+        self._system_files_load_token += 1
+        token = self._system_files_load_token
+        self._set_model_preview_placeholder("正在加载模型文件...")
+
+        thread = QThread(self)
+        worker = _SystemFilesLoadWorker(token, self._load_system_files_payload_sync)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_system_files_loaded)
+        worker.failed.connect(self._on_system_files_load_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._forget_system_files_load_thread)
+        thread.finished.connect(thread.deleteLater)
+
+        self._system_files_load_thread = thread
+        self._system_files_load_worker = worker
+        thread.start()
+
+    def _reload_system_files_from_backend(self):
+        self._start_system_files_load()
+
+    def _on_system_files_loaded(self, token: int, payload: object) -> None:
+        if int(token) != self._system_files_load_token:
+            return
+
+        data = payload if isinstance(payload, dict) else {}
+
+        rows = []
+        rows.extend(data.get("model_rows") or [])
+        rows.extend(data.get("collapse_rows") or [])
+        rows.extend(data.get("fatigue_rows") or [])
+        self._remember_file_rows(rows)
+
+        self.model_files = list(data.get("model_files") or [])
+        self.collapse_files = list(data.get("collapse_files") or [])
+
+        self.fatigue_result_files = list(data.get("fatigue_result_files") or [])
+        self.fatigue_input_files = list(data.get("fatigue_input_files") or [])
+        self._set_fatigue_groups_from_candidates(list(data.get("fatigue_files") or []))
 
         self._refresh_files_table()
         self._refresh_model_preview()
+        self._invalidate_rule_preview_cache()
+        self._start_rule_preview_preload()
+        self._refresh_files_table()
+        self._refresh_model_preview()
+
+    def _on_system_files_load_failed(self, token: int, message: str) -> None:
+        if int(token) != self._system_files_load_token:
+            return
+        print("[NewSpecialInspectionPage] load system files failed:", message)
+        self._set_model_preview_placeholder("模型文件加载失败")
+
+    def _reload_system_files_from_backend(self):
+        self._start_system_files_load()
 
     # ---------------- 文件动态表格刷新与事件 ----------------
     def _set_file_table_row(
@@ -3826,39 +4002,149 @@ class NewSpecialInspectionPage(BasePage):
     def _on_del_fatigue_input(self):
         self._on_del_fatigue("input")
 
+    def _forget_model_preview_parse_thread(self) -> None:
+        self._model_preview_parse_thread = None
+        self._model_preview_parse_worker = None
+        self._model_preview_loading_path = ""
+
+    def _start_model_preview_parse(self, model_path: str) -> None:
+        normalized_path = os.path.normpath(str(model_path or "").strip())
+        if not normalized_path:
+            return
+
+        if (
+            self._model_preview_parse_thread is not None
+            and self._model_preview_parse_thread.isRunning()
+            and self._model_preview_loading_path == normalized_path
+        ):
+            return
+
+        self._model_preview_parse_token += 1
+        token = self._model_preview_parse_token
+        self._model_preview_loading_path = normalized_path
+
+        if getattr(self, "model_preview_panel", None) is not None:
+            self.model_preview_panel.clear_model("正在解析模型文件...")
+        else:
+            self._set_model_preview_placeholder("正在解析模型文件...")
+
+        thread = QThread(self)
+        worker = _ModelPreviewParseWorker(token, normalized_path, self.facility_code)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_model_preview_parsed)
+        worker.failed.connect(self._on_model_preview_parse_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._forget_model_preview_parse_thread)
+        thread.finished.connect(thread.deleteLater)
+
+        self._model_preview_parse_thread = thread
+        self._model_preview_parse_worker = worker
+        thread.start()
+
+    def _on_model_preview_parsed(
+        self,
+        token: int,
+        model_path: str,
+        nodes: object,
+        members: object,
+        groups_od: object,
+        history_overlay: object,
+    ) -> None:
+        normalized_path = os.path.normpath(str(model_path or "").strip())
+
+        if int(token) != self._model_preview_parse_token:
+            return
+
+        # 允许远程预览缓存路径或当前 model_files[0] 路径加载成功。
+        current_model_path = ""
+        if self.model_files:
+            current_model_path = os.path.normpath(str(self.model_files[0] or "").strip())
+
+        remote_preview_path = os.path.normpath(
+            str(getattr(self, "_remote_preview_model_path", "") or "").strip()
+        )
+
+        if normalized_path not in {current_model_path, remote_preview_path}:
+            return
+
+        if not self._ensure_model_preview_panel():
+            return
+
+        self.model_preview_panel.load_parsed_model(
+            normalized_path,
+            nodes,
+            members,
+            groups_od,
+            target_z=9.1,
+            history_overlay=history_overlay if isinstance(history_overlay, dict) else {},
+        )
+        self._model_preview_loaded_path = normalized_path
+
+    def _on_model_preview_parse_failed(self, token: int, model_path: str, message: str) -> None:
+        if int(token) != self._model_preview_parse_token:
+            return
+
+        print("[NewSpecialInspectionPage] model preview parse failed:", message)
+
+        if getattr(self, "model_preview_panel", None) is not None:
+            self.model_preview_panel.clear_model(f"模型预览加载失败：\n{message}")
+        else:
+            self._set_model_preview_placeholder("模型预览加载失败")
+
     def _refresh_model_preview(self, *, force_remote: bool = False):
-        if not hasattr(self, "model_preview_panel"):
+        if not hasattr(self, "_model_preview_layout") and not hasattr(self, "model_preview_panel"):
             return
 
         model_path = ""
 
-        # C/S 远程模式：右侧预览必须使用客户端下载缓存，而不能直接读数据库记录里的服务端 D 盘路径。
+        # C/S 远程模式：右侧预览必须使用客户端下载缓存，
+        # 不能直接读取数据库记录里的服务端 D 盘路径。
         if _use_fastapi_backend():
-            model_path = self._download_latest_model_for_preview(force=force_remote)
+            try:
+                model_path = self._download_latest_model_for_preview(force=force_remote)
+                self._remote_preview_model_path = model_path or ""
+            except Exception as exc:
+                print("[NewSpecialInspectionPage] download remote preview model failed:", exc)
+                model_path = ""
 
-        # 本地兼容或远程下载失败时，保留原有文件列表兜底。
+        # 本地兼容或远程下载失败时，使用本地文件列表兜底。
         if not model_path and self.model_files:
             candidate = os.path.normpath(str(self.model_files[0] or "").strip())
             if self._is_existing_file(candidate):
                 model_path = candidate
 
-        history_overlay = {}
-        try:
-            history_overlay = load_history_detection_overlay(self.facility_code) or {}
-        except Exception as exc:
-            print("[NewSpecialInspectionPage] load history overlay failed:", exc)
-            history_overlay = {}
+        if not model_path:
+            if getattr(self, "model_preview_panel", None) is not None:
+                self.model_preview_panel.clear_model("未找到可预览的模型文件")
+            else:
+                self._set_model_preview_placeholder("未找到可预览的模型文件")
+            return
+
+        # 如果同一个文件已经加载过，不重复解析。
+        normalized_path = os.path.normpath(str(model_path or "").strip())
+        if self._model_preview_loaded_path == normalized_path:
+            return
+
+        self._start_model_preview_parse(normalized_path)
 
         if model_path and os.path.exists(model_path):
-            if not self._ensure_model_preview_panel():
+            if (
+                    getattr(self, "model_preview_panel", None) is not None
+                    and self._model_preview_loaded_path == model_path
+            ):
                 return
-            self.model_preview_panel.load_model(model_path, target_z=9.1, history_overlay=history_overlay)
+            self._start_model_preview_parse(model_path)
         else:
+            self._model_preview_loaded_path = ""
             if getattr(self, "model_preview_panel", None) is not None:
                 self.model_preview_panel.clear_model("当前未加载模型文件")
             else:
                 self._set_model_preview_placeholder("当前未加载模型文件")
-
     def _create_title_row_widget(self, title_text: str, buttons_info: list) -> QWidget:
         """创建一个内嵌于表格标题行的自定义 Widget，包含标题文字和对应按钮"""
         w = QWidget()
