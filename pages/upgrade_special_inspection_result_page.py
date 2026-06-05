@@ -44,8 +44,8 @@ def _project_root_dir() -> Path:
 
 
 def _use_fastapi_backend() -> bool:
-    flag = os.environ.get("SHIYOU_USE_FASTAPI", "1").strip().lower()
-    return flag not in {"0", "false", "no", "off", "local"}
+    flag = os.environ.get("SHIYOU_USE_FASTAPI", "0").strip().lower()
+    return flag in {"1", "true", "yes", "on", "remote", "fastapi"}
 
 
 def _api_base_url() -> str:
@@ -666,6 +666,14 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._report_progress_timer.timeout.connect(self._update_report_progress_text)
         self._result_load_token = 0
         self._result_load_jobs = []
+        self._result_progress = None
+        self._result_progress_base_text = ""
+        self._result_progress_tick = 0
+        self._result_loading_active = False
+        self._result_waiting_for_elevation = False
+        self._result_progress_timer = QTimer(self)
+        self._result_progress_timer.setInterval(320)
+        self._result_progress_timer.timeout.connect(self._update_result_progress_text)
         self._overlay_load_token = 0
         self._overlay_load_jobs = []
         self._elevation_model_load_token = 0
@@ -1510,8 +1518,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._elevation_model_thread = None
         self._elevation_model_worker = None
 
+    def _mark_result_elevation_ready(self) -> None:
+        self._result_waiting_for_elevation = False
+        QTimer.singleShot(0, self._finish_result_loading_if_ready)
+
     def _start_elevation_model_load(self, context: dict) -> None:
         if self._elevation_model_thread is not None and self._elevation_model_thread.isRunning():
+            self._mark_result_elevation_ready()
             return
 
         self._elevation_model_load_token += 1
@@ -1560,6 +1573,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
         context = self._pending_elevation_context or ((self._result_bundle or {}).get("context") or {})
         self._draw_elevation_view(context, self._elevation_model_loaded_path)
+        self._mark_result_elevation_ready()
 
     def _on_elevation_model_load_failed(self, token: int, message: str) -> None:
         if int(token) != self._elevation_model_load_token:
@@ -1567,6 +1581,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
         print("[UpgradeSpecialInspectionResultPage] elevation model load failed:", message)
         self.elevation_view._draw_message(f"立面图加载失败：{message}")
+        self._mark_result_elevation_ready()
 
     def _draw_elevation_view(self, context: dict, model_path: str = "") -> None:
         if not context:
@@ -1601,6 +1616,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
     def _refresh_elevation_view(self):
         if not hasattr(self, "elevation_view"):
+            self._mark_result_elevation_ready()
             return
 
         bundle = self._result_bundle or {}
@@ -1621,14 +1637,18 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         if model_override:
             self._elevation_model_loaded_path = os.path.normpath(model_override)
             self._draw_elevation_view(context, self._elevation_model_loaded_path)
+            self._mark_result_elevation_ready()
             return
 
         # 本地模式：如果异步模型已经加载过，直接绘制。
         if self._elevation_model_loaded_path:
             self._draw_elevation_view(context, self._elevation_model_loaded_path)
+            self._mark_result_elevation_ready()
             return
 
         # 本地模式：首次加载时走异步线程，避免 UI 卡死。
+        if getattr(self, "_result_loading_active", False):
+            self._result_waiting_for_elevation = True
         self._start_elevation_model_load(context)
     def _save_current_elevation_image(self):
         """导出当前右侧模型立面检验等级图，并把图片路径写入数据库。"""
@@ -1921,11 +1941,65 @@ class UpgradeSpecialInspectionResultPage(BasePage):
     def _forget_overlay_load_thread(self, thread: QThread) -> None:
         self._overlay_load_jobs = [job for job in self._overlay_load_jobs if job[0] is not thread]
 
+    def _show_result_progress(self, text: str) -> None:
+        base_text = (text or "正在加载结果").rstrip(".。 ")
+        self._result_progress_base_text = base_text
+        self._result_progress_tick = 0
+        progress = self._result_progress
+        if progress is None:
+            progress = QProgressDialog(f"{base_text}...", None, 0, 0, self)
+            progress.setWindowTitle("查看结果")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setCancelButton(None)
+            progress.setMinimumDuration(0)
+            progress.setAutoClose(False)
+            progress.setAutoReset(False)
+            self._result_progress = progress
+        else:
+            progress.setLabelText(f"{base_text}...")
+            progress.setRange(0, 0)
+        progress.show()
+        if not self._result_progress_timer.isActive():
+            self._result_progress_timer.start()
+        QApplication.processEvents()
+
+    def _update_result_progress_text(self) -> None:
+        if self._result_progress is None or not self._result_progress_base_text:
+            return
+        dot_count = (self._result_progress_tick % 3) + 1
+        self._result_progress.setLabelText(f"{self._result_progress_base_text}{'.' * dot_count}")
+        self._result_progress_tick += 1
+
+    def _close_result_progress(self) -> None:
+        if self._result_progress_timer.isActive():
+            self._result_progress_timer.stop()
+        if self._result_progress is not None:
+            try:
+                self._result_progress.close()
+            except Exception:
+                pass
+            self._result_progress = None
+        self._result_progress_base_text = ""
+        self._result_progress_tick = 0
+
     def _set_result_loading(self, loading: bool) -> None:
+        self._result_loading_active = bool(loading)
+        self._result_waiting_for_elevation = False
         if hasattr(self, "btn_report") and self.btn_report is not None:
             self.btn_report.setEnabled(not loading)
-        if loading and hasattr(self, "elevation_view"):
-            self.elevation_view._draw_message("正在加载特检结果...")
+        if loading:
+            self._show_result_progress("正在加载结果")
+            if hasattr(self, "elevation_view"):
+                self.elevation_view._draw_message("正在加载特检结果...")
+        else:
+            self._close_result_progress()
+
+    def _finish_result_loading_if_ready(self) -> None:
+        if not getattr(self, "_result_loading_active", False):
+            return
+        if getattr(self, "_result_waiting_for_elevation", False):
+            return
+        self._set_result_loading(False)
 
     def _start_result_data_load(self) -> None:
         self._result_load_token += 1
@@ -1954,14 +2028,14 @@ class UpgradeSpecialInspectionResultPage(BasePage):
     def _on_result_data_loaded(self, token: int, bundle: object, overlay: object) -> None:
         if int(token) != self._result_load_token:
             return
-        self._set_result_loading(False)
         self._apply_result_data(bundle if isinstance(bundle, dict) else {}, overlay if isinstance(overlay, dict) else {})
+        self._finish_result_loading_if_ready()
 
     def _on_result_data_load_failed(self, token: int, message: str) -> None:
         if int(token) != self._result_load_token:
             return
-        self._set_result_loading(False)
         self._apply_result_data({}, {})
+        self._set_result_loading(False)
         QMessageBox.warning(self, "加载失败", message or "特检结果加载失败。")
 
     def _start_overlay_load(self, display_year: str) -> None:
@@ -2142,7 +2216,9 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._fill_node_summary(context)
         self._apply_row_limit()
 
-        self._refresh_elevation_view()
+        if hasattr(self, "elevation_view"):
+            self.elevation_view._draw_message("正在加载立面图...")
+        QTimer.singleShot(0, self._refresh_elevation_view)
         # 页面浏览阶段不再批量导出检验等级图；报告图片统一在“生成特检策略报告”按钮中处理。
 
     @staticmethod
@@ -2281,7 +2357,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             self._close_report_progress()
 
     def _show_report_progress(self, text: str) -> None:
-        self._report_progress_base_text = (text or "正在处理").rstrip(".。 ")
+        self._report_progress_base_text = "正在生成报告"
         self._report_progress_tick = 0
         message = f"{self._report_progress_base_text}..."
         progress = self._report_progress
@@ -2306,10 +2382,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         progress = self._report_progress
         if progress is None:
             return
-        maximum = max(1, int(maximum))
-        value = max(0, min(int(value), maximum))
-        progress.setRange(0, maximum)
-        progress.setValue(value)
+        progress.setRange(0, 0)
 
     def _update_report_progress_text(self) -> None:
         if self._report_progress is None or not self._report_progress_base_text:

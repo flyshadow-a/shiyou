@@ -14,6 +14,7 @@ from sqlalchemy.orm import joinedload, sessionmaker
 from .config import AppSettings, load_settings
 from .database import Base, build_engine
 from .document_code_parser import parse_document_code_from_name
+from .storage_share import ensure_storage_share_connected
 from .models import (
     AuthRole,
     DocumentCategory,
@@ -92,7 +93,9 @@ class FileMetadataService:
         )
         self._ensure_schema()
         self.storage_root = Path(settings.storage_root)
-        self.storage_root.mkdir(parents=True, exist_ok=True)
+        ok, message = ensure_storage_share_connected(settings)
+        if not ok:
+            print(f"[FileMetadataService] storage share auto-connect failed: {message}")
 
     @classmethod
     def from_config(cls, config_path: str | None = None) -> "FileMetadataService":

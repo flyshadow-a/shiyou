@@ -41,6 +41,22 @@ from services.file_db_adapter import (
 from .construction_docs_widget import ConstructionDocsWidget
 
 
+def _file_access_error(path: str) -> str:
+    text = str(path or "").strip()
+    if not text:
+        return "文件路径为空。"
+    try:
+        os.stat(text)
+        return ""
+    except FileNotFoundError:
+        return f"文件不存在：\n{text}"
+    except OSError as exc:
+        return (
+            f"无法访问文件：\n{text}\n\n{exc}\n\n"
+            "如果这是服务器共享目录，请检查客户端是否已登录共享目录、账号密码和共享权限。"
+        )
+
+
 class _ModelFilesDbLoadWorker(QObject):
     finished = pyqtSignal(int, str, str, object)
     failed = pyqtSignal(int, str, str)
@@ -209,6 +225,9 @@ class _ModelFileDownloadWorker(QObject):
                 filename = str(task.get("filename") or os.path.basename(src_path)).strip()
                 self.progress.emit(index - 1, f"正在下载 {index}/{total}：{filename}")
                 try:
+                    access_error = _file_access_error(src_path)
+                    if access_error:
+                        raise FileNotFoundError(access_error)
                     if not src_path or not os.path.exists(src_path):
                         raise FileNotFoundError(src_path or "文件不存在")
                     target_path = str(task.get("target_path") or "").strip()
@@ -1349,8 +1368,9 @@ class ModelFilesDocsWidget(QWidget):
         if row < 0 or row >= len(self.current_table_rows):
             return
         path = str(self.current_table_rows[row].get("file_path") or "")
-        if not path or not os.path.exists(path):
-            QMessageBox.information(self, "\u63d0\u793a", "\u8be5\u884c\u5c1a\u672a\u4e0a\u4f20\u6587\u4ef6\uff0c\u65e0\u6cd5\u4e0b\u8f7d\u3002")
+        access_error = _file_access_error(path)
+        if access_error:
+            QMessageBox.information(self, "\u63d0\u793a", access_error)
             return
 
         default_name = sanitize_download_filename(os.path.basename(path))
@@ -1799,15 +1819,23 @@ class ModelFilesDocsWidget(QWidget):
 
     def _handle_model_doc_download(self, selected: List[Dict[str, Any]], _records: List[Dict[str, Any]]):
         available: list[tuple[str, str]] = []
+        missing_messages: list[str] = []
         missing = 0
         for rec in selected:
             path = rec.get("path") or ""
-            if path and os.path.exists(path):
+            access_error = _file_access_error(path)
+            if not access_error:
                 available.append((path, rec.get("filename") or os.path.basename(path)))
             else:
                 missing += 1
+                if len(missing_messages) < 3:
+                    missing_messages.append(access_error)
 
         if not available:
+            detail = "\n\n".join(message for message in missing_messages if message)
+            if detail:
+                QMessageBox.information(self, "提示", f"未找到可下载的文件。\n\n{detail}")
+                return
             QMessageBox.information(self, "提示", "未找到可下载的文件。")
             return
 

@@ -72,8 +72,8 @@ def _project_root_dir() -> Path:
 
 
 def _use_fastapi_backend() -> bool:
-    flag = os.environ.get("SHIYOU_USE_FASTAPI", "1").strip().lower()
-    return flag not in {"0", "false", "no", "off", "local"}
+    flag = os.environ.get("SHIYOU_USE_FASTAPI", "0").strip().lower()
+    return flag in {"1", "true", "yes", "on", "remote", "fastapi"}
 
 
 def _api_base_url() -> str:
@@ -957,6 +957,10 @@ class NewSpecialInspectionPage(BasePage):
         self.collapse_files: List[str] = []
         self.fatigue_result_files: List[str] = []
         self.fatigue_input_files: List[str] = []
+        self.model_file_rows: List[dict[str, Any]] = []
+        self.collapse_file_rows: List[dict[str, Any]] = []
+        self.fatigue_result_file_rows: List[dict[str, Any]] = []
+        self.fatigue_input_file_rows: List[dict[str, Any]] = []
         self._file_meta_by_path: dict[str, dict[str, Any]] = {}
         self._model_files_helper_widget: ModelFilesDocsWidget | None = None
         self.btn_update_risk: QPushButton | None = None
@@ -1041,6 +1045,10 @@ class NewSpecialInspectionPage(BasePage):
         self.collapse_files = []
         self.fatigue_result_files = []
         self.fatigue_input_files = []
+        self.model_file_rows = []
+        self.collapse_file_rows = []
+        self.fatigue_result_file_rows = []
+        self.fatigue_input_file_rows = []
         self._file_meta_by_path.clear()
         self._invalidate_rule_preview_cache()
         self._system_files_load_token += 1
@@ -1900,7 +1908,10 @@ class NewSpecialInspectionPage(BasePage):
         QMessageBox.information(self, "提取分析", "已从系统文件库提取并刷新分析结果文件。")
 
     def _on_extract_model_files(self):
-        self.model_files = self._db_fetch_file_records(self.CATEGORY_MODEL)
+        model_rows = self._db_fetch_file_rows(self.CATEGORY_MODEL)
+        self._remember_file_rows(model_rows)
+        self.model_files = self._runtime_paths_from_rows(model_rows, self.CATEGORY_MODEL)
+        self.model_file_rows = self._align_file_rows_to_paths(self.model_files, model_rows, self.CATEGORY_MODEL)
         self._invalidate_rule_preview_cache()
         self._start_rule_preview_preload()
         self._refresh_model_files_table()
@@ -2476,7 +2487,6 @@ class NewSpecialInspectionPage(BasePage):
         if is_file_db_configured():
             try:
                 default_rows = list_files_by_prefix(
-                    file_type_code=category,
                     module_code="model_files",
                     logical_path_prefix=self._default_model_logical_prefix(category, branch),
                     facility_code=(self.facility_code or "").strip() or None,
@@ -2909,6 +2919,87 @@ class NewSpecialInspectionPage(BasePage):
             if path:
                 self._remember_file_meta(path, row=row)
 
+    @staticmethod
+    def _file_path_key(path: str) -> str:
+        text = str(path or "").strip()
+        if not text:
+            return ""
+        return os.path.normcase(os.path.normpath(text))
+
+    def _display_row_from_meta(self, path: str) -> dict[str, Any]:
+        normalized = os.path.normpath(str(path or "").strip())
+        if not normalized:
+            return {}
+        meta = dict(self._file_meta_by_path.get(normalized) or {})
+        if not meta:
+            return {}
+        meta["storage_path"] = normalized
+        meta.setdefault("display_path", self._display_storage_path(normalized))
+        return meta
+
+    def _normalize_display_row(self, row: dict[str, Any], fallback_path: str = "") -> dict[str, Any]:
+        current = dict(row or {})
+        raw_path = (
+            current.get("storage_path")
+            or current.get("server_path")
+            or current.get("path")
+            or fallback_path
+            or ""
+        )
+        resolved_path = os.path.normpath(str(raw_path or "").strip())
+        if not resolved_path and current:
+            try:
+                resolved_path = os.path.normpath(self._resolve_db_storage_path(current))
+            except Exception:
+                resolved_path = ""
+        if resolved_path:
+            current["storage_path"] = resolved_path
+            current.setdefault("display_path", self._display_storage_path(resolved_path))
+        return current
+
+    def _align_file_rows_to_paths(
+            self,
+            paths: List[str],
+            rows: List[dict[str, Any]],
+            category: str,
+            branch: str | None = None,
+    ) -> List[dict[str, Any]]:
+        row_groups: dict[str, list[dict[str, Any]]] = {}
+        for row in rows or []:
+            current = self._normalize_display_row(row)
+            path = str(current.get("storage_path") or "").strip()
+            if not path or not self._is_runtime_supported_row(current, category, branch):
+                continue
+            row_groups.setdefault(self._file_path_key(path), []).append(current)
+
+        aligned: List[dict[str, Any]] = []
+        for path in paths or []:
+            normalized = os.path.normpath(str(path or "").strip())
+            group = row_groups.get(self._file_path_key(normalized)) or []
+            if group:
+                aligned.append(group.pop(0))
+                continue
+            aligned.append(self._display_row_from_meta(normalized))
+        return aligned
+
+    def _upsert_file_path_and_row(
+            self,
+            paths: List[str],
+            rows: List[dict[str, Any]],
+            path: str,
+            row: dict[str, Any] | None = None,
+    ) -> None:
+        normalized = os.path.normpath(str(path or "").strip())
+        if not normalized:
+            return
+        if normalized in paths:
+            index = paths.index(normalized)
+            paths.pop(index)
+            if index < len(rows):
+                rows.pop(index)
+        paths.insert(0, normalized)
+        rows.insert(0, self._normalize_display_row(row or self._display_row_from_meta(normalized), normalized))
+
     def _file_meta(self, path: str) -> dict[str, Any]:
         normalized = os.path.normpath(str(path or "").strip())
         return dict(self._file_meta_by_path.get(normalized) or {})
@@ -2974,8 +3065,6 @@ class NewSpecialInspectionPage(BasePage):
         客户端本机通常无法 os.path.exists，但它仍然是服务端计算可用路径，
         因此不能因为客户端不可访问而从表格和 input_overrides 中过滤掉。
         """
-        if not _use_fastapi_backend():
-            return False
         text = str(path or "").strip()
         if not text:
             return False
@@ -3005,8 +3094,8 @@ class NewSpecialInspectionPage(BasePage):
             ordered.append(path)
         return sorted(ordered, key=self._path_sort_key)
 
-    def _path_modified_text(self, path: str) -> str:
-        meta = self._file_meta(path)
+    def _path_modified_text(self, path: str, meta: dict[str, Any] | None = None) -> str:
+        meta = dict(meta or self._file_meta(path))
         modified_at = meta.get("modified_at")
         if hasattr(modified_at, "strftime"):
             return modified_at.strftime("%Y/%m/%d")
@@ -3049,19 +3138,26 @@ class NewSpecialInspectionPage(BasePage):
         branch = self._runtime_fatigue_branch_for_name(filename, logical_path)
         return branch or None
 
-    def _file_display_payload(self, path: str, *, category: str, branch: str | None = None) -> dict[str, str]:
-        meta = self._file_meta(path)
+    def _file_display_payload(
+            self,
+            path: str,
+            *,
+            category: str,
+            branch: str | None = None,
+            row_meta: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
+        meta = dict(row_meta or self._file_meta(path))
         return {
             "category": str(meta.get("category_name") or self._default_category_label(category, branch)).strip(),
             "work_condition": str(meta.get("work_condition") or "").strip(),
             "filename": str(meta.get("original_name") or os.path.basename(str(path or ""))).strip(),
             "format": str(meta.get("format_label") or self._path_format_label(path)).strip(),
-            "modified": self._path_modified_text(path),
+            "modified": self._path_modified_text(path, meta),
             "remark": str(meta.get("remark") or "").strip(),
         }
 
-    def _display_marks_for_path(self, path: str) -> list[str]:
-        meta = self._file_meta(path)
+    def _display_marks_for_path(self, path: str, row_meta: dict[str, Any] | None = None) -> list[str]:
+        meta = dict(row_meta or self._file_meta(path))
         marks: list[str] = []
         branch_label = str(meta.get("branch_label") or "").strip()
         format_label = str(meta.get("format_label") or "").strip()
@@ -3082,11 +3178,11 @@ class NewSpecialInspectionPage(BasePage):
             return primary
         return f"{primary}\n{' | '.join(marks)}"
 
-    def _friendly_tooltip(self, path: str) -> str:
+    def _friendly_tooltip(self, path: str, row_meta: dict[str, Any] | None = None) -> str:
         normalized = os.path.normpath(str(path or "").strip())
-        meta = self._file_meta(normalized)
+        meta = dict(row_meta or self._file_meta(normalized))
         payload = self._file_display_payload(normalized, category=self._infer_category_from_meta(meta),
-                                             branch=self._infer_branch_from_meta(meta))
+                                             branch=self._infer_branch_from_meta(meta), row_meta=meta)
         lines = [f"文件名：{payload['filename']}"]
         if payload["category"]:
             lines.append(f"文件类别：{payload['category']}")
@@ -3096,7 +3192,7 @@ class NewSpecialInspectionPage(BasePage):
             lines.append(f"文件格式：{payload['format']}")
         if payload["modified"]:
             lines.append(f"修改时间：{payload['modified']}")
-        marks = self._display_marks_for_path(normalized)
+        marks = self._display_marks_for_path(normalized, meta)
         display_path = str(meta.get("display_path") or normalized).strip()
         logical_path = str(meta.get("logical_path") or "").replace("\\", "/").strip().strip("/")
         remark = str(meta.get("remark") or "").strip()
@@ -3506,7 +3602,9 @@ class NewSpecialInspectionPage(BasePage):
 
         for row in rows or []:
             path = os.path.normpath(str(row.get("storage_path") or "").strip())
-            if not path or path in seen or not os.path.exists(path):
+            if not path or path in seen:
+                continue
+            if not os.path.exists(path) and not self._is_remote_server_path_for_display(path):
                 continue
             if not self._is_runtime_supported_row(row, category, branch):
                 continue
@@ -3600,10 +3698,13 @@ class NewSpecialInspectionPage(BasePage):
 
         data = payload if isinstance(payload, dict) else {}
 
+        model_rows = list(data.get("model_rows") or [])
+        collapse_rows = list(data.get("collapse_rows") or [])
+        fatigue_rows = list(data.get("fatigue_rows") or [])
         rows = []
-        rows.extend(data.get("model_rows") or [])
-        rows.extend(data.get("collapse_rows") or [])
-        rows.extend(data.get("fatigue_rows") or [])
+        rows.extend(model_rows)
+        rows.extend(collapse_rows)
+        rows.extend(fatigue_rows)
         self._remember_file_rows(rows)
 
         self.model_files = list(data.get("model_files") or [])
@@ -3611,14 +3712,30 @@ class NewSpecialInspectionPage(BasePage):
 
         self.fatigue_result_files = list(data.get("fatigue_result_files") or [])
         self.fatigue_input_files = list(data.get("fatigue_input_files") or [])
+        self.model_file_rows = self._align_file_rows_to_paths(self.model_files, model_rows, self.CATEGORY_MODEL)
+        self.collapse_file_rows = self._align_file_rows_to_paths(
+            self.collapse_files,
+            collapse_rows,
+            self.CATEGORY_COLLAPSE,
+        )
+        self.fatigue_result_file_rows = self._align_file_rows_to_paths(
+            self.fatigue_result_files,
+            fatigue_rows,
+            self.CATEGORY_FATIGUE,
+            "result",
+        )
+        self.fatigue_input_file_rows = self._align_file_rows_to_paths(
+            self.fatigue_input_files,
+            fatigue_rows,
+            self.CATEGORY_FATIGUE,
+            "input",
+        )
         self._set_fatigue_groups_from_candidates(list(data.get("fatigue_files") or []))
 
         self._refresh_files_table()
         self._refresh_model_preview()
         self._invalidate_rule_preview_cache()
         self._start_rule_preview_preload()
-        self._refresh_files_table()
-        self._refresh_model_preview()
 
     def _on_system_files_load_failed(self, token: int, message: str) -> None:
         if int(token) != self._system_files_load_token:
@@ -3639,8 +3756,10 @@ class NewSpecialInspectionPage(BasePage):
             *,
             category: str,
             branch: str | None = None,
+            row_meta: dict[str, Any] | None = None,
     ) -> None:
-        payload = self._file_display_payload(path, category=category, branch=branch)
+        row_meta = self._normalize_display_row(row_meta or {}, path) if row_meta else None
+        payload = self._file_display_payload(path, category=category, branch=branch, row_meta=row_meta)
         values = [
             str(index),
             payload["category"],
@@ -3658,7 +3777,9 @@ class NewSpecialInspectionPage(BasePage):
                 item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             if col == 3:
-                item.setToolTip(self._friendly_tooltip(path))
+                item.setToolTip(self._friendly_tooltip(path, row_meta))
+            elif text:
+                item.setToolTip(text)
             table.setItem(row, col, item)
         table.setRowHeight(row, 40)
 
@@ -3688,8 +3809,9 @@ class NewSpecialInspectionPage(BasePage):
             paths: List[str],
             row_map: dict[int, int] | None,
             category: str,
-            branch: str | None = None,
             empty_hint: str,
+            rows: List[dict[str, Any]] | None = None,
+            branch: str | None = None,
     ) -> None:
         header_row = table.rowCount()
         table.insertRow(header_row)
@@ -3702,7 +3824,8 @@ class NewSpecialInspectionPage(BasePage):
         for i, path in enumerate(paths, start=1):
             row = table.rowCount()
             table.insertRow(row)
-            self._set_file_table_row(table, row, i, path, category=category, branch=branch)
+            row_meta = rows[i - 1] if rows is not None and i - 1 < len(rows) else None
+            self._set_file_table_row(table, row, i, path, category=category, branch=branch, row_meta=row_meta)
             if row_map is not None:
                 row_map[row] = i - 1
 
@@ -3731,6 +3854,7 @@ class NewSpecialInspectionPage(BasePage):
             row_map=self._model_row_map,
             category=self.CATEGORY_MODEL,
             empty_hint="暂无选择模型文件。",
+            rows=self.model_file_rows,
         )
 
         # 再放倒塌
@@ -3745,6 +3869,7 @@ class NewSpecialInspectionPage(BasePage):
             row_map=self._collapse_row_map,
             category=self.CATEGORY_COLLAPSE,
             empty_hint="暂无选择倒塌分析结果文件。",
+            rows=self.collapse_file_rows,
         )
 
         # 疲劳结果
@@ -3760,6 +3885,7 @@ class NewSpecialInspectionPage(BasePage):
             category=self.CATEGORY_FATIGUE,
             branch="result",
             empty_hint="暂无选择疲劳分析结果文件。",
+            rows=self.fatigue_result_file_rows,
         )
 
         # 疲劳输入
@@ -3775,6 +3901,7 @@ class NewSpecialInspectionPage(BasePage):
             category=self.CATEGORY_FATIGUE,
             branch="input",
             empty_hint="暂无选择疲劳分析输入文件。",
+            rows=self.fatigue_input_file_rows,
         )
 
         self._fit_table_height(self.files_table)
@@ -3808,7 +3935,7 @@ class NewSpecialInspectionPage(BasePage):
             format_label=self._path_format_label(fp),
             source_label="本地导入",
         )
-        self._append_unique_path(self.model_files, system_path)
+        self._upsert_file_path_and_row(self.model_files, self.model_file_rows, system_path)
         self._invalidate_rule_preview_cache()
         self._start_rule_preview_preload()
         self._refresh_model_files_table()
@@ -3841,6 +3968,8 @@ class NewSpecialInspectionPage(BasePage):
                     failed = True
                     continue
                 del self.model_files[idx]
+                if idx < len(self.model_file_rows):
+                    del self.model_file_rows[idx]
                 deleted_count += 1
 
         self._invalidate_rule_preview_cache()
@@ -3878,26 +4007,31 @@ class NewSpecialInspectionPage(BasePage):
             format_label=self._path_format_label(fp),
             source_label="本地导入",
         )
-        self._append_unique_path(self.collapse_files, system_path)
+        self._upsert_file_path_and_row(self.collapse_files, self.collapse_file_rows, system_path)
         self._refresh_files_table()
 
     def _on_del_collapse(self):
         selected = self.files_table.selectionModel().selectedRows()
-        if not selected:
+        indexes = sorted(
+            {self._collapse_row_map[idx.row()] for idx in selected if idx.row() in self._collapse_row_map},
+            reverse=True,
+        )
+        if not indexes:
             QMessageBox.warning(self, "提示", "请先在表格中点击选中要删除的倒塌文件行。")
             return
 
-        rows_to_delete = sorted([idx.row() for idx in selected], reverse=True)
         failed = False
         deleted_count = 0
-        for r in rows_to_delete:
-            if 1 <= r <= len(self.collapse_files):
-                path = self.collapse_files[r - 1]
+        for idx in indexes:
+            if 0 <= idx < len(self.collapse_files):
+                path = self.collapse_files[idx]
                 deleted = self._db_delete_file(path, self.CATEGORY_COLLAPSE)
                 if is_file_db_configured() and not deleted:
                     failed = True
                     continue
-                del self.collapse_files[r - 1]
+                del self.collapse_files[idx]
+                if idx < len(self.collapse_file_rows):
+                    del self.collapse_file_rows[idx]
                 deleted_count += 1
 
         self._refresh_files_table()
@@ -3944,7 +4078,8 @@ class NewSpecialInspectionPage(BasePage):
             format_label=self._path_format_label(fp),
             source_label="本地导入",
         )
-        self._append_unique_path(self._fatigue_target_list(branch), system_path)
+        target_rows = self.fatigue_input_file_rows if branch == "input" else self.fatigue_result_file_rows
+        self._upsert_file_path_and_row(self._fatigue_target_list(branch), target_rows, system_path)
         self._refresh_files_table()
         QMessageBox.information(self, "本地导入", f"文件已入系统库并显示：\n{system_path}")
 
@@ -3976,6 +4111,9 @@ class NewSpecialInspectionPage(BasePage):
                     failed = True
                     continue
                 del target_list[idx]
+                target_rows = self.fatigue_input_file_rows if branch == "input" else self.fatigue_result_file_rows
+                if idx < len(target_rows):
+                    del target_rows[idx]
                 deleted_count += 1
 
         self._refresh_files_table()

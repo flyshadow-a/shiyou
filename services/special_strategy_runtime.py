@@ -195,9 +195,22 @@ def _read_text_lines_with_fallback(file_path: str) -> list[str]:
         return file.readlines()
 
 
+def _path_exists(path: str | Path) -> bool:
+    try:
+        return Path(path).exists()
+    except (OSError, RuntimeError) as exc:
+        print("[special_strategy_runtime] file path unavailable:", path, exc)
+        return False
+
+
 def _read_seainp_water_depth(file_path: str) -> str:
     path = Path(str(file_path or "").strip())
-    if not path.exists() or not path.is_file():
+    if not _path_exists(path):
+        return ""
+    try:
+        if not path.is_file():
+            return ""
+    except (OSError, RuntimeError):
         return ""
 
     for raw_line in _read_text_lines_with_fallback(str(path)):
@@ -847,15 +860,26 @@ def _should_override_fatigue_groups(
     return result_count == input_count
 
 
-def resolve_current_model_inputs(facility_code: str, cfg: dict[str, Any]) -> dict[str, Any]:
+def resolve_current_model_input_records(
+    facility_code: str,
+    cfg: dict[str, Any],
+    *,
+    require_existing: bool = True,
+) -> dict[str, Any]:
     resolved = {
         "model": str(cfg["model"]),
         "clplog": [str(x) for x in cfg.get("clplog", [])],
         "ftglst": [str(x) for x in cfg.get("ftglst", [])],
         "ftginp": [str(x) for x in cfg.get("ftginp", [])],
     }
+    file_records: dict[str, list[dict[str, Any]]] = {
+        "model": [],
+        "collapse": [],
+        "fatigue_result": [],
+        "fatigue_input": [],
+    }
     if not is_file_db_configured():
-        return resolved
+        return {"inputs": resolved, "files": file_records}
 
     rows = list_files_by_prefix(
         module_code="model_files",
@@ -863,9 +887,10 @@ def resolve_current_model_inputs(facility_code: str, cfg: dict[str, Any]) -> dic
         facility_code=normalize_facility_code(facility_code),
     )
     if not rows:
-        return resolved
+        return {"inputs": resolved, "files": file_records}
 
     model_path = ""
+    model_row: dict[str, Any] | None = None
     collapse_rows: list[dict[str, Any]] = []
     ftglst_rows: list[dict[str, Any]] = []
     ftginp_rows: list[dict[str, Any]] = []
@@ -873,12 +898,15 @@ def resolve_current_model_inputs(facility_code: str, cfg: dict[str, Any]) -> dic
     for row in sorted(rows, key=_row_sort_key):
         logical_path = _normalize_logical_path(str(row.get("logical_path", "")))
         storage_path = resolve_storage_path(row)
-        if not storage_path or not Path(storage_path).exists():
+        if not storage_path:
+            continue
+        if require_existing and not _path_exists(storage_path):
             continue
         current_row = dict(row)
         current_row["storage_path"] = storage_path
         if _logical_has_segment(logical_path, "当前模型/结构模型") and _row_matches_runtime_file(current_row, "model") and not model_path:
             model_path = storage_path
+            model_row = current_row
         elif _logical_has_segment(logical_path, "当前模型/倒塌分析") and _row_matches_runtime_file(current_row, "clplog"):
             collapse_rows.append(current_row)
         elif (
@@ -896,12 +924,33 @@ def resolve_current_model_inputs(facility_code: str, cfg: dict[str, Any]) -> dic
 
     if model_path:
         resolved["model"] = model_path
+        if model_row:
+            file_records["model"] = [model_row]
     if collapse_rows:
-        resolved["clplog"] = [str(row["storage_path"]) for row in sorted(collapse_rows, key=_row_sort_key)]
+        sorted_collapse_rows = sorted(collapse_rows, key=_row_sort_key)
+        resolved["clplog"] = [str(row["storage_path"]) for row in sorted_collapse_rows]
+        file_records["collapse"] = sorted_collapse_rows
     if _should_override_fatigue_groups(resolved["ftglst"], resolved["ftginp"], ftglst_rows, ftginp_rows):
-        resolved["ftglst"] = [str(row["storage_path"]) for row in sorted(ftglst_rows, key=_row_sort_key)]
-        resolved["ftginp"] = [str(row["storage_path"]) for row in sorted(ftginp_rows, key=_row_sort_key)]
-    return resolved
+        sorted_ftglst_rows = sorted(ftglst_rows, key=_row_sort_key)
+        sorted_ftginp_rows = sorted(ftginp_rows, key=_row_sort_key)
+        resolved["ftglst"] = [str(row["storage_path"]) for row in sorted_ftglst_rows]
+        resolved["ftginp"] = [str(row["storage_path"]) for row in sorted_ftginp_rows]
+        file_records["fatigue_result"] = sorted_ftglst_rows
+        file_records["fatigue_input"] = sorted_ftginp_rows
+    return {"inputs": resolved, "files": file_records}
+
+
+def resolve_current_model_inputs(facility_code: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    payload = resolve_current_model_input_records(facility_code, cfg)
+    inputs = payload.get("inputs") if isinstance(payload, dict) else None
+    if isinstance(inputs, dict):
+        return inputs
+    return {
+        "model": str(cfg["model"]),
+        "clplog": [str(x) for x in cfg.get("clplog", [])],
+        "ftglst": [str(x) for x in cfg.get("ftglst", [])],
+        "ftginp": [str(x) for x in cfg.get("ftginp", [])],
+    }
 
 
 def merge_runtime_params(facility_code: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:

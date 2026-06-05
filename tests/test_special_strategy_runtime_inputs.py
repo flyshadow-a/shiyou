@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from services.special_strategy_runtime import resolve_current_model_inputs
+from services.special_strategy_runtime import resolve_current_model_input_records, resolve_current_model_inputs
 
 
 class SpecialStrategyRuntimeInputTests(unittest.TestCase):
@@ -55,12 +55,14 @@ class SpecialStrategyRuntimeInputTests(unittest.TestCase):
                     "original_name": "ftglst",
                     "storage_path": str(files["ftglst_b"]),
                     "work_condition": "4-2WJT",
+                    "remark": "second result",
                 },
                 {
                     "logical_path": "WC19-1D/当前模型/疲劳分析/结果/用户上传/疲劳分析结果文件",
                     "original_name": "ftglst",
                     "storage_path": str(files["ftglst_a"]),
                     "work_condition": "4-1WJT",
+                    "remark": "first result",
                 },
                 {
                     "logical_path": "WC19-1D/当前模型/疲劳分析/输入/用户上传/疲劳分析模型文件",
@@ -95,6 +97,15 @@ class SpecialStrategyRuntimeInputTests(unittest.TestCase):
                         "ftginp": [],
                     },
                 )
+                resolved_records = resolve_current_model_input_records(
+                    "WC19-1D",
+                    {
+                        "model": "",
+                        "clplog": [],
+                        "ftglst": [],
+                        "ftginp": [],
+                    },
+                )
 
             self.assertEqual(resolved["model"], str(files["model"]))
             self.assertEqual(resolved["clplog"], [str(files["clplog"])])
@@ -105,6 +116,18 @@ class SpecialStrategyRuntimeInputTests(unittest.TestCase):
             self.assertEqual(
                 resolved["ftginp"],
                 [str(files["ftginp_a"]), str(files["ftginp_b"])],
+            )
+            self.assertEqual(
+                [row.get("work_condition") for row in resolved_records["files"]["fatigue_result"]],
+                ["4-1WJT", "4-2WJT"],
+            )
+            self.assertEqual(
+                [row.get("remark") for row in resolved_records["files"]["fatigue_result"]],
+                ["first result", "second result"],
+            )
+            self.assertEqual(
+                [row.get("original_name") for row in resolved_records["files"]["fatigue_input"]],
+                ["ftginp.demo", "ftginp.demo"],
             )
 
 

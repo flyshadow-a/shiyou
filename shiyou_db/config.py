@@ -48,10 +48,20 @@ class DatabasePoolSettings:
 
 
 @dataclass(frozen=True)
+class StorageShareSettings:
+    auto_connect: bool = False
+    unc_path: str = ""
+    username: str = ""
+    password: str = ""
+    force_reconnect: bool = False
+
+
+@dataclass(frozen=True)
 class AppSettings:
     database: DatabaseSettings
     storage_root: str
     pool: DatabasePoolSettings = field(default_factory=DatabasePoolSettings)
+    storage_share: StorageShareSettings = field(default_factory=StorageShareSettings)
     echo_sql: bool = False
     enable_3d_preview: bool = True
 
@@ -87,6 +97,11 @@ def load_settings(config_path: str | None = None) -> AppSettings:
     pool_raw = raw.get("database_pool") or db.get("pool") or {}
 
     storage_root_raw = str(raw.get("storage_root") or DEFAULT_STORAGE_ROOT).strip()
+    share_raw = raw.get("storage_share") or {}
+    share_username = str(share_raw.get("username") or share_raw.get("user") or "").strip()
+    share_domain = str(share_raw.get("domain") or "").strip()
+    if share_domain and share_username and "\\" not in share_username and "@" not in share_username:
+        share_username = f"{share_domain}\\{share_username}"
 
     return AppSettings(
         database=DatabaseSettings(
@@ -104,6 +119,13 @@ def load_settings(config_path: str | None = None) -> AppSettings:
             pool_recycle=max(60, int(pool_raw.get("pool_recycle", 1800))),
             pool_timeout=max(1, int(pool_raw.get("pool_timeout", 30))),
             connect_timeout=max(1, int(pool_raw.get("connect_timeout", 10))),
+        ),
+        storage_share=StorageShareSettings(
+            auto_connect=bool(share_raw.get("auto_connect", False)),
+            unc_path=os.path.normpath(str(share_raw.get("unc_path") or storage_root_raw or "").strip()),
+            username=share_username,
+            password=str(share_raw.get("password") or "").strip(),
+            force_reconnect=bool(share_raw.get("force_reconnect", False)),
         ),
         echo_sql=bool(raw.get("echo_sql", False)),
         enable_3d_preview=bool(raw.get("enable_3d_preview", True)),

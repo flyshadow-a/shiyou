@@ -891,7 +891,12 @@ class ImportantHistoryDetailWidget(QWidget):
             summary_text=project.get("conclusion", ""),
             parent=self,
         )
-        if dialog.exec_() != QDialog.Accepted:
+        try:
+            result = self._exec_dialog(dialog)
+        except Exception as exc:
+            QMessageBox.warning(self, "编辑失败", f"打开编辑窗口失败：\n{exc}")
+            return
+        if result != QDialog.Accepted:
             return
         values = dialog.get_values()
         try:
@@ -906,6 +911,15 @@ class ImportantHistoryDetailWidget(QWidget):
             QMessageBox.warning(self, "保存失败", str(exc))
             return
         self._reload_current_folder(selected_id=int(project["id"]))
+
+    @staticmethod
+    def _exec_dialog(dialog: QDialog) -> int:
+        if not isinstance(dialog, QDialog):
+            raise TypeError(f"dialog is not a QDialog instance: {type(dialog)!r}")
+        exec_method = getattr(dialog, "exec", None)
+        if callable(exec_method):
+            return int(exec_method())
+        return int(dialog.exec_())
 
     def _delete_project(self):
         project = self._get_selected_project()

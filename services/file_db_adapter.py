@@ -124,6 +124,63 @@ def _safe_segment(text: str) -> str:
     return "".join(filtered).strip("._") or "default"
 
 
+def _storage_parts(text: str) -> list[str]:
+    return [
+        seg
+        for seg in str(text or "").replace("\\", "/").strip().strip("/").split("/")
+        if seg and seg not in (".", "..")
+    ]
+
+
+def _path_exists(path: str | Path) -> bool:
+    try:
+        return Path(path).exists()
+    except (OSError, RuntimeError):
+        return False
+
+
+def _path_is_dir(path: str | Path) -> bool:
+    try:
+        return Path(path).is_dir()
+    except (OSError, RuntimeError):
+        return False
+
+
+def _map_to_configured_storage_root(raw_path: str, storage_root: str) -> str:
+    if not raw_path or not storage_root:
+        return ""
+
+    raw_norm = os.path.normpath(os.path.expanduser(str(raw_path)))
+    root_norm = os.path.normpath(os.path.expanduser(str(storage_root)))
+    if raw_norm in ("", ".", "..") or root_norm in ("", ".", ".."):
+        return ""
+
+    try:
+        raw_abs = os.path.abspath(raw_norm)
+        root_abs = os.path.abspath(root_norm)
+        root_key = os.path.normcase(root_abs).rstrip("\\/")
+        raw_key = os.path.normcase(raw_abs)
+        if raw_key == root_key or raw_key.startswith(root_key + os.sep):
+            return os.path.normpath(raw_abs)
+    except Exception:
+        pass
+
+    root_parts = _storage_parts(root_norm)
+    if not root_parts:
+        return ""
+    marker = root_parts[-1]
+
+    parts = _storage_parts(raw_norm)
+
+    for index, part in enumerate(parts):
+        if part.casefold() != marker.casefold():
+            continue
+        rel_parts = parts[index + 1:]
+        return os.path.normpath(str(Path(root_norm, *rel_parts)))
+
+    return ""
+
+
 def resolve_storage_path(row: dict[str, Any], *, config_path: str | None = None) -> str:
     raw_storage = str(row.get("storage_path") or "").strip()
     raw_path = os.path.normpath(raw_storage) if raw_storage else ""
@@ -138,6 +195,10 @@ def resolve_storage_path(row: dict[str, Any], *, config_path: str | None = None)
         rel_candidate = Path(storage_root) / Path(*[seg for seg in raw_rel.split("/") if seg])
         return os.path.normpath(str(rel_candidate))
 
+    mapped_raw_path = _map_to_configured_storage_root(raw_path, storage_root)
+    if mapped_raw_path:
+        return mapped_raw_path
+
     # 兼容旧数据：stored_name 缺失时，尝试从原始路径里补一个文件名
     if not stored_name and raw_path:
         guessed_name = os.path.basename(raw_path)
@@ -146,7 +207,7 @@ def resolve_storage_path(row: dict[str, Any], *, config_path: str | None = None)
 
     # 缺关键字段时，只在原始路径真实存在的情况下返回它；否则返回空串
     if not storage_root or not module_code or not stored_name:
-        if raw_path and raw_path not in (".", "..") and os.path.exists(raw_path):
+        if raw_path and raw_path not in (".", "..") and _path_exists(raw_path):
             return raw_path
         return ""
 
@@ -155,7 +216,7 @@ def resolve_storage_path(row: dict[str, Any], *, config_path: str | None = None)
     base_dir = Path(storage_root) / safe_module / Path(*logical_segments)
 
     direct_candidate = base_dir / stored_name
-    if direct_candidate.exists():
+    if _path_exists(direct_candidate):
         return os.path.normpath(str(direct_candidate))
 
     date_candidates: list[str] = []
@@ -165,23 +226,23 @@ def resolve_storage_path(row: dict[str, Any], *, config_path: str | None = None)
 
     for day in date_candidates:
         candidate = base_dir / day / stored_name
-        if candidate.exists():
+        if _path_exists(candidate):
             return os.path.normpath(str(candidate))
 
-    if base_dir.is_dir():
+    if _path_is_dir(base_dir):
         try:
             for day_dir in base_dir.iterdir():
-                if not day_dir.is_dir():
+                if not _path_is_dir(day_dir):
                     continue
                 candidate = day_dir / stored_name
-                if candidate.exists():
+                if _path_exists(candidate):
                     return os.path.normpath(str(candidate))
         except Exception:
             pass
 
-    if raw_path and raw_path not in (".", "..") and os.path.exists(raw_path):
+    if raw_path and raw_path not in (".", "..") and _path_exists(raw_path):
         return raw_path
-    return ""
+    return os.path.normpath(str(direct_candidate))
 
 def list_files(
     *,
