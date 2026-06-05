@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import copy
+import csv
 import json
 import os
 import re
@@ -1342,6 +1344,220 @@ def _appendix_sources_from_config(cfg: dict[str, Any]) -> tuple[str, str, list[s
     return appendix_a_file, appendix_b_file, appendix_c_dirs
 
 
+
+
+@contextlib.contextmanager
+def _suppress_server_gui_dialogs(enabled: bool = True):
+    """
+    C/S 服务端运行时禁止任何本机 GUI 弹窗。
+
+    说明：
+    - 原 inspection_tool 在检测到 ManualBrace 缺失时可能会调用 tkinter / PyQt 的提示框；
+    - 在 FastAPI 服务端进程里弹窗会卡住服务端，客户端用户也看不到；
+    - 因此服务端只允许生成 manual_fill.csv，并把待补全项返回给客户端，绝不能等待本机 GUI 操作。
+    """
+    if not enabled:
+        yield
+        return
+
+    patches: list[tuple[object, str, object]] = []
+
+    def _patch(obj: object, name: str, value: object) -> None:
+        try:
+            old = getattr(obj, name)
+        except Exception:
+            return
+        try:
+            setattr(obj, name, value)
+            patches.append((obj, name, old))
+        except Exception:
+            pass
+
+    class _DummyTk:
+        def __init__(self, *args, **kwargs):
+            pass
+        def withdraw(self):
+            pass
+        def destroy(self):
+            pass
+        def mainloop(self):
+            pass
+        def attributes(self, *args, **kwargs):
+            pass
+        def protocol(self, *args, **kwargs):
+            pass
+        def title(self, *args, **kwargs):
+            pass
+        def geometry(self, *args, **kwargs):
+            pass
+        def resizable(self, *args, **kwargs):
+            pass
+        def update(self, *args, **kwargs):
+            pass
+        def update_idletasks(self, *args, **kwargs):
+            pass
+        def __getattr__(self, _name):
+            def _noop(*args, **kwargs):
+                return None
+            return _noop
+
+    try:
+        import builtins
+        _patch(builtins, "input", lambda *args, **kwargs: "")
+    except Exception:
+        pass
+
+    try:
+        import tkinter
+        _patch(tkinter, "Tk", _DummyTk)
+        _patch(tkinter, "Toplevel", _DummyTk)
+    except Exception:
+        pass
+
+    try:
+        from tkinter import messagebox, simpledialog
+        for name in ("showinfo", "showwarning", "showerror"):
+            _patch(messagebox, name, lambda *args, **kwargs: None)
+        for name in ("askyesno", "askokcancel", "askretrycancel"):
+            _patch(messagebox, name, lambda *args, **kwargs: False)
+        for name in ("askstring", "askinteger", "askfloat"):
+            _patch(simpledialog, name, lambda *args, **kwargs: "")
+    except Exception:
+        pass
+
+    try:
+        from PyQt5.QtWidgets import QMessageBox, QInputDialog, QDialog
+        _patch(QMessageBox, "information", staticmethod(lambda *args, **kwargs: QMessageBox.Ok))
+        _patch(QMessageBox, "warning", staticmethod(lambda *args, **kwargs: QMessageBox.Ok))
+        _patch(QMessageBox, "critical", staticmethod(lambda *args, **kwargs: QMessageBox.Ok))
+        _patch(QMessageBox, "question", staticmethod(lambda *args, **kwargs: QMessageBox.No))
+        _patch(QInputDialog, "getText", staticmethod(lambda *args, **kwargs: ("", False)))
+        _patch(QInputDialog, "getItem", staticmethod(lambda *args, **kwargs: ("", False)))
+        _patch(QInputDialog, "getInt", staticmethod(lambda *args, **kwargs: (0, False)))
+        _patch(QInputDialog, "getDouble", staticmethod(lambda *args, **kwargs: (0.0, False)))
+        _patch(QDialog, "exec_", lambda self, *args, **kwargs: QDialog.Rejected)
+        _patch(QDialog, "exec", lambda self, *args, **kwargs: QDialog.Rejected)
+    except Exception:
+        pass
+
+    try:
+        yield
+    finally:
+        for obj, name, old in reversed(patches):
+            try:
+                setattr(obj, name, old)
+            except Exception:
+                pass
+
+def _manual_fill_csv_path(paths: dict[str, Any]) -> Path:
+    """inspection_tool 发现未映射 JSLC/ManualBrace 时通常会在中间表旁生成 *.manual_fill.csv。"""
+    workbook = Path(str(paths.get("intermediate_workbook") or ""))
+    if not workbook.name:
+        return Path("")
+    return workbook.with_suffix(".manual_fill.csv")
+
+
+def _first_non_empty(row: dict[str, Any], keys: list[str]) -> str:
+    lowered = {str(k).strip().lower(): v for k, v in row.items()}
+    for key in keys:
+        if key in row and str(row.get(key) or "").strip():
+            return str(row.get(key) or "").strip()
+        low = key.lower()
+        if low in lowered and str(lowered.get(low) or "").strip():
+            return str(lowered.get(low) or "").strip()
+    return ""
+
+
+def _normalize_manual_fill_row_for_client(row: dict[str, Any]) -> dict[str, Any]:
+    """把服务端 manual_fill.csv 的任意列名统一成客户端弹窗可显示的字段，同时保留 raw。"""
+    raw = dict(row)
+    joint_i = _first_non_empty(raw, ["JointI", "Joint I", "Joint_i", "joint_i", "JSLCA", "JSLC_A", "I", "A"])
+    joint_j = _first_non_empty(raw, ["JointJ", "Joint J", "Joint_j", "joint_j", "JSLCB", "JSLC_B", "J", "B", "Joint"])
+    case = _first_non_empty(raw, ["Case", "case", "Source", "source", "File", "file", "ftginp", "文件"])
+    return {
+        "row_index": raw.get("row_index") or raw.get("index") or raw.get("序号"),
+        "joint_i": joint_i,
+        "joint_j": joint_j,
+        "case": case,
+        "manual_brace": _first_non_empty(raw, ["ManualBrace", "manual_brace"]),
+        "raw": raw,
+    }
+
+
+def _read_manual_fill_rows(csv_path: Path) -> list[dict[str, Any]]:
+    """读取 inspection_tool 输出的待补全 manual_fill.csv。"""
+    path = Path(csv_path)
+    if not path.exists() or not path.is_file():
+        return []
+
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk", "latin-1"):
+        try:
+            rows: list[dict[str, Any]] = []
+            with open(path, "r", encoding=encoding, newline="") as fp:
+                reader = csv.DictReader(fp)
+                fieldnames = list(reader.fieldnames or [])
+                for index, raw in enumerate(reader, start=1):
+                    item = {str(k or "").strip(): ("" if v is None else str(v).strip()) for k, v in dict(raw).items()}
+                    item.setdefault("row_index", index)
+                    item.setdefault("manual_fill_csv", str(path))
+                    item.setdefault("_fieldnames", fieldnames)
+                    rows.append(_normalize_manual_fill_row_for_client(item))
+            return rows
+        except UnicodeDecodeError:
+            continue
+        except Exception as exc:
+            print("[special_strategy_runtime] read manual fill csv failed:", path, exc)
+            return []
+    return []
+
+
+def _manual_fill_value(entry: dict[str, Any]) -> str:
+    raw = entry.get("raw") if isinstance(entry.get("raw"), dict) else {}
+    return str(
+        entry.get("manual_brace")
+        or entry.get("ManualBrace")
+        or raw.get("ManualBrace")
+        or raw.get("manual_brace")
+        or ""
+    ).strip()
+
+
+def _write_manual_fill_entries_csv(entries: list[dict[str, Any]], output_path: Path) -> Path | None:
+    """把客户端输入写成 inspection_tool 可复用的 manual_fill_workbook/csv。"""
+    valid_entries = [dict(e) for e in (entries or []) if _manual_fill_value(dict(e))]
+    if not valid_entries:
+        return None
+
+    rows: list[dict[str, Any]] = []
+    field_order: list[str] = []
+    for entry in valid_entries:
+        raw = entry.get("raw") if isinstance(entry.get("raw"), dict) else {}
+        current = dict(raw)
+        if not current:
+            current = {k: v for k, v in entry.items() if k != "raw"}
+        current["ManualBrace"] = _manual_fill_value(entry)
+        current["manual_brace"] = _manual_fill_value(entry)
+        rows.append(current)
+        for key in current.keys():
+            key_text = str(key)
+            if key_text.startswith("_"):
+                continue
+            if key_text not in field_order:
+                field_order.append(key_text)
+
+    for key in ("ManualBrace", "manual_brace"):
+        if key not in field_order:
+            field_order.append(key)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8-sig", newline="") as fp:
+        writer = csv.DictWriter(fp, fieldnames=field_order, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    return output_path
+
 def prepare_special_strategy_calculation(
     facility_code: str,
     *,
@@ -1357,8 +1573,9 @@ def prepare_special_strategy_calculation(
     _write_json(paths["params_json"], params)
 
     metadata_payload = default_metadata(code)
-    if metadata:
-        metadata_payload.update({k: v for k, v in metadata.items() if v not in ("", None)})
+    metadata_source = dict(metadata or {})
+    if metadata_source:
+        metadata_payload.update({k: v for k, v in metadata_source.items() if v not in ("", None)})
 
     base_inputs = (
         {
@@ -1374,22 +1591,49 @@ def prepare_special_strategy_calculation(
     config_xlsm = Path(str(cfg.get("config_xlsm") or cfg["template_xlsm"]))
 
     prepare_inspection_pipeline, _finalize_inspection_pipeline = _load_inspection_pipeline_funcs()
-    prepared_pipeline = prepare_inspection_pipeline(
-        template_xlsm=config_xlsm,
-        model_file=Path(str(resolved_inputs["model"])),
-        clplog_file=[Path(str(x)) for x in resolved_inputs["clplog"]],
-        ftglst_file=[Path(str(x)) for x in resolved_inputs["ftglst"]],
-        out_xlsx=paths["intermediate_workbook"],
-        policy_mode=str(cfg.get("policy", "strict")),
-        seed=int(cfg.get("seed", 42)),
-        params_json=paths["params_json"],
-        ftginp_files=[Path(str(x)) for x in resolved_inputs["ftginp"]],
-        manual_fill_workbook=(str(cfg.get("manual_fill_workbook") or "").strip() or None),
-        interactive_manual_fill=bool(cfg.get("interactive_manual_fill", False)),
-        enable_topology_inference=bool(cfg.get("enable_topology_inference", False)),
+    manual_fill_entries = metadata_source.get("manual_fill_entries") or []
+    manual_fill_csv = _write_manual_fill_entries_csv(
+        list(manual_fill_entries) if isinstance(manual_fill_entries, list) else [],
+        Path(str(paths["root"])) / "client_manual_fill.csv",
+    )
+    manual_fill_workbook = (
+        str(manual_fill_csv)
+        if manual_fill_csv is not None
+        else (str(cfg.get("manual_fill_workbook") or "").strip() or None)
     )
 
+    # C/S 模式下，服务端不能弹 GUI。客户端已经在 /manual-fill/check 后完成输入，
+    # 因此 metadata.disable_server_gui=True 时强制关闭服务端交互窗口。
+    disable_server_gui = bool(
+        metadata_source.get("disable_server_gui")
+        or metadata_source.get("server_mode")
+        or manual_fill_csv is not None
+    )
+    interactive_manual_fill = bool(cfg.get("interactive_manual_fill", False)) and not disable_server_gui
+
+    suppress_server_gui = bool(disable_server_gui or metadata_source.get("manual_fill_check_only"))
+    if suppress_server_gui:
+        print("[special_strategy_runtime] server GUI suppressed for ManualBrace flow")
+
+    with _suppress_server_gui_dialogs(suppress_server_gui):
+        prepared_pipeline = prepare_inspection_pipeline(
+            template_xlsm=config_xlsm,
+            model_file=Path(str(resolved_inputs["model"])).resolve(),
+            clplog_file=[Path(str(x)).resolve() for x in resolved_inputs["clplog"]],
+            ftglst_file=[Path(str(x)).resolve() for x in resolved_inputs["ftglst"]],
+            out_xlsx=paths["intermediate_workbook"],
+            policy_mode=str(cfg.get("policy", "strict")),
+            seed=int(cfg.get("seed", 42)),
+            params_json=paths["params_json"],
+            ftginp_files=[Path(str(x)).resolve() for x in resolved_inputs["ftginp"]],
+            manual_fill_workbook=manual_fill_workbook,
+            interactive_manual_fill=interactive_manual_fill,
+            enable_topology_inference=bool(cfg.get("enable_topology_inference", False)),
+        )
+
     config_path = _common_config_path()
+    generated_manual_fill_csv = _manual_fill_csv_path(paths)
+    manual_fill_rows = _read_manual_fill_rows(generated_manual_fill_csv)
     return {
         "facility_code": code,
         "cfg": cfg,
@@ -1400,8 +1644,37 @@ def prepare_special_strategy_calculation(
         "config_path": str(config_path),
         "artifact_stamp": run_stamp,
         "prepared_pipeline": prepared_pipeline,
+        "manual_fill_csv": str(generated_manual_fill_csv) if generated_manual_fill_csv else "",
+        "manual_fill_required": bool(manual_fill_rows),
+        "manual_fill_rows": manual_fill_rows,
     }
 
+
+
+def check_special_strategy_manual_fill_rows(
+    facility_code: str,
+    *,
+    param_overrides: dict[str, Any] | None = None,
+    input_overrides: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    C/S 客户端在真正运行 /api/strategy/run 之前调用。
+
+    这里只做一次无 GUI 的 prepare，用来生成并读取 manual_fill.csv，
+    返回需要客户端手工补充的 ManualBrace 行；不落库、不生成最终结果。
+    """
+    metadata_payload = dict(metadata or {})
+    metadata_payload["server_mode"] = True
+    metadata_payload["disable_server_gui"] = True
+    prepared = prepare_special_strategy_calculation(
+        facility_code,
+        param_overrides=param_overrides,
+        input_overrides=input_overrides,
+        metadata=metadata_payload,
+    )
+    rows = prepared.get("manual_fill_rows") if isinstance(prepared, dict) else []
+    return list(rows or [])
 
 def finalize_special_strategy_calculation(
     prepared_calculation: dict[str, Any],
@@ -1573,6 +1846,8 @@ def generate_special_strategy_report(
     run_id: int | None = None,
     metadata: dict[str, Any] | None = None,
     output_path: str | Path | None = None,
+    generate_pdf: bool = True,
+    pdf_timeout_seconds: int = 300,
 ) -> Path:
     code = normalize_facility_code(facility_code)
     run_payload = load_strategy_run_by_id(run_id) if run_id else None
@@ -1698,9 +1973,14 @@ def generate_special_strategy_report(
                     "附件文件已生成，但没有任何附件图片被插入报告。"
                     f" planned_files={planned_files}, stats={appendix_insert_stats}"
                 )
-        if not refresh_word_document_fields(report_output_path, pdf_output_path=pdf_output_path):
+        refresh_pdf_path = pdf_output_path if generate_pdf else None
+        if not refresh_word_document_fields(
+            report_output_path,
+            timeout_seconds=int(pdf_timeout_seconds or 300),
+            pdf_output_path=refresh_pdf_path,
+        ):
             raise RuntimeError(f"Word COM 自动更新目录并导出 PDF 失败：{report_output_path}")
-        if not pdf_output_path.exists() or pdf_output_path.stat().st_size <= 0:
+        if generate_pdf and (not pdf_output_path.exists() or pdf_output_path.stat().st_size <= 0):
             raise RuntimeError(f"PDF 导出后未生成有效文件：{pdf_output_path}")
 
     finally:

@@ -16,6 +16,7 @@ docstring_parser==0.17.0
 docutils==0.22.4
 et_xmlfile==2.0.0
 fonttools==4.61.1
+fastapi
 gitdb==4.0.12
 GitPython==3.1.46
 greenlet==3.4.0
@@ -57,6 +58,7 @@ pyvista==0.47.3
 pyvistaqt==0.11.4
 pywin32==311
 pywin32-ctypes==0.2.3
+pydantic
 QtPy==2.4.3
 requests==2.33.1
 rich==15.0.0
@@ -72,6 +74,7 @@ tqdm==4.67.3
 typing_extensions==4.15.0
 tzdata==2025.3
 urllib3==2.6.3
+uvicorn
 version-query==1.7.0
 vtk==9.6.1
 xlrd==2.0.2

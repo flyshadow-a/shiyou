@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 import os
 import json
+import time
 
 from PyQt5.QtCore import QObject, Qt, pyqtSignal, QThread, QTimer
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
@@ -22,6 +23,347 @@ from pages.sacs_elevation_risk_view import SacsElevationRiskView
 from services.special_strategy_inspection_overlay_service import load_strategy_inspection_overlay
 from services.special_strategy_image_service import build_strategy_image_path, save_strategy_image_record
 from services.special_strategy_state_db import list_strategy_risk_images
+
+
+# =========================
+# FastAPI 客户端调用封装
+# =========================
+# 默认启用远程 FastAPI 后端；如需临时恢复旧本地模式，启动客户端前设置：set SHIYOU_USE_FASTAPI=0
+try:
+    import requests
+except Exception:  # pragma: no cover
+    requests = None
+
+
+def _project_root_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _use_fastapi_backend() -> bool:
+    flag = os.environ.get("SHIYOU_USE_FASTAPI", "1").strip().lower()
+    return flag not in {"0", "false", "no", "off", "local"}
+
+
+def _api_base_url() -> str:
+    env_url = os.environ.get("SHIYOU_API_BASE_URL", "").strip()
+    if env_url:
+        return env_url.rstrip("/")
+
+    cfg_path = _project_root_dir() / "client_config.json"
+    if cfg_path.exists():
+        try:
+            payload = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+            value = str(payload.get("api_base_url") or "").strip()
+            if value:
+                return value.rstrip("/")
+        except Exception:
+            pass
+
+    return "http://127.0.0.1:8000"
+
+
+class _RemoteBackendError(RuntimeError):
+    pass
+
+
+class _RemoteBackendClient:
+    def __init__(self, base_url: str | None = None, timeout: int = 30):
+        if requests is None:
+            raise _RemoteBackendError("未安装 requests，无法调用 FastAPI 后端。请执行：pip install requests")
+        self.base_url = (base_url or _api_base_url()).rstrip("/")
+        self.timeout = int(timeout)
+
+    def _url(self, path: str) -> str:
+        return f"{self.base_url}{path}"
+
+    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            resp = requests.post(self._url(path), json=payload, timeout=self.timeout)
+        except Exception as exc:
+            raise _RemoteBackendError(f"无法连接 FastAPI 服务端：{self.base_url}\n{exc}") from exc
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"text": resp.text}
+        if resp.status_code >= 400:
+            raise _RemoteBackendError(f"后端接口调用失败：{path}\nHTTP {resp.status_code}\n{data}")
+        return data if isinstance(data, dict) else {"data": data}
+
+    def _get_json(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        try:
+            resp = requests.get(self._url(path), params=params or {}, timeout=self.timeout)
+        except Exception as exc:
+            raise _RemoteBackendError(f"无法连接 FastAPI 服务端：{self.base_url}\n{exc}") from exc
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"text": resp.text}
+        if resp.status_code >= 400:
+            raise _RemoteBackendError(f"后端接口调用失败：{path}\nHTTP {resp.status_code}\n{data}")
+        return data if isinstance(data, dict) else {"data": data}
+
+    def _wait_task(self, task_path: str, task_id: str, *, interval: float = 1.0) -> dict[str, Any]:
+        while True:
+            task = self._get_json(f"{task_path}/{task_id}")
+            status = str(task.get("status") or "").lower()
+            if status in {"success", "failed", "error"}:
+                if status != "success":
+                    raise _RemoteBackendError(str(task.get("error") or task.get("message") or "服务端任务执行失败"))
+                result = task.get("result")
+                return result if isinstance(result, dict) else task
+            time.sleep(max(0.2, float(interval)))
+
+    def _download_file(self, path: str, local_output_path: str | Path) -> str:
+        output_path = Path(local_output_path).expanduser()
+        if not output_path.suffix:
+            output_path = output_path.with_suffix(".docx")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = output_path.with_name(output_path.name + ".download.tmp")
+
+        try:
+            resp = requests.get(
+                self._url(path),
+                stream=True,
+                timeout=max(self.timeout, 300),
+            )
+        except Exception as exc:
+            raise _RemoteBackendError(f"下载服务端报告失败：{self.base_url}{path}\n{exc}") from exc
+
+        try:
+            if resp.status_code >= 400:
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = {"text": resp.text}
+                raise _RemoteBackendError(f"下载服务端报告失败：HTTP {resp.status_code}\n{data}")
+
+            with open(temp_path, "wb") as fp:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fp.write(chunk)
+
+            temp_path.replace(output_path)
+            return str(output_path)
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+    def _download_binary(self, path: str, local_output_path: str | Path, *, params: dict[str, Any] | None = None) -> str:
+        output_path = Path(local_output_path).expanduser()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = output_path.with_name(output_path.name + ".download.tmp")
+
+        try:
+            resp = requests.get(
+                self._url(path),
+                params=params or {},
+                stream=True,
+                timeout=max(self.timeout, 300),
+            )
+        except Exception as exc:
+            raise _RemoteBackendError(f"下载服务端文件失败：{self.base_url}{path}\n{exc}") from exc
+
+        try:
+            if resp.status_code >= 400:
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = {"text": resp.text}
+                raise _RemoteBackendError(f"下载服务端文件失败：HTTP {resp.status_code}\n{data}")
+
+            with open(temp_path, "wb") as fp:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fp.write(chunk)
+
+            temp_path.replace(output_path)
+            return str(output_path)
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+    def _client_model_cache_dir(self, facility_code: str) -> Path:
+        root = _project_root_dir() / ".client_cache" / "model_files" / str(facility_code or "default_facility").strip()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def download_latest_model_file(self, facility_code: str) -> str:
+        cache_dir = self._client_model_cache_dir(facility_code)
+        return os.path.normpath(self._download_binary(
+            "/api/files/download/latest-model",
+            cache_dir / "sacinp_from_server",
+            params={"facility_code": str(facility_code or "").strip()},
+        ))
+
+    def load_result_bundle(self, facility_code: str, run_id: int | None = None) -> dict[str, Any] | None:
+        params = {"compact": "false"}
+        if run_id:
+            params["run_id"] = int(run_id)
+        return self._get_json(f"/api/strategy/result/{facility_code}", params=params)
+
+    def default_report_path(self, facility_code: str) -> str:
+        # 客户端保存对话框的默认名只用于展示；最终报告由服务端生成。
+        try:
+            local_service = SpecialStrategyResultService()
+            return local_service.default_report_path(facility_code)
+        except Exception:
+            return str(Path.cwd() / f"{facility_code}_特检策略报告.docx")
+
+    def export_images(
+            self,
+            *,
+            facility_code: str,
+            run_id: int | None,
+            mode: str = "risk",
+            show_level_ii: bool = False,
+    ) -> dict[str, Any]:
+        data = self._post_json(
+            "/api/images/export",
+            {
+                "facility_code": facility_code,
+                "run_id": run_id,
+                "mode": mode,
+                "show_level_ii": bool(show_level_ii),
+            },
+        )
+        task_id = str(data.get("task_id") or "").strip()
+        if task_id:
+            return self._wait_task("/api/images/tasks", task_id)
+        result = data.get("result")
+        return result if isinstance(result, dict) else data
+
+    def generate_report(
+            self,
+            *,
+            facility_code: str,
+            run_id: int | None,
+            metadata: dict[str, Any] | None = None,
+            output_path: str | None = None,
+    ) -> str:
+        """
+        C/S 分离部署版报告生成：
+        1）服务端生成 Word/PDF；
+        2）客户端下载到用户选择的本地路径。
+        """
+        local_output_path = str(output_path or "").strip()
+        if not local_output_path:
+            raise _RemoteBackendError("未选择客户端本地报告保存路径。")
+
+        data = self._post_json(
+            "/api/reports/generate",
+            {
+                "facility_code": facility_code,
+                "run_id": run_id,
+                "metadata": metadata or {},
+                "output_path": None,
+                "generate_pdf": True,
+                "pdf_timeout_seconds": 300,
+            },
+        )
+
+        task_id = str(data.get("task_id") or "").strip()
+        if not task_id:
+            result = data.get("result") if isinstance(data.get("result"), dict) else data
+            raise _RemoteBackendError(f"服务端未返回报告任务 task_id，返回内容：{result}")
+
+        result = self._wait_task("/api/reports/tasks", task_id)
+
+        server_report_path = str((result or {}).get("report_path") or "")
+        server_pdf_exists = bool((result or {}).get("pdf_exists"))
+        server_pdf_path = str((result or {}).get("pdf_path") or "")
+
+        print(
+            "[RemoteBackendClient] report generated on server:",
+            "task_id=", task_id,
+            "server_report_path=", server_report_path,
+            "server_pdf_exists=", server_pdf_exists,
+            "server_pdf_path=", server_pdf_path,
+            "download_to=", local_output_path,
+        )
+
+        downloaded_docx = self._download_file(
+            f"/api/reports/tasks/{task_id}/download?file_type=docx",
+            local_output_path,
+        )
+
+        if server_pdf_exists:
+            pdf_local_path = str(Path(local_output_path).with_suffix(".pdf"))
+            try:
+                downloaded_pdf = self._download_file(
+                    f"/api/reports/tasks/{task_id}/download?file_type=pdf",
+                    pdf_local_path,
+                )
+                print("[RemoteBackendClient] report pdf downloaded:", downloaded_pdf)
+            except Exception as exc:
+                print("[RemoteBackendClient] report pdf download failed:", exc)
+
+        print("[RemoteBackendClient] report downloaded:", downloaded_docx)
+        return downloaded_docx
+
+
+class _RemoteSpecialStrategyResultService:
+    def __init__(self):
+        self._api = _RemoteBackendClient()
+
+    def load_result_bundle(self, facility_code: str, run_id: int | None = None) -> dict[str, Any] | None:
+        try:
+            return self._api.load_result_bundle(facility_code, run_id)
+        except Exception as exc:
+            print("[RemoteSpecialStrategyResultService] load_result_bundle failed:", exc)
+            return None
+
+    def default_report_path(self, facility_code: str) -> str:
+        return self._api.default_report_path(facility_code)
+
+    def generate_report(
+        self,
+        facility_code: str,
+        *,
+        run_id: int | None = None,
+        metadata: dict[str, Any] | None = None,
+        output_path: str | None = None,
+    ) -> str:
+        return self._api.generate_report(
+            facility_code=facility_code,
+            run_id=run_id,
+            metadata=metadata,
+            output_path=output_path,
+        )
+
+
+class _RemoteImageExportWorker(QObject):
+    finished = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        facility_code: str,
+        run_id: int | None = None,
+        mode: str = "risk",
+        show_level_ii: bool = False,
+    ):
+        super().__init__()
+        self._facility_code = facility_code
+        self._run_id = run_id
+        self._mode = mode
+        self._show_level_ii = bool(show_level_ii)
+
+    def run(self) -> None:
+        try:
+            api = _RemoteBackendClient()
+            api.export_images(
+                facility_code=self._facility_code,
+                run_id=self._run_id,
+                mode=self._mode,
+                show_level_ii=self._show_level_ii,
+            )
+            self.finished.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 NODE_SUMMARY_DISPLAY_LABELS = ["当前", "+5年", "+10年", "+15年", "+20年", "+25年"]
 NODE_SUMMARY_CONTEXT_MAP = {
@@ -46,7 +388,10 @@ class _SpecialStrategyReportWorker(QObject):
 
     def run(self) -> None:
         try:
-            service = SpecialStrategyResultService()
+            if _use_fastapi_backend():
+                service = _RemoteSpecialStrategyResultService()
+            else:
+                service = SpecialStrategyResultService()
             report_path = service.generate_report(
                 self._facility_code,
                 run_id=self._run_id,
@@ -225,7 +570,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
     def __init__(self, facility_code: str, parent=None, run_id: int | None = None):
         self.facility_code = facility_code
         self.run_id = run_id
-        self._result_service = SpecialStrategyResultService()
+        self._result_service = _RemoteSpecialStrategyResultService() if _use_fastapi_backend() else SpecialStrategyResultService()
         self._year_mapper = NodeYearLabelMapper()
 
         # 这些状态必须先初始化
@@ -247,6 +592,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._export_view = None
         self._export_context = None
         self._export_key = None
+        self._remote_export_thread = None
+        self._remote_export_worker = None
         self._pending_report_after_risk_export = False
 
         # 生成报告相关状态：先导出检验等级图，再生成 Word/PDF 报告
@@ -272,6 +619,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._cached_risk_image_records = None
         self._cached_risk_latest_group_key = None
         self._is_refreshing_elevation = False
+        self._remote_elevation_model_path = ""
 
         self._build_ui()
         self._start_result_data_load()
@@ -1066,6 +1414,34 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             return True
         return False
 
+    @staticmethod
+    def _is_existing_file(path: str) -> bool:
+        text = str(path or "").strip()
+        return bool(text) and os.path.exists(text) and os.path.isfile(text)
+
+    def _download_latest_model_for_elevation(self, *, force: bool = False) -> str:
+        """C/S 模式下，结果页右侧立面图必须使用客户端下载缓存文件。"""
+        if not _use_fastapi_backend():
+            return ""
+        cached = os.path.normpath(str(getattr(self, "_remote_elevation_model_path", "") or ""))
+        if (not force) and self._is_existing_file(cached):
+            return cached
+        try:
+            path = _RemoteBackendClient().download_latest_model_file(self.facility_code)
+            path = os.path.normpath(str(path or "").strip())
+            if self._is_existing_file(path):
+                self._remote_elevation_model_path = path
+                print("[UpgradeSpecialInspectionResultPage] remote model downloaded for elevation:", path)
+                return path
+        except Exception as exc:
+            print("[UpgradeSpecialInspectionResultPage] download latest model for elevation failed:", exc)
+        return cached if self._is_existing_file(cached) else ""
+
+    def _model_override_for_elevation(self) -> str:
+        if _use_fastapi_backend():
+            return self._download_latest_model_for_elevation()
+        return ""
+
     def _refresh_elevation_view(self):
         if not hasattr(self, "elevation_view"):
             return
@@ -1075,10 +1451,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._is_refreshing_elevation = True
         try:
             bundle = self._result_bundle or {}
-            context = bundle.get("context") or {}
+            context = self._context_from_bundle(bundle)
             if not context:
-                self.elevation_view._draw_message("当前没有可用的特检结果")
-                return
+                context = self._context_from_overlay(getattr(self, "_overlay_bundle", {}) or {})
+            if not context:
+                # 结果接口暂时没有 context 时，仍允许用模型文件 + overlay 实时绘图；
+                # 这样不会因为服务端返回字段不完整导致右侧立面图空白。
+                context = {"workpoint_z": 10, "level_threshold": 2}
 
             # 当前页面需要支持“默认只看 III/IV，按钮切换是否显示 II”的交互能力，
             # 因此这里统一实时绘制，不再直接显示旧缓存图片。
@@ -1088,11 +1467,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 QApplication.setOverrideCursor(Qt.WaitCursor)
                 QApplication.processEvents()
 
+                model_override = self._model_override_for_elevation()
                 self.elevation_view.load_for_facility(
                     facility_code=self.facility_code,
                     context=context,
                     year_label=self.current_year,
                     row_name=self.row_combo.currentText().strip() if hasattr(self, "row_combo") else "XZ 前",
+                    model_path_override=model_override,
                 )
 
                 # 先同步立面下拉
@@ -1195,8 +1576,15 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         # 正在导出时不重复启动，避免多个离屏视图同时写文件。
         if self._export_timer.isActive():
             return
+        if self._remote_export_thread is not None and self._remote_export_thread.isRunning():
+            return
 
         self._batch_exported_keys.add(key)
+
+        # 远程 FastAPI 模式：图片在服务端导出，客户端只等待任务完成。
+        if _use_fastapi_backend():
+            self._start_remote_image_export()
+            return
 
         try:
             self._export_context = dict(context)
@@ -1206,7 +1594,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             self._export_view = SacsElevationRiskView()
             self._export_view.resize(900, 900)
             if hasattr(self._export_view, "set_show_level_ii"):
-                self._export_view.set_show_level_ii(bool(self._show_level_ii_in_view))
+                # 报告导出的风险图固定只显示 III/IV，不受页面“显示二级”按钮影响。
+                self._export_view.set_show_level_ii(False)
 
             self._export_view.clear_inspection_overlay()
             self._export_view.load_for_facility(
@@ -1214,6 +1603,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 context=self._export_context,
                 year_label=self.current_year,
                 row_name="XZ 前",
+                model_path_override=self._model_override_for_elevation(),
             )
             QApplication.processEvents()
 
@@ -1248,6 +1638,47 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             print("[UpgradeSpecialInspectionResultPage] schedule async risk image export failed:", exc)
             self._finish_async_export()
 
+    def _start_remote_image_export(self) -> None:
+        thread = QThread(self)
+        worker = _RemoteImageExportWorker(self.facility_code, self.run_id, mode="risk", show_level_ii=False)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_remote_image_export_finished)
+        worker.failed.connect(self._on_remote_image_export_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._on_remote_image_export_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        self._remote_export_thread = thread
+        self._remote_export_worker = worker
+        print("[UpgradeSpecialInspectionResultPage] start remote risk image export, show_level_ii=False")
+        thread.start()
+
+    def _on_remote_image_export_thread_finished(self) -> None:
+        self._remote_export_thread = None
+        self._remote_export_worker = None
+
+    def _on_remote_image_export_finished(self) -> None:
+        print("[UpgradeSpecialInspectionResultPage] remote risk image export finished")
+        self._finish_async_export()
+
+    def _on_remote_image_export_failed(self, message: str) -> None:
+        print("[UpgradeSpecialInspectionResultPage] remote risk image export failed:", message)
+        if self._export_key is not None:
+            try:
+                self._batch_exported_keys.discard(self._export_key)
+            except Exception:
+                pass
+        self._pending_report_after_risk_export = False
+        self._pending_report_output_path = ""
+        self._set_report_button_busy(False)
+        QMessageBox.warning(self, "导出检验等级图失败", f"服务端导出检验等级图失败：\n{message}")
+        self._finish_async_export()
+
     def _process_next_export_task(self):
         """每次只导出一张带标注图，导完一张就让界面继续响应。"""
         if self._export_index >= self._export_total:
@@ -1279,11 +1710,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 context=self._export_context,
                 year_label=year_label,
                 row_name=row_name,
+                model_path_override=self._model_override_for_elevation(),
             )
             if hasattr(self._export_view, "set_inspection_overlay"):
                 self._export_view.set_inspection_overlay(overlay)
             if hasattr(self._export_view, "set_show_level_ii"):
-                self._export_view.set_show_level_ii(bool(self._show_level_ii_in_view))
+                # 报告导出的风险图固定只显示 III/IV，不受页面“显示二级”按钮影响。
+                self._export_view.set_show_level_ii(False)
             QApplication.processEvents()
 
             image_path = build_strategy_image_path(
@@ -1305,7 +1738,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 year_label=year_label,
                 row_name=row_name,
                 image_path=saved_path,
-                remark="更新风险结果页异步导出模型立面检验等级图",
+                remark="更新风险结果页异步导出模型立面检验等级图（报告用，仅 III/IV）",
             )
 
             self._export_index += 1
@@ -1351,7 +1784,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._export_context = None
         self._export_key = None
 
-        print("[UpgradeSpecialInspectionResultPage] async risk image export finished")
+        print("[UpgradeSpecialInspectionResultPage] async/remote risk image export finished")
 
         if self._pending_report_after_risk_export:
             QTimer.singleShot(0, self._do_generate_report_after_risk_export)
@@ -1448,12 +1881,91 @@ class UpgradeSpecialInspectionResultPage(BasePage):
     def _load_result_data(self):
         self._start_result_data_load()
 
+    def _rows_from_bundle(self, bundle: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
+        for key in keys:
+            rows = bundle.get(key)
+            if isinstance(rows, list) and rows:
+                return [dict(row) for row in rows if isinstance(row, dict)]
+        data = bundle.get("data")
+        if isinstance(data, dict):
+            for key in keys:
+                rows = data.get(key)
+                if isinstance(rows, list) and rows:
+                    return [dict(row) for row in rows if isinstance(row, dict)]
+        return []
+
+    def _context_from_bundle(self, bundle: dict[str, Any]) -> dict[str, Any]:
+        context = bundle.get("context")
+        if isinstance(context, dict) and context:
+            return dict(context)
+        data = bundle.get("data")
+        if isinstance(data, dict):
+            context = data.get("context")
+            if isinstance(context, dict) and context:
+                return dict(context)
+        return {}
+
+    @staticmethod
+    def _flatten_overlay_items(overlay: dict[str, Any], key: str) -> list[dict[str, Any]]:
+        groups = overlay.get(key) if isinstance(overlay, dict) else {}
+        rows: list[dict[str, Any]] = []
+        if isinstance(groups, dict):
+            for value in groups.values():
+                if isinstance(value, list):
+                    rows.extend([dict(item) for item in value if isinstance(item, dict)])
+                elif isinstance(value, dict):
+                    rows.append(dict(value))
+        elif isinstance(groups, list):
+            rows.extend([dict(item) for item in groups if isinstance(item, dict)])
+        return rows
+
+    def _context_from_overlay(self, overlay: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(overlay, dict) or not overlay:
+            return {}
+        member_rows = self._flatten_overlay_items(overlay, "member_items_by_key")
+        node_rows = self._flatten_overlay_items(overlay, "node_items_by_joint")
+        context: dict[str, Any] = {
+            "workpoint_z": 10,
+            "level_threshold": 2,
+            "member_inspection_strategy_rows": member_rows,
+            "node_inspection_strategy_rows": node_rows,
+            "member_inspection_rows": member_rows,
+            "node_inspection_rows": node_rows,
+        }
+        return context if (member_rows or node_rows) else {"workpoint_z": 10, "level_threshold": 2}
+
+    def _rows_from_overlay(self, overlay: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+        if not isinstance(overlay, dict):
+            return []
+        if kind == "member":
+            rows = self._flatten_overlay_items(overlay, "member_items_by_key")
+            out = []
+            for row in rows:
+                item = dict(row)
+                if not item.get("risk_level") and item.get("inspect_level"):
+                    item["risk_level"] = item.get("inspect_level")
+                out.append(item)
+            return out
+        rows = self._flatten_overlay_items(overlay, "node_items_by_joint")
+        out = []
+        for row in rows:
+            item = dict(row)
+            if not item.get("joint_a") and item.get("joint_id"):
+                item["joint_a"] = item.get("joint_id")
+            if not item.get("joint_b") and item.get("brace"):
+                item["joint_b"] = item.get("brace")
+            if not item.get("weld_type") and item.get("joint_type"):
+                item["weld_type"] = item.get("joint_type")
+            if not item.get("risk_level") and item.get("inspect_level"):
+                item["risk_level"] = item.get("inspect_level")
+            out.append(item)
+        return out
+
     def _apply_result_data(self, bundle: dict, overlay: dict | None = None):
         self._result_bundle = bundle or {}
+        self._overlay_bundle = overlay or {}
 
         if not bundle:
-            self._set_detail_rows(self.table_comp, [], is_node=False)
-            self._set_detail_rows(self.table_node, [], is_node=True)
             self._clear_summary_table(self.summary_comp)
             self._clear_summary_table(self.summary_node)
             self._apply_row_limit()
@@ -1461,17 +1973,63 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 self.elevation_view._draw_message("当前没有可用的特检结果")
             return
 
-        context = bundle.get("context") or {}
+        context = self._context_from_bundle(bundle)
+        if not context:
+            context = self._context_from_overlay(self._overlay_bundle)
+            if context:
+                self._result_bundle["context"] = context
 
-        self._set_detail_rows(self.table_comp, bundle.get("member_risk_rows_full", []), is_node=False)
-        self._set_detail_rows(self.table_node, bundle.get("node_risk_rows_full", []), is_node=True)
+        member_rows = self._rows_from_bundle(
+            bundle,
+            "member_risk_rows_full",
+            "member_risk_rows",
+            "member_rows",
+            "member_inspection_strategy_rows",
+        )
+        node_rows = self._rows_from_bundle(
+            bundle,
+            "node_risk_rows_full",
+            "node_risk_rows",
+            "node_rows",
+            "node_inspection_strategy_rows",
+        )
+
+        if not member_rows:
+            member_rows = self._rows_from_overlay(self._overlay_bundle, "member")
+        if not node_rows:
+            node_rows = self._rows_from_overlay(self._overlay_bundle, "node")
+
+        print(
+            "[UpgradeSpecialInspectionResultPage] load result data:",
+            "facility=", self.facility_code,
+            "run_id=", self.run_id,
+            "member_rows=", len(member_rows),
+            "node_rows=", len(node_rows),
+            "context_keys=", len(context.keys()) if isinstance(context, dict) else 0,
+            "overlay_member=", len((self._overlay_bundle or {}).get("member_level_by_key") or {}),
+            "overlay_node=", len((self._overlay_bundle or {}).get("node_level_by_joint") or {}),
+        )
+
+        self._set_detail_rows(self.table_comp, member_rows, is_node=False)
+        self._set_detail_rows(self.table_node, node_rows, is_node=True)
         self._fill_component_summary(context)
         self._fill_node_summary(context)
         self._apply_row_limit()
 
-        self._overlay_bundle = overlay or {}
         self._refresh_elevation_view()
         # 页面浏览阶段不再批量导出检验等级图；报告图片统一在“生成特检策略报告”按钮中处理。
+
+    @staticmethod
+    def _row_get(row: dict[str, Any], *names: str) -> str:
+        for name in names:
+            if name in row and row.get(name) not in ("", None):
+                return str(row.get(name))
+        lowered = {str(k).lower(): v for k, v in row.items()}
+        for name in names:
+            value = lowered.get(str(name).lower())
+            if value not in ("", None):
+                return str(value)
+        return ""
 
     def _set_detail_rows(self, table: QTableWidget, rows: list[dict[str, str]], *, is_node: bool):
         start = self.HEADER_ROWS
@@ -1488,31 +2046,31 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             r = start + idx
             if not is_node:
                 vals = [
-                    row.get("joint_a", ""),
-                    row.get("joint_b", ""),
-                    row.get("member_type", ""),
-                    row.get("consequence_level", ""),
-                    row.get("a", ""),
-                    row.get("b", ""),
-                    row.get("rm", ""),
-                    row.get("vr", ""),
-                    row.get("pf", ""),
-                    row.get("collapse_prob_level", ""),
-                    row.get("risk_level", ""),
+                    self._row_get(row, "joint_a", "JointA", "A"),
+                    self._row_get(row, "joint_b", "JointB", "B"),
+                    self._row_get(row, "member_type", "MemberType"),
+                    self._row_get(row, "consequence_level", "失效后果等级"),
+                    self._row_get(row, "a", "A_const", "A"),
+                    self._row_get(row, "b", "B_const", "B"),
+                    self._row_get(row, "rm", "Rm", "倒塌分析载荷系数Rm"),
+                    self._row_get(row, "vr", "VR"),
+                    self._row_get(row, "pf", "Pf"),
+                    self._row_get(row, "collapse_prob_level", "失效概率等级"),
+                    self._row_get(row, "risk_level", "member_risk_level", "构件风险等级", "风险等级", "inspect_level", "检验等级"),
                 ]
             else:
                 vals = [
-                    row.get("joint_a", ""),
-                    row.get("joint_b", ""),
-                    row.get("weld_type", ""),
-                    row.get("consequence_level", ""),
-                    row.get("a", ""),
-                    row.get("b", ""),
-                    row.get("rm", ""),
-                    row.get("vr", ""),
-                    row.get("pf", ""),
-                    row.get("collapse_prob_level", ""),
-                    row.get("risk_level", ""),
+                    self._row_get(row, "joint_a", "JointA", "A"),
+                    self._row_get(row, "joint_b", "JointB", "B"),
+                    self._row_get(row, "weld_type", "WeldType"),
+                    self._row_get(row, "consequence_level", "失效后果等级"),
+                    self._row_get(row, "a", "A_const", "A"),
+                    self._row_get(row, "b", "B_const", "B"),
+                    self._row_get(row, "rm", "Rm", "倒塌分析载荷系数Rm"),
+                    self._row_get(row, "vr", "VR"),
+                    self._row_get(row, "pf", "Pf"),
+                    self._row_get(row, "collapse_prob_level", "失效概率等级"),
+                    self._row_get(row, "risk_level", "node_risk_level", "节点风险等级", "风险等级", "inspect_level", "检验等级"),
                 ]
             for c, value in enumerate(vals):
                 item = QTableWidgetItem(self._display_cell(value))
@@ -1695,7 +2253,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             QMessageBox.warning(self, "生成报告失败", "当前没有可用的特检策略结果，无法导出检验等级图。")
             return
 
-        if self._export_timer.isActive():
+        if self._export_timer.isActive() or (self._remote_export_thread is not None and self._remote_export_thread.isRunning()):
             QMessageBox.information(self, "提示", "检验等级图正在导出，请稍候。")
             return
 

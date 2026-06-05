@@ -1,9 +1,12 @@
 __pycache__/
 .pytest_cache/
 *.pyc
+.client_cache/
 .idea/
 patch_file.py
 AGENTS.md
+client_config.json
+server_config.json
 shiyou_db/db_config.json
 shiyou_db/shiyou_file_storage/
 .env
@@ -41,7 +44,13 @@ pages/output_special_strategy/*.temp
 pages/output_special_strategy/*.bak
 模型/
 data/preview_cache/
+server_outputs/
 
 WC19-1D*.pdf
 WC19-1D*.docx
 ReadPSIlist.xlsm
+*.runx
+sacinp.M1
+seainp.M1
+Jcninp.*
+psiinp.*

@@ -28,6 +28,7 @@ from .file_management_filter_search_bar import FileManagementFilterSearchBar
 from .file_management_ui_constants import FILE_MANAGEMENT_SIDEBAR_WIDTH
 from .file_path_bar import PathBreadcrumbBar
 from services.file_db_adapter import (
+    clear_file_list_cache,
     hard_delete_record,
     is_file_db_configured,
     list_rebuild_directories,
@@ -311,6 +312,16 @@ class ModelFilesDocsWidget(QWidget):
             self.row_db_records_by_path.clear()
         self.facility_code = new_code
         self._refresh_model_tree_if_needed(force=platform_changed)
+        if getattr(self, "current_path", None) and hasattr(self, "doc_man_widget"):
+            self._show_files_for_current_leaf()
+
+    def refresh_current_model_files(self, facility_code: str | None = None) -> None:
+        """Refresh records that may have been uploaded by another page."""
+        if facility_code is not None:
+            self.facility_code = str(facility_code or "").strip()
+        clear_file_list_cache()
+        self.row_paths_by_path.clear()
+        self.row_db_records_by_path.clear()
         if getattr(self, "current_path", None) and hasattr(self, "doc_man_widget"):
             self._show_files_for_current_leaf()
 
@@ -1857,7 +1868,7 @@ class ModelFilesDocsWidget(QWidget):
         node = self._get_node_by_path(parts)
         model_key = node.get("model_key") if node else ""
         alias_map = {
-            "static": ["结构模型", "静力"],
+            "static": ["结构模型", "静力", "静力/结果", "静力/结果/自动计算"],
             "seismic": ["地震分析", "地震"],
             "fatigue": ["疲劳分析", "疲劳"],
             "collapse": ["倒塌分析", "倒塌"],

@@ -14,7 +14,8 @@ import subprocess
 import time
 from typing import List, Optional, cast
 
-from PyQt5.QtCore import QEvent, QTimer, Qt, QUrl,QProcess
+from client_api.api_client import ApiClient
+from PyQt5.QtCore import QEvent, QTimer, Qt, QUrl, QProcess, QObject, QThread, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QFont, QFontMetrics, QMouseEvent
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -70,6 +71,86 @@ class ScrollSafeComboBox(QComboBox):
             super().wheelEvent(event)
             return
         event.ignore()
+
+
+class FeasibilityRunWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, facility_code: str, analysis_mode: str):
+        super().__init__()
+        self._facility_code = facility_code
+        self._analysis_mode = analysis_mode
+
+    def run(self):
+        try:
+            api = ApiClient()
+            task_id = api.run_feasibility(
+                facility_code=self._facility_code,
+                analysis_mode=self._analysis_mode,
+            )
+            task = api.wait_feasibility_task(task_id, interval=1.0)
+            if str(task.get("status") or "").lower() != "success":
+                raise RuntimeError(str(task.get("error") or task.get("message") or "服务端计算失败"))
+            result = task.get("result") or {}
+            if not isinstance(result, dict):
+                result = {}
+            self.finished.emit(result)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class FeasibilityExportFilesWorker(QObject):
+    finished = pyqtSignal(list)
+    failed = pyqtSignal(str)
+
+    def __init__(self, facility_code: str, analysis_mode: str, output_dir: str):
+        super().__init__()
+        self._facility_code = facility_code
+        self._analysis_mode = analysis_mode
+        self._output_dir = output_dir
+
+    def run(self):
+        try:
+            api = ApiClient()
+            files = api.export_feasibility_files_and_extract(
+                facility_code=self._facility_code,
+                analysis_mode=self._analysis_mode,
+                local_output_dir=self._output_dir,
+            )
+            self.finished.emit(list(files or []))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+
+class FeasibilityCreateModelWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, facility_code: str):
+        super().__init__()
+        self._facility_code = facility_code
+
+    def run(self):
+        try:
+            api = ApiClient()
+            task_id = api.create_feasibility_model(
+                facility_code=self._facility_code,
+                metadata={},
+            )
+            task = api.wait_feasibility_model_task(task_id, interval=1.0)
+
+            if str(task.get("status") or "").lower() != "success":
+                raise RuntimeError(str(task.get("error") or task.get("message") or "服务端创建新模型失败"))
+
+            result = task.get("result") or {}
+            if not isinstance(result, dict):
+                result = {}
+
+            self.finished.emit(result)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class FeasibilityAssessmentPage(BasePage):
@@ -156,6 +237,13 @@ class FeasibilityAssessmentPage(BasePage):
         self.current_exitcode_file = ""
 
         self.analysis_process = None
+
+        self._remote_analysis_thread = None
+        self._remote_analysis_worker = None
+        self._remote_export_thread = None
+        self._remote_export_worker = None
+        self._remote_create_model_thread = None
+        self._remote_create_model_worker = None
 
         # 三个输入表格统一保存状态：
         # 用户可以只填写井槽/立管/组块载荷中的任意一种或任意组合，
@@ -1429,6 +1517,13 @@ class FeasibilityAssessmentPage(BasePage):
 
     # ---------------- 业务按钮：占位实现（后续你定格式后再替换） ----------------
     def _on_create_model(self):
+        """服务端模式：创建新模型交给 FastAPI 服务端执行。
+
+        关键点：
+        1. PyQt 客户端不再直接调用 create_new_model_files()；
+        2. 客户端只提交创建任务并轮询任务状态；
+        3. 服务端从数据库文件记录和 D:/shiyou_file_storage 中读取原始模型，再生成 M1。
+        """
         try:
             if not getattr(self, "_input_data_saved", False):
                 QMessageBox.warning(
@@ -1438,71 +1533,123 @@ class FeasibilityAssessmentPage(BasePage):
                 )
                 return
 
-            if not getattr(self, "job_name", "").strip():
-                raise ValueError("job_name 为空，无法创建新模型")
+            facility_code = str(getattr(self, "facility_code", "") or getattr(self, "job_name", "") or "").strip()
+            if not facility_code:
+                raise ValueError("facility_code/job_name 为空，无法创建新模型")
 
-            if not getattr(self, "mysql_url", "").strip():
-                raise ValueError("MYSQL_URL 未配置，无法创建新模型")
+            if (
+                self._remote_create_model_thread is not None
+                and self._remote_create_model_thread.isRunning()
+            ):
+                QMessageBox.information(self, "提示", "当前已有创建新模型任务正在执行，请稍候。")
+                return
 
-            result = create_new_model_files(
-                mysql_url=self.mysql_url,
-                job_name=self.job_name,
-                overwrite_job=True,
-                generate_bat=True,      # 创建模型时同步复制 RUNX/PSIINP/JCNINP 并生成 bat
-                user_export_dir="",     # 创建阶段不再让用户选择导出目录；统一由“导出文件”按钮处理
-            )
+            self.btn_create.setEnabled(False)
+            self.btn_create.setText("服务端创建中...")
 
-            export_info = result.get("export", {}) or {}
+            self._remote_create_model_thread = QThread(self)
+            self._remote_create_model_worker = FeasibilityCreateModelWorker(facility_code)
 
-            self.current_model_dir = export_info.get("model_dir", "").strip() or get_job_runtime_dir(self.job_name)
-            self.current_runx_file = export_info.get("runx_file", "").strip()
-            if not self.current_runx_file:
-                self.current_runx_file = self._find_first_existing_file(
-                    self.current_model_dir,
-                    ["psiFACTOR.runx", "psifactor.runx"]
-                )
+            self._remote_create_model_worker.moveToThread(self._remote_create_model_thread)
+            self._remote_create_model_thread.started.connect(self._remote_create_model_worker.run)
+            self._remote_create_model_worker.finished.connect(self._on_remote_create_model_finished)
+            self._remote_create_model_worker.failed.connect(self._on_remote_create_model_failed)
 
-            self.current_bat_file = export_info.get("bat_file", "").strip()
-            self.current_psiinp_file = export_info.get("psiinp_file", "").strip()
-            self.current_jcninp_file = export_info.get("jcninp_file", "").strip()
+            self._remote_create_model_worker.finished.connect(self._remote_create_model_thread.quit)
+            self._remote_create_model_worker.failed.connect(self._remote_create_model_thread.quit)
+            self._remote_create_model_worker.finished.connect(self._remote_create_model_worker.deleteLater)
+            self._remote_create_model_worker.failed.connect(self._remote_create_model_worker.deleteLater)
+            self._remote_create_model_thread.finished.connect(self._on_remote_create_model_thread_finished)
+            self._remote_create_model_thread.finished.connect(self._remote_create_model_thread.deleteLater)
 
-            new_model_file = export_info.get("new_model_file", "").strip()
-            new_sea_file = export_info.get("new_sea_file", "").strip()
-
-            self._model_created_in_session = True
-            self._refresh_runtime_paths_from_disk()
-
-            msg_lines = ["创建新模型完成。"]
-            msg_lines.append("")
-            msg_lines.append("【系统内部运行目录】")
-            msg_lines.append(self.current_model_dir or "未找到运行目录")
-
-            if new_model_file:
-                msg_lines.append(f"新模型文件：{new_model_file}")
-            else:
-                msg_lines.append("新模型文件：未生成")
-
-            if new_sea_file:
-                msg_lines.append(f"新海况文件：{new_sea_file}")
-            else:
-                msg_lines.append("新海况文件：未生成")
-
-            if self.current_runx_file:
-                msg_lines.append(f"RUNX文件：{self.current_runx_file}")
-            if getattr(self, "current_psiinp_file", ""):
-                msg_lines.append(f"PSIINP文件：{self.current_psiinp_file}")
-            if getattr(self, "current_jcninp_file", ""):
-                msg_lines.append(f"JCNINP文件：{self.current_jcninp_file}")
-            if self.current_bat_file:
-                msg_lines.append(f"BAT文件：{self.current_bat_file}")
-
-            msg_lines.append("")
-            msg_lines.append("需要导出 M1 文件和计算结果时，请点击底部“导出文件”。")
-
-            QMessageBox.information(self, "创建完成", "\n".join(msg_lines))
+            print("[FeasibilityAssessmentPage] start remote create model:", facility_code)
+            self._remote_create_model_thread.start()
 
         except Exception as e:
+            try:
+                self.btn_create.setEnabled(True)
+                self.btn_create.setText("创建新模型")
+            except Exception:
+                pass
             QMessageBox.critical(self, "创建失败", f"创建新模型失败：\n{e}")
+
+    def _on_remote_create_model_thread_finished(self):
+        self._remote_create_model_thread = None
+        self._remote_create_model_worker = None
+
+    def _on_remote_create_model_finished(self, result: dict):
+        try:
+            self.btn_create.setEnabled(True)
+            self.btn_create.setText("创建新模型")
+        except Exception:
+            pass
+
+        if not isinstance(result, dict):
+            result = {}
+
+        export_info = result.get("export", {}) or {}
+
+        self.current_model_dir = str(export_info.get("model_dir") or result.get("work_dir") or "").strip() or get_job_runtime_dir(self.job_name)
+
+        self.current_runx_file = str(export_info.get("runx_file") or result.get("runx_path") or "").strip()
+        if not self.current_runx_file:
+            self.current_runx_file = self._find_first_existing_file(
+                self.current_model_dir,
+                ["psiFACTOR.runx", "psifactor.runx"]
+            )
+
+        self.current_bat_file = str(export_info.get("bat_file") or result.get("bat_path") or "").strip()
+        self.current_psiinp_file = str(export_info.get("psiinp_file") or result.get("psiinp_path") or "").strip()
+        self.current_jcninp_file = str(export_info.get("jcninp_file") or result.get("jcninp_path") or "").strip()
+
+        new_model_file = str(export_info.get("new_model_file") or result.get("new_model_file") or "").strip()
+        new_sea_file = str(export_info.get("new_sea_file") or result.get("new_sea_file") or "").strip()
+
+        self._model_created_in_session = True
+        self._last_analysis_mode = "rebuild"
+
+        try:
+            self._refresh_runtime_paths_from_disk()
+        except Exception as exc:
+            print("[FeasibilityAssessmentPage] refresh runtime paths after create failed:", exc)
+
+        msg_lines = ["服务端创建新模型完成。"]
+        msg_lines.append("")
+        msg_lines.append("【服务端运行目录】")
+        msg_lines.append(self.current_model_dir or "未找到运行目录")
+
+        if new_model_file:
+            msg_lines.append(f"新模型文件：{new_model_file}")
+        else:
+            msg_lines.append("新模型文件：未生成")
+
+        if new_sea_file:
+            msg_lines.append(f"新海况文件：{new_sea_file}")
+        else:
+            msg_lines.append("新海况文件：未生成")
+
+        if self.current_runx_file:
+            msg_lines.append(f"RUNX文件：{self.current_runx_file}")
+        if getattr(self, "current_psiinp_file", ""):
+            msg_lines.append(f"PSIINP文件：{self.current_psiinp_file}")
+        if getattr(self, "current_jcninp_file", ""):
+            msg_lines.append(f"JCNINP文件：{self.current_jcninp_file}")
+        if self.current_bat_file:
+            msg_lines.append(f"BAT文件：{self.current_bat_file}")
+
+        msg_lines.append("")
+        msg_lines.append("需要导出 M1 文件和计算结果时，请点击底部“导出文件”。")
+
+        QMessageBox.information(self, "创建完成", "\n".join(msg_lines))
+
+    def _on_remote_create_model_failed(self, error: str):
+        try:
+            self.btn_create.setEnabled(True)
+            self.btn_create.setText("创建新模型")
+        except Exception:
+            pass
+
+        QMessageBox.critical(self, "创建失败", f"服务端创建新模型失败：\n{error}")
 
     def _dump_table_block(self, title: str, table: QTableWidget, header_rows: int,
                           with_combo_cols: bool, combo_start_col: int) -> str:
@@ -1744,19 +1891,8 @@ class FeasibilityAssessmentPage(BasePage):
         return copied
 
     def _on_export_generated_files(self):
-        """用户手动选择目录后，导出 M1 文件和计算结果文件。"""
+        """服务端模式：服务端打包 M1/SEA/结果文件，客户端下载解压到用户选择目录。"""
         try:
-            files = self._collect_generated_export_files()
-            if not files:
-                QMessageBox.warning(
-                    self,
-                    "无可导出文件",
-                    "当前还没有找到可导出的 M1 文件或计算结果文件。\n\n"
-                    "如果需要导出新模型文件，请先点击“保存数据”->“创建新模型”；\n"
-                    "如果需要导出计算结果，请先点击“计算分析”。"
-                )
-                return
-
             default_dir = getattr(self, "_model_user_export_dir", "") or os.path.expanduser("~")
             user_export_dir = QFileDialog.getExistingDirectory(
                 self,
@@ -1767,29 +1903,37 @@ class FeasibilityAssessmentPage(BasePage):
             if not user_export_dir:
                 return
 
-            self._model_user_export_dir = os.path.normpath(str(user_export_dir or ""))
-            copied_files = self._copy_generated_files_to_user_dir(user_export_dir)
-
-            if not copied_files:
-                QMessageBox.warning(
-                    self,
-                    "导出失败",
-                    "没有成功复制任何文件，请检查目标目录权限。"
-                )
+            if self._remote_export_thread is not None and self._remote_export_thread.isRunning():
+                QMessageBox.information(self, "提示", "当前已有导出任务正在执行，请稍候。")
                 return
 
-            msg_lines = [
-                "导出完成。",
-                "",
-                "【导出目录】",
-                os.path.normpath(user_export_dir),
-                "",
-                "【已导出文件】",
-            ]
-            for path in copied_files:
-                msg_lines.append(f" - {path}")
+            self._model_user_export_dir = os.path.normpath(str(user_export_dir or ""))
 
-            QMessageBox.information(self, "导出完成", "\n".join(msg_lines))
+            analysis_mode = str(getattr(self, "_last_analysis_mode", "") or "auto").strip() or "auto"
+
+            thread = QThread(self)
+            worker = FeasibilityExportFilesWorker(
+                self.facility_code,
+                analysis_mode,
+                self._model_user_export_dir,
+            )
+            worker.moveToThread(thread)
+
+            thread.started.connect(worker.run)
+            worker.finished.connect(self._on_remote_export_finished)
+            worker.failed.connect(self._on_remote_export_failed)
+            worker.finished.connect(thread.quit)
+            worker.failed.connect(thread.quit)
+            worker.finished.connect(worker.deleteLater)
+            worker.failed.connect(worker.deleteLater)
+            thread.finished.connect(self._on_remote_export_thread_finished)
+            thread.finished.connect(thread.deleteLater)
+
+            self._remote_export_thread = thread
+            self._remote_export_worker = worker
+
+            print("[FeasibilityAssessmentPage] start remote export files:", self.facility_code)
+            thread.start()
 
         except Exception as e:
             QMessageBox.critical(
@@ -1797,6 +1941,31 @@ class FeasibilityAssessmentPage(BasePage):
                 "导出失败",
                 f"导出 M1 文件和结果文件失败：\n{e}"
             )
+
+    def _on_remote_export_thread_finished(self):
+        self._remote_export_thread = None
+        self._remote_export_worker = None
+
+    def _on_remote_export_finished(self, copied_files: list):
+        if not copied_files:
+            QMessageBox.warning(self, "导出失败", "没有成功下载任何文件，请检查服务端导出任务。")
+            return
+
+        msg_lines = [
+            "导出完成。",
+            "",
+            "【导出目录】",
+            os.path.normpath(getattr(self, "_model_user_export_dir", "") or ""),
+            "",
+            "【已导出文件】",
+        ]
+        for path in copied_files:
+            msg_lines.append(f" - {path}")
+
+        QMessageBox.information(self, "导出完成", "\n".join(msg_lines))
+
+    def _on_remote_export_failed(self, message: str):
+        QMessageBox.critical(self, "导出失败", f"服务端导出文件失败：\n{message}")
 
     def _rewrite_runx_for_current_analysis(self, runx_path: str, *, analysis_mode: str, runtime_bundle: dict) -> str:
         """根据当前计算对象修正 RUNX 中的模型/海况文件名。"""
@@ -2077,185 +2246,136 @@ class FeasibilityAssessmentPage(BasePage):
         check_once()
 
     def _on_run_analysis(self):
+        """服务端模式：计算分析交给 FastAPI 服务端执行。"""
+        if self._remote_analysis_thread is not None and self._remote_analysis_thread.isRunning():
+            QMessageBox.information(self, "提示", "当前已有计算任务正在运行。")
+            return
+
         try:
+            has_input_data = self._has_any_valid_input_data()
+            if has_input_data and not getattr(self, "_input_data_saved", False):
+                QMessageBox.warning(
+                    self,
+                    "请先保存数据",
+                    "检测到新增井槽、立管/电缆或组块载荷数据，请先点击“保存数据”。",
+                )
+                return
+
+            if has_input_data and not getattr(self, "_model_created_in_session", False):
+                QMessageBox.warning(
+                    self,
+                    "请先创建新模型",
+                    "新增数据已保存后，需要先点击“创建新模型”，再进行计算分析。",
+                )
+                return
+
             analysis_mode = "original" if self._should_calculate_original_model() else "rebuild"
             self._last_analysis_mode = analysis_mode
+        except Exception:
+            analysis_mode = "rebuild"
+            self._last_analysis_mode = analysis_mode
 
-            # 每次计算前都重新准备当前计算模型。
-            # - 三张表为空、未保存、未创建新模型：计算原始上传模型；
-            # - 否则：优先计算本次创建生成的 runtime/sacinp.M1；没有 M1 时回退原始上传模型。
+        self.btn_run.setEnabled(False)
+        self.btn_run.setText("服务端计算中...")
+
+        thread = QThread(self)
+        worker = FeasibilityRunWorker(self.facility_code, analysis_mode)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_remote_analysis_finished)
+        worker.failed.connect(self._on_remote_analysis_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._on_remote_analysis_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        self._remote_analysis_thread = thread
+        self._remote_analysis_worker = worker
+
+        print(
+            "[FeasibilityAssessmentPage] start remote feasibility analysis:",
+            self.facility_code,
+            analysis_mode,
+        )
+        thread.start()
+
+
+    def _on_remote_analysis_thread_finished(self):
+        self._remote_analysis_thread = None
+        self._remote_analysis_worker = None
+
+    def _refresh_open_model_files_pages(self) -> None:
+        try:
+            from services.file_db_adapter import clear_file_list_cache
+
+            clear_file_list_cache()
+        except Exception as exc:
+            print("[FeasibilityAssessmentPage] clear model file cache failed:", exc)
+
+        window = self.window()
+        candidates = []
+        seen = set()
+
+        page_map = getattr(window, "page_tab_map", None)
+        if isinstance(page_map, dict):
+            candidates.extend(page_map.values())
+
+        tab_widget = getattr(window, "tab_widget", None)
+        if tab_widget is not None:
             try:
-                if analysis_mode == "original":
-                    runtime_bundle = prepare_original_runtime_for_analysis(
-                        mysql_url=self.mysql_url,
-                        job_name=self.job_name,
-                    )
-                else:
-                    runtime_bundle = prepare_latest_rebuild_runtime_for_analysis(
-                        mysql_url=self.mysql_url,
-                        job_name=self.job_name,
-                    )
-                self.current_model_dir = str(runtime_bundle.get("model_dir") or "").strip() or get_job_runtime_dir(self.job_name)
-            except Exception as exc:
-                QMessageBox.warning(self, "计算模型准备失败", str(exc))
-                return
+                for index in range(tab_widget.count()):
+                    candidates.append(tab_widget.widget(index))
+            except Exception:
+                pass
 
-            self._refresh_runtime_paths_from_disk()
-
-            work_dir = getattr(self, "current_model_dir", "").strip() or self.model_files_root
-            if not work_dir or not os.path.isdir(work_dir):
-                QMessageBox.warning(self, "提示", "未找到模型运行目录，请先确认模型文件已上传。")
-                return
-
-            # 计算前再次从“当前模型/其他/用户上传/其他”复制必需辅助文件。
-            # RUNX 文件复制后会根据计算对象修正其中引用的模型/海况文件名。
-            support_files = stage_support_files_for_job(self.job_name, require_all=True)
-            runx_path = support_files.get("runx", "") or getattr(self, "current_runx_file", "").strip()
-            if runx_path:
+        for widget in candidates:
+            if widget is None or id(widget) in seen:
+                continue
+            seen.add(id(widget))
+            docs_widget = getattr(widget, "docs_widget", None)
+            refresh = getattr(docs_widget, "refresh_current_model_files", None)
+            if callable(refresh):
                 try:
-                    runx_path = self._rewrite_runx_for_current_analysis(
-                        runx_path,
-                        analysis_mode=analysis_mode,
-                        runtime_bundle=runtime_bundle,
-                    )
+                    refresh(self.facility_code)
                 except Exception as exc:
-                    QMessageBox.warning(self, "RUNX 文件修正失败", str(exc))
-                    return
-            self.current_runx_file = runx_path
+                    print("[FeasibilityAssessmentPage] refresh model files page failed:", exc)
 
-            bat_path = ensure_analysis_bat(
-                work_dir=work_dir,
-                runx_path=runx_path,
-                psiinp_path=support_files.get("psiinp", "") or os.path.join(work_dir, "psiinp.19-1d"),
-                jcninp_path=support_files.get("jcninp", "") or os.path.join(work_dir, "Jcninp.19-1d"),
-            )
-            self.current_bat_file = bat_path
+    def _on_remote_analysis_finished(self, result: dict):
+        self.btn_run.setEnabled(True)
+        self.btn_run.setText("计算分析")
 
-            # 计算前清理旧结果，并记录本次开始时间。
-            # 否则 find_result_file 可能找到上一次或半截 psilst.factor，造成“秒完成但结果不完整”。
-            self._cleanup_previous_analysis_outputs(work_dir)
-            analysis_start_time = time.time()
+        self.current_model_dir = str(result.get("work_dir") or self.current_model_dir or "").strip()
+        self.current_result_file = str(result.get("result_file") or "").strip()
+        self.current_bat_file = str(result.get("bat_path") or "").strip()
+        self.current_runx_file = str(result.get("runx_path") or "").strip()
+        self._last_analysis_mode = str(result.get("analysis_mode") or self._last_analysis_mode or "").strip()
 
-            if self.analysis_process is not None:
-                QMessageBox.information(self, "提示", "当前已有计算任务正在运行。")
-                return
+        mode_text = "原模型" if self._last_analysis_mode == "original" else "本次创建的新模型/改造后模型"
 
-            self.btn_run.setEnabled(False)
-            self.btn_run.setText("计算中...")
+        msg = (
+            "服务端计算完成。\n"
+            f"计算对象：{mode_text}\n"
+            f"计算目录：{self.current_model_dir}\n"
+            f"结果文件：{self.current_result_file}"
+        )
 
-            process = QProcess(self)
-            self.analysis_process = process
-            process.setWorkingDirectory(work_dir)
-            process.setProgram("cmd")
-            process.setArguments(["/c", bat_path])
-            # 不使用 MergedChannels，避免 SACS 大量输出阻塞 QProcess 管道。
-            process.setProcessChannelMode(QProcess.SeparateChannels)
+        archived_path = str(result.get("archived_path") or "").strip()
+        if archived_path:
+            msg += f"\n服务器归档：{archived_path}"
+            self._refresh_open_model_files_pages()
 
-            def drain_stdout():
-                try:
-                    _ = bytes(process.readAllStandardOutput())
-                except Exception:
-                    pass
+        if self._last_analysis_mode != "original":
+            msg += "\n\n如需保存 M1 文件和计算结果，请点击底部“导出文件”并选择目录。"
 
-            def drain_stderr():
-                try:
-                    _ = bytes(process.readAllStandardError())
-                except Exception:
-                    pass
+        QMessageBox.information(self, "提示", msg)
 
-            process.readyReadStandardOutput.connect(drain_stdout)
-            process.readyReadStandardError.connect(drain_stderr)
-
-            def on_finished(exit_code, exit_status):
-                self.analysis_process = None
-
-                if exit_code != 0:
-                    self.btn_run.setEnabled(True)
-                    self.btn_run.setText("计算分析")
-                    QMessageBox.critical(self, "提示", f"计算失败，退出码：{exit_code}\n请查看计算目录下的 analysis_stdout.log / analysis_stderr.log。")
-                    return
-
-                self.btn_run.setText("等待结果写入...")
-
-                def on_result_ready(result_file: str, wait_error: str):
-                    self.btn_run.setEnabled(True)
-                    self.btn_run.setText("计算分析")
-                    self.current_result_file = result_file or ""
-
-                    if wait_error:
-                        QMessageBox.warning(
-                            self,
-                            "计算结果未完成",
-                            f"SACS 外层进程已结束，但结果文件没有在限定时间内稳定。\n{wait_error}\n"
-                            f"请稍后打开计算目录检查：{work_dir}"
-                        )
-                        return
-
-                    if not self.current_result_file:
-                        QMessageBox.warning(
-                            self,
-                            "未找到计算结果",
-                            f"SACS 进程已结束，但没有找到本次新生成的结果文件。\n计算目录：{work_dir}\n"
-                            "请查看 analysis_stdout.log / analysis_stderr.log。"
-                        )
-                        return
-
-                    error_token = self._analysis_output_has_error(work_dir, self.current_result_file)
-                    if error_token:
-                        QMessageBox.warning(
-                            self,
-                            "计算可能失败",
-                            f"结果/日志中检测到错误标记：{error_token}\n"
-                            f"结果文件暂不归档，请先检查：\n{self.current_result_file}"
-                        )
-                        return
-
-                    self._last_analysis_mode = analysis_mode
-
-                    archived_path = self._archive_analysis_result_file(
-                        self.current_result_file,
-                        analysis_mode=analysis_mode,
-                        runtime_bundle=runtime_bundle,
-                    )
-
-                    mode_text = "原模型" if analysis_mode == "original" else "本次创建的新模型"
-                    msg = f"计算完成。\n计算对象：{mode_text}\n结果文件：{self.current_result_file}"
-
-                    if analysis_mode == "original":
-                        if archived_path:
-                            msg += f"\n服务器归档：{archived_path}"
-                        else:
-                            msg += "\n\n注意：原模型结果应自动保存到“模型文件/当前模型/静力/结果”位置，但本次归档失败，请检查文件服务配置。"
-                    else:
-                        msg += (
-                            "\n\n本次为新模型/改造后模型计算结果，系统不会自动保存到“模型文件”页面。"
-                            "\n如需保存 M1 文件和计算结果，请点击底部“导出文件”并选择目录。"
-                        )
-
-                    QMessageBox.information(self, "提示", msg)
-
-                self._wait_for_fresh_result_file(
-                    work_dir=work_dir,
-                    start_time=analysis_start_time,
-                    on_ready=on_result_ready,
-                )
-
-            def on_error(_err):
-                err_text = process.errorString()
-                self.btn_run.setEnabled(True)
-                self.btn_run.setText("计算分析")
-                self.analysis_process = None
-                QMessageBox.critical(self, "运行失败", f"启动计算进程失败：\n{err_text}")
-
-            process.finished.connect(on_finished)
-            process.errorOccurred.connect(on_error)
-            process.start()
-
-        except Exception as e:
-            self.btn_run.setEnabled(True)
-            self.btn_run.setText("计算分析")
-            self.analysis_process = None
-            QMessageBox.critical(self, "运行失败", f"调用 bat 计算失败：\n{e}")
+    def _on_remote_analysis_failed(self, message: str):
+        self.btn_run.setEnabled(True)
+        self.btn_run.setText("计算分析")
+        QMessageBox.critical(self, "运行失败", f"服务端计算失败：\n{message}")
 
     # def _on_view_result(self):
     #     path, _ = QFileDialog.getOpenFileName(self, "选择分析结果文件（psilst）", "", "All Files (*)")
@@ -2321,6 +2441,11 @@ class FeasibilityAssessmentPage(BasePage):
                 env_op_company=self.env_op_company,
                 env_oilfield=self.env_oilfield,
                 overall_model_image_path=self.overall_model_image_path,
+                # 服务端/客户端分离后，结果页不能再假定服务端路径可被客户端直接访问。
+                # 这里把本次计算对象和服务端返回路径传给结果页，结果页会按需通过 API 下载到客户端缓存后再显示。
+                analysis_mode=str(getattr(self, "_last_analysis_mode", "") or "").strip(),
+                server_result_file=str(getattr(self, "current_result_file", "") or "").strip(),
+                server_work_dir=str(getattr(self, "current_model_dir", "") or "").strip(),
             )
 
             idx = mw.tab_widget.addTab(page, title)

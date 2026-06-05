@@ -6,6 +6,7 @@ import shutil
 import datetime
 import re
 import json
+import time
 from pathlib import Path
 from typing import Any, List
 from PyQt5.QtWidgets import (
@@ -51,6 +52,304 @@ from pages.special_strategy_rule_dialogs import (
     SpecialStrategyRuleDialog,
     normalize_rule_overrides,
 )
+
+
+# =========================
+# FastAPI 客户端调用封装
+# =========================
+# 说明：
+# 1. 默认启用远程 FastAPI 后端：环境变量 SHIYOU_USE_FASTAPI 未设置或不为 0/false/no/off 时启用。
+# 2. 后端地址读取顺序：环境变量 SHIYOU_API_BASE_URL -> 项目根目录 client_config.json -> http://127.0.0.1:8000。
+# 3. 如果需要临时恢复旧的本地计算方式，可在启动客户端前设置：set SHIYOU_USE_FASTAPI=0。
+try:
+    import requests
+except Exception:  # pragma: no cover - 允许在未安装 requests 时退回本地模式
+    requests = None
+
+
+def _project_root_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _use_fastapi_backend() -> bool:
+    flag = os.environ.get("SHIYOU_USE_FASTAPI", "1").strip().lower()
+    return flag not in {"0", "false", "no", "off", "local"}
+
+
+def _api_base_url() -> str:
+    env_url = os.environ.get("SHIYOU_API_BASE_URL", "").strip()
+    if env_url:
+        return env_url.rstrip("/")
+
+    cfg_path = _project_root_dir() / "client_config.json"
+    if cfg_path.exists():
+        try:
+            payload = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+            value = str(payload.get("api_base_url") or "").strip()
+            if value:
+                return value.rstrip("/")
+        except Exception:
+            pass
+
+    return "http://127.0.0.1:8000"
+
+
+class _RemoteBackendError(RuntimeError):
+    pass
+
+
+class _RemoteStrategyApiClient:
+    """新增特检策略页面使用的最小 FastAPI 客户端。"""
+
+    def __init__(self, base_url: str | None = None, timeout: int = 30):
+        if requests is None:
+            raise _RemoteBackendError("未安装 requests，无法调用 FastAPI 后端。请执行：pip install requests")
+        self.base_url = (base_url or _api_base_url()).rstrip("/")
+        self.timeout = int(timeout)
+
+    def _url(self, path: str) -> str:
+        return f"{self.base_url}{path}"
+
+    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            resp = requests.post(self._url(path), json=payload, timeout=self.timeout)
+        except Exception as exc:
+            raise _RemoteBackendError(f"无法连接 FastAPI 服务端：{self.base_url}\n{exc}") from exc
+        if resp.status_code in (404, 405):
+            raise FileNotFoundError(f"后端接口不存在：{path}")
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"text": resp.text}
+        if resp.status_code >= 400:
+            raise _RemoteBackendError(f"后端接口调用失败：{path}\nHTTP {resp.status_code}\n{data}")
+        return data if isinstance(data, dict) else {"data": data}
+
+    def _get_json(self, path: str) -> dict[str, Any]:
+        try:
+            resp = requests.get(self._url(path), timeout=self.timeout)
+        except Exception as exc:
+            raise _RemoteBackendError(f"无法连接 FastAPI 服务端：{self.base_url}\n{exc}") from exc
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"text": resp.text}
+        if resp.status_code >= 400:
+            raise _RemoteBackendError(f"后端接口调用失败：{path}\nHTTP {resp.status_code}\n{data}")
+        return data if isinstance(data, dict) else {"data": data}
+
+    def _wait_strategy_task(self, task_id: str, *, interval: float = 1.0) -> dict[str, Any]:
+        while True:
+            task = self._get_json(f"/api/strategy/tasks/{task_id}")
+            status = str(task.get("status") or "").lower()
+            if status in {"success", "failed", "error"}:
+                if status != "success":
+                    raise _RemoteBackendError(str(task.get("error") or task.get("message") or "服务端任务执行失败"))
+                result = task.get("result")
+                return result if isinstance(result, dict) else task
+            time.sleep(max(0.2, float(interval)))
+
+    def _submit_and_wait(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        data = self._post_json(path, payload)
+        task_id = str(data.get("task_id") or "").strip()
+        if task_id:
+            return self._wait_strategy_task(task_id)
+        result = data.get("result")
+        return result if isinstance(result, dict) else data
+
+    def _download_binary(self, path: str, local_output_path: str | Path, *, params: dict[str, Any] | None = None) -> str:
+        output_path = Path(local_output_path).expanduser()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = output_path.with_name(output_path.name + ".download.tmp")
+
+        try:
+            resp = requests.get(
+                self._url(path),
+                params=params or {},
+                stream=True,
+                timeout=max(self.timeout, 300),
+            )
+        except Exception as exc:
+            raise _RemoteBackendError(f"下载服务端文件失败：{self.base_url}{path}\n{exc}") from exc
+
+        try:
+            if resp.status_code >= 400:
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = {"text": resp.text}
+                raise _RemoteBackendError(f"下载服务端文件失败：HTTP {resp.status_code}\n{data}")
+
+            with open(temp_path, "wb") as fp:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fp.write(chunk)
+
+            temp_path.replace(output_path)
+            return str(output_path)
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+    def _client_cache_dir(self, facility_code: str, *parts: str) -> Path:
+        root = _project_root_dir() / ".client_cache" / "model_files" / str(facility_code or "default_facility").strip()
+        for part in parts:
+            text = str(part or "").strip().replace("/", "_").replace("\\", "_")
+            if text:
+                root = root / text
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def download_latest_model_file(self, facility_code: str) -> str:
+        cache_dir = self._client_cache_dir(facility_code)
+        return os.path.normpath(self._download_binary(
+            "/api/files/download/latest-model",
+            cache_dir / "sacinp_from_server",
+            params={"facility_code": str(facility_code or "").strip()},
+        ))
+
+    def download_latest_sea_file(self, facility_code: str) -> str:
+        cache_dir = self._client_cache_dir(facility_code)
+        return os.path.normpath(self._download_binary(
+            "/api/files/download/latest-sea",
+            cache_dir / "seainp_from_server",
+            params={"facility_code": str(facility_code or "").strip()},
+        ))
+
+    def load_strategy_input_files(self, facility_code: str) -> dict[str, Any]:
+        """从服务端读取特检策略当前默认输入文件清单。
+
+        注意：这里返回的是服务端可访问的 D:/shiyou_file_storage 等路径，
+        仅用于表格展示和提交给服务端计算；客户端预览仍使用 download_latest_model_file 下载到本地缓存。
+        """
+        try:
+            resp = requests.get(
+                self._url("/api/files/strategy-inputs"),
+                params={"facility_code": str(facility_code or "").strip()},
+                timeout=max(self.timeout, 120),
+            )
+        except Exception as exc:
+            raise _RemoteBackendError(f"无法读取服务端特检策略输入文件清单：{self.base_url}\n{exc}") from exc
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"text": resp.text}
+        if resp.status_code >= 400:
+            raise _RemoteBackendError(f"读取服务端特检策略输入文件清单失败：HTTP {resp.status_code}\n{data}")
+        return data if isinstance(data, dict) else {"data": data}
+
+    def prepare_strategy(
+        self,
+        *,
+        facility_code: str,
+        param_overrides: dict[str, Any],
+        input_overrides: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        payload = {
+            "facility_code": facility_code,
+            "param_overrides": param_overrides or {},
+            "input_overrides": input_overrides or {},
+            "metadata": {},
+        }
+        try:
+            result = self._submit_and_wait("/api/strategy/prepare", payload)
+            return "prepare", result
+        except FileNotFoundError:
+            # 兼容第一版只实现 /api/strategy/run 的服务端：无法做后置规则弹窗时，直接完成整套计算。
+            result = self._submit_and_wait("/api/strategy/run", payload)
+            state = result.get("state") if isinstance(result, dict) else {}
+            run_id = (
+                result.get("run_id")
+                or result.get("db_run_id")
+                or (state.get("db_run_id") if isinstance(state, dict) else None)
+            )
+            if run_id:
+                try:
+                    result = self._get_json(f"/api/strategy/result/{facility_code}?run_id={int(run_id)}")
+                except Exception:
+                    pass
+            return "run", result
+
+    def finalize_strategy(
+        self,
+        *,
+        facility_code: str,
+        prepared_calculation: dict[str, Any],
+        rule_overrides: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        prepare_token = str(
+            prepared_calculation.get("prepare_token")
+            or prepared_calculation.get("prepared_token")
+            or prepared_calculation.get("token")
+            or ""
+        ).strip()
+        payload = {
+            "facility_code": facility_code,
+            "prepare_token": prepare_token,
+            "prepared_calculation": prepared_calculation,
+            "rule_overrides": rule_overrides or {},
+        }
+        result = self._submit_and_wait("/api/strategy/finalize", payload)
+        state = result.get("state") if isinstance(result, dict) else {}
+        run_id = (
+            result.get("run_id")
+            or result.get("db_run_id")
+            or (state.get("db_run_id") if isinstance(state, dict) else None)
+        )
+        if run_id:
+            try:
+                return self._get_json(f"/api/strategy/result/{facility_code}?run_id={int(run_id)}")
+            except Exception:
+                return result
+        return result
+
+    def check_manual_fill(
+        self,
+        *,
+        facility_code: str,
+        param_overrides: dict[str, Any],
+        input_overrides: dict[str, Any],
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._post_json(
+            "/api/strategy/manual-fill/check",
+            {
+                "facility_code": facility_code,
+                "param_overrides": param_overrides or {},
+                "input_overrides": input_overrides or {},
+                "metadata": metadata or {},
+            },
+        )
+
+    def run_strategy(
+        self,
+        *,
+        facility_code: str,
+        param_overrides: dict[str, Any],
+        input_overrides: dict[str, Any],
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "facility_code": facility_code,
+            "param_overrides": param_overrides or {},
+            "input_overrides": input_overrides or {},
+            "metadata": metadata or {},
+        }
+        result = self._submit_and_wait("/api/strategy/run", payload)
+        state = result.get("state") if isinstance(result, dict) else {}
+        run_id = (
+            result.get("run_id")
+            or result.get("db_run_id")
+            or (state.get("db_run_id") if isinstance(state, dict) else None)
+        )
+        if run_id:
+            try:
+                return self._get_json(f"/api/strategy/result/{facility_code}?run_id={int(run_id)}")
+            except Exception:
+                return result
+        return result
 
 
 class _SystemFilePickerDialog(QDialog):
@@ -345,6 +644,90 @@ class _SystemLibraryPickerDialog(QDialog):
         return list(self._selected_rows)
 
 
+
+class ManualBraceClientDialog(QDialog):
+    """客户端 ManualBrace 人工补全弹窗。"""
+
+    def __init__(self, rows: list[dict[str, Any]], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("疲劳输入检查")
+        self.resize(720, 420)
+        self._rows = list(rows or [])
+        self._result_entries: list[dict[str, Any]] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        tip = QLabel(
+            "检测到疲劳分析模型文件中存在需要人工补充的 ManualBrace。\n"
+            "请在客户端输入 ManualBrace。ManualBrace 为 4 个字符；留空表示跳过。"
+        )
+        tip.setWordWrap(True)
+        layout.addWidget(tip)
+
+        self.table = QTableWidget(len(self._rows), 6, self)
+        self.table.setHorizontalHeaderLabels(["序号", "JointI", "JointJ", "Case", "ManualBrace", "原始信息"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.table.setAlternatingRowColors(True)
+
+        for row_idx, row in enumerate(self._rows):
+            raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+            joint_i = str(row.get("joint_i") or raw.get("JointI") or raw.get("JSLCA") or raw.get("A") or "").strip()
+            joint_j = str(row.get("joint_j") or raw.get("JointJ") or raw.get("JSLCB") or raw.get("B") or raw.get("Joint") or "").strip()
+            case_text = str(row.get("case") or raw.get("Case") or raw.get("Source") or raw.get("File") or "疲劳分析模型文件").strip()
+            default_value = str(row.get("manual_brace") or raw.get("ManualBrace") or "").strip()
+            raw_text = "; ".join(f"{k}={v}" for k, v in raw.items() if not str(k).startswith("_"))
+
+            values = [str(row_idx + 1), joint_i, joint_j, case_text, default_value, raw_text]
+            for col, text in enumerate(values):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignCenter if col in {0, 1, 2, 4} else Qt.AlignLeft | Qt.AlignVCenter)
+                if col != 4:
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(row_idx, col, item)
+            self.table.setRowHeight(row_idx, 34)
+
+        layout.addWidget(self.table, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.button(QDialogButtonBox.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _accept(self):
+        entries: list[dict[str, Any]] = []
+        for row_idx, row in enumerate(self._rows):
+            item = self.table.item(row_idx, 4)
+            manual_brace = item.text().strip() if item is not None else ""
+            if manual_brace and len(manual_brace) != 4:
+                QMessageBox.warning(self, "输入错误", f"第 {row_idx + 1} 行 ManualBrace 必须为 4 个字符；留空表示跳过。")
+                return
+            current = dict(row)
+            raw = dict(current.get("raw") or {})
+            raw["ManualBrace"] = manual_brace
+            raw["manual_brace"] = manual_brace
+            current["raw"] = raw
+            current["manual_brace"] = manual_brace
+            current["ManualBrace"] = manual_brace
+            entries.append(current)
+        self._result_entries = entries
+        self.accept()
+
+    @property
+    def result_entries(self) -> list[dict[str, Any]]:
+        return list(self._result_entries)
+
 class _NoWheelFileTable(QTableWidget):
     def wheelEvent(self, event):
         # 不在表格内部滚动，把滚轮交回外层滚动区域
@@ -362,6 +745,7 @@ class _SpecialStrategyCalculationWorker(QObject):
         stage: str = "run",
         param_overrides: dict[str, Any] | None = None,
         input_overrides: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
         prepared_calculation: dict[str, Any] | None = None,
     ):
         super().__init__()
@@ -369,10 +753,43 @@ class _SpecialStrategyCalculationWorker(QObject):
         self._stage = stage
         self._param_overrides = dict(param_overrides or {})
         self._input_overrides = dict(input_overrides or {})
+        self._metadata = dict(metadata or {})
         self._prepared_calculation = prepared_calculation
 
     def run(self) -> None:
         try:
+            if _use_fastapi_backend():
+                api = _RemoteStrategyApiClient()
+                if self._stage == "prepare":
+                    emit_stage, result = api.prepare_strategy(
+                        facility_code=self._facility_code,
+                        param_overrides=self._param_overrides,
+                        input_overrides=self._input_overrides,
+                    )
+                    self.finished.emit({"stage": emit_stage, "payload": result})
+                    return
+
+                if self._stage == "finalize":
+                    if self._prepared_calculation is None:
+                        raise ValueError("missing prepared calculation for finalize stage")
+                    result = api.finalize_strategy(
+                        facility_code=self._facility_code,
+                        prepared_calculation=self._prepared_calculation,
+                        rule_overrides=self._param_overrides.get("rule_overrides"),
+                    )
+                    self.finished.emit({"stage": "finalize", "payload": result})
+                    return
+
+                result = api.run_strategy(
+                    facility_code=self._facility_code,
+                    param_overrides=self._param_overrides,
+                    input_overrides=self._input_overrides,
+                    metadata=self._metadata,
+                )
+                self.finished.emit({"stage": "run", "payload": result})
+                return
+
+            # 本地兼容模式：set SHIYOU_USE_FASTAPI=0 后启用。
             if self._stage == "prepare":
                 result = prepare_special_strategy_calculation(
                     self._facility_code,
@@ -391,6 +808,7 @@ class _SpecialStrategyCalculationWorker(QObject):
                     self._facility_code,
                     param_overrides=self._param_overrides,
                     input_overrides=self._input_overrides,
+                    metadata=self._metadata,
                 )
             self.finished.emit({"stage": self._stage, "payload": result})
         except Exception as exc:
@@ -513,6 +931,8 @@ class NewSpecialInspectionPage(BasePage):
         self._rule_preview_thread: QThread | None = None
         self._rule_preview_worker: _RulePreviewWorker | None = None
         self._rule_preview_loading_path = ""
+        self._remote_preview_model_path = ""
+        self._remote_preview_sea_path = ""
 
         super().__init__("", parent)
         self._risk_progress_timer = QTimer(self)
@@ -553,9 +973,15 @@ class NewSpecialInspectionPage(BasePage):
         next_code = str(facility_code or "").strip()
         if not next_code:
             return
+        platform_changed = next_code != self.facility_code
         self.facility_code = next_code
         self._risk_updated = False
         self._latest_run_id = None
+        if platform_changed:
+            self._remote_preview_model_path = ""
+            self._remote_preview_sea_path = ""
+            if hasattr(self, "model_preview_panel"):
+                self.model_preview_panel.clear_model("正在加载当前平台模型...")
         self._default_params = self._load_default_params()
         self._rule_overrides = normalize_rule_overrides((self._default_params or {}).get("rule_overrides"))
         self._apply_default_form_values()
@@ -1489,6 +1915,7 @@ class NewSpecialInspectionPage(BasePage):
         stage: str = "run",
         param_overrides: dict[str, Any] | None = None,
         input_overrides: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
         prepared_calculation: dict[str, Any] | None = None,
     ) -> None:
         self._set_risk_running(True)
@@ -1499,6 +1926,7 @@ class NewSpecialInspectionPage(BasePage):
             stage=stage,
             param_overrides=param_overrides,
             input_overrides=input_overrides,
+            metadata=metadata,
             prepared_calculation=prepared_calculation,
         )
         worker.moveToThread(thread)
@@ -1528,14 +1956,61 @@ class NewSpecialInspectionPage(BasePage):
 
         self._risk_updated = True
         state = payload.get("state") if isinstance(payload, dict) else {}
-        run_id = state.get("db_run_id") if isinstance(state, dict) else None
-        self._latest_run_id = int(run_id) if isinstance(run_id, int) else run_id
+        run_id = None
+        if isinstance(payload, dict):
+            run_id = payload.get("run_id") or payload.get("db_run_id")
+        if not run_id and isinstance(state, dict):
+            run_id = state.get("db_run_id") or state.get("run_id")
+        try:
+            self._latest_run_id = int(run_id) if run_id not in ("", None) else None
+        except Exception:
+            self._latest_run_id = run_id
         self.strategy_calculated.emit(self.facility_code, self._latest_run_id)
         QMessageBox.information(self, "更新风险等级", "已按当前参数完成风险结果计算。")
 
     def _on_risk_calculation_failed(self, message: str) -> None:
         self._set_risk_running(False)
         QMessageBox.warning(self, "更新风险等级失败", f"风险结果计算失败：\n{message}")
+
+
+    def _collect_client_manual_fill_entries(
+        self,
+        param_overrides: dict[str, Any],
+        input_overrides: dict[str, Any],
+    ) -> list[dict[str, Any]] | None:
+        """远程模式下先让服务端做无 GUI 检查，再在客户端补充 ManualBrace。"""
+        if not _use_fastapi_backend():
+            return []
+
+        try:
+            api = _RemoteStrategyApiClient()
+            data = api.check_manual_fill(
+                facility_code=self.facility_code,
+                param_overrides=param_overrides,
+                input_overrides=input_overrides,
+                metadata={"disable_server_gui": True, "manual_fill_check_only": True},
+            )
+        except FileNotFoundError:
+            # 旧服务端没有检查接口时，为避免服务端继续弹 GUI，直接提示更新服务端。
+            QMessageBox.warning(
+                self,
+                "ManualBrace 检查失败",
+                "服务端缺少 /api/strategy/manual-fill/check 接口。\n"
+                "请先替换 server/routers/strategy.py 和 services/special_strategy_runtime.py。",
+            )
+            return None
+        except Exception as exc:
+            QMessageBox.warning(self, "ManualBrace 检查失败", f"检查疲劳输入人工补全项失败：\n{exc}")
+            return None
+
+        rows = data.get("manual_fill_rows") or data.get("rows") or []
+        if not rows:
+            return []
+
+        dialog = ManualBraceClientDialog(rows, self)
+        if dialog.exec_() != QDialog.Accepted:
+            return None
+        return dialog.result_entries
 
     def _on_update_risk_level(self):
         if not self._validate_fatigue_groups():
@@ -1545,10 +2020,31 @@ class NewSpecialInspectionPage(BasePage):
             return
         if not self._run_pre_risk_rule_dialog_sequence():
             return
+
+        try:
+            param_overrides = self._collect_runtime_overrides()
+            input_overrides = self._collect_runtime_input_overrides()
+        except Exception as exc:
+            QMessageBox.warning(self, "参数错误", f"收集计算参数失败：\n{exc}")
+            return
+
+        manual_entries = self._collect_client_manual_fill_entries(param_overrides, input_overrides)
+        if manual_entries is None:
+            QMessageBox.information(self, "更新风险等级", "已取消 ManualBrace 人工补全，本次计算未继续。")
+            return
+
+        metadata = {
+            "manual_fill_entries": manual_entries,
+            "manual_fill_source": "client",
+            "disable_server_gui": True,
+        }
+
+        # 远程模式保持原来的 /api/strategy/run 计算流程，只是把客户端补全项随 metadata 传给服务端。
         self._start_risk_calculation_worker(
-            stage="prepare",
-            param_overrides=self._collect_runtime_overrides(),
-            input_overrides=self._collect_runtime_input_overrides(),
+            stage="run",
+            param_overrides=param_overrides,
+            input_overrides=input_overrides,
+            metadata=metadata,
         )
 
     def _validate_fatigue_groups(self) -> bool:
@@ -1622,7 +2118,57 @@ class NewSpecialInspectionPage(BasePage):
         QMessageBox.warning(self, "错误", "未找到 MainWindow/tab_widget，无法打开结果页。")
 
     # ---------------- 文件来源：后续数据库接入接口（先走 upload/model_files） ----------------
+    @staticmethod
+    def _is_existing_file(path: str) -> bool:
+        text = str(path or "").strip()
+        return bool(text) and os.path.exists(text) and os.path.isfile(text)
+
+    def _download_latest_model_for_preview(self, *, force: bool = False) -> str:
+        """C/S 模式下，右侧模型预览和规则弹窗都必须使用客户端本地缓存文件。"""
+        if not _use_fastapi_backend():
+            return ""
+        cached = os.path.normpath(str(getattr(self, "_remote_preview_model_path", "") or ""))
+        if (not force) and self._is_existing_file(cached):
+            return cached
+        try:
+            path = _RemoteStrategyApiClient().download_latest_model_file(self.facility_code)
+            path = os.path.normpath(str(path or "").strip())
+            if self._is_existing_file(path):
+                self._remote_preview_model_path = path
+                print("[NewSpecialInspectionPage] remote model downloaded for preview:", path)
+                return path
+        except Exception as exc:
+            print("[NewSpecialInspectionPage] download latest model for preview failed:", exc)
+        return cached if self._is_existing_file(cached) else ""
+
+    def _download_latest_sea_for_preview(self, *, force: bool = False) -> str:
+        if not _use_fastapi_backend():
+            return ""
+        cached = os.path.normpath(str(getattr(self, "_remote_preview_sea_path", "") or ""))
+        if (not force) and self._is_existing_file(cached):
+            return cached
+        try:
+            path = _RemoteStrategyApiClient().download_latest_sea_file(self.facility_code)
+            path = os.path.normpath(str(path or "").strip())
+            if self._is_existing_file(path):
+                self._remote_preview_sea_path = path
+                print("[NewSpecialInspectionPage] remote sea downloaded for preview:", path)
+                return path
+        except Exception as exc:
+            print("[NewSpecialInspectionPage] download latest sea for preview failed:", exc)
+        return cached if self._is_existing_file(cached) else ""
+
     def _current_model_path_for_rule_preview(self) -> str:
+        # 远程模式下优先使用服务端下载到客户端的当前模型，避免客户端直接读服务端 D 盘路径。
+        remote_model = self._download_latest_model_for_preview()
+        if remote_model:
+            return remote_model
+
+        input_overrides = self._collect_runtime_input_overrides()
+        override_model = str(input_overrides.get("model") or "").strip()
+        if self._is_existing_file(override_model):
+            return override_model
+
         model_candidates = self._sorted_existing_paths(self.model_files, category=self.CATEGORY_MODEL)
         if model_candidates:
             return model_candidates[0]
@@ -1737,6 +2283,32 @@ class NewSpecialInspectionPage(BasePage):
         self,
         prepared_calculation: dict[str, Any],
     ) -> tuple[list[str], list[tuple[str, str]], bool]:
+        # 远程 FastAPI prepare 接口建议直接返回这两个预览字段：
+        #   joint_ids: ["301L", ...]
+        #   member_pairs: [["301L", "401L"], ...]
+        remote_joint_ids = prepared_calculation.get("joint_ids") or prepared_calculation.get("preview_joint_ids")
+        remote_member_pairs = prepared_calculation.get("member_pairs") or prepared_calculation.get("preview_member_pairs")
+        if isinstance(remote_joint_ids, list) or isinstance(remote_member_pairs, list):
+            joint_ids = [
+                str(value or "").strip()
+                for value in (remote_joint_ids or [])
+                if str(value or "").strip()
+            ]
+            member_pairs: list[tuple[str, str]] = []
+            for item in remote_member_pairs or []:
+                if isinstance(item, dict):
+                    a = str(item.get("joint_a") or item.get("JointA") or item.get("a") or "").strip()
+                    b = str(item.get("joint_b") or item.get("JointB") or item.get("b") or "").strip()
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    a = str(item[0] or "").strip()
+                    b = str(item[1] or "").strip()
+                else:
+                    continue
+                if a and b:
+                    member_pairs.append((a, b))
+            return joint_ids, member_pairs, bool(joint_ids or member_pairs)
+
+        # 本地兼容模式仍使用原始 prepared_pipeline DataFrame。
         prepared_pipeline = prepared_calculation.get("prepared_pipeline")
         if not isinstance(prepared_pipeline, dict):
             return [], [], False
@@ -2212,7 +2784,7 @@ class NewSpecialInspectionPage(BasePage):
         normalized = os.path.normpath(raw)
         if normalized in (".", ".."):
             return False
-        return os.path.exists(normalized)
+        return os.path.exists(normalized) or self._is_remote_server_path_for_display(normalized)
 
     def _remember_file_meta(
             self,
@@ -2340,12 +2912,36 @@ class NewSpecialInspectionPage(BasePage):
             str(meta.get("original_name") or os.path.basename(str(path or ""))).strip().lower(),
         )
 
+    def _is_remote_server_path_for_display(self, path: str) -> bool:
+        """C/S 模式下，表格中的 D:/shiyou_file_storage 路径属于服务端路径。
+
+        客户端本机通常无法 os.path.exists，但它仍然是服务端计算可用路径，
+        因此不能因为客户端不可访问而从表格和 input_overrides 中过滤掉。
+        """
+        if not _use_fastapi_backend():
+            return False
+        text = str(path or "").strip()
+        if not text:
+            return False
+        meta = self._file_meta(text)
+        source = str(meta.get("source_label") or meta.get("remark") or "").lower()
+        logical = str(meta.get("logical_path") or "").replace("\\", "/")
+        return (
+            bool(meta)
+            or "服务端" in source
+            or "server" in source
+            or "当前模型" in logical
+            or "shiyou_file_storage" in text.replace("\\", "/").lower()
+        )
+
     def _sorted_existing_paths(self, values: List[str], *, category: str, branch: str | None = None) -> List[str]:
         ordered: List[str] = []
         seen: set[str] = set()
         for value in values:
             path = os.path.normpath(str(value or "").strip())
-            if not path or path in seen or not os.path.exists(path):
+            if not path or path in seen:
+                continue
+            if not os.path.exists(path) and not self._is_remote_server_path_for_display(path):
                 continue
             if not self._is_runtime_supported_path(path, category, branch):
                 continue
@@ -2773,7 +3369,79 @@ class NewSpecialInspectionPage(BasePage):
             table.setRowHeight(r, final_row_height)
         self._fit_table_height_from_current_rows(table)
 
+    def _remote_row_path(self, row: dict[str, Any]) -> str:
+        return os.path.normpath(str(
+            row.get("storage_path")
+            or row.get("server_path")
+            or row.get("path")
+            or ""
+        ).strip())
+
+    def _apply_remote_strategy_input_rows(self, payload: dict[str, Any]) -> bool:
+        files = payload.get("files") if isinstance(payload, dict) else {}
+        if not isinstance(files, dict):
+            return False
+
+        def rows_for(key: str) -> list[dict[str, Any]]:
+            rows = files.get(key) or []
+            return [dict(row) for row in rows if isinstance(row, dict)]
+
+        model_rows = rows_for("model")
+        collapse_rows = rows_for("collapse")
+        fatigue_result_rows = rows_for("fatigue_result")
+        fatigue_input_rows = rows_for("fatigue_input")
+
+        all_rows: list[dict[str, Any]] = []
+        for row in model_rows:
+            row.setdefault("category_name", self._default_category_label(self.CATEGORY_MODEL))
+            row.setdefault("format_label", self._path_format_label(self._remote_row_path(row)))
+            row.setdefault("source_label", "服务端当前模型")
+            all_rows.append(row)
+        for row in collapse_rows:
+            row.setdefault("category_name", self._default_category_label(self.CATEGORY_COLLAPSE))
+            row.setdefault("format_label", self._path_format_label(self._remote_row_path(row)))
+            row.setdefault("source_label", "服务端倒塌分析结果")
+            all_rows.append(row)
+        for row in fatigue_result_rows:
+            row.setdefault("category_name", self._default_category_label(self.CATEGORY_FATIGUE, "result"))
+            row.setdefault("branch_label", "疲劳结果文件")
+            row.setdefault("format_label", self._path_format_label(self._remote_row_path(row)))
+            row.setdefault("source_label", "服务端疲劳结果")
+            all_rows.append(row)
+        for row in fatigue_input_rows:
+            row.setdefault("category_name", self._default_category_label(self.CATEGORY_FATIGUE, "input"))
+            row.setdefault("branch_label", "疲劳输入文件")
+            row.setdefault("format_label", self._path_format_label(self._remote_row_path(row)))
+            row.setdefault("source_label", "服务端疲劳输入")
+            all_rows.append(row)
+
+        self._remember_file_rows(all_rows)
+
+        self.model_files = [self._remote_row_path(row) for row in model_rows if self._remote_row_path(row)]
+        self.collapse_files = [self._remote_row_path(row) for row in collapse_rows if self._remote_row_path(row)]
+        self.fatigue_result_files = [self._remote_row_path(row) for row in fatigue_result_rows if self._remote_row_path(row)]
+        self.fatigue_input_files = [self._remote_row_path(row) for row in fatigue_input_rows if self._remote_row_path(row)]
+
+        return bool(self.model_files or self.collapse_files or self.fatigue_result_files or self.fatigue_input_files)
+
     def _reload_system_files_from_backend(self):
+        if _use_fastapi_backend():
+            try:
+                payload = _RemoteStrategyApiClient().load_strategy_input_files(self.facility_code)
+                if self._apply_remote_strategy_input_rows(payload):
+                    print(
+                        "[NewSpecialInspectionPage] remote strategy input files loaded:",
+                        "model=", len(self.model_files),
+                        "collapse=", len(self.collapse_files),
+                        "ftglst=", len(self.fatigue_result_files),
+                        "ftginp=", len(self.fatigue_input_files),
+                    )
+                    self._refresh_files_table()
+                    self._refresh_model_preview()
+                    return
+            except Exception as exc:
+                print("[NewSpecialInspectionPage] load remote strategy input files failed:", exc)
+
         self.model_files = self._db_fetch_file_records(self.CATEGORY_MODEL)
         self._invalidate_rule_preview_cache()
         self._start_rule_preview_preload()
@@ -3158,13 +3826,21 @@ class NewSpecialInspectionPage(BasePage):
     def _on_del_fatigue_input(self):
         self._on_del_fatigue("input")
 
-    def _refresh_model_preview(self):
-        if not hasattr(self, "_model_preview_layout"):
+    def _refresh_model_preview(self, *, force_remote: bool = False):
+        if not hasattr(self, "model_preview_panel"):
             return
 
         model_path = ""
-        if self.model_files:
-            model_path = self.model_files[0]
+
+        # C/S 远程模式：右侧预览必须使用客户端下载缓存，而不能直接读数据库记录里的服务端 D 盘路径。
+        if _use_fastapi_backend():
+            model_path = self._download_latest_model_for_preview(force=force_remote)
+
+        # 本地兼容或远程下载失败时，保留原有文件列表兜底。
+        if not model_path and self.model_files:
+            candidate = os.path.normpath(str(self.model_files[0] or "").strip())
+            if self._is_existing_file(candidate):
+                model_path = candidate
 
         history_overlay = {}
         try:

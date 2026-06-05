@@ -62,6 +62,13 @@ from services.platform_strength_quick_assessment import run_quick_assessment_pre
 
 from pages.sacs_import_service import import_model_bundle_to_db
 
+# 远程客户端：用于从 FastAPI 服务端下载数据库中登记的模型/海况文件到本地缓存。
+# 注意：如果当前运行环境没有 client_api，页面仍可回退到原本的本地/数据库路径逻辑。
+try:
+    from client_api.api_client import ApiClient
+except Exception:  # pragma: no cover - 兼容未接入客户端 API 的旧环境
+    ApiClient = None
+
 from shiyou_db.runtime_db import get_mysql_url
 from shiyou_db.config import get_storage_root
 from services.special_strategy_image_service import build_strategy_image_path, save_strategy_image_record
@@ -987,6 +994,13 @@ class PlatformStrengthPage(BasePage):
         self.upload_dir = first_existing_path("upload")
         self.model_files_root = first_existing_path("upload", "model_files")
 
+        # 远程服务端文件缓存：
+        # 结构强度页面在客户端运行时，不能直接访问服务端 D:/shiyou_file_storage。
+        # 因此通过 /api/files/download/latest-model 和 /api/files/download/latest-sea
+        # 下载到 .client_cache 后再交给 PyVista/SACS 解析显示。
+        self._remote_model_file_cache: Dict[str, str] = {}
+        self._remote_sea_file_cache: Dict[str, str] = {}
+
         self._model_signature_cache: Dict[str, Tuple[float, bool]] = {}
         self._default_splash_items: List[Dict] = []
         self._default_pile_items: List[Dict] = []
@@ -1221,7 +1235,7 @@ class PlatformStrengthPage(BasePage):
     def _on_top_key_changed(self, key: str, txt: str):
         if key in {"branch", "op_company", "oilfield", "facility_code", "facility_name"}:
             self._sync_platform_ui(changed_key=key)
-            self._schedule_autoload_inp_to_view()
+            self._schedule_autoload_inp_to_view(force_remote=True)
 
     def _get_top_value(self, key: str) -> str:
         if not hasattr(self, "dropdown_bar"):
@@ -1346,20 +1360,20 @@ class PlatformStrengthPage(BasePage):
         QTimer.singleShot(0, self._start_async_strength_env_load)
         self._schedule_autoload_inp_to_view(delay_ms=600)
 
-    def _schedule_autoload_inp_to_view(self, delay_ms: int = 80) -> None:
+    def _schedule_autoload_inp_to_view(self, delay_ms: int = 80, force_remote: bool = False) -> None:
         self._overall_export_seq += 1
         self._model_autoload_seq += 1
         self._model_preview_load_seq += 1
         seq = self._model_autoload_seq
         QTimer.singleShot(
             int(delay_ms),
-            lambda s=seq: self._do_scheduled_autoload_inp_to_view(s),
+            lambda s=seq, f=force_remote: self._do_scheduled_autoload_inp_to_view(s, f),
         )
 
-    def _do_scheduled_autoload_inp_to_view(self, seq: int) -> None:
+    def _do_scheduled_autoload_inp_to_view(self, seq: int, force_remote: bool = False) -> None:
         if seq != self._model_autoload_seq or getattr(self, "_is_closing", False):
             return
-        self._autoload_inp_to_view()
+        self._autoload_inp_to_view(force_remote=force_remote)
 
     def _build_strength_env_payload(self) -> dict[str, Any]:
         self._strength_env_load_seq += 1
@@ -1465,14 +1479,19 @@ class PlatformStrengthPage(BasePage):
         self._horizontal_levels = []
         self._refresh_layers_table()
 
-    def _start_async_model_preview_load(self, facility_code: str, target_z: float) -> None:
+    def _start_async_model_preview_load(
+        self,
+        facility_code: str,
+        target_z: float,
+        model_path: str = "",
+    ) -> None:
         if getattr(self, "_is_closing", False):
             return
         self._model_preview_load_seq += 1
         payload = {
             "seq": self._model_preview_load_seq,
             "facility_code": str(facility_code or "").strip(),
-            "path": "",
+            "path": os.path.normpath(str(model_path or "").strip()) if model_path else "",
             "target_z": float(target_z or 9.1),
             "model_files_root": self.model_files_root,
             "upload_dir": self.upload_dir,
@@ -2698,18 +2717,105 @@ class PlatformStrengthPage(BasePage):
         candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return candidates[0][2]
 
-    def _get_shared_current_model_file(self, facility_code: str) -> str:
+    def _client_cache_root(self) -> str:
+        """客户端本地缓存目录。
+
+        这里只保存从服务端下载来的临时预览/分析输入文件，
+        不改变服务端数据库和文件存储中的原始文件。
+        """
+        root = os.path.join(os.getcwd(), ".client_cache", "model_files")
+        os.makedirs(root, exist_ok=True)
+        return os.path.normpath(root)
+
+    def _is_local_accessible_file(self, path: object) -> bool:
+        text = os.path.normpath(str(path or "").strip())
+        return bool(text and os.path.isfile(text))
+
+    def _get_api_client(self):
+        if ApiClient is None:
+            return None
+        try:
+            return ApiClient()
+        except Exception as exc:
+            print("[PlatformStrengthPage] create ApiClient failed:", exc)
+            return None
+
+    def _download_latest_model_from_server(self, facility_code: str, force: bool = False) -> str:
+        """从 FastAPI 服务端下载当前设施最新 sacinp 模型文件到客户端缓存。
+
+        服务端侧已经通过 /api/files/latest-model 从 MySQL 文件记录中找到
+        D:/shiyou_file_storage 下的真实文件；客户端只拿下载后的本地缓存路径。
+        """
         code = (facility_code or "").strip()
         if not code:
             return ""
 
-        # 优先从文件数据库读取“当前模型/结构模型”中的原模型文件，
-        # 即用户在模型文件页面上传后落在 shiyou_file_storage/model_files/... 的真实路径。
+        cached = os.path.normpath(str(self._remote_model_file_cache.get(code, "") or ""))
+        if (not force) and self._is_local_accessible_file(cached):
+            return cached
+
+        api = self._get_api_client()
+        if api is None:
+            return ""
+
+        try:
+            cache_dir = os.path.join(self._client_cache_root(), code)
+            os.makedirs(cache_dir, exist_ok=True)
+            # ApiClient.download_latest_model_file 会从 /api/files/download/latest-model 下载。
+            local_path = api.download_latest_model_file(code)
+            local_path = os.path.normpath(str(local_path or ""))
+            if self._is_local_accessible_file(local_path):
+                self._remote_model_file_cache[code] = local_path
+                print("[PlatformStrengthPage] remote model downloaded:", local_path)
+                return local_path
+        except Exception as exc:
+            print("[PlatformStrengthPage] download latest model from server failed:", exc)
+        return ""
+
+    def _download_latest_sea_from_server(self, facility_code: str, force: bool = False) -> str:
+        """从 FastAPI 服务端下载当前设施最新 SeaInp 文件到客户端缓存。"""
+        code = (facility_code or "").strip()
+        if not code:
+            return ""
+
+        cached = os.path.normpath(str(self._remote_sea_file_cache.get(code, "") or ""))
+        if (not force) and self._is_local_accessible_file(cached):
+            return cached
+
+        api = self._get_api_client()
+        if api is None:
+            return ""
+
+        try:
+            local_path = api.download_latest_sea_file(code)
+            local_path = os.path.normpath(str(local_path or ""))
+            if self._is_local_accessible_file(local_path):
+                self._remote_sea_file_cache[code] = local_path
+                print("[PlatformStrengthPage] remote sea downloaded:", local_path)
+                return local_path
+        except Exception as exc:
+            # 部分平台没有 seainp，不能影响结构模型显示。
+            print("[PlatformStrengthPage] download latest sea from server failed:", exc)
+        return ""
+
+    def _get_shared_current_model_file(self, facility_code: str, force_remote: bool = False) -> str:
+        code = (facility_code or "").strip()
+        if not code:
+            return ""
+
+        # 1) C/S 新流程：优先从 FastAPI 服务端下载。
+        #    服务端通过 MySQL 文件记录和 storage_root 定位真实 sacinp，
+        #    客户端只使用下载后的 .client_cache 本地路径。
+        remote_model = self._download_latest_model_from_server(code, force=force_remote)
+        if remote_model:
+            return remote_model
+
+        # 2) 兼容本机单机/旧流程：如果客户端刚好能访问数据库中的 storage_path，继续可用。
         db_model = self._find_current_model_file_from_db(code)
         if db_model:
             return db_model
 
-        # 兜底：只查新流程运行目录，不再查旧 sacs_jobs/<平台>/source。
+        # 3) 兜底：只查新流程运行目录，不再查旧 sacs_jobs/<平台>/source。
         runtime_dir = os.path.normpath(get_job_runtime_dir(code))
         candidates = [
             os.path.join(runtime_dir, "sacinp.JKnew"),
@@ -2721,19 +2827,26 @@ class PlatformStrengthPage(BasePage):
                 return p
         return ""
 
-    def _resolve_current_preview_model_file(self, facility_code: str) -> str:
-        shared = self._get_shared_current_model_file(facility_code)
+    def _resolve_current_preview_model_file(self, facility_code: str, force_remote: bool = False) -> str:
+        shared = self._get_shared_current_model_file(facility_code, force_remote=force_remote)
         if shared:
             return shared
         return self._find_best_inp_file(facility_code)
 
     def _find_matching_sea_file(self, model_path: str, facility_code: str = "") -> Optional[str]:
-        # 优先从文件数据库读取“当前模型/结构模型/海况”中的海况文件。
-        db_sea = self._find_current_sea_file_from_db(facility_code)
+        code = (facility_code or "").strip()
+
+        # 1) C/S 新流程：优先从服务端下载数据库中登记的 SeaInp 文件。
+        remote_sea = self._download_latest_sea_from_server(code)
+        if remote_sea:
+            return remote_sea
+
+        # 2) 兼容本机单机/旧流程：直接使用数据库 storage_path。
+        db_sea = self._find_current_sea_file_from_db(code)
         if db_sea:
             return db_sea
 
-        # 兜底：如果海况文件与结构模型同目录，仍可自动识别。
+        # 3) 兜底：如果海况文件与结构模型同目录，仍可自动识别。
         if not model_path:
             return None
 
@@ -3735,6 +3848,9 @@ class PlatformStrengthPage(BasePage):
 
     def _resolve_current_sea_file(self) -> str:
         facility_code = self._get_top_value("facility_code")
+        remote_sea = self._download_latest_sea_from_server(facility_code)
+        if remote_sea:
+            return remote_sea
         return self._find_current_sea_file_from_db(facility_code)
 
     def _on_read_marine_table_from_seainp(self) -> None:
@@ -3752,12 +3868,14 @@ class PlatformStrengthPage(BasePage):
         except Exception as exc:
             QMessageBox.critical(self, "读取失败", f"SeaInp 海生物信息读取失败：\n{exc}")
 
-    def _autoload_inp_to_view(self):
+    def _autoload_inp_to_view(self, force_remote: bool = False):
         if not hasattr(self, "inp_path_label"):
             return
 
         facility_code = self._get_top_value("facility_code")
-        if not facility_code:
+        path = self._resolve_current_preview_model_file(facility_code, force_remote=force_remote)
+
+        if not path:
             self.inp_path_label.setText("未找到可解析的 SACS 结构模型文件")
             if self._ensure_inp_view_created():
                 self.inp_view.clear_view(
@@ -3770,7 +3888,7 @@ class PlatformStrengthPage(BasePage):
         try:
             target_z = self._get_workpoint_value()
             self.inp_path_label.setText("正在查找并加载 SACS 结构模型文件...")
-            self._start_async_model_preview_load(facility_code, target_z)
+            self._start_async_model_preview_load(facility_code, target_z, model_path=path)
 
         except Exception as e:
             self.inp_path_label.setText("模型加载失败")

@@ -26,7 +26,7 @@ from PyQt5.QtCore import QObject, QProcess, Qt, QThread, QTimer, QRectF, pyqtSig
 
 from PyQt5.QtCore import Qt, QTimer, QRectF, QProcess
 
-
+from client_api.api_client import ApiClient
 from PyQt5.QtGui import QColor, QPen, QBrush, QFontMetrics
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -340,7 +340,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
     )
     def __init__(self, main_window, facility_code, job_name="", mysql_url="", platform_overview_text="",
                  inspection_record_summary_text="", env_branch="", env_op_company="", env_oilfield="",
-                 overall_model_image_path="", parent=None):
+                 overall_model_image_path="", analysis_mode="", server_result_file="", server_work_dir="",
+                 parent=None):
         if parent is None:
             parent = main_window
         super().__init__("", parent)
@@ -355,6 +356,16 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self.env_op_company = str(env_op_company or "").strip()
         self.env_oilfield = str(env_oilfield or "").strip()
         self.overall_model_image_path = str(overall_model_image_path or "").strip()
+
+        # 服务端/客户端分离参数：
+        # analysis_mode: original / rebuild / auto。原模型计算时，右侧模型图使用服务端当前 sacinp 下载缓存作为 old/new 双侧显示。
+        # server_result_file/server_work_dir: 服务端计算返回的结果文件/工作目录，仅作记录；客户端不会直接访问这些服务端 D 盘路径。
+        self.analysis_mode = str(analysis_mode or "").strip()
+        self.server_result_file = os.path.normpath(str(server_result_file or "").strip()) if server_result_file else ""
+        self.server_work_dir = os.path.normpath(str(server_work_dir or "").strip()) if server_work_dir else ""
+        self._remote_model_cache_dir = Path.cwd() / ".client_cache" / "feasibility" / self.facility_code
+        self._remote_model_cache_dir.mkdir(parents=True, exist_ok=True)
+
         self.current_tab = "构件"
         self._report_thread = None
         self._report_worker = None
@@ -1380,18 +1391,46 @@ class FeasibilityAssessmentResultsPage(BasePage):
         except ValueError as exc:
             return [], str(exc) or "请完整输入承载力和桩身重是数据"
 
-    def _get_current_job_factor_path(self) -> str:
+    def _get_current_job_factor_path(self, *, allow_remote_export: bool = True) -> str:
+        """获取客户端可访问的 psilst.factor。
+
+        C/S 模式下服务端返回的 result_file 往往是服务端本机路径，客户端不能直接读取。
+        因此这里按顺序尝试：
+        1. 本地运行目录中的 psilst.factor；
+        2. 服务端 result_file 恰好是客户端可访问路径；
+        3. 调用 /api/feasibility/files/export 下载服务端打包结果到客户端缓存，再查找 psilst/factor。
+
+        生成报告时传 allow_remote_export=False：报告由服务端读取结果文件，客户端不再
+        为生成报告下载/解压计算输出包，避免和上一页“导出文件”按钮重复。
+        """
         runtime_dir = os.path.normpath(get_job_runtime_dir(self.job_name))
-        factor_path = os.path.join(runtime_dir, "psilst.factor")
-        if not os.path.exists(factor_path):
-            raise FileNotFoundError(
-                "未找到当前任务生成的结果文件："
-                f"{factor_path}\n请先完成当前任务的“计算分析”。"
-            )
-        return factor_path
+        local_factor_path = os.path.join(runtime_dir, "psilst.factor")
+        if os.path.exists(local_factor_path):
+            return local_factor_path
+
+        if self.server_result_file and os.path.exists(self.server_result_file):
+            return self.server_result_file
+
+        if not allow_remote_export:
+            return self.server_result_file or ""
+
+        try:
+            extracted = self._download_feasibility_outputs_for_client_cache()
+            factor_path = self._pick_factor_file_from_paths(extracted)
+            if factor_path:
+                return factor_path
+        except Exception as exc:
+            print("[FeasibilityAssessmentResultsPage] remote factor download failed:", exc)
+
+        raise FileNotFoundError(
+            "未找到当前任务生成的结果文件。\n"
+            f"本地目录：{local_factor_path}\n"
+            f"服务端结果路径：{self.server_result_file or '未返回'}\n"
+            "请先完成当前任务的“计算分析”，或检查服务端 /api/feasibility/files/export 是否可用。"
+        )
 
     def _build_report_payload(self) -> dict:
-        factor_path = self._get_current_job_factor_path()
+        factor_path = self._get_current_job_factor_path(allow_remote_export=False)
 
         platform_overview = ""
         platform_overview_blocks = []
@@ -1871,7 +1910,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
             if candidates:
                 candidates.sort(key=lambda path: os.path.getmtime(path), reverse=True)
                 return candidates[0]
-        return get_job_sea_file(code)
+        fallback = get_job_sea_file(code)
+        if fallback and os.path.exists(fallback):
+            return fallback
+
+        # C/S 模式下客户端本地没有服务端 D 盘文件时，通过 API 下载海况文件到客户端缓存。
+        return self._download_latest_sea_for_client_cache()
 
     def _iter_basis_data_logical_prefixes(self, path_segments: List[str]):
         normalized_segments = [str(segment or "").strip().strip("/\\") for segment in path_segments]
@@ -2242,9 +2286,40 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return {"message": "report generated (local)", "output_path": result}
 
     def _generate_report(self, payload: dict) -> dict:
-        # 当前工程使用本地报告生成逻辑。不要保留冲突分支中的 HTTP 调用，
-        # 因为 _get_report_mode / _post_report_request 在本文件中没有定义。
-        return self._generate_report_locally(payload)
+        """
+        FastAPI 服务端生成可行性评估报告，客户端下载到用户选择路径。
+
+        本函数保留原返回格式：
+            {"message": "...", "output_path": "..."}
+        这样下面 _on_report_generation_finished 不需要改。
+        """
+        output_path = str(payload.get("output_path", "")).strip()
+        if not output_path:
+            raise ValueError("未选择报告保存路径。")
+
+        api = ApiClient()
+
+        task_id = api.generate_feasibility_report(
+            facility_code=self.facility_code,
+            run_id=None,
+            report_payload=payload,
+            metadata={},
+            output_path=None,
+        )
+
+        task = api.wait_feasibility_report_task(task_id, interval=1.0)
+        if str(task.get("status") or "").lower() != "success":
+            raise RuntimeError(str(task.get("error") or task.get("message") or "服务端报告生成失败"))
+
+        local_path = api.download_feasibility_report(
+            task_id,
+            output_path,
+        )
+
+        return {
+            "message": "report generated (remote)",
+            "output_path": local_path,
+        }
 
     def _open_report_output_directory(self, output_path: str) -> bool:
         target = Path(str(output_path or "").strip())
@@ -2340,17 +2415,157 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._set_report_running(False)
         QMessageBox.critical(self, "生成报告失败", message)
 
+    def _client_cache_dir(self, *parts: str) -> Path:
+        root = self._remote_model_cache_dir
+        for part in parts:
+            text = str(part or "").strip().replace("/", "_").replace("\\", "_")
+            if text:
+                root = root / text
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    @staticmethod
+    def _is_existing_file(path: str) -> bool:
+        text = str(path or "").strip()
+        return bool(text) and os.path.exists(text) and os.path.isfile(text)
+
+    def _download_latest_original_model_for_client_cache(self) -> str:
+        """下载数据库中当前平台最新 sacinp 到客户端缓存。"""
+        cache_dir = self._client_cache_dir("model_files")
+        path = ApiClient().download_latest_model_file(
+            self.facility_code,
+            local_output_path=None,
+        )
+        path = os.path.normpath(str(path or "").strip())
+        if path and os.path.exists(path):
+            return path
+
+        # 极端情况下 ApiClient 的默认缓存不在本页面缓存目录，也允许指定一次目标目录。
+        return os.path.normpath(
+            ApiClient().download_latest_model_file(
+                self.facility_code,
+                local_output_path=cache_dir / "sacinp_from_server",
+            )
+        )
+
+    def _download_latest_sea_for_client_cache(self) -> str:
+        """下载数据库中当前平台最新 seainp 到客户端缓存。没有海况文件时返回空字符串。"""
+        try:
+            cache_dir = self._client_cache_dir("model_files")
+            return os.path.normpath(
+                ApiClient().download_latest_sea_file(
+                    self.facility_code,
+                    local_output_path=cache_dir / "seainp_from_server",
+                )
+            )
+        except Exception as exc:
+            print("[FeasibilityAssessmentResultsPage] download latest sea failed:", exc)
+            return ""
+
+    def _download_feasibility_outputs_for_client_cache(self) -> list[str]:
+        """下载服务端可行性评估运行输出包到客户端缓存。"""
+        mode = str(self.analysis_mode or "auto").strip() or "auto"
+        cache_dir = self._client_cache_dir("feasibility_outputs", mode)
+        return ApiClient().export_feasibility_files_and_extract(
+            facility_code=self.facility_code,
+            analysis_mode=mode,
+            local_output_dir=cache_dir,
+        )
+
+    @staticmethod
+    def _pick_file_by_names(paths: list[str], exact_names: set[str], prefix_names: tuple[str, ...] = ()) -> str:
+        existing = [os.path.normpath(str(path or "").strip()) for path in paths]
+        existing = [path for path in existing if path and os.path.exists(path) and os.path.isfile(path)]
+        for path in existing:
+            name = os.path.basename(path).lower()
+            if name in exact_names:
+                return path
+        for path in existing:
+            name = os.path.basename(path).lower()
+            if any(name.startswith(prefix) for prefix in prefix_names):
+                return path
+        return ""
+
+    def _pick_factor_file_from_paths(self, paths: list[str]) -> str:
+        return self._pick_file_by_names(
+            paths,
+            exact_names={"psilst.factor", "psilst.lst", "psilst"},
+            prefix_names=("psilst",),
+        )
+
+    def _pick_rebuild_model_from_paths(self, paths: list[str]) -> str:
+        return self._pick_file_by_names(
+            paths,
+            exact_names={"sacinp.m1", "sacinp.m1.txt"},
+            prefix_names=("sacinp.m1",),
+        )
+
+    def _resolve_client_model_pair(self, old_file: str, new_file: str, workpoint: float) -> tuple[str, str, float]:
+        """把数据库/服务端记录中的模型路径转换为客户端可访问路径。"""
+        old_file = os.path.normpath(str(old_file or "").strip()) if old_file else ""
+        new_file = os.path.normpath(str(new_file or "").strip()) if new_file else ""
+
+        # 原模型计算：只需要显示当前结构。SacsComparePanel 需要 old/new 都存在，因此使用同一个缓存文件。
+        if str(self.analysis_mode or "").strip().lower() == "original":
+            original = self._download_latest_original_model_for_client_cache()
+            return original, original, workpoint
+
+        old_local = old_file if self._is_existing_file(old_file) else ""
+        new_local = new_file if self._is_existing_file(new_file) else ""
+
+        if not old_local:
+            try:
+                old_local = self._download_latest_original_model_for_client_cache()
+            except Exception as exc:
+                print("[FeasibilityAssessmentResultsPage] download original model failed:", exc)
+                old_local = ""
+
+        if not new_local:
+            try:
+                extracted = self._download_feasibility_outputs_for_client_cache()
+                new_local = self._pick_rebuild_model_from_paths(extracted)
+            except Exception as exc:
+                print("[FeasibilityAssessmentResultsPage] download rebuild model failed:", exc)
+                new_local = ""
+
+        # 如果本次没有改造模型，至少显示原模型，避免右侧空白。
+        if old_local and not new_local:
+            new_local = old_local
+        if new_local and not old_local:
+            old_local = new_local
+
+        if not old_local or not new_local:
+            raise FileNotFoundError(
+                "无法获得客户端可访问的模型文件。\n"
+                f"old_file={old_file}\n"
+                f"new_file={new_file}\n"
+                "请检查 /api/files/download/latest-model 和 /api/feasibility/files/export。"
+            )
+
+        return old_local, new_local, workpoint
+
     def _fetch_model_paths(self):
         """
-        获取结果页右侧三维对比图的模型路径。
+        获取结果页右侧三维对比图模型路径。
 
-        优先使用“当前仍存在的历史改造项目”中的 M1 文件：
-        - 最新历史改造项目的 sacinp.M1 作为 new_file；
-        - 上一次历史改造项目的 sacinp.M1 作为 old_file；
-        - 如果只有一次历史改造，则 old_file 使用原始上传模型。
-
-        这样第二次、第三次改造后，图中只显示“本次改造相对上一次改造”的新增/变化。
+        服务端/客户端分离后，数据库中保存的路径通常是服务端 D 盘路径，客户端不能直接读取。
+        因此本函数会优先使用本地可访问路径；如果不可访问，就通过 FastAPI 下载到客户端缓存目录。
         """
+        default_workpoint = 9.1
+
+        try:
+            default_workpoint = load_latest_wizard_workpoint(
+                self.mysql_url,
+                job_name=self.job_name,
+                default=9.1,
+            )
+        except Exception:
+            default_workpoint = 9.1
+
+        # 原模型计算不需要读 wizard_model_info；直接下载数据库最新原模型做单模型显示。
+        if str(self.analysis_mode or "").strip().lower() == "original":
+            return self._resolve_client_model_pair("", "", float(default_workpoint))
+
         try:
             bundle = get_latest_rebuild_compare_model_paths(
                 mysql_url=self.mysql_url,
@@ -2358,26 +2573,26 @@ class FeasibilityAssessmentResultsPage(BasePage):
             )
             old_file = str(bundle.get("old_model_file") or "").strip()
             new_file = str(bundle.get("new_model_file") or "").strip()
-            if old_file and new_file and os.path.exists(old_file) and os.path.exists(new_file):
-                workpoint = load_latest_wizard_workpoint(
-                    self.mysql_url,
-                    job_name=self.job_name,
-                    default=9.1,
-                )
-                return old_file, new_file, workpoint
-        except Exception:
-            pass
+            if old_file or new_file:
+                return self._resolve_client_model_pair(old_file, new_file, float(default_workpoint))
+        except Exception as exc:
+            print("[FeasibilityAssessmentResultsPage] latest rebuild compare paths unavailable:", exc)
 
-        row = load_latest_wizard_model_paths(self.mysql_url, job_name=self.job_name)
+        try:
+            row = load_latest_wizard_model_paths(self.mysql_url, job_name=self.job_name)
+        except Exception as exc:
+            print("[FeasibilityAssessmentResultsPage] load wizard model paths failed:", exc)
+            row = None
 
-        if row is None:
-            raise ValueError(f"wizard_model_info 中未找到 job_name={self.job_name} 的记录")
+        if row is not None:
+            old_file = str(row["model_file"] or "").strip()
+            new_file = str(row["new_model_file"] or "").strip()
+            workpoint = float(row["workpoint"]) if row["workpoint"] is not None else float(default_workpoint)
+            return self._resolve_client_model_pair(old_file, new_file, workpoint)
 
-        old_file = str(row["model_file"] or "").strip()
-        new_file = str(row["new_model_file"] or "").strip()
-        workpoint = float(row["workpoint"]) if row["workpoint"] is not None else 9.1
-
-        return old_file, new_file, workpoint
+        # 没有 wizard_model_info 时也不要直接失败，先展示数据库中的当前原模型。
+        original = self._download_latest_original_model_for_client_cache()
+        return original, original, float(default_workpoint)
 
     def reload_model_view(self):
         try:

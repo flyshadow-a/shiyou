@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 import math
 import re
 import random
@@ -86,6 +87,53 @@ PIPELINE_MODULE_MAP = {
     8: ("整体风险等级计算", ["build_member_risk_vba", "build_joint_risk_vba", "build_joint_forecast_vba_wide"]),
     9: ("检测策略形成", ["build_node_plan_vba", "build_member_plan_vba"]),
 }
+
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _is_fastapi_server_runtime() -> bool:
+    """Return True when this code is running inside the FastAPI/uvicorn server process."""
+    argv_text = " ".join(str(x) for x in sys.argv).lower()
+    if "uvicorn" in argv_text or "server.main" in argv_text or "fastapi" in argv_text:
+        return True
+    if "uvicorn" in sys.modules or "fastapi" in sys.modules:
+        return True
+    return False
+
+
+def _server_gui_allowed() -> bool:
+    """
+    服务端默认禁止弹窗。
+
+    原来的 VBA 转换代码会在服务端用 ctypes/tkinter 弹出“疲劳输入检查”和 ManualBrace 输入框。
+    C/S 分离部署时用户看不到服务端桌面，这会导致接口一直卡住。
+
+    默认规则：
+    - FastAPI/uvicorn 服务端：不弹窗、不等待 input；只打印日志并返回待补全行给调用方。
+    - 本地命令行/单机调试：仍允许弹窗。
+    - 如确实要在服务端调试弹窗，可设置 SHIYOU_ALLOW_SERVER_GUI=1。
+    - 如要在任何运行方式都禁用弹窗，可设置 SHIYOU_DISABLE_SERVER_GUI=1。
+    """
+    if _env_truthy("SHIYOU_DISABLE_SERVER_GUI", False):
+        return False
+    if _env_truthy("SHIYOU_ALLOW_SERVER_GUI", False):
+        return True
+    if _is_fastapi_server_runtime():
+        return False
+    return True
+
+
+def _server_gui_disabled_reason() -> str:
+    if _env_truthy("SHIYOU_DISABLE_SERVER_GUI", False):
+        return "SHIYOU_DISABLE_SERVER_GUI=1"
+    if _is_fastapi_server_runtime() and not _env_truthy("SHIYOU_ALLOW_SERVER_GUI", False):
+        return "FastAPI/uvicorn 服务端运行中，默认禁止服务端弹窗"
+    return ""
 
 
 def _norm_cdf(x: float) -> float:
@@ -1015,8 +1063,16 @@ def build_fatigue_merge_cfg_from_ftginp(paths: Sequence[str | Path]) -> List[Dic
 
 def _show_warning_popup(title: str, message: str) -> None:
     """
-    Best-effort popup message (Windows). No-op when GUI is unavailable.
+    Best-effort popup message (Windows).
+
+    C/S 分离部署时这段代码在服务端执行，服务端弹窗会卡住 FastAPI 任务，
+    客户端无法点击。因此服务端默认不弹窗，只输出日志。
     """
+    if not _server_gui_allowed():
+        reason = _server_gui_disabled_reason()
+        print(f"[INFO] server GUI popup suppressed: title={title!r}, reason={reason}")
+        return
+
     try:
         import ctypes
 
@@ -1078,7 +1134,15 @@ def _collect_manual_overrides_gui(audit_df: pd.DataFrame) -> Optional[Dict[Tuple
     Returns:
       - dict: GUI ran (possibly empty if user skipped all)
       - None: GUI unavailable/error, caller may fallback to terminal input
+
+    注意：FastAPI/uvicorn 服务端默认不允许进入此函数的弹窗分支。
+    ManualBrace 应由客户端界面收集后，通过接口传回服务端。
     """
+    if not _server_gui_allowed():
+        reason = _server_gui_disabled_reason()
+        print(f"[INFO] server ManualBrace GUI input suppressed: reason={reason}")
+        return None
+
     pending = _pending_manual_fill_rows(audit_df)
     if pending.empty:
         return {}
@@ -1295,6 +1359,69 @@ def load_manual_selector_overrides_from_workbook(
 
     print(f"[INFO] manual selector overrides loaded: {len(overrides)} from {p}")
     return overrides
+
+
+def normalize_manual_selector_overrides(
+    raw: Any,
+) -> Dict[Tuple[int, str], str]:
+    """
+    Normalize ManualBrace overrides supplied directly by the client API.
+
+    Supported payloads:
+    1) {(1, "407L"): "306L"}
+    2) {"1|407L": "306L"} / {"1:407L": "306L"}
+    3) [{"FileIndex": 1, "Joint": "407L", "ManualBrace": "306L"}, ...]
+
+    This lets the client collect ManualBrace in its own PyQt dialog and pass the
+    values into the server calculation without any server-side popup.
+    """
+    out: Dict[Tuple[int, str], str] = {}
+    if raw is None:
+        return out
+
+    def _add(file_index_value: Any, joint_value: Any, brace_value: Any) -> None:
+        fi = _as_float(file_index_value)
+        joint = _safe_str(joint_value)
+        brace = _safe_str(brace_value)[:4]
+        if fi is None or joint == "" or brace == "":
+            return
+        out[(int(fi), joint)] = brace
+
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            if isinstance(key, tuple) and len(key) >= 2:
+                _add(key[0], key[1], value)
+                continue
+            if isinstance(value, dict):
+                _add(
+                    value.get("FileIndex") or value.get("file_index") or value.get("fileIndex"),
+                    value.get("Joint") or value.get("joint"),
+                    value.get("ManualBrace") or value.get("manual_brace") or value.get("Brace") or value.get("brace"),
+                )
+                continue
+            key_text = _safe_str(key)
+            if "|" in key_text:
+                left, right = key_text.split("|", 1)
+            elif ":" in key_text:
+                left, right = key_text.split(":", 1)
+            elif "," in key_text:
+                left, right = key_text.split(",", 1)
+            else:
+                continue
+            _add(left, right, value)
+        return out
+
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            if isinstance(item, dict):
+                _add(
+                    item.get("FileIndex") or item.get("file_index") or item.get("fileIndex"),
+                    item.get("Joint") or item.get("joint"),
+                    item.get("ManualBrace") or item.get("manual_brace") or item.get("Brace") or item.get("brace"),
+                )
+            elif isinstance(item, (list, tuple)) and len(item) >= 3:
+                _add(item[0], item[1], item[2])
+    return out
 
 
 def apply_manual_selector_overrides(
@@ -3951,6 +4078,7 @@ def prepare_run_state(
     params_json: str | Path | None = None,
     ftginp_files: Sequence[str | Path] | None = None,
     manual_fill_workbook: str | Path | None = None,
+    manual_selector_overrides: Any = None,
     interactive_manual_fill: bool = False,
     enable_topology_inference: bool = False,
     apply_sheet2_jointtype: bool = True,
@@ -4030,7 +4158,11 @@ def prepare_run_state(
 
     merge_cfg: Optional[Sequence[Dict[str, Any]]] = cfg.get("fatigue_merge")
     fatigue_selector_audit_df = pd.DataFrame(columns=FATIGUE_AUDIT_COLUMNS)
-    manual_selector_overrides = load_manual_selector_overrides_from_workbook(manual_fill_workbook)
+    manual_selector_overrides_from_workbook = load_manual_selector_overrides_from_workbook(manual_fill_workbook)
+    manual_selector_overrides_direct = normalize_manual_selector_overrides(manual_selector_overrides)
+    manual_selector_overrides = {**manual_selector_overrides_from_workbook, **manual_selector_overrides_direct}
+    if manual_selector_overrides_direct:
+        print(f"[INFO] manual selector overrides loaded from client payload: {len(manual_selector_overrides_direct)}")
     if ftginp_paths:
         print(f"[INFO] fatigue input files resolved: {len(ftginp_paths)}")
         for i, p in enumerate(ftginp_paths, start=1):
@@ -4070,30 +4202,47 @@ def prepare_run_state(
                 )
                 if manual_csv is not None:
                     print(f"[WARN] manual fill csv: {manual_csv}")
-                _show_warning_popup("疲劳输入检查", warn_msg)
+
+                # C/S 分离核心修改：
+                # 服务端不再弹“疲劳输入检查”或 ManualBrace 输入框。
+                # 待补全行保留在 fatigue_selector_audit_df 中，由 API 返回给客户端；
+                # 客户端弹自己的 PyQt 输入框后，再把 manual_selector_overrides 传回来。
+                if _server_gui_allowed():
+                    _show_warning_popup("疲劳输入检查", warn_msg)
+                else:
+                    print(
+                        "[INFO] ManualBrace pending rows will be returned to client; "
+                        f"server-side GUI disabled: {_server_gui_disabled_reason()}"
+                    )
 
                 if interactive_manual_fill:
-                    user_overrides_opt = _collect_manual_overrides_gui(fatigue_selector_audit_df)
-                    if user_overrides_opt is None:
-                        # GUI unavailable -> fallback to terminal input.
-                        user_overrides = _collect_manual_overrides_interactive(fatigue_selector_audit_df)
-                    else:
-                        user_overrides = user_overrides_opt
-                    if user_overrides:
-                        merge_cfg, interactive_applied_df = apply_manual_selector_overrides(merge_cfg, user_overrides)
-                        # Rebuild pending audit from updated selectors, then append applied log.
-                        pending_after_df = build_ringmember_manual_fill_audit(merge_cfg)
-                        if not interactive_applied_df.empty:
-                            fatigue_selector_audit_df = pd.concat(
-                                [pending_after_df, interactive_applied_df], ignore_index=True
-                            )
-                        else:
-                            fatigue_selector_audit_df = pending_after_df
-                        manual_left = int((pending_after_df["Action"] == "manual_fill_needed").sum())
+                    if not _server_gui_allowed():
                         print(
-                            "[INFO] interactive manual fill applied: "
-                            f"applied={len(interactive_applied_df)}, remaining={manual_left}"
+                            "[INFO] interactive_manual_fill ignored on server; "
+                            "client should submit ManualBrace by manual_selector_overrides."
                         )
+                    else:
+                        user_overrides_opt = _collect_manual_overrides_gui(fatigue_selector_audit_df)
+                        if user_overrides_opt is None:
+                            # GUI unavailable -> fallback to terminal input only in local/single-machine mode.
+                            user_overrides = _collect_manual_overrides_interactive(fatigue_selector_audit_df)
+                        else:
+                            user_overrides = user_overrides_opt
+                        if user_overrides:
+                            merge_cfg, interactive_applied_df = apply_manual_selector_overrides(merge_cfg, user_overrides)
+                            # Rebuild pending audit from updated selectors, then append applied log.
+                            pending_after_df = build_ringmember_manual_fill_audit(merge_cfg)
+                            if not interactive_applied_df.empty:
+                                fatigue_selector_audit_df = pd.concat(
+                                    [pending_after_df, interactive_applied_df], ignore_index=True
+                                )
+                            else:
+                                fatigue_selector_audit_df = pending_after_df
+                            manual_left = int((pending_after_df["Action"] == "manual_fill_needed").sum())
+                            print(
+                                "[INFO] interactive manual fill applied: "
+                                f"applied={len(interactive_applied_df)}, remaining={manual_left}"
+                            )
         if len(ftginp_paths) != len(ftglst_paths):
             print(
                 "[WARN] ftginp count != ftglst count; "
@@ -4430,6 +4579,7 @@ def run(
     params_json: str | Path | None = None,
     ftginp_files: Sequence[str | Path] | None = None,
     manual_fill_workbook: str | Path | None = None,
+    manual_selector_overrides: Any = None,
     interactive_manual_fill: bool = False,
     enable_topology_inference: bool = False,
     apply_sheet2_jointtype: bool = True,
@@ -4450,6 +4600,7 @@ def run(
         params_json=params_json,
         ftginp_files=ftginp_files,
         manual_fill_workbook=manual_fill_workbook,
+        manual_selector_overrides=manual_selector_overrides,
         interactive_manual_fill=interactive_manual_fill,
         enable_topology_inference=enable_topology_inference,
         apply_sheet2_jointtype=apply_sheet2_jointtype,
@@ -4491,6 +4642,11 @@ def main() -> None:
         action="store_true",
         help="Prompt ManualBrace by GUI input dialog (fallback terminal) when JSLC selector mapping is missing, then continue in one run.",
     )
+    ap.add_argument(
+        "--disable-gui",
+        action="store_true",
+        help="Disable all server/local popup dialogs for ManualBrace checking.",
+    )
     ap.add_argument("--out", required=True, help="output xlsx")
     ap.add_argument("--policy", default="strict", choices=["strict","loose"], help="inspection policy mode")
     ap.add_argument("--seed", type=int, default=42, help="random seed for sampling")
@@ -4500,6 +4656,9 @@ def main() -> None:
         help="Enable non-VBA topology inference for fatigue selector completion (default: disabled for strict VBA).",
     )
     args = ap.parse_args()
+
+    if args.disable_gui:
+        os.environ["SHIYOU_DISABLE_SERVER_GUI"] = "1"
 
     if args.data_dir:
         bundle = discover_data_bundle(args.data_dir)

@@ -43,6 +43,113 @@ def _norm(value: object) -> str:
     return os.path.normpath(str(value or "").strip()) if str(value or "").strip() else ""
 
 
+def _is_existing_file(path: object) -> bool:
+    text = str(path or "").strip()
+    return bool(text) and os.path.exists(text) and os.path.isfile(text)
+
+
+def _project_root() -> Path:
+    here = Path(__file__).resolve()
+    return here.parents[1] if here.parent.name == "services" else here.parent
+
+
+def _api_base_url() -> str:
+    env_url = os.environ.get("SHIYOU_API_BASE_URL", "").strip()
+    if env_url:
+        return env_url.rstrip("/")
+    cfg_path = _project_root() / "client_config.json"
+    if cfg_path.exists():
+        try:
+            import json
+            payload = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+            value = str(payload.get("api_base_url") or "").strip()
+            if value:
+                return value.rstrip("/")
+        except Exception:
+            pass
+    return "http://127.0.0.1:8000"
+
+
+def _download_latest_sacinp_from_fastapi(facility_code: str) -> str:
+    """客户端辅助导图进程兜底：从 FastAPI 服务端下载当前 sacinp 到本地缓存。"""
+    try:
+        import requests
+    except Exception:
+        return ""
+
+    code = str(facility_code or "").strip()
+    if not code:
+        return ""
+
+    cache_dir = _project_root() / ".client_cache" / "model_files" / code
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    output_path = cache_dir / "sacinp_from_server"
+    tmp_path = output_path.with_name(output_path.name + ".download.tmp")
+
+    try:
+        with requests.get(
+            f"{_api_base_url()}/api/files/download/latest-model",
+            params={"facility_code": code},
+            stream=True,
+            timeout=300,
+        ) as resp:
+            resp.raise_for_status()
+            with open(tmp_path, "wb") as fp:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fp.write(chunk)
+        tmp_path.replace(output_path)
+        return str(output_path) if _is_existing_file(output_path) else ""
+    except Exception as exc:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
+        print("[ReportImageExporter] download latest model from FastAPI failed:", exc, flush=True)
+        return ""
+
+
+def _find_client_cached_rebuilt_model(facility_code: str) -> str:
+    """客户端兜底查找新增构件后下载/生成的 sacinp.M1。"""
+    code = str(facility_code or "").strip()
+    if not code:
+        return ""
+
+    roots = [
+        _project_root() / ".client_cache" / "feasibility" / code,
+        _project_root() / "feasibility_assessment_runtime" / code,
+        Path.cwd() / ".client_cache" / "feasibility" / code,
+        Path.cwd() / "feasibility_assessment_runtime" / code,
+    ]
+
+    candidates: list[Path] = []
+    for root in roots:
+        try:
+            if root.exists():
+                candidates.extend([p for p in root.rglob("sacinp.M1") if p.is_file()])
+                candidates.extend([p for p in root.rglob("*.M1") if p.is_file() and p.name.lower().startswith("sacinp")])
+        except Exception:
+            continue
+
+    if not candidates:
+        return ""
+
+    candidates.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+    return str(candidates[0])
+
+
+def _ensure_usable_model_path(path: object, facility_code: str, *, allow_download: bool = True) -> str:
+    text = _norm(path)
+    if _is_existing_file(text):
+        return text
+    if allow_download:
+        downloaded = _download_latest_sacinp_from_fastapi(facility_code)
+        if _is_existing_file(downloaded):
+            return _norm(downloaded)
+    return ""
+
+
 def _resolve_outline_model_bundles(facility_code: str) -> dict[str, dict]:
     """为“生成评估报告”准备原模型/改造后模型。
 
@@ -117,10 +224,16 @@ def _export_one_image(
     overlay: dict | None = None,
     remark: str = "",
     model_path_override: str = "",
+    show_level_ii: bool = False,
 ) -> str:
     from services.special_strategy_image_service import build_strategy_image_path, save_strategy_image_record
 
+    is_risk_image = str(image_type or "").strip() == "elevation_risk"
+
     view.clear_inspection_overlay()
+    if is_risk_image and hasattr(view, "set_show_level_ii"):
+        view.set_show_level_ii(bool(show_level_ii))
+
     view.load_for_facility(
         facility_code=facility_code,
         context=context,
@@ -130,6 +243,9 @@ def _export_one_image(
     )
     if overlay and hasattr(view, "set_inspection_overlay"):
         view.set_inspection_overlay(overlay)
+
+    if is_risk_image and hasattr(view, "set_show_level_ii"):
+        view.set_show_level_ii(bool(show_level_ii))
 
     _pump_events(app, times=8)
 
@@ -163,6 +279,7 @@ def export_report_images(
     run_id: int | None = None,
     mode: str = "all",
     include_outline: bool | None = None,
+    show_level_ii: bool = False,
 ) -> int:
     """
     导出报告所需立面图片。
@@ -220,8 +337,23 @@ def export_report_images(
     original_bundle = outline_bundles.get("original") or {}
     rebuilt_bundle = outline_bundles.get("rebuilt") or {}
 
-    original_model_path = _norm(original_bundle.get("model_file"))
-    rebuilt_model_path = _norm(rebuilt_bundle.get("model_file")) or original_model_path
+    original_model_path = _ensure_usable_model_path(original_bundle.get("model_file"), facility_code, allow_download=True)
+
+    rebuilt_model_path = _norm(rebuilt_bundle.get("model_file"))
+    if not _is_existing_file(rebuilt_model_path):
+        cached_rebuilt = _find_client_cached_rebuilt_model(facility_code)
+        if _is_existing_file(cached_rebuilt):
+            rebuilt_model_path = _norm(cached_rebuilt)
+        else:
+            rebuilt_model_path = original_model_path
+
+    # 如果数据库中的原始路径在客户端不可访问，上面会自动下载到 .client_cache。
+    # 如果新增构件后的 M1 在客户端缓存中不存在，则改造后轮廓图临时回退到原模型，避免报告流程直接中断。
+    if not original_model_path and _is_existing_file(rebuilt_model_path):
+        original_model_path = rebuilt_model_path
+
+    original_bundle["model_file"] = original_model_path
+    rebuilt_bundle["model_file"] = rebuilt_model_path
 
     original_row_names: list[str] = []
     rebuilt_row_names: list[str] = []
@@ -257,14 +389,20 @@ def export_report_images(
 
     if mode in {"all", "risk"}:
         risk_probe_model = rebuilt_model_path or original_model_path
-        risk_row_names = _load_row_names(
-            view,
-            facility_code,
-            context,
-            mapper.default_display_label(),
-            app,
-            model_path_override=risk_probe_model,
-        )
+        if not _is_existing_file(risk_probe_model):
+            risk_probe_model = _ensure_usable_model_path("", facility_code, allow_download=True)
+        if _is_existing_file(risk_probe_model):
+            risk_row_names = _load_row_names(
+                view,
+                facility_code,
+                context,
+                mapper.default_display_label(),
+                app,
+                model_path_override=risk_probe_model,
+            )
+        else:
+            print("[ReportImageExporter] risk probe model missing; use default row names", flush=True)
+            risk_row_names = ["XZ 前", "XZ 后", "YZ 左", "YZ 右"]
 
     outline_count = len(original_row_names) + len(rebuilt_row_names) if mode in {"all", "outline"} else 0
     risk_count = len(risk_row_names) * len(year_labels) if mode in {"all", "risk"} else 0
@@ -272,6 +410,7 @@ def export_report_images(
     done = 0
     print(
         f"[ReportImageExporter] start export, mode={mode}, "
+        f"show_level_ii={bool(show_level_ii)}, "
         f"original_outline={len(original_row_names)}, rebuilt_outline={len(rebuilt_row_names)}, risk={risk_count}",
         flush=True,
     )
@@ -340,8 +479,12 @@ def export_report_images(
                     year_label=year_label,
                     row_name=row_name,
                     overlay=overlay,
-                    remark="生成特检策略报告前导出：更新风险结果页模型立面风险图",
+                    remark=(
+                        "生成特检策略报告前导出：更新风险结果页模型立面风险图"
+                        f"（{'II/III/IV' if show_level_ii else 'III/IV'}）"
+                    ),
                     model_path_override=rebuilt_model_path or original_model_path,
+                    show_level_ii=bool(show_level_ii),
                 )
                 done += 1
                 print(f"[ReportImageExporter] progress {done}/{total}: risk {year_label} {row_name}", flush=True)
@@ -368,6 +511,7 @@ def main() -> int:
         help="导出模式：all=轮廓图+风险图；outline=只导出轮廓图；risk=只导出风险等级图",
     )
     parser.add_argument("--no-outline", action="store_true", help="兼容旧参数：等价于 --mode risk")
+    parser.add_argument("--show-level-ii", action="store_true", help="风险图导出 II/III/IV；默认只导出 III/IV")
     parser.add_argument("--generate-report", action="store_true", help="导出图片后继续生成特检策略报告")
     args = parser.parse_args()
 
@@ -388,6 +532,7 @@ def main() -> int:
             facility_code=args.facility_code,
             run_id=run_id,
             mode=mode,
+            show_level_ii=bool(args.show_level_ii),
         )
         if args.generate_report:
             _ensure_project_root_on_path()

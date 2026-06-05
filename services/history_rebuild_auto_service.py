@@ -570,6 +570,25 @@ def find_original_uploaded_model_bundle(facility_code: str) -> dict[str, Any]:
             sea_candidates.append((_score_original_sea_row(row, path), path))
 
     if not model_candidates:
+        # C/S 服务端模式兜底：
+        # 旧逻辑可能因为 file_type_code/category 字段不一致，查不到当前模型文件；
+        # 这里改用 /api/files/latest-model 背后的统一文件解析服务。
+        try:
+            from services.server_file_service import get_latest_sacinp_path, get_latest_seainp_path
+
+            model_path = _norm(str(get_latest_sacinp_path(code)))
+            sea_path_obj = get_latest_seainp_path(code)
+            sea_path = _norm(str(sea_path_obj or ""))
+
+            if _file_exists(model_path):
+                return {
+                    "source": "original_server_file_service",
+                    "model_file": model_path,
+                    "sea_file": sea_path if _file_exists(sea_path) else "",
+                }
+        except Exception as exc:
+            print("[history_rebuild_auto_service] server_file_service fallback failed:", exc)
+
         return {}
 
     model_candidates.sort(key=lambda item: item[0], reverse=True)
