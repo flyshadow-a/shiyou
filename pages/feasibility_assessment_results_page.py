@@ -16,7 +16,7 @@ import re
 import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from openpyxl import Workbook
 
@@ -109,6 +109,224 @@ def _resolve_result_model_paths(self):
     }
 
 
+def _feasibility_cache_dir(cache_root: str | Path, *parts: str) -> Path:
+    root = Path(cache_root)
+    for part in parts:
+        text = str(part or "").strip().replace("/", "_").replace("\\", "_")
+        if text:
+            root = root / text
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _is_existing_file_for_results(path: object) -> bool:
+    text = os.path.normpath(str(path or "").strip())
+    return bool(text and os.path.exists(text) and os.path.isfile(text))
+
+
+def _pick_file_by_names_for_results(
+    paths: list[str],
+    exact_names: set[str],
+    prefix_names: tuple[str, ...] = (),
+) -> str:
+    existing = [os.path.normpath(str(path or "").strip()) for path in paths]
+    existing = [path for path in existing if _is_existing_file_for_results(path)]
+    for path in existing:
+        name = os.path.basename(path).lower()
+        if name in exact_names:
+            return path
+    for path in existing:
+        name = os.path.basename(path).lower()
+        if any(name.startswith(prefix) for prefix in prefix_names):
+            return path
+    return ""
+
+
+def _download_feasibility_outputs_for_results(payload: dict[str, Any]) -> list[str]:
+    mode = str(payload.get("analysis_mode") or "auto").strip() or "auto"
+    cache_dir = _feasibility_cache_dir(payload.get("cache_root") or "", "feasibility_outputs", mode)
+    if bool(payload.get("reuse_cached_outputs")):
+        cached_paths = [
+            str(path)
+            for path in cache_dir.rglob("*")
+            if path.is_file() and not path.name.lower().endswith(".zip")
+        ]
+        if cached_paths:
+            cached_paths.sort()
+            return cached_paths
+
+    return ApiClient().export_feasibility_files_and_extract(
+        facility_code=str(payload.get("facility_code") or "").strip(),
+        analysis_mode=mode,
+        local_output_dir=cache_dir,
+    )
+
+
+def _get_current_job_factor_path_for_results(payload: dict[str, Any]) -> str:
+    job_name = str(payload.get("job_name") or "").strip()
+    server_result_file = os.path.normpath(str(payload.get("server_result_file") or "").strip())
+
+    runtime_dir = os.path.normpath(get_job_runtime_dir(job_name))
+    local_factor_path = os.path.join(runtime_dir, "psilst.factor")
+    if os.path.exists(local_factor_path):
+        return local_factor_path
+
+    if server_result_file and os.path.exists(server_result_file):
+        return server_result_file
+
+    extracted = _download_feasibility_outputs_for_results(payload)
+    factor_path = _pick_file_by_names_for_results(
+        extracted,
+        exact_names={"psilst.factor", "psilst.lst", "psilst"},
+        prefix_names=("psilst",),
+    )
+    if factor_path:
+        return factor_path
+
+    raise FileNotFoundError(
+        "未找到当前任务生成的结果文件。\n"
+        f"本地目录：{local_factor_path}\n"
+        f"服务端结果路径：{server_result_file or '未返回'}\n"
+        "请先完成当前任务的“计算分析”，或检查服务端 /api/feasibility/files/export 是否可用。"
+    )
+
+
+def _get_remote_analysis_results_for_results(payload: dict[str, Any]) -> dict[str, Any]:
+    facility_code = str(payload.get("facility_code") or "").strip()
+    if not facility_code:
+        return {}
+    try:
+        data = ApiClient().get_feasibility_result(facility_code)
+    except Exception as exc:
+        print("[FeasibilityAssessmentResultsPage] remote analysis result unavailable:", exc)
+        return {}
+    results = data.get("results") if isinstance(data, dict) else None
+    return results if isinstance(results, dict) else {}
+
+
+def _download_latest_original_model_for_results(payload: dict[str, Any]) -> str:
+    facility_code = str(payload.get("facility_code") or "").strip()
+    cache_dir = _feasibility_cache_dir(payload.get("cache_root") or "", "model_files")
+    cached = cache_dir / "sacinp_from_server"
+    if _is_existing_file_for_results(cached):
+        return os.path.normpath(str(cached))
+
+    path = ApiClient().download_latest_model_file(
+        facility_code,
+        local_output_path=cached,
+    )
+    path = os.path.normpath(str(path or "").strip())
+    if path and os.path.exists(path):
+        return path
+    return ""
+
+
+def _resolve_client_model_pair_for_results(
+    payload: dict[str, Any],
+    old_file: str,
+    new_file: str,
+    workpoint: float,
+) -> tuple[str, str, float]:
+    old_file = os.path.normpath(str(old_file or "").strip()) if old_file else ""
+    new_file = os.path.normpath(str(new_file or "").strip()) if new_file else ""
+
+    if str(payload.get("analysis_mode") or "").strip().lower() == "original":
+        original = _download_latest_original_model_for_results(payload)
+        return original, original, workpoint
+
+    old_local = old_file if _is_existing_file_for_results(old_file) else ""
+    new_local = new_file if _is_existing_file_for_results(new_file) else ""
+
+    if not old_local:
+        old_local = _download_latest_original_model_for_results(payload)
+
+    if not new_local:
+        extracted = _download_feasibility_outputs_for_results(payload)
+        new_local = _pick_file_by_names_for_results(
+            extracted,
+            exact_names={"sacinp.m1", "sacinp.m1.txt"},
+            prefix_names=("sacinp.m1",),
+        )
+
+    if old_local and not new_local:
+        new_local = old_local
+    if new_local and not old_local:
+        old_local = new_local
+
+    if not old_local or not new_local:
+        raise FileNotFoundError(
+            "无法获得客户端可访问的模型文件。\n"
+            f"old_file={old_file}\n"
+            f"new_file={new_file}\n"
+            "请检查 /api/files/download/latest-model 和 /api/feasibility/files/export。"
+        )
+
+    return old_local, new_local, workpoint
+
+
+def fetch_model_paths_for_results(payload: dict[str, Any]) -> dict[str, Any]:
+    job_name = str(payload.get("job_name") or "").strip()
+    mysql_url = str(payload.get("mysql_url") or "").strip()
+    default_workpoint = 9.1
+
+    try:
+        default_workpoint = load_latest_wizard_workpoint(
+            mysql_url,
+            job_name=job_name,
+            default=9.1,
+        )
+    except Exception:
+        default_workpoint = 9.1
+
+    if str(payload.get("analysis_mode") or "").strip().lower() == "original":
+        old_file, new_file, workpoint = _resolve_client_model_pair_for_results(
+            payload,
+            "",
+            "",
+            float(default_workpoint),
+        )
+        return {"old_file": old_file, "new_file": new_file, "workpoint": workpoint}
+
+    try:
+        bundle = get_latest_rebuild_compare_model_paths(
+            mysql_url=mysql_url,
+            job_name=job_name,
+        )
+        old_file = str(bundle.get("old_model_file") or "").strip()
+        new_file = str(bundle.get("new_model_file") or "").strip()
+        if old_file or new_file:
+            old_file, new_file, workpoint = _resolve_client_model_pair_for_results(
+                payload,
+                old_file,
+                new_file,
+                float(default_workpoint),
+            )
+            return {"old_file": old_file, "new_file": new_file, "workpoint": workpoint}
+    except Exception as exc:
+        print("[FeasibilityAssessmentResultsPage] latest rebuild compare paths unavailable:", exc)
+
+    try:
+        row = load_latest_wizard_model_paths(mysql_url, job_name=job_name)
+    except Exception as exc:
+        print("[FeasibilityAssessmentResultsPage] load wizard model paths failed:", exc)
+        row = None
+
+    if row is not None:
+        old_file = str(row["model_file"] or "").strip()
+        new_file = str(row["new_model_file"] or "").strip()
+        workpoint = float(row["workpoint"]) if row["workpoint"] is not None else float(default_workpoint)
+        old_file, new_file, workpoint = _resolve_client_model_pair_for_results(
+            payload,
+            old_file,
+            new_file,
+            workpoint,
+        )
+        return {"old_file": old_file, "new_file": new_file, "workpoint": workpoint}
+
+    original = _download_latest_original_model_for_results(payload)
+    return {"old_file": original, "new_file": original, "workpoint": float(default_workpoint)}
+
+
 class ReportGenerationWorker(QObject):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
@@ -132,30 +350,61 @@ class AnalysisResultsWorker(QObject):
     def __init__(
         self,
         project_root: Path,
-        factor_path: str,
+        factor_path: str = "",
         pile_capacity_input_rows: List[dict] | None = None,
         pile_capacity_input_error: str = "",
+        path_payload: dict[str, Any] | None = None,
     ):
         super().__init__()
         self._project_root = project_root
-        self._factor_path = factor_path
+        self._factor_path = str(factor_path or "").strip()
         self._pile_capacity_input_rows = list(pile_capacity_input_rows or [])
         self._pile_capacity_input_error = str(pile_capacity_input_error or "").strip()
+        self._path_payload = dict(path_payload or {})
 
     def run(self):
         try:
             project_root_text = str(self._project_root)
             if project_root_text not in sys.path:
                 sys.path.insert(0, project_root_text)
-            from src.report_service import build_analysis_results_for_ui
 
-            results = build_analysis_results_for_ui(
-                self._factor_path,
-                pile_capacity_input_rows=self._pile_capacity_input_rows,
-            )
+            # Fast path: server can parse its local result file and return JSON directly.
+            # If the client supplied pile capacity rows, keep the local parser path because
+            # those rows affect the pile capacity table calculations.
+            results: dict[str, Any] = {}
+            if not self._pile_capacity_input_rows:
+                results = _get_remote_analysis_results_for_results(self._path_payload)
+
+            if not results:
+                from src.report_service import build_analysis_results_for_ui
+
+                factor_path = self._factor_path
+                if not factor_path:
+                    factor_path = _get_current_job_factor_path_for_results(self._path_payload)
+                results = build_analysis_results_for_ui(
+                    factor_path,
+                    pile_capacity_input_rows=self._pile_capacity_input_rows,
+                )
             if self._pile_capacity_input_error:
                 results["pile_capacity_input_error"] = self._pile_capacity_input_error
             self.finished.emit(results)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class ModelViewLoadWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, payload: dict[str, Any]):
+        super().__init__()
+        self._payload = dict(payload)
+
+    def run(self):
+        try:
+            result = fetch_model_paths_for_results(self._payload)
+            result["seq"] = self._payload.get("seq")
+            self.finished.emit(result)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -376,6 +625,9 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._analysis_results = {}
         self._detail_table_rows = {}
         self._pile_capacity_input_warning_shown = False
+        self._model_load_thread = None
+        self._model_load_worker = None
+        self._model_load_seq = 0
 
         # “生成评估报告”按钮专用：先导出/上传模型立面轮廓图，再生成评估报告。
         # 注意：三维图仍由结构强度/改造可行性评估页进入时自动保存，
@@ -388,7 +640,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._build_ui()
         self._show_analysis_status_in_tables("正在解析数据...")
         self.start_analysis_results_loading()
-        QTimer.singleShot(0, self.reload_model_view)
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -1232,12 +1483,33 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         self._schedule_detail_render_jobs(jobs)
 
+    def _build_remote_path_payload(self, *, seq: int | None = None) -> dict[str, Any]:
+        def safe_attr(name: str, default: object = "") -> object:
+            try:
+                return getattr(self, name)
+            except RuntimeError:
+                return default
+            except Exception:
+                return default
+
+        payload = {
+            "facility_code": str(safe_attr("facility_code") or "").strip(),
+            "job_name": str(safe_attr("job_name") or "").strip(),
+            "mysql_url": str(safe_attr("mysql_url") or "").strip(),
+            "analysis_mode": str(safe_attr("analysis_mode") or "").strip(),
+            "server_result_file": str(safe_attr("server_result_file") or "").strip(),
+            "server_work_dir": str(safe_attr("server_work_dir") or "").strip(),
+            "cache_root": str(safe_attr("_remote_model_cache_dir", Path.cwd() / ".client_cache" / "feasibility")),
+        }
+        if seq is not None:
+            payload["seq"] = seq
+        return payload
+
     def start_analysis_results_loading(self) -> None:
         if self._analysis_thread is not None and self._analysis_thread.isRunning():
             return
 
         try:
-            factor_path = self._get_current_job_factor_path()
             project_root = self._get_wordtemplate_project_root()
             pile_capacity_input_rows, pile_capacity_input_error = self._load_pile_capacity_input_rows_for_analysis()
         except Exception:
@@ -1247,9 +1519,10 @@ class FeasibilityAssessmentResultsPage(BasePage):
         thread = QThread(self)
         worker = AnalysisResultsWorker(
             project_root,
-            factor_path,
+            "",
             pile_capacity_input_rows,
             pile_capacity_input_error,
+            self._build_remote_path_payload(),
         )
         worker.moveToThread(thread)
 
@@ -1271,10 +1544,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._analysis_results = results
         self._fill_summary_table_from_analysis(results.get("analysis_summary", {}))
         self._fill_detail_tables_from_analysis(results)
+        QTimer.singleShot(0, self.reload_model_view)
 
     def _on_analysis_results_failed(self, message: str) -> None:
         self._analysis_results = {}
         self._show_analysis_status_in_tables(f"解析数据失败：{message}")
+        QTimer.singleShot(0, self.reload_model_view)
 
     def _on_analysis_thread_finished(self) -> None:
         self._analysis_thread = None
@@ -1297,6 +1572,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 self._analysis_thread.wait(3000)
                 self._analysis_thread = None
                 self._analysis_worker = None
+            if self._model_load_thread is not None and self._model_load_thread.isRunning():
+                self._model_load_thread.quit()
+                self._model_load_thread.wait(3000)
+                self._model_load_thread = None
+                self._model_load_worker = None
         except Exception:
             pass
         super().closeEvent(event)
@@ -2595,6 +2875,62 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return original, original, float(default_workpoint)
 
     def reload_model_view(self):
+        return self._start_model_view_loading()
+
+    def _start_model_view_loading(self):
+        if self._model_load_thread is not None and self._model_load_thread.isRunning():
+            return
+        self._model_load_seq += 1
+        payload = self._build_remote_path_payload(seq=self._model_load_seq)
+        payload["reuse_cached_outputs"] = True
+        if hasattr(self, "model_panel"):
+            try:
+                self.model_panel.path_label.setText("正在加载右侧模型...")
+                self.model_panel.compare_view.clear_view("正在加载右侧模型...")
+            except Exception:
+                pass
+
+        thread = QThread(self)
+        worker = ModelViewLoadWorker(payload)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_model_view_loaded)
+        worker.failed.connect(self._on_model_view_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._on_model_view_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        self._model_load_thread = thread
+        self._model_load_worker = worker
+        thread.start()
+
+    def _on_model_view_loaded(self, payload: dict) -> None:
+        if payload.get("seq") != self._model_load_seq:
+            return
+        try:
+            old_file = str(payload.get("old_file") or "").strip()
+            new_file = str(payload.get("new_file") or "").strip()
+            workpoint = float(payload.get("workpoint") or 9.1)
+            self.model_panel.load_files(old_file, new_file, target_z=workpoint)
+        except Exception as e:
+            if hasattr(self, "model_panel"):
+                self.model_panel.path_label.setText("模型加载失败")
+                self.model_panel.compare_view.clear_view(f"右侧模型加载失败：\n{e}")
+
+    def _on_model_view_failed(self, message: str) -> None:
+        if hasattr(self, "model_panel"):
+            self.model_panel.path_label.setText("模型加载失败")
+            self.model_panel.compare_view.clear_view(f"右侧模型加载失败：\n{message}")
+
+    def _on_model_view_thread_finished(self) -> None:
+        self._model_load_thread = None
+        self._model_load_worker = None
+
+    def _reload_model_view_sync_legacy(self):
         try:
             old_file, new_file, workpoint = self._fetch_model_paths()
             self.model_panel.load_files(old_file, new_file, target_z=workpoint)

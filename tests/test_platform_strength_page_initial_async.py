@@ -373,7 +373,9 @@ def test_autoload_model_preview_starts_worker_instead_of_parsing_on_ui_thread(mo
     monkeypatch.setattr(
         platform_strength_page.PlatformStrengthPage,
         "_start_async_model_preview_load",
-        lambda self, path, target_z: async_load_calls.append((str(path), float(target_z))),
+        lambda self, facility_code, target_z, **_kwargs: async_load_calls.append(
+            (str(facility_code), float(target_z))
+        ),
         raising=False,
     )
 
@@ -459,7 +461,9 @@ def test_autoload_model_preview_does_not_resolve_model_path_on_ui_thread(monkeyp
     monkeypatch.setattr(
         platform_strength_page.PlatformStrengthPage,
         "_start_async_model_preview_load",
-        lambda self, facility_code, target_z: async_payloads.append((str(facility_code), float(target_z))),
+        lambda self, facility_code, target_z, **_kwargs: async_payloads.append(
+            (str(facility_code), float(target_z))
+        ),
         raising=False,
     )
 

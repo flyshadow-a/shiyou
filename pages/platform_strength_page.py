@@ -409,10 +409,67 @@ def _find_best_inp_file_for_preview(facility_code: str, model_files_root: str, u
     return candidates[0][2]
 
 
+def _client_cache_root_for_preview() -> str:
+    root = os.path.join(os.getcwd(), ".client_cache", "model_files")
+    os.makedirs(root, exist_ok=True)
+    return os.path.normpath(root)
+
+
+def _is_local_accessible_file_for_preview(path: object) -> bool:
+    text = os.path.normpath(str(path or "").strip())
+    return bool(text and os.path.isfile(text))
+
+
+def _cached_remote_model_file_for_preview(facility_code: str, cached_path: str = "") -> str:
+    code = str(facility_code or "").strip()
+    candidates = [
+        os.path.normpath(str(cached_path or "").strip()),
+        os.path.join(_client_cache_root_for_preview(), code, "sacinp_from_server") if code else "",
+    ]
+    for candidate in candidates:
+        if _is_local_accessible_file_for_preview(candidate):
+            return candidate
+    return ""
+
+
+def _download_latest_model_from_server_for_preview(
+    facility_code: str,
+    *,
+    force: bool = False,
+    cached_path: str = "",
+) -> str:
+    code = str(facility_code or "").strip()
+    if not code or ApiClient is None:
+        return ""
+
+    if not force:
+        cached = _cached_remote_model_file_for_preview(code, cached_path)
+        if cached:
+            return cached
+
+    try:
+        local_path = ApiClient().download_latest_model_file(code)
+        local_path = os.path.normpath(str(local_path or ""))
+        if _is_local_accessible_file_for_preview(local_path):
+            return local_path
+    except Exception as exc:
+        print("[PlatformStrengthPage] worker download latest model failed:", exc)
+    return ""
+
+
 def resolve_model_preview_file(payload: dict[str, Any]) -> str:
     facility_code = str(payload.get("facility_code") or "").strip()
     if not facility_code:
         return ""
+
+    if bool(payload.get("allow_remote", True)):
+        remote_model = _download_latest_model_from_server_for_preview(
+            facility_code,
+            force=bool(payload.get("force_remote")),
+            cached_path=str(payload.get("cached_remote_model_path") or ""),
+        )
+        if remote_model:
+            return remote_model
 
     db_model = _find_current_model_file_from_db_for_preview(facility_code)
     if db_model:
@@ -1484,17 +1541,22 @@ class PlatformStrengthPage(BasePage):
         facility_code: str,
         target_z: float,
         model_path: str = "",
+        force_remote: bool = False,
     ) -> None:
         if getattr(self, "_is_closing", False):
             return
         self._model_preview_load_seq += 1
+        code = str(facility_code or "").strip()
         payload = {
             "seq": self._model_preview_load_seq,
-            "facility_code": str(facility_code or "").strip(),
+            "facility_code": code,
             "path": os.path.normpath(str(model_path or "").strip()) if model_path else "",
             "target_z": float(target_z or 9.1),
             "model_files_root": self.model_files_root,
             "upload_dir": self.upload_dir,
+            "force_remote": bool(force_remote),
+            "allow_remote": True,
+            "cached_remote_model_path": self._remote_model_file_cache.get(code, ""),
         }
         thread = QThread(self)
         worker = ModelPreviewLoadWorker(payload)
@@ -1560,6 +1622,10 @@ class PlatformStrengthPage(BasePage):
             if not self._ensure_inp_view_created():
                 return
             self.inp_view.apply_model_preview_payload(payload)
+            code = str(payload.get("facility_code") or "").strip()
+            path = os.path.normpath(str(payload.get("path") or "").strip())
+            if code and path:
+                self._remote_model_file_cache[code] = path
             self._reset_model_preview_pan_controls()
             self.inp_path_label.setText(f"当前模型文件：{payload.get('path') or ''}")
 
@@ -3873,27 +3939,19 @@ class PlatformStrengthPage(BasePage):
             return
 
         facility_code = self._get_top_value("facility_code")
-        path = self._resolve_current_preview_model_file(facility_code, force_remote=force_remote)
-
-        if not path:
-            self.inp_path_label.setText("未找到可解析的 SACS 结构模型文件")
-            if self._ensure_inp_view_created():
-                self.inp_view.clear_view(
-                    "未找到可解析的 SACS 结构模型文件\n"
-                    "请先上传文件名以 sacinp 开头（或扩展名为 .sacinp）的模型文件"
-                )
-            self._refresh_layers_table()
-            return
 
         try:
             target_z = self._get_workpoint_value()
             self.inp_path_label.setText("正在查找并加载 SACS 结构模型文件...")
-            self._start_async_model_preview_load(facility_code, target_z, model_path=path)
+            self._start_async_model_preview_load(
+                facility_code,
+                target_z,
+                force_remote=force_remote,
+            )
 
         except Exception as e:
             self.inp_path_label.setText("模型加载失败")
-            if self._ensure_inp_view_created():
-                self.inp_view.clear_view(f"INP 加载失败：\n{e}")
+            self._set_inp_view_placeholder_text(f"INP 加载失败：\n{e}")
             self._refresh_layers_table()
 
     # ---------------- 左侧表格 ----------------

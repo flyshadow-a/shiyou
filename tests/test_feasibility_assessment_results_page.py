@@ -284,31 +284,33 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
             self.assertTrue(result.endswith("coordinate_system.png"))
             self.assertTrue(Path(result).exists())
 
-    def test_generate_report_uses_local_report_module(self) -> None:
+    def test_generate_report_uses_remote_report_api(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page.facility_code = "WC19-1D"
+        output_path = r"C:\reports\WC19-1D_report.pdf"
+
+        with patch("pages.feasibility_assessment_results_page.ApiClient") as api_cls:
+            api = api_cls.return_value
+            api.generate_feasibility_report.return_value = "task-1"
+            api.wait_feasibility_report_task.return_value = {"status": "success"}
+            api.download_feasibility_report.return_value = output_path
+
+            result = page._generate_report({"chapter_1_3": {}, "output_path": output_path})
+
+        self.assertEqual("report generated (remote)", result["message"])
+        self.assertEqual(output_path, result["output_path"])
+        api.generate_feasibility_report.assert_called_once()
+        api.wait_feasibility_report_task.assert_called_once_with("task-1", interval=1.0)
+        api.download_feasibility_report.assert_called_once_with("task-1", output_path)
+
+    def test_generate_report_requires_output_path_before_remote_call(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
 
-        with patch.object(
-            page,
-            "_generate_report_locally",
-            return_value={"message": "report generated (local)", "output_path": "local.pdf"},
-        ) as local_generate:
-            result = page._generate_report({"chapter_1_3": {}})
-
-        self.assertEqual("local.pdf", result["output_path"])
-        local_generate.assert_called_once()
-
-    def test_generate_report_raises_local_errors_without_http_fallback(self) -> None:
-        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
-
-        with patch.object(
-            page,
-            "_generate_report_locally",
-            side_effect=RuntimeError("local failed"),
-        ) as local_generate:
-            with self.assertRaisesRegex(RuntimeError, "local failed"):
+        with patch("pages.feasibility_assessment_results_page.ApiClient") as api_cls:
+            with self.assertRaisesRegex(ValueError, "保存路径"):
                 page._generate_report({"chapter_1_3": {}})
 
-        local_generate.assert_called_once()
+        api_cls.assert_not_called()
 
     def test_fill_summary_table_from_analysis_uses_report_summary_items(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
@@ -519,7 +521,16 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         page._analysis_thread = None
         page._analysis_worker = None
         page._analysis_results = {}
-        page._get_current_job_factor_path = lambda: "factor-path"
+        page.facility_code = "WC19-1D"
+        page.job_name = "WC19-1D"
+        page.mysql_url = "mysql://example"
+        page.analysis_mode = "rebuild"
+        page.server_result_file = ""
+        page.server_work_dir = ""
+        page._remote_model_cache_dir = Path(tempfile.gettempdir()) / "feasibility-analysis-cache"
+        page._get_current_job_factor_path = lambda: (_ for _ in ()).throw(
+            AssertionError("factor path resolution must not run synchronously")
+        )
         page._get_wordtemplate_project_root = lambda: PROJECT_ROOT / "pages" / "output_feasibility_analysis_report"
         page._load_pile_capacity_input_rows_for_analysis = lambda: ([{"pile_head_id": "P1"}], "")
 
@@ -530,14 +541,125 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
             worker = worker_cls.return_value
             page.start_analysis_results_loading()
 
-        worker_cls.assert_called_once_with(
-            PROJECT_ROOT / "pages" / "output_feasibility_analysis_report",
-            "factor-path",
-            [{"pile_head_id": "P1"}],
-            "",
-        )
+        worker_cls.assert_called_once()
+        args = worker_cls.call_args.args
+        self.assertEqual(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report", args[0])
+        self.assertEqual("", args[1])
+        self.assertEqual([{"pile_head_id": "P1"}], args[2])
+        self.assertEqual("", args[3])
+        self.assertEqual("WC19-1D", args[4]["facility_code"])
+        self.assertEqual("mysql://example", args[4]["mysql_url"])
         worker.moveToThread.assert_called_once_with(thread)
         thread.start.assert_called_once()
+
+    def test_analysis_worker_uses_remote_result_fast_path_without_pile_inputs(self) -> None:
+        from pages import feasibility_assessment_results_page as results_page
+
+        emitted = []
+        worker = results_page.AnalysisResultsWorker(
+            PROJECT_ROOT / "pages" / "output_feasibility_analysis_report",
+            "",
+            [],
+            "",
+            {"facility_code": "WC19-1D"},
+        )
+        worker.finished.connect(emitted.append)
+
+        with patch(
+            "pages.feasibility_assessment_results_page._get_remote_analysis_results_for_results",
+            return_value={"analysis_summary": {"items": [{"check_item": "构件"}]}},
+        ) as remote_results, patch(
+            "pages.feasibility_assessment_results_page._get_current_job_factor_path_for_results",
+            side_effect=AssertionError("factor download must not run on remote result hit"),
+        ):
+            worker.run()
+
+        remote_results.assert_called_once()
+        self.assertEqual([{"analysis_summary": {"items": [{"check_item": "构件"}]}}], emitted)
+
+    def test_analysis_worker_falls_back_to_factor_parser_with_pile_inputs(self) -> None:
+        from pages import feasibility_assessment_results_page as results_page
+
+        emitted = []
+        worker = results_page.AnalysisResultsWorker(
+            PROJECT_ROOT / "pages" / "output_feasibility_analysis_report",
+            "",
+            [{"pile_head_id": "P1"}],
+            "",
+            {"facility_code": "WC19-1D"},
+        )
+        worker.finished.connect(emitted.append)
+
+        with patch(
+            "pages.feasibility_assessment_results_page._get_remote_analysis_results_for_results",
+            side_effect=AssertionError("remote fast path must not skip pile input calculations"),
+        ), patch(
+            "pages.feasibility_assessment_results_page._get_current_job_factor_path_for_results",
+            return_value="factor-path",
+        ) as factor_path, patch(
+            "src.report_service.build_analysis_results_for_ui",
+            return_value={"analysis_summary": {"items": []}},
+        ) as build_results:
+            worker.run()
+
+        factor_path.assert_called_once()
+        build_results.assert_called_once_with(
+            "factor-path",
+            pile_capacity_input_rows=[{"pile_head_id": "P1"}],
+        )
+        self.assertEqual([{"analysis_summary": {"items": []}}], emitted)
+
+    def test_analysis_results_loaded_schedules_model_load_after_tables(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page._analysis_results = {}
+        page._fill_summary_table_from_analysis = unittest.mock.Mock()
+        page._fill_detail_tables_from_analysis = unittest.mock.Mock()
+
+        scheduled = []
+        with patch(
+            "pages.feasibility_assessment_results_page.QTimer.singleShot",
+            side_effect=lambda delay, callback: scheduled.append((delay, callback)),
+        ):
+            page._on_analysis_results_loaded({"analysis_summary": {"items": []}})
+
+        page._fill_summary_table_from_analysis.assert_called_once_with({"items": []})
+        page._fill_detail_tables_from_analysis.assert_called_once()
+        self.assertEqual(1, len(scheduled))
+        self.assertEqual(0, scheduled[0][0])
+
+    def test_reload_model_view_starts_background_worker(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page._model_load_thread = None
+        page._model_load_worker = None
+        page._model_load_seq = 0
+        page.facility_code = "WC19-1D"
+        page.job_name = "WC19-1D"
+        page.mysql_url = "mysql://example"
+        page.analysis_mode = "rebuild"
+        page.server_result_file = ""
+        page.server_work_dir = ""
+        page._remote_model_cache_dir = Path(tempfile.gettempdir()) / "feasibility-test-cache"
+
+        page._fetch_model_paths = lambda: (_ for _ in ()).throw(
+            AssertionError("model path resolution must not run synchronously in reload_model_view")
+        )
+        page._client_cache_dir = lambda *parts: page._remote_model_cache_dir / "_".join(parts or ["default"])
+
+        model_panel = unittest.mock.Mock()
+        page.model_panel = model_panel
+
+        with patch("pages.feasibility_assessment_results_page.QThread") as thread_cls, patch(
+            "pages.feasibility_assessment_results_page.ModelViewLoadWorker"
+        ) as worker_cls:
+            thread = thread_cls.return_value
+            worker = worker_cls.return_value
+            page.reload_model_view()
+
+        worker_cls.assert_called_once()
+        self.assertTrue(worker_cls.call_args.args[0]["reuse_cached_outputs"])
+        worker.moveToThread.assert_called_once_with(thread)
+        thread.start.assert_called_once()
+        model_panel.load_files.assert_not_called()
 
     def test_open_report_output_directory_selects_generated_file(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
