@@ -409,6 +409,53 @@ class ModelViewLoadWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class RemoteOutlineImageExportWorker(QObject):
+    finished = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def __init__(self, facility_code: str, run_id: int | None = None):
+        super().__init__()
+        self._facility_code = str(facility_code or "").strip()
+        self._run_id = run_id
+
+    def run(self) -> None:
+        """
+        服务端导出可行性评估报告需要的二维立面轮廓图。
+
+        关键点：
+        1. 不再在客户端本地启动 report_image_batch_export_process.py；
+        2. 不再使用 QProcess + sys.executable；
+        3. 打包后不会重新启动 ShiyouClient.exe；
+        4. 因此不会再次弹出登录界面。
+        """
+        try:
+            if not self._facility_code:
+                raise ValueError("facility_code 不能为空，无法导出轮廓图。")
+
+            api = ApiClient()
+            task_id = api.export_images(
+                facility_code=self._facility_code,
+                run_id=self._run_id,
+                mode="outline",
+                show_level_ii=False,
+            )
+
+            task = api.wait_image_task(
+                task_id,
+                interval=1.0,
+                timeout_seconds=600,
+            )
+
+            if str(task.get("status") or "").lower() != "success":
+                raise RuntimeError(
+                    str(task.get("error") or task.get("message") or "服务端轮廓图导出失败")
+                )
+
+            self.finished.emit()
+
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
 class InpWireframeView(QGraphicsView):
     """
     简化版 INP 可视化：解析 *NODE 和 *ELEMENT（取前两节点连线），做 2D 投影显示线框。
@@ -635,6 +682,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._outline_export_process = None
         self._outline_export_log: List[str] = []
         self._pending_generate_report_after_outline = False
+
+        # C/S 分离打包后，轮廓图统一由服务端导出。
+        # 客户端不再用 QProcess 启动本地导图子进程，避免打包后再次弹登录界面。
+        self._outline_export_thread = None
+        self._outline_export_worker = None
+
         self.btn_generate_report = None
 
         self._build_ui()
@@ -1559,28 +1612,33 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def closeEvent(self, event):
         try:
-            if hasattr(self, "model_panel") and self.model_panel is not None:
-                self.model_panel.safe_close()
-                self.model_panel.deleteLater()
-                self.model_panel = None
-            self._close_report_progress()
             if self._report_thread is not None and self._report_thread.isRunning():
                 self._report_thread.quit()
                 self._report_thread.wait(3000)
                 self._report_thread = None
                 self._report_worker = None
+
             if self._analysis_thread is not None and self._analysis_thread.isRunning():
                 self._analysis_thread.quit()
                 self._analysis_thread.wait(3000)
                 self._analysis_thread = None
                 self._analysis_worker = None
+
             if self._model_load_thread is not None and self._model_load_thread.isRunning():
                 self._model_load_thread.quit()
                 self._model_load_thread.wait(3000)
                 self._model_load_thread = None
                 self._model_load_worker = None
+
+            if self._outline_export_thread is not None and self._outline_export_thread.isRunning():
+                self._outline_export_thread.quit()
+                self._outline_export_thread.wait(3000)
+                self._outline_export_thread = None
+                self._outline_export_worker = None
+
         except Exception:
             pass
+
         super().closeEvent(event)
 
     def _on_row_limit_changed(self, text):
@@ -2941,25 +2999,39 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 self.model_panel.path_label.setText("模型加载失败")
                 self.model_panel.compare_view.clear_view(f"右侧模型加载失败：\n{e}")
 
-
     def _on_generate_report(self):
+        """
+        生成可行性评估报告。
+
+        新流程：
+        1. 客户端点击生成报告；
+        2. 客户端调用服务端导出轮廓图；
+        3. 服务端完成原模型/改造后模型轮廓图导出；
+        4. 客户端再调用服务端生成报告；
+        5. 客户端下载报告到用户选择路径。
+
+        这样仍然会导出轮廓图，但不再在客户端本地启动子进程。
+        """
         if self._report_thread is not None and self._report_thread.isRunning():
             QMessageBox.information(self, "生成报告", "报告正在生成中，请稍候。")
             return
 
+        if self._outline_export_thread is not None and self._outline_export_thread.isRunning():
+            QMessageBox.information(self, "提示", "轮廓图正在导出，请稍候。")
+            return
+
+        self._start_export_outline_images_for_report()
 
     def _report_image_export_command(self) -> tuple[str, list[str]]:
-        args = ["--report-image-export-worker"]
-        if getattr(sys, "frozen", False):
-            return sys.executable, args
+        """
+        兼容旧接口。
 
-        entrypoint = os.path.normpath(
-            os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "main.py",
-            )
-        )
-        return sys.executable, [entrypoint, *args]
+        旧版会返回 sys.executable + main.py / --report-image-export-worker，
+        打包后 sys.executable 会变成 ShiyouClient.exe，从而重新打开登录界面。
+
+        新版不再使用本地子进程导图，所以这里保留空返回，避免旧调用报错。
+        """
+        return "", []
 
     def _set_report_button_busy(self, busy: bool, text: str = "生成评估报告") -> None:
         btn = getattr(self, "btn_generate_report", None)
@@ -2969,12 +3041,16 @@ class FeasibilityAssessmentResultsPage(BasePage):
         btn.setText(text if busy else "生成评估报告")
 
     def _start_export_outline_images_for_report(self) -> bool:
-        """生成评估报告前导出/上传模型立面轮廓图。
-
-        这里导出的是二维立面轮廓图，不是三维图。三维图由结构强度页面进入时自动保存；
-        检验等级图由“生成特检策略报告”按钮导出。
         """
-        if self._outline_export_process is not None:
+        生成评估报告前导出二维立面轮廓图。
+
+        新版：
+        - 不再使用 QProcess；
+        - 不再启动 main.py；
+        - 不再启动 ShiyouClient.exe 自身；
+        - 改为调用服务端 /api/images/export，mode=outline。
+        """
+        if self._outline_export_thread is not None and self._outline_export_thread.isRunning():
             QMessageBox.information(self, "提示", "轮廓图正在导出，请稍候。")
             return False
 
@@ -2982,83 +3058,97 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._pending_generate_report_after_outline = True
         self._set_report_button_busy(True, "正在导出轮廓图...")
 
-        proc = QProcess(self)
-        self._outline_export_process = proc
-
-        program, args = self._report_image_export_command()
-        args.extend([
-            "--facility-code", str(self.facility_code or ""),
-            "--mode", "outline",
-        ])
-
         run_id = getattr(self, "run_id", None)
-        if run_id:
-            try:
-                args.extend(["--run-id", str(int(run_id))])
-            except Exception:
-                pass
+        try:
+            run_id = int(run_id) if run_id not in (None, "") else None
+        except Exception:
+            run_id = None
 
-        proc.setProgram(program)
-        proc.setArguments(args)
-        proc.setProcessChannelMode(QProcess.MergedChannels)
+        thread = QThread(self)
+        worker = RemoteOutlineImageExportWorker(
+            facility_code=self.facility_code,
+            run_id=run_id,
+        )
+        worker.moveToThread(thread)
 
-        def read_output():
-            try:
-                data = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="ignore")
-            except Exception:
-                data = ""
-            if data:
-                self._outline_export_log.append(data)
-                print(data, end="")
+        thread.started.connect(worker.run)
 
-        proc.readyReadStandardOutput.connect(read_output)
-        proc.finished.connect(self._on_outline_export_finished)
-        proc.errorOccurred.connect(self._on_outline_export_error)
-        proc.start()
+        worker.finished.connect(self._on_remote_outline_export_finished)
+        worker.failed.connect(self._on_remote_outline_export_failed)
+
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+
+        thread.finished.connect(self._on_remote_outline_export_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        self._outline_export_thread = thread
+        self._outline_export_worker = worker
+
+        thread.start()
         return True
 
-    def _on_outline_export_error(self, error):
-        log = "".join(self._outline_export_log[-20:])
-        proc = self._outline_export_process
-        self._outline_export_process = None
+    def _on_remote_outline_export_thread_finished(self) -> None:
+        self._outline_export_thread = None
+        self._outline_export_worker = None
+
+    def _on_remote_outline_export_finished(self) -> None:
+        """
+        服务端轮廓图导出完成后，继续生成报告。
+        """
+        if self._pending_generate_report_after_outline:
+            self._pending_generate_report_after_outline = False
+            self._set_report_button_busy(True, "正在生成报告...")
+            QTimer.singleShot(0, self._do_generate_report_after_outline_export)
+        else:
+            self._set_report_button_busy(False)
+
+    def _on_remote_outline_export_failed(self, message: str) -> None:
+        """
+        服务端轮廓图导出失败。
+        """
         self._pending_generate_report_after_outline = False
         self._set_report_button_busy(False)
-        try:
-            if proc is not None:
-                proc.deleteLater()
-        except Exception:
-            pass
+
         QMessageBox.warning(
             self,
             "轮廓图导出失败",
-            f"启动轮廓图导出进程失败：\n{error}\n\n{log}",
+            f"服务端导出轮廓图失败，已中止生成报告：\n{message}",
+        )
+
+    def _on_outline_export_error(self, error):
+        """
+        旧 QProcess 错误回调，保留兼容。
+
+        新版正常不会走这里。
+        """
+        self._pending_generate_report_after_outline = False
+        self._set_report_button_busy(False)
+
+        QMessageBox.warning(
+            self,
+            "轮廓图导出失败",
+            f"轮廓图导出失败：\n{error}",
         )
 
     def _on_outline_export_finished(self, exit_code: int, _status):
-        proc = self._outline_export_process
+        """
+        旧 QProcess 完成回调，保留兼容。
+
+        新版正常不会走这里。
+        """
         self._outline_export_process = None
 
-        try:
-            if proc is not None:
-                try:
-                    remain = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="ignore")
-                    if remain:
-                        self._outline_export_log.append(remain)
-                        print(remain, end="")
-                except Exception:
-                    pass
-                proc.deleteLater()
-        except Exception:
-            pass
-
-        log = "".join(self._outline_export_log[-30:])
-        if exit_code != 0:
+        if int(exit_code) != 0:
             self._pending_generate_report_after_outline = False
             self._set_report_button_busy(False)
             QMessageBox.warning(
                 self,
                 "轮廓图导出失败",
-                f"轮廓图导出失败，退出码：{exit_code}\n\n{log}",
+                f"轮廓图导出失败，退出码：{exit_code}",
             )
             return
 
@@ -3070,24 +3160,34 @@ class FeasibilityAssessmentResultsPage(BasePage):
             self._set_report_button_busy(False)
 
     def _do_generate_report_after_outline_export(self):
+        """
+        轮廓图导出完成后生成报告。
 
+        注意：
+        这里不能在 finally 里立刻恢复按钮，否则报告线程刚启动按钮就恢复了。
+        按钮恢复交给 _on_report_generation_finished / _on_report_generation_failed。
+        """
         try:
             environment_error = self._validate_environment_conditions_for_report()
             if environment_error:
                 QMessageBox.warning(self, "环境条件缺失", environment_error)
+                self._set_report_button_busy(False)
                 return
 
             payload = self._build_report_payload()
             output_filename = str(payload.get("output_filename", "")).strip()
             output_path = self._select_report_output_path(output_filename)
             if not output_path:
+                self._set_report_button_busy(False)
                 return
+
             payload["output_path"] = output_path
+            self._set_report_button_busy(True, "正在生成报告...")
             self._start_report_generation_worker(payload)
+
         except Exception as e:
-            QMessageBox.critical(self, "生成报告失败", str(e))
-        finally:
             self._set_report_button_busy(False)
+            QMessageBox.critical(self, "生成报告失败", str(e))
 
     def _on_generate_report(self):
         """先导出/上传模型立面轮廓图，再生成评估报告。"""

@@ -637,6 +637,87 @@ def _default_report_output_path(facility_code: str) -> Path:
     return FEASIBILITY_REPORT_DIR / f"{safe_code}_{timestamp}_feasibility_report.pdf"
 
 
+def _feasibility_report_project_root() -> Path:
+    """
+    获取可行性评估报告模块根目录。
+
+    源码运行：
+        pages/output_feasibility_analysis_report
+
+    打包运行：
+        ShiyouServer/output_feasibility_analysis_report
+
+    这样服务端打包后不会继续错误地只找源码目录。
+    """
+    candidates: list[Path] = []
+
+    # 打包后 exe 同级目录
+    if getattr(sys, "frozen", False):
+        try:
+            candidates.append(Path(sys.executable).resolve().parent / "output_feasibility_analysis_report")
+        except Exception:
+            pass
+
+    # 当前工作目录
+    candidates.append(Path.cwd() / "output_feasibility_analysis_report")
+
+    # 项目根目录外置目录
+    candidates.append(PROJECT_ROOT / "output_feasibility_analysis_report")
+
+    # 源码目录
+    candidates.append(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report")
+
+    for candidate in candidates:
+        if (candidate / "config" / "path_config.json").exists():
+            return candidate
+
+    return candidates[0]
+
+
+def _ensure_feasibility_report_resource_available(project_root: Path) -> None:
+    config_path = project_root / "config" / "path_config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(
+            "可行性评估报告配置文件缺失：\n"
+            f"{config_path}\n\n"
+            "请确认服务端打包目录中包含：\n"
+            "output_feasibility_analysis_report/config/path_config.json\n"
+            "建议使用 build_server.ps1 一键打包，不要手动复制零散文件。"
+        )
+
+
+def _ensure_outline_images_before_feasibility_report(
+    *,
+    facility_code: str,
+    run_id: int | None = None,
+) -> None:
+    """
+    服务端生成可行性评估报告前，先导出二维立面轮廓图。
+
+    轮廓图仍然需要，但必须在服务端导出。
+    """
+    code = str(facility_code or "").strip()
+    if not code:
+        raise ValueError("facility_code 不能为空，无法导出报告轮廓图。")
+
+    try:
+        from services.report_image_batch_export_process import export_report_images
+
+        print(
+            f"[FeasibilityReportAPI] export outline images before report: facility={code}, run_id={run_id}",
+            flush=True,
+        )
+
+        export_report_images(
+            facility_code=code,
+            run_id=run_id,
+            mode="outline",
+            show_level_ii=False,
+        )
+
+    except Exception as exc:
+        raise RuntimeError(f"服务端导出可行性评估报告轮廓图失败：{exc}") from exc
+
 def generate_feasibility_report(
     *,
     facility_code: str,
@@ -646,9 +727,14 @@ def generate_feasibility_report(
     output_path: str | None = None,
 ) -> dict[str, Any]:
     code = str(facility_code or "").strip()
+    if not code:
+        raise ValueError("facility_code 不能为空，无法生成可行性评估报告。")
+
     payload = dict(report_payload or {})
 
-    project_root = PROJECT_ROOT / "pages" / "output_feasibility_analysis_report"
+    project_root = _feasibility_report_project_root()
+    _ensure_feasibility_report_resource_available(project_root)
+
     src_root = project_root / "src"
     for path in (str(project_root), str(src_root)):
         if path not in sys.path:
@@ -674,8 +760,15 @@ def generate_feasibility_report(
 
     final_output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # 报告需要二维立面轮廓图，服务端生成报告前兜底导出。
+    _ensure_outline_images_before_feasibility_report(
+        facility_code=code,
+        run_id=run_id,
+    )
+
     print(
-        f"[FeasibilityReportAPI] generate report: facility={code}, factor={factor_path}, output={final_output_path}",
+        f"[FeasibilityReportAPI] generate report: "
+        f"facility={code}, factor={factor_path}, output={final_output_path}, project_root={project_root}",
         flush=True,
     )
 
@@ -696,6 +789,7 @@ def generate_feasibility_report(
         "output_path": result_path,
         "output_exists": os.path.exists(result_path),
         "factor_path": factor_path,
+        "project_root": str(project_root),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
 
