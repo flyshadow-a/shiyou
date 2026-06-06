@@ -154,6 +154,8 @@ class _RemoteBackendClient:
             except Exception:
                 pass
 
+
+
     def _download_binary(self, path: str, local_output_path: str | Path, *, params: dict[str, Any] | None = None) -> str:
         output_path = Path(local_output_path).expanduser()
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -428,7 +430,7 @@ class _SpecialStrategyResultLoadWorker(QObject):
 
     def run(self) -> None:
         try:
-            service = SpecialStrategyResultService()
+            service = _RemoteSpecialStrategyResultService() if _use_fastapi_backend() else SpecialStrategyResultService()
             bundle = service.load_result_bundle(self._facility_code, self._run_id) or {}
             overlay = {}
             if bundle:
@@ -648,6 +650,12 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._export_key = None
         self._remote_export_thread = None
         self._remote_export_worker = None
+
+        # 生成特检策略报告前导出检验等级图专用远程线程。
+        # 不再使用 QProcess + sys.executable，避免打包后重新打开登录界面。
+        self._report_risk_export_thread = None
+        self._report_risk_export_worker = None
+
         self._pending_report_after_risk_export = False
 
         # 生成报告相关状态：先导出检验等级图，再生成 Word/PDF 报告
@@ -2405,7 +2413,12 @@ class UpgradeSpecialInspectionResultPage(BasePage):
 
     def _is_risk_export_process_running(self) -> bool:
         process = self._risk_export_process
-        return process is not None and process.state() != QProcess.NotRunning
+        local_running = process is not None and process.state() != QProcess.NotRunning
+
+        remote_thread = getattr(self, "_report_risk_export_thread", None)
+        remote_running = remote_thread is not None and remote_thread.isRunning()
+
+        return bool(local_running or remote_running)
 
     def _build_report_image_export_command(self) -> tuple[str, list[str], str]:
         root_dir = Path(__file__).resolve().parents[1]
@@ -2423,10 +2436,25 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         return sys.executable, args, str(root_dir)
 
     def _start_report_risk_image_export_process(self) -> None:
+        """
+        生成特检策略报告前导出检验等级图。
+
+        C/S 分离后：
+        - 远程模式下走服务端 /api/images/export；
+        - 不再在客户端本地启动 QProcess；
+        - 避免打包后 sys.executable 变成 ShiyouClient.exe 导致重新弹登录界面。
+
+        本地模式仍保留旧 QProcess 逻辑，方便源码调试。
+        """
         if self._is_risk_export_process_running():
             QMessageBox.information(self, "提示", "检验等级图正在导出，请稍候。")
             return
 
+        if _use_fastapi_backend():
+            self._start_report_risk_image_export_remote()
+            return
+
+        # 本地源码调试模式：保留旧逻辑
         program, args, work_dir = self._build_report_image_export_command()
         process = QProcess(self)
         process.setWorkingDirectory(work_dir)
@@ -2440,6 +2468,75 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._risk_export_stderr_buffer = ""
         self._show_report_progress("正在启动检验等级图导出进程")
         process.start(program, args)
+
+    def _start_report_risk_image_export_remote(self) -> None:
+        """
+        远程导出生成特检策略报告所需的检验等级图。
+        """
+        if self._report_risk_export_thread is not None and self._report_risk_export_thread.isRunning():
+            QMessageBox.information(self, "提示", "检验等级图正在导出，请稍候。")
+            return
+
+        thread = QThread(self)
+        worker = _RemoteImageExportWorker(
+            self.facility_code,
+            self.run_id,
+            mode="risk",
+            show_level_ii=False,
+        )
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+
+        worker.finished.connect(self._on_report_risk_remote_export_finished)
+        worker.failed.connect(self._on_report_risk_remote_export_failed)
+
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+
+        thread.finished.connect(self._on_report_risk_remote_export_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        self._report_risk_export_thread = thread
+        self._report_risk_export_worker = worker
+
+        self._show_report_progress("正在导出检验等级图")
+        print("[UpgradeSpecialInspectionResultPage] start remote report risk image export")
+        thread.start()
+
+    def _on_report_risk_remote_export_thread_finished(self) -> None:
+        self._report_risk_export_thread = None
+        self._report_risk_export_worker = None
+
+    def _on_report_risk_remote_export_finished(self) -> None:
+        """
+        服务端检验等级图导出完成后，继续生成特检策略报告。
+        """
+        print("[UpgradeSpecialInspectionResultPage] remote report risk image export finished")
+        self._show_report_progress("检验等级图导出完成，正在生成报告")
+
+        if self._pending_report_after_risk_export:
+            QTimer.singleShot(0, self._do_generate_report_after_risk_export)
+        else:
+            self._set_report_button_busy(False)
+
+    def _on_report_risk_remote_export_failed(self, message: str) -> None:
+        """
+        服务端检验等级图导出失败。
+        """
+        print("[UpgradeSpecialInspectionResultPage] remote report risk image export failed:", message)
+
+        self._reset_pending_report_after_risk_export()
+        self._set_report_button_busy(False)
+
+        QMessageBox.warning(
+            self,
+            "生成报告失败",
+            f"服务端导出检验等级图失败，已中止生成报告。\n{message}",
+        )
 
     def _read_report_image_export_stdout(self) -> None:
         process = self._risk_export_process
@@ -2673,3 +2770,76 @@ class UpgradeSpecialInspectionResultPage(BasePage):
     def _on_report_generation_failed(self, message: str) -> None:
         self._set_report_button_busy(False)
         QMessageBox.warning(self, "生成报告失败", f"特检策略报告生成失败：\n{message}")
+
+    def closeEvent(self, event):
+        try:
+            if self._report_thread is not None and self._report_thread.isRunning():
+                self._report_thread.quit()
+                self._report_thread.wait(3000)
+                self._report_thread = None
+                self._report_worker = None
+
+            if self._remote_export_thread is not None and self._remote_export_thread.isRunning():
+                self._remote_export_thread.quit()
+                self._remote_export_thread.wait(3000)
+                self._remote_export_thread = None
+                self._remote_export_worker = None
+
+            if self._report_risk_export_thread is not None and self._report_risk_export_thread.isRunning():
+                self._report_risk_export_thread.quit()
+                self._report_risk_export_thread.wait(3000)
+                self._report_risk_export_thread = None
+                self._report_risk_export_worker = None
+
+            if self._elevation_model_thread is not None and self._elevation_model_thread.isRunning():
+                self._elevation_model_thread.quit()
+                self._elevation_model_thread.wait(3000)
+                self._elevation_model_thread = None
+                self._elevation_model_worker = None
+
+            for thread, _worker, _token in list(getattr(self, "_result_load_jobs", [])):
+                try:
+                    if thread is not None and thread.isRunning():
+                        thread.quit()
+                        thread.wait(3000)
+                except Exception:
+                    pass
+            self._result_load_jobs = []
+
+            for thread, _worker, _token in list(getattr(self, "_overlay_load_jobs", [])):
+                try:
+                    if thread is not None and thread.isRunning():
+                        thread.quit()
+                        thread.wait(3000)
+                except Exception:
+                    pass
+            self._overlay_load_jobs = []
+
+            if self._risk_export_process is not None:
+                try:
+                    if self._risk_export_process.state() != QProcess.NotRunning:
+                        self._risk_export_process.kill()
+                except Exception:
+                    pass
+                self._risk_export_process = None
+
+            if self._export_timer is not None and self._export_timer.isActive():
+                self._export_timer.stop()
+
+            if self._report_progress_timer is not None and self._report_progress_timer.isActive():
+                self._report_progress_timer.stop()
+
+            if self._result_progress_timer is not None and self._result_progress_timer.isActive():
+                self._result_progress_timer.stop()
+
+            if self._export_view is not None:
+                try:
+                    self._export_view.deleteLater()
+                except Exception:
+                    pass
+                self._export_view = None
+
+        except Exception:
+            pass
+
+        super().closeEvent(event)
