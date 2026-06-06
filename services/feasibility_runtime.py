@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import hashlib
 import os
 import json
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from datetime import datetime
@@ -35,6 +37,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SERVER_OUTPUT_DIR = PROJECT_ROOT / "server_outputs"
 FEASIBILITY_REPORT_DIR = SERVER_OUTPUT_DIR / "feasibility_reports"
 FEASIBILITY_EXPORT_DIR = SERVER_OUTPUT_DIR / "feasibility_exports"
+FEASIBILITY_RESULT_CACHE_VERSION = 1
 
 
 def _norm(path: object) -> str:
@@ -55,6 +58,115 @@ def _load_latest_analysis_state(facility_code: str) -> dict[str, Any]:
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _json_cache_default(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return item()
+        except Exception:
+            pass
+    return str(value)
+
+
+def _normalise_pile_capacity_input_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    normalised: list[dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            normalised.append(dict(row))
+    return normalised
+
+
+def _result_file_signature(path: str) -> dict[str, Any]:
+    stat = os.stat(path)
+    return {
+        "path": os.path.normcase(os.path.abspath(path)),
+        "size": int(stat.st_size),
+        "mtime_ns": int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))),
+    }
+
+
+def _analysis_result_cache_path(
+    *,
+    work_dir: str,
+    result_file: str,
+    pile_capacity_input_rows: list[dict[str, Any]],
+) -> Path:
+    key_payload = {
+        "version": FEASIBILITY_RESULT_CACHE_VERSION,
+        "result_file": _result_file_signature(result_file),
+        "pile_capacity_input_rows": pile_capacity_input_rows,
+    }
+    key_text = json.dumps(
+        key_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=_json_cache_default,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(key_text.encode("utf-8")).hexdigest()
+    cache_dir = Path(work_dir) / "feasibility_result_cache"
+    return cache_dir / f"{digest}.json"
+
+
+def _load_analysis_result_cache(cache_path: Path) -> dict[str, Any] | None:
+    if not cache_path.exists() or not cache_path.is_file():
+        return None
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(cached, dict):
+        return None
+    if int(cached.get("version", 0) or 0) != FEASIBILITY_RESULT_CACHE_VERSION:
+        return None
+    results = cached.get("results")
+    return results if isinstance(results, dict) else None
+
+
+def _save_analysis_result_cache(cache_path: Path, results: dict[str, Any]) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": FEASIBILITY_RESULT_CACHE_VERSION,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "results": results,
+    }
+    tmp_path = cache_path.with_suffix(".tmp")
+    tmp_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=_json_cache_default),
+        encoding="utf-8",
+    )
+    os.replace(tmp_path, cache_path)
+
+
+def _preheat_feasibility_result_cache(facility_code: str) -> None:
+    try:
+        load_feasibility_result_bundle(
+            facility_code=facility_code,
+            pile_capacity_input_rows=[],
+        )
+    except Exception as exc:
+        print("[FeasibilityRuntime] preheat feasibility result cache failed:", exc, flush=True)
+
+
+def _start_feasibility_result_cache_preheat(facility_code: str) -> None:
+    code = str(facility_code or "").strip()
+    if not code:
+        return
+    thread = threading.Thread(
+        target=_preheat_feasibility_result_cache,
+        args=(code,),
+        name=f"feasibility-result-cache-{code}",
+        daemon=True,
+    )
+    thread.start()
 
 
 def _read_tail_text(path: str, max_bytes: int = 256 * 1024) -> str:
@@ -462,6 +574,8 @@ def run_feasibility_analysis(
     except Exception:
         pass
 
+    _start_feasibility_result_cache_preheat(code)
+
     return state
 
 
@@ -469,6 +583,7 @@ def load_feasibility_result_bundle(
     *,
     facility_code: str,
     run_id: int | None = None,
+    pile_capacity_input_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     code = str(facility_code or "").strip()
     work_dir = _norm(get_job_runtime_dir(code))
@@ -488,10 +603,20 @@ def load_feasibility_result_bundle(
     except Exception:
         from src.report_service import build_analysis_results_for_ui
 
-    results = build_analysis_results_for_ui(
-        result_file,
-        pile_capacity_input_rows=[],
+    pile_rows = _normalise_pile_capacity_input_rows(pile_capacity_input_rows)
+    cache_path = _analysis_result_cache_path(
+        work_dir=work_dir,
+        result_file=result_file,
+        pile_capacity_input_rows=pile_rows,
     )
+    results = _load_analysis_result_cache(cache_path)
+    cache_hit = results is not None
+    if results is None:
+        results = build_analysis_results_for_ui(
+            result_file,
+            pile_capacity_input_rows=pile_rows,
+        )
+        _save_analysis_result_cache(cache_path, results)
 
     return {
         "facility_code": code,
@@ -500,6 +625,8 @@ def load_feasibility_result_bundle(
         "factor_path": result_file,
         "results": results,
         "state_path": str(Path(work_dir) / "feasibility_analysis_state.json"),
+        "cache_hit": cache_hit,
+        "cache_path": str(cache_path),
     }
 
 

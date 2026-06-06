@@ -43,6 +43,11 @@ class FeasibilityReportGenerateRequest(BaseModel):
     output_path: str | None = None
 
 
+class FeasibilityResultRequest(BaseModel):
+    run_id: int | None = None
+    pile_capacity_input_rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class FeasibilityExportFilesRequest(BaseModel):
     facility_code: str
     analysis_mode: str = "auto"

@@ -1,6 +1,6 @@
 {
-  "special_strategy_images_root": "Y:\\special_strategy_images",
-  "report_image_output_root": "Y:\\shiyou_file_storage\\image",
+  "special_strategy_images_root": "\\\\10.177.19.121\\shiyou_file_storage\\special_strategy_images",
+  "report_image_output_root": "\\\\10.177.19.121\\shiyou_file_storage\\image",
   "report_defaults": {
     "template_file": "xxx平台改建可行性评估报告纯净版.docx"
   },

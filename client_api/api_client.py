@@ -637,7 +637,23 @@ class ApiClient:
             timeout_seconds=timeout_seconds,
         )
 
-    def get_feasibility_result(self, facility_code: str, run_id: int | None = None) -> dict[str, Any]:
+    def get_feasibility_result(
+        self,
+        facility_code: str,
+        run_id: int | None = None,
+        pile_capacity_input_rows: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        rows = list(pile_capacity_input_rows or [])
+        if rows:
+            return self._post_json(
+                f"/api/feasibility/result/{facility_code}",
+                {
+                    "run_id": run_id,
+                    "pile_capacity_input_rows": rows,
+                },
+                timeout=max(self.timeout, 120),
+            )
+
         params: dict[str, Any] = {}
         if run_id:
             params["run_id"] = int(run_id)

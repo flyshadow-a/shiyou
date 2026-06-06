@@ -196,7 +196,10 @@ def _get_remote_analysis_results_for_results(payload: dict[str, Any]) -> dict[st
     if not facility_code:
         return {}
     try:
-        data = ApiClient().get_feasibility_result(facility_code)
+        data = ApiClient().get_feasibility_result(
+            facility_code,
+            pile_capacity_input_rows=payload.get("pile_capacity_input_rows") or [],
+        )
     except Exception as exc:
         print("[FeasibilityAssessmentResultsPage] remote analysis result unavailable:", exc)
         return {}
@@ -368,12 +371,9 @@ class AnalysisResultsWorker(QObject):
             if project_root_text not in sys.path:
                 sys.path.insert(0, project_root_text)
 
-            # Fast path: server can parse its local result file and return JSON directly.
-            # If the client supplied pile capacity rows, keep the local parser path because
-            # those rows affect the pile capacity table calculations.
-            results: dict[str, Any] = {}
-            if not self._pile_capacity_input_rows:
-                results = _get_remote_analysis_results_for_results(self._path_payload)
+            remote_payload = dict(self._path_payload)
+            remote_payload["pile_capacity_input_rows"] = self._pile_capacity_input_rows
+            results: dict[str, Any] = _get_remote_analysis_results_for_results(remote_payload)
 
             if not results:
                 from src.report_service import build_analysis_results_for_ui
@@ -638,7 +638,11 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self.btn_generate_report = None
 
         self._build_ui()
+        self._start_initial_loading()
+
+    def _start_initial_loading(self) -> None:
         self._show_analysis_status_in_tables("正在解析数据...")
+        self.reload_model_view()
         self.start_analysis_results_loading()
 
     # ---------------- UI ----------------
@@ -1544,12 +1548,10 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._analysis_results = results
         self._fill_summary_table_from_analysis(results.get("analysis_summary", {}))
         self._fill_detail_tables_from_analysis(results)
-        QTimer.singleShot(0, self.reload_model_view)
 
     def _on_analysis_results_failed(self, message: str) -> None:
         self._analysis_results = {}
         self._show_analysis_status_in_tables(f"解析数据失败：{message}")
-        QTimer.singleShot(0, self.reload_model_view)
 
     def _on_analysis_thread_finished(self) -> None:
         self._analysis_thread = None
@@ -2885,8 +2887,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
         payload["reuse_cached_outputs"] = True
         if hasattr(self, "model_panel"):
             try:
-                self.model_panel.path_label.setText("正在加载右侧模型...")
-                self.model_panel.compare_view.clear_view("正在加载右侧模型...")
+                self.model_panel.path_label.setText("模型正在加载")
+                self.model_panel.compare_view.clear_view("模型正在加载")
             except Exception:
                 pass
 

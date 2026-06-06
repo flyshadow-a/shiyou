@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from server.schemas import (
     FeasibilityExportFilesRequest,
     FeasibilityReportGenerateRequest,
+    FeasibilityResultRequest,
     FeasibilityRunRequest,
 )
 from server.task_manager import get_task, submit_task
@@ -70,6 +71,21 @@ def get_feasibility_result(
     bundle = load_feasibility_result_bundle(
         facility_code=facility_code,
         run_id=run_id,
+    )
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Feasibility result not found")
+    return bundle
+
+
+@router.post("/result/{facility_code}")
+def get_feasibility_result_with_payload(
+    facility_code: str,
+    req: FeasibilityResultRequest,
+):
+    bundle = load_feasibility_result_bundle(
+        facility_code=facility_code,
+        run_id=req.run_id,
+        pile_capacity_input_rows=req.pile_capacity_input_rows,
     )
     if not bundle:
         raise HTTPException(status_code=404, detail="Feasibility result not found")

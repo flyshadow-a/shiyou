@@ -248,12 +248,25 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         coordinate_config = get_coordinate_system_config("WC19-1D")
         report_defaults = get_report_defaults()
 
-        self.assertEqual(Path(r"Y:\special_strategy_images\WC19-1D\latest\platform_strength_page\overall_model\Current"), overall_config["directory"])
+        self.assertEqual(
+            Path(
+                r"\\10.177.19.121\shiyou_file_storage\special_strategy_images\WC19-1D\latest\platform_strength_page\overall_model\Current"
+            ),
+            overall_config["directory"],
+        )
         self.assertEqual("3d.png", overall_config["preferred_file"])
-        self.assertEqual(Path(r"Y:\special_strategy_images\WC19-1D\latest\feasibility_assessment_results_page\elevation_outline_rebuilt"), coordinate_config["directory"])
+        self.assertEqual(
+            Path(
+                r"\\10.177.19.121\shiyou_file_storage\special_strategy_images\WC19-1D\latest\feasibility_assessment_results_page\elevation_outline_rebuilt"
+            ),
+            coordinate_config["directory"],
+        )
         self.assertEqual("XY_-14.png", coordinate_config["xy_file"])
         self.assertEqual("YZ_Left.png", coordinate_config["yz_file"])
-        self.assertEqual(Path(r"Y:\shiyou_file_storage\image\WC19-1D\coordinate_system.png"), coordinate_config["output_path"])
+        self.assertEqual(
+            Path(r"\\10.177.19.121\shiyou_file_storage\image\WC19-1D\coordinate_system.png"),
+            coordinate_config["output_path"],
+        )
         self.assertEqual(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report" / "xxx平台改建可行性评估报告纯净版.docx", report_defaults["template_path"])
         self.assertNotIn("appendix_a_reference_path", report_defaults)
         self.assertNotIn("factor_path", report_defaults)
@@ -577,7 +590,37 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         remote_results.assert_called_once()
         self.assertEqual([{"analysis_summary": {"items": [{"check_item": "构件"}]}}], emitted)
 
-    def test_analysis_worker_falls_back_to_factor_parser_with_pile_inputs(self) -> None:
+    def test_analysis_worker_uses_remote_result_fast_path_with_pile_inputs(self) -> None:
+        from pages import feasibility_assessment_results_page as results_page
+
+        emitted = []
+        remote_payloads = []
+        worker = results_page.AnalysisResultsWorker(
+            PROJECT_ROOT / "pages" / "output_feasibility_analysis_report",
+            "",
+            [{"pile_head_id": "P1"}],
+            "",
+            {"facility_code": "WC19-1D"},
+        )
+        worker.finished.connect(emitted.append)
+
+        with patch(
+            "pages.feasibility_assessment_results_page._get_remote_analysis_results_for_results",
+            side_effect=lambda payload: remote_payloads.append(payload)
+            or {"analysis_summary": {"items": []}},
+        ), patch(
+            "pages.feasibility_assessment_results_page._get_current_job_factor_path_for_results",
+            side_effect=AssertionError("factor parser must not run on remote result hit"),
+        ), patch(
+            "src.report_service.build_analysis_results_for_ui",
+            side_effect=AssertionError("local parser must not run on remote result hit"),
+        ):
+            worker.run()
+
+        self.assertEqual([[{"pile_head_id": "P1"}]], [p["pile_capacity_input_rows"] for p in remote_payloads])
+        self.assertEqual([{"analysis_summary": {"items": []}}], emitted)
+
+    def test_analysis_worker_falls_back_to_factor_parser_when_remote_misses(self) -> None:
         from pages import feasibility_assessment_results_page as results_page
 
         emitted = []
@@ -592,7 +635,7 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
 
         with patch(
             "pages.feasibility_assessment_results_page._get_remote_analysis_results_for_results",
-            side_effect=AssertionError("remote fast path must not skip pile input calculations"),
+            return_value={},
         ), patch(
             "pages.feasibility_assessment_results_page._get_current_job_factor_path_for_results",
             return_value="factor-path",
@@ -609,7 +652,7 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         )
         self.assertEqual([{"analysis_summary": {"items": []}}], emitted)
 
-    def test_analysis_results_loaded_schedules_model_load_after_tables(self) -> None:
+    def test_analysis_results_loaded_does_not_start_model_load_again(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
         page._analysis_results = {}
         page._fill_summary_table_from_analysis = unittest.mock.Mock()
@@ -624,8 +667,26 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
 
         page._fill_summary_table_from_analysis.assert_called_once_with({"items": []})
         page._fill_detail_tables_from_analysis.assert_called_once()
-        self.assertEqual(1, len(scheduled))
-        self.assertEqual(0, scheduled[0][0])
+        self.assertEqual([], scheduled)
+
+    def test_initial_load_starts_model_and_analysis_loading_independently(self) -> None:
+        calls = []
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page._build_ui = lambda: calls.append("build_ui")
+        page._show_analysis_status_in_tables = lambda message: calls.append(("status", message))
+        page.reload_model_view = lambda: calls.append("reload_model_view")
+        page.start_analysis_results_loading = lambda: calls.append("start_analysis_results_loading")
+
+        page._start_initial_loading()
+
+        self.assertEqual(
+            [
+                ("status", "正在解析数据..."),
+                "reload_model_view",
+                "start_analysis_results_loading",
+            ],
+            calls,
+        )
 
     def test_reload_model_view_starts_background_worker(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
