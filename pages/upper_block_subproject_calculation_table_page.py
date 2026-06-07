@@ -190,6 +190,10 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         # 顶部按钮区
         btn_bar = QHBoxLayout()
         btn_bar.addStretch(1)
+        self.btn_back = QPushButton("返回")
+        self.btn_back.setObjectName("TopActionBtn")
+        self.btn_back.setFont(self._songti_small_four_font(bold=True))
+        self.btn_back.setMinimumSize(120, 32)
         self.btn_save = QPushButton("保存")
         self.btn_save.setObjectName("TopActionBtn") # 使用与主页相同的 ObjectName 以便将来可能的样式扩展
         self.btn_save.setFont(self._songti_small_four_font(bold=True))
@@ -198,20 +202,24 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         # 应用与主页一致的样式
         self.btn_save.setStyleSheet("""
             QPushButton#TopActionBtn {
-                background: #f6a24a;
-                border: 1px solid #2f3a4a;
-                border-radius: 3px;
-                padding: 6px 16px;
-                color: black;
+                background: #2563eb;
+                color: #ffffff;
+                border: 1px solid #1d4ed8;
+                border-radius: 8px;
+                padding: 7px 18px;
                 font-family: "SimSun", "NSimSun", "宋体", "Microsoft YaHei UI", "Microsoft YaHei";
                 font-size: 12pt;
                 font-weight: bold;
             }
-            QPushButton#TopActionBtn:hover { background: #ffb86b; }
+            QPushButton#TopActionBtn:hover { background: #1d4ed8; }
+            QPushButton#TopActionBtn:pressed { background: #1e40af; }
         """)
 
+        self.btn_back.setStyleSheet(self.btn_save.styleSheet())
+        self.btn_back.clicked.connect(self._on_back)
         self.btn_save.clicked.connect(self._on_save)
         btn_bar.addWidget(self.btn_save)
+        btn_bar.addWidget(self.btn_back)
         self.main_layout.addLayout(btn_bar)
 
         # 表格
@@ -397,6 +405,17 @@ class UpperBlockSubprojectCalculationTablePage(BasePage):
         finally: self._updating = False
 
     # ---------- actions ----------
+    def _on_back(self):
+        mw = self.main_window or self.window()
+        tab_widget = getattr(mw, "tab_widget", None)
+        if tab_widget is None:
+            return
+        for i in range(tab_widget.count()):
+            tab_text = tab_widget.tabText(i)
+            if "平台载荷信息" in tab_text:
+                tab_widget.setCurrentIndex(i)
+                return
+
     def _on_save(self):
         if self.source_row is None: return
         r = self._grand_total_row

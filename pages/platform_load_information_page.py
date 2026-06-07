@@ -157,6 +157,20 @@ def _normalise_chart_line_visibility(
     return {str(label): bool(current.get(str(label), True)) for label in labels}
 
 
+def _select_chart_xticks(values: List[int], max_tick_count: int = 8) -> List[int]:
+    ticks = sorted(set(int(value) for value in values))
+    if len(ticks) <= max_tick_count:
+        return ticks
+
+    step = max(1, (len(ticks) - 1) // (max_tick_count - 1))
+    selected = ticks[::step]
+    if selected[-1] != ticks[-1]:
+        selected.append(ticks[-1])
+    while len(selected) > max_tick_count and len(selected) > 2:
+        selected.pop(-2)
+    return selected
+
+
 
 def _find_factor_bytes_marker(path: str, marker: bytes, start: int = 0) -> int:
     marker_length = len(marker)
@@ -644,10 +658,10 @@ class SimpleLineChart(FigureCanvas):
             self._line.set_data(x, y)
         self.ax.relim()
         self.ax.autoscale_view()
-        ticks = [int(v) for v in x]
-        self.ax.set_xticks(ticks)
-        if ticks:
-            right = max(ticks) if max(ticks) > 0 else 1
+        all_ticks = [int(v) for v in x]
+        self.ax.set_xticks(_select_chart_xticks(all_ticks))
+        if all_ticks:
+            right = max(all_ticks) if max(all_ticks) > 0 else 1
             self.ax.set_xlim(0, right)
         else:
             self.ax.set_xlim(0, 1)
@@ -829,6 +843,35 @@ class MultiLineChart(FigureCanvas):
         for label, line in self._lines.items():
             line.set_visible(self._line_visibility.get(label, True))
 
+    def _apply_chart_layout(self, labels: List[str]) -> None:
+        self.draw()
+        renderer = self.figure.canvas.get_renderer()
+        figure_width = max(float(self.figure.bbox.width), 1.0)
+        left_margin = self._axis_outer_margin(self.ax, renderer, figure_width, is_left=True)
+        right_margin = 0.04
+        if self.ax_right is not None:
+            right_margin = self._axis_outer_margin(self.ax_right, renderer, figure_width, is_left=False)
+        self.figure.subplots_adjust(
+            left=left_margin,
+            right=1.0 - right_margin,
+            bottom=0.16,
+            top=0.68 if len(labels) > 3 else 0.72,
+        )
+
+    @staticmethod
+    def _axis_outer_margin(axis, renderer, figure_width: float, *, is_left: bool) -> float:
+        label_attr = "label1" if is_left else "label2"
+        boxes = [
+            getattr(tick, label_attr).get_window_extent(renderer)
+            for tick in axis.yaxis.get_major_ticks()
+        ]
+        boxes.append(axis.yaxis.label.get_window_extent(renderer))
+        widths = [max(0.0, float(box.width)) for box in boxes if box.width > 0]
+        required = (sum(widths[:1]) + max(widths[1:] or [0.0]) + 34.0) / figure_width
+        minimum = 0.12 if is_left else 0.04
+        maximum = 0.30 if is_left else 0.24
+        return min(max(required, minimum), maximum)
+
     def _rebuild_legend(self) -> List[str]:
         labels = [self._display_labels.get(label, label) for label in self._lines.keys()]
         if self._legend is not None:
@@ -897,12 +940,7 @@ class MultiLineChart(FigureCanvas):
         self._line_visibility[label] = not self._line_visibility.get(label, True)
         self._apply_line_visibility()
         labels = self._rebuild_legend()
-        self.figure.subplots_adjust(
-            left=0.12,
-            right=0.82 if self.ax_right is not None else 0.96,
-            bottom=0.16,
-            top=0.68 if len(labels) > 3 else 0.72,
-        )
+        self._apply_chart_layout(labels)
         self.draw_idle()
 
     def update_data(self, x: List[float], lines: List[Tuple[str, List[float], str]]):
@@ -946,23 +984,18 @@ class MultiLineChart(FigureCanvas):
             self.ax_right.relim()
             self.ax_right.autoscale_view()
         self._apply_axis_number_format()
-        ticks = [int(v) for v in x]
-        self.ax.set_xticks(ticks)
-        if ticks:
-            left = min(ticks)
-            right = max(ticks)
+        all_ticks = [int(v) for v in x]
+        self.ax.set_xticks(_select_chart_xticks(all_ticks))
+        if all_ticks:
+            left = min(all_ticks)
+            right = max(all_ticks)
             if left == right:
                 right = left + 1
             self.ax.set_xlim(left, right)
         else:
             self.ax.set_xlim(0, 1)
         labels = self._rebuild_legend()
-        self.figure.subplots_adjust(
-            left=0.12,
-            right=0.82 if self.ax_right is not None else 0.96,
-            bottom=0.16,
-            top=0.68 if len(labels) > 3 else 0.72,
-        )
+        self._apply_chart_layout(labels)
         self.draw_idle()
 
     @staticmethod
@@ -970,6 +1003,15 @@ class MultiLineChart(FigureCanvas):
         if abs(value) >= 100:
             return f"{value:.0f}"
         return f"{value:.3f}".rstrip("0").rstrip(".")
+
+    @staticmethod
+    def _format_hover_text(label: str, x_value: float, y_value: float) -> str:
+        if float(x_value).is_integer():
+            x_text = str(int(x_value))
+        else:
+            x_text = f"{x_value:.3f}".rstrip("0").rstrip(".")
+        y_text = MultiLineChart._format_hover_value(y_value)
+        return f"{label}\n改造次序：{x_text}\n数值：{y_text}"
 
     def _on_motion(self, event) -> None:
         valid_axes = [self.ax]
@@ -1003,7 +1045,8 @@ class MultiLineChart(FigureCanvas):
         annot.set_position((offset_x, offset_y))
         annot.set_ha("right" if offset_x < 0 else "left")
         annot.set_va("top" if offset_y < 0 else "bottom")
-        annot.set_text(f"{self._display_labels.get(label, label)}：{self._format_hover_value(y_value)}")
+        display_label = self._display_labels.get(label, label)
+        annot.set_text(self._format_hover_text(display_label, x_value, y_value))
         annot.set_visible(True)
         self.draw_idle()
 
