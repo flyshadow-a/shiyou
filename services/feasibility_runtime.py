@@ -215,6 +215,99 @@ def _remove_analysis_output_with_retry(path: str, *, retries: int = 12, interval
     raise RuntimeError(f"旧计算结果文件无法删除，可能仍被 SACS 或其他进程占用：{full}\n{last_exc}")
 
 
+
+def _analysis_output_paths(work_dir: str) -> list[str]:
+    work_dir = _norm(work_dir)
+    if not work_dir or not os.path.isdir(work_dir):
+        return []
+
+    paths: list[str] = []
+    for fn in list(os.listdir(work_dir)):
+        if _is_previous_analysis_output_name(fn):
+            paths.append(os.path.join(work_dir, fn))
+    return paths
+
+
+def _can_rename_for_lock_check(path: str) -> bool:
+    """
+    Windows/共享盘上判断文件是否还被 SACS 占用。
+
+    仅 open/read 不能可靠判断是否被占用，因为 Windows 文件共享模式允许“可读但不可删除/重命名”。
+    这里用 rename 到临时名再 rename 回来的方式测试是否已经释放。
+    """
+    full = _norm(path)
+    if not full or not os.path.exists(full):
+        return True
+
+    if os.path.isdir(full):
+        return True
+
+    parent = os.path.dirname(full)
+    name = os.path.basename(full)
+    tmp = os.path.join(parent, f".{name}.lockcheck.tmp")
+
+    if os.path.exists(tmp):
+        try:
+            os.remove(tmp)
+        except Exception:
+            return False
+
+    try:
+        os.rename(full, tmp)
+        os.rename(tmp, full)
+        return True
+    except Exception:
+        # 尽量恢复
+        try:
+            if os.path.exists(tmp) and not os.path.exists(full):
+                os.rename(tmp, full)
+        except Exception:
+            pass
+        return False
+
+
+def _wait_for_analysis_outputs_released(
+    work_dir: str,
+    *,
+    timeout_seconds: float = 180.0,
+    interval_seconds: float = 1.0,
+) -> None:
+    """
+    等待 SACS 输出文件完全释放后再把后台任务标记为完成。
+
+    原因：
+    - SACS/共享盘有时在 bat 返回后仍短暂占用 psilst.factor / analysis_*.log；
+    - 如果此时 task_manager 已把任务标记 success，用户马上开始第二次计算，
+      第二次清理旧结果会失败，或者 SACS 继续追加旧结果。
+    """
+    start = time.time()
+    last_locked: list[str] = []
+
+    while time.time() - start <= float(timeout_seconds):
+        locked: list[str] = []
+        for path in _analysis_output_paths(work_dir):
+            if not _can_rename_for_lock_check(path):
+                locked.append(path)
+
+        if not locked:
+            if last_locked:
+                print(
+                    f"[FeasibilityRuntime] analysis outputs released: work_dir={work_dir}",
+                    flush=True,
+                )
+            return
+
+        last_locked = locked
+        time.sleep(max(0.2, float(interval_seconds)))
+
+    raise RuntimeError(
+        "SACS 计算已结束，但输出文件仍被占用，暂不能开始下一次计算。\n"
+        "请稍后重试；如果长时间不释放，请检查服务端任务管理器中是否仍有 AnalysisEngine.exe / SACS / cmd.exe 进程。\n"
+        "被占用文件：\n" + "\n".join(last_locked)
+    )
+
+
+
 def _cleanup_previous_analysis_outputs(work_dir: str) -> None:
     """
     每次 SACS 计算前强制清理上一轮输出。
@@ -227,10 +320,7 @@ def _cleanup_previous_analysis_outputs(work_dir: str) -> None:
     if not work_dir or not os.path.isdir(work_dir):
         return
 
-    targets: list[str] = []
-    for fn in list(os.listdir(work_dir)):
-        if _is_previous_analysis_output_name(fn):
-            targets.append(os.path.join(work_dir, fn))
+    targets: list[str] = _analysis_output_paths(work_dir)
 
     if not targets:
         return
@@ -502,6 +592,9 @@ def run_feasibility_analysis(
             result_file=result_file,
             runtime_bundle=runtime_bundle,
         )
+
+    # 等待输出文件释放后再把后台任务标记为完成，避免用户立即开始第二次计算时旧文件仍被占用。
+    _wait_for_analysis_outputs_released(work_dir)
 
     run_id = int(time.time())
 
