@@ -92,6 +92,7 @@ class FeasibilityRunWorker(QObject):
             task = api.wait_feasibility_task(task_id, interval=1.0)
             if str(task.get("status") or "").lower() != "success":
                 message = str(task.get("error") or task.get("message") or "服务端计算失败")
+                message = message.replace("\\n", "\n")
                 if "当前已有 SACS 计算任务正在运行" in message:
                     message = message.split("Traceback", 1)[0].strip()
                 raise RuntimeError(message)
@@ -100,16 +101,10 @@ class FeasibilityRunWorker(QObject):
                 result = {}
             self.finished.emit(result)
         except Exception as exc:
-            message = str(exc)
-            message = message.replace("\\n", "\n")
+            message = str(exc).replace("\\n", "\n")
             if "当前已有 SACS 计算任务正在运行" in message:
                 start = message.find("当前已有 SACS 计算任务正在运行")
-                message = message[start:].strip()
-                # requests.HTTPError 字符串末尾可能带有 JSON 引号/括号，这里做简单清理。
-                for tail in ("'}", '"}', "}"):
-                    if message.endswith(tail):
-                        message = message[: -len(tail)].strip()
-                message = message.strip("'\"")
+                message = message[start:].strip().strip("'}\"")
             self.failed.emit(message)
 
 

@@ -11,13 +11,7 @@ from server.schemas import (
     FeasibilityReportGenerateRequest,
     FeasibilityRunRequest,
 )
-from server.task_manager import get_task, submit_task
-from server.sacs_lock import (
-    SacsTaskBusyError,
-    acquire_sacs_lock,
-    get_sacs_lock_status,
-    release_sacs_lock,
-)
+from server.task_manager import get_active_task, get_task, submit_task, submit_task_if_no_active
 from services.feasibility_runtime import (
     export_feasibility_generated_files,
     generate_feasibility_report,
@@ -37,58 +31,64 @@ def _run_feasibility_task(
     facility_code: str,
     analysis_mode: str,
     metadata: dict,
-    sacs_lock_token: str | None = None,
 ) -> dict:
-    """
-    真正执行 SACS 可行性评估计算的后台任务。
+    return run_feasibility_analysis(
+        facility_code=facility_code,
+        analysis_mode=analysis_mode,
+        metadata=metadata or {},
+    )
 
-    SACS 锁在接口入口处先占用；这里用 finally 确保无论计算成功还是失败，
-    后台任务结束时都会释放锁。
-    """
-    try:
-        return run_feasibility_analysis(
-            facility_code=facility_code,
-            analysis_mode=analysis_mode,
-            metadata=metadata or {},
-        )
-    finally:
-        release_sacs_lock(sacs_lock_token)
 
 @router.post("/run")
 def run_feasibility(req: FeasibilityRunRequest):
     """
     启动结构强度/改造可行性评估计算。
 
-    服务端只有一个 SACS 时，必须在提交后台任务之前占用全局锁。
-    如果已经有任务运行，直接返回 HTTP 409，客户端弹窗提示，不再进入计算目录。
+    不使用持久锁文件，只根据服务端当前任务状态判断：
+    - 如果已有 feasibility_run 任务处于 pending/running，直接返回 409；
+    - 如果没有正在运行的计算任务，才提交新的后台计算。
     """
-    try:
-        sacs_lock_token = acquire_sacs_lock(
-            facility_code=req.facility_code,
-            analysis_mode=req.analysis_mode,
-            task_type="feasibility_run",
-            metadata=req.metadata or {},
-        )
-    except SacsTaskBusyError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    task_id, active_task = submit_task_if_no_active(
+        name="feasibility_run",
+        payload=req.model_dump(),
+        func=_run_feasibility_task,
+        kwargs={
+            "facility_code": req.facility_code,
+            "analysis_mode": req.analysis_mode,
+            "metadata": req.metadata,
+        },
+        active_names=("feasibility_run",),
+    )
 
-    try:
-        task_id = submit_task(
-            name="feasibility_run",
-            payload=req.model_dump(),
-            func=_run_feasibility_task,
-            kwargs={
-                "facility_code": req.facility_code,
-                "analysis_mode": req.analysis_mode,
-                "metadata": req.metadata,
-                "sacs_lock_token": sacs_lock_token,
-            },
+    if active_task is not None:
+        payload = active_task.get("payload") or {}
+        facility_code = str(payload.get("facility_code") or "未知平台")
+        analysis_mode = str(payload.get("analysis_mode") or "未知模式")
+        started_at = str(active_task.get("created_at") or active_task.get("updated_at") or "未知时间")
+        active_task_id = str(active_task.get("task_id") or "")
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "当前已有 SACS 计算任务正在运行，请等待当前任务完成后再试。\n"
+                f"正在计算平台：{facility_code}\n"
+                f"计算模式：{analysis_mode}\n"
+                f"开始时间：{started_at}\n"
+                f"任务编号：{active_task_id}"
+            ),
         )
-    except Exception:
-        release_sacs_lock(sacs_lock_token)
-        raise
 
     return {"task_id": task_id}
+
+
+
+@router.get("/running/status")
+def get_feasibility_running_status():
+    active_task = get_active_task("feasibility_run")
+    return {
+        "running": active_task is not None,
+        "task": active_task,
+        "message": "当前已有 SACS 计算任务正在运行。" if active_task else "当前没有 SACS 计算任务运行。",
+    }
 
 @router.get("/tasks/{task_id}")
 def get_feasibility_task(task_id: str):
@@ -96,12 +96,6 @@ def get_feasibility_task(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
-
-
-
-@router.get("/sacs-lock/status")
-def get_sacs_lock_state():
-    return get_sacs_lock_status()
 
 
 @router.get("/result/{facility_code}")
