@@ -22,10 +22,10 @@ from core.app_paths import external_path, first_existing_path
 from pages.hover_tip_table import HoverTipTable
 from core.base_page import BasePage
 from services.inspection_business_db_adapter import (
-    load_platform_summary_snapshot,
     load_platform_load_information_items,
     save_platform_load_summary_snapshot,
 )
+from services.platform_summary_source import load_platform_summary_source
 
 
 
@@ -324,47 +324,7 @@ class SummaryInformationTablePage(BasePage):
         return None
 
     def _profiles_from_saved_platform_summary_snapshot(self) -> List[Dict[str, Any]]:
-        snapshot = load_platform_summary_snapshot(snapshot_key="latest")
-        if not snapshot:
-            return []
-
-        columns = [str(col or "").strip() for col in (snapshot.get("columns") or [])]
-        rows = snapshot.get("rows") or []
-        if not columns or not rows:
-            return []
-
-        profiles: List[Dict[str, Any]] = []
-        for row in rows:
-            values = list(row) if isinstance(row, list) else []
-            source = {
-                columns[index]: str(values[index] or "").strip()
-                for index in range(min(len(columns), len(values)))
-            }
-            profile = {
-                "facility_code": self._snapshot_value(source, ["设施编码", "设施编号", "平台编码", "平台编号", "编码"]),
-                "facility_name": self._snapshot_value(source, ["设施名称", "平台名称"]),
-                "branch": self._snapshot_value(source, ["分公司", "所属分公司"]),
-                "op_company": self._snapshot_value(
-                    source,
-                    ["作业公司", "所属作业单元", "所属作业公司", "作业单元", "作业单位"],
-                ),
-                "oilfield": self._snapshot_value(source, ["油气田", "所属油（气）田", "所属油气田"]),
-                "facility_type": self._snapshot_value(source, ["设施类型", "平台类型"]),
-                "category": self._snapshot_value(source, ["分类", "平台分类"]),
-                "start_time": self._snapshot_value(source, ["投产时间", "投产日期", "投产年月"]),
-                "design_life": self._snapshot_value(source, ["设计年限", "设计寿命"]),
-            }
-            if any(str(value or "").strip() for value in profile.values()):
-                profiles.append(profile)
-        return profiles
-
-    @staticmethod
-    def _snapshot_value(source: Dict[str, str], aliases: List[str]) -> str:
-        for alias in aliases:
-            value = str(source.get(alias) or "").strip()
-            if value:
-                return value
-        return ""
+        return load_platform_summary_source(snapshot_key="latest").profiles
 
     def _build_summary_row(self, profile: Dict[str, Any], index: int) -> List[str]:
         facility_code = str(profile.get("facility_code") or "").strip()
@@ -506,13 +466,10 @@ class SummaryInformationTablePage(BasePage):
             self.table.setRowHeight(rr, 48)
 
         # 写入数据
-        green = QColor(0, 170, 0)
         for i, row in enumerate(rows):
             rr = i + header_rows
             for c, val in enumerate(row):
                 it = self._mk_item(val)
-                if i == 0 and val:
-                    it.setForeground(green)
                 self.table.setItem(rr, c, it)
 
         # # 行数多时：不强制无限增高，避免卡顿；行数少时：自动扩展更像“表格自然增长”

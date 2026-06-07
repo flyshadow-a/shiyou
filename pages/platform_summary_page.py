@@ -32,11 +32,10 @@ from PyQt5.QtWidgets import (
 from core.base_page import BasePage
 from core.message_boxes import ask_yes_no
 from services.inspection_business_db_adapter import (
-    list_facility_profiles,
-    load_platform_summary_snapshot,
     save_facility_profile,
     save_platform_summary_snapshot,
 )
+from services.platform_summary_source import load_platform_summary_source
 
 try:
     import pandas as pd
@@ -772,21 +771,17 @@ class PlatformSummaryPage(BasePage):
         if self.table is None:
             return
         try:
-            snapshot = load_platform_summary_snapshot(snapshot_key="latest")
+            summary_source = load_platform_summary_source(snapshot_key="latest")
         except Exception as exc:
-            snapshot = None
             QMessageBox.warning(self, "读取失败", f"读取平台历史汇总信息失败：\n{exc}")
+            return
 
-        if snapshot and snapshot.get("columns"):
-            self._apply_snapshot_to_table(snapshot)
+        if summary_source.snapshot and summary_source.snapshot.get("columns"):
+            self._apply_snapshot_to_table(summary_source.snapshot)
             self._schedule_summary_pages_refresh()
             return
 
-        try:
-            profiles = list_facility_profiles()
-        except Exception as exc:
-            QMessageBox.warning(self, "读取失败", f"读取平台历史汇总信息失败：\n{exc}")
-            return
+        profiles = summary_source.profiles
         if not profiles:
             return
 
