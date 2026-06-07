@@ -2358,16 +2358,18 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         if btn is None:
             return
         btn.setEnabled(not busy)
-        btn.setText(text if busy else "生成特检策略报告")
+        btn.setText("生成报告中..." if busy else "生成特检策略报告")
         if busy:
-            self._show_report_progress(text)
+            stage_text = str(text or "正在生成报告").strip() or "正在生成报告"
+            self._show_report_progress(stage_text)
         else:
             self._close_report_progress()
 
     def _show_report_progress(self, text: str) -> None:
-        self._report_progress_base_text = "正在生成报告"
+        base_text = str(text or "正在生成报告").strip() or "正在生成报告"
+        self._report_progress_base_text = base_text
         self._report_progress_tick = 0
-        message = f"{self._report_progress_base_text}..."
+        message = f"{base_text}..."
         progress = self._report_progress
         if progress is None:
             progress = QProgressDialog(message, None, 0, 0, self)

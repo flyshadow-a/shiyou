@@ -9,10 +9,15 @@ from fastapi.responses import FileResponse
 from server.schemas import (
     FeasibilityExportFilesRequest,
     FeasibilityReportGenerateRequest,
-    FeasibilityResultRequest,
     FeasibilityRunRequest,
 )
 from server.task_manager import get_task, submit_task
+from server.sacs_lock import (
+    SacsTaskBusyError,
+    acquire_sacs_lock,
+    get_sacs_lock_status,
+    release_sacs_lock,
+)
 from services.feasibility_runtime import (
     export_feasibility_generated_files,
     generate_feasibility_report,
@@ -32,28 +37,61 @@ def _run_feasibility_task(
     facility_code: str,
     analysis_mode: str,
     metadata: dict,
+    sacs_lock_token: str | None = None,
 ) -> dict:
-    return run_feasibility_analysis(
-        facility_code=facility_code,
-        analysis_mode=analysis_mode,
-        metadata=metadata or {},
-    )
+    """
+    服务端 SACS 计算任务。
 
+    注意：
+    - SACS 全局锁在 /run 接口提交任务前占用；
+    - 即使客户端关闭，服务端线程仍会继续运行；
+    - 任务完成/失败后，finally 中释放锁。
+    """
+    try:
+        return run_feasibility_analysis(
+            facility_code=facility_code,
+            analysis_mode=analysis_mode,
+            metadata=metadata or {},
+        )
+    finally:
+        release_sacs_lock(sacs_lock_token)
 
 @router.post("/run")
 def run_feasibility(req: FeasibilityRunRequest):
-    task_id = submit_task(
-        name="feasibility_run",
-        payload=req.model_dump(),
-        func=_run_feasibility_task,
-        kwargs={
-            "facility_code": req.facility_code,
-            "analysis_mode": req.analysis_mode,
-            "metadata": req.metadata,
-        },
-    )
-    return {"task_id": task_id}
+    """
+    启动结构强度/改造可行性评估计算。
 
+    SACS 只有一个时，必须全局串行：
+    - 如果当前已有 SACS 任务运行，直接返回 HTTP 409；
+    - 不再提交第二个计算任务，避免两个 SACS 进程抢同一运行目录/结果文件。
+    """
+    try:
+        sacs_lock_token = acquire_sacs_lock(
+            facility_code=req.facility_code,
+            analysis_mode=req.analysis_mode,
+            task_type="feasibility_run",
+            metadata=req.metadata or {},
+        )
+    except SacsTaskBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    try:
+        task_id = submit_task(
+            name="feasibility_run",
+            payload=req.model_dump(),
+            func=_run_feasibility_task,
+            kwargs={
+                "facility_code": req.facility_code,
+                "analysis_mode": req.analysis_mode,
+                "metadata": req.metadata,
+                "sacs_lock_token": sacs_lock_token,
+            },
+        )
+    except Exception:
+        release_sacs_lock(sacs_lock_token)
+        raise
+
+    return {"task_id": task_id}
 
 @router.get("/tasks/{task_id}")
 def get_feasibility_task(task_id: str):
@@ -61,6 +99,12 @@ def get_feasibility_task(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
+
+
+
+@router.get("/sacs-lock/status")
+def get_sacs_lock_state():
+    return get_sacs_lock_status()
 
 
 @router.get("/result/{facility_code}")
@@ -71,21 +115,6 @@ def get_feasibility_result(
     bundle = load_feasibility_result_bundle(
         facility_code=facility_code,
         run_id=run_id,
-    )
-    if not bundle:
-        raise HTTPException(status_code=404, detail="Feasibility result not found")
-    return bundle
-
-
-@router.post("/result/{facility_code}")
-def get_feasibility_result_with_payload(
-    facility_code: str,
-    req: FeasibilityResultRequest,
-):
-    bundle = load_feasibility_result_bundle(
-        facility_code=facility_code,
-        run_id=req.run_id,
-        pile_capacity_input_rows=req.pile_capacity_input_rows,
     )
     if not bundle:
         raise HTTPException(status_code=404, detail="Feasibility result not found")

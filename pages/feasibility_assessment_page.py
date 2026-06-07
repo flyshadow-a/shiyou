@@ -91,13 +91,22 @@ class FeasibilityRunWorker(QObject):
             )
             task = api.wait_feasibility_task(task_id, interval=1.0)
             if str(task.get("status") or "").lower() != "success":
-                raise RuntimeError(str(task.get("error") or task.get("message") or "服务端计算失败"))
+                message = str(task.get("error") or task.get("message") or "服务端计算失败")
+                if "当前已有 SACS 计算任务正在运行" in message:
+                    message = message.split("Traceback", 1)[0].strip()
+                raise RuntimeError(message)
             result = task.get("result") or {}
             if not isinstance(result, dict):
                 result = {}
             self.finished.emit(result)
         except Exception as exc:
-            self.failed.emit(str(exc))
+            message = str(exc)
+            # 服务端 HTTP 409 返回时，requests 异常里会包含 detail 字段；
+            # 这里清洗一下，避免客户端弹窗显示太多 HTTP/字典细节。
+            if "当前已有 SACS 计算任务正在运行" in message:
+                start = message.find("当前已有 SACS 计算任务正在运行")
+                message = message[start:].strip().strip("'}\"")
+            self.failed.emit(message)
 
 
 class FeasibilityExportFilesWorker(QObject):
