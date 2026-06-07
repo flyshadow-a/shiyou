@@ -135,6 +135,33 @@ class PlatformLoadInformationAsyncLoadTests(unittest.TestCase):
 
         self.assertEqual([default_platform()["facility_code"]], started)
 
+    def test_legacy_load_current_platform_data_delegates_to_async_worker(self) -> None:
+        started = []
+
+        def fake_start_async(self):
+            started.append(self._get_top_value("璁炬柦缂栫爜"))
+
+        with patch.object(PlatformLoadInformationPage, "_start_async_current_platform_load", lambda self: None):
+            page = PlatformLoadInformationPage()
+            self.addCleanup(page.deleteLater)
+
+        with patch.object(
+            platform_load_page,
+            "load_platform_load_information_items",
+            side_effect=AssertionError("_load_current_platform_data should not read DB on UI thread"),
+        ), patch.object(
+            platform_load_page,
+            "list_rebuild_directories",
+            side_effect=AssertionError("_load_current_platform_data should not read files on UI thread"),
+        ), patch.object(
+            PlatformLoadInformationPage,
+            "_start_async_current_platform_load",
+            fake_start_async,
+        ):
+            page._load_current_platform_data()
+
+        self.assertEqual(1, len(started))
+
     def test_worker_emits_platform_load_payload(self) -> None:
         emitted = []
         failed = []

@@ -34,8 +34,9 @@ class PlatformLoadHistoryRebuildSyncTests(unittest.TestCase):
         self.assertEqual(
             merged,
             [
-                ["0", "项目A", "2020", "项目A结论", "100", "110"],
+                ["0", "项目A", "2020", "项目A结论", "", ""],
                 ["1", "项目B", "2021", "项目B结论", "200", "210"],
+                ["2", "旧项目A", "旧日期", "旧内容", "100", "110"],
             ],
         )
 
@@ -80,6 +81,33 @@ class PlatformLoadHistoryRebuildSyncTests(unittest.TestCase):
             [
                 ["0", "文件管理项目", "2020", "文件管理内容", "100", "110"],
                 ["1", "手动项目", "2024", "手动内容", "200", "210"],
+            ],
+        )
+
+    def test_unmatched_history_project_does_not_overwrite_manual_row_by_position(self) -> None:
+        existing_rows = [
+            ["0", "ManualProject", "2024", "ManualContent", "200", "210"],
+        ]
+        history_projects = [
+            {
+                "project_name": "HistoryProject",
+                "directory_name": "",
+                "project_year": "2020",
+                "summary_text": "HistoryContent",
+            }
+        ]
+
+        merged = _merge_history_rebuild_projects_into_load_rows(
+            existing_rows,
+            history_projects,
+            column_count=6,
+        )
+
+        self.assertEqual(
+            merged,
+            [
+                ["0", "HistoryProject", "2020", "HistoryContent", "", ""],
+                ["1", "ManualProject", "2024", "ManualContent", "200", "210"],
             ],
         )
 

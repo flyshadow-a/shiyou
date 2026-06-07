@@ -1279,13 +1279,6 @@ class PlatformStrengthPage(BasePage):
                 "design_life": platform["design_life"],
             },
         )
-        self.dropdown_bar.set_options("branch", [profile["branch"]], profile["branch"])
-        self.dropdown_bar.set_options("op_company", [profile["op_company"]], profile["op_company"])
-        self.dropdown_bar.set_options("oilfield", [profile["oilfield"]], profile["oilfield"])
-        self.dropdown_bar.set_options("facility_type", [profile["facility_type"]], profile["facility_type"])
-        self.dropdown_bar.set_options("category", [profile["category"]], profile["category"])
-        self.dropdown_bar.set_options("start_time", [profile["start_time"]], profile["start_time"])
-        self.dropdown_bar.set_options("design_life", [profile["design_life"]], profile["design_life"])
         if hasattr(self, "tbl_splash") and hasattr(self, "tbl_pile") and hasattr(self, "tbl_marine"):
             self._start_async_strength_env_load()
 

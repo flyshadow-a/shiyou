@@ -400,13 +400,6 @@ class ConstructionDocsPage(BasePage):
                     "design_life": platform["design_life"],
                 },
             )
-        self.dropdown_bar.set_options("division", [profile["branch"]], profile["branch"])
-        self.dropdown_bar.set_options("company", [profile["op_company"]], profile["op_company"])
-        self.dropdown_bar.set_options("field", [profile["oilfield"]], profile["oilfield"])
-        self.dropdown_bar.set_options("facility_type", [profile["facility_type"]], profile["facility_type"])
-        self.dropdown_bar.set_options("category", [profile["category"]], profile["category"])
-        self.dropdown_bar.set_options("start_time", [profile["start_time"]], profile["start_time"])
-        self.dropdown_bar.set_options("design_years", [profile["design_life"]], profile["design_life"])
         values = self.dropdown_bar.get_all_values()
         values["facility_code"] = profile["facility_code"]
         values["facility_name"] = profile["facility_name"]

@@ -129,8 +129,6 @@ def _merge_history_rebuild_projects_into_load_rows(
     for index, project in enumerate(history_projects):
         name, date, content = _history_rebuild_project_values(project)
         source_index = rows_by_name.get(name)
-        if source_index is None and index < len(normalized_rows):
-            source_index = index
         source = normalized_rows[source_index] if source_index is not None else None
         if source_index is not None:
             used_existing_indexes.add(source_index)
@@ -1825,14 +1823,6 @@ class PlatformLoadInformationPage(BasePage):
         if profile_code and current_code and profile_code != current_code:
             return
 
-        self._switching_platform = True
-        try:
-            for key in ("branch", "op_company", "oilfield", "facility_type", "category", "start_time", "design_life"):
-                value = str(profile.get(key) or "").strip()
-                if value:
-                    self.dropdown_bar.set_options(key, [value], value)
-        finally:
-            self._switching_platform = False
         self._sync_all_top_meta_values()
 
     def _platform_defaults_for_worker(self, facility_code: str) -> Dict[str, str]:
@@ -2299,37 +2289,8 @@ class PlatformLoadInformationPage(BasePage):
         if not facility_code:
             return
 
-        self._switching_platform = True
-        try:
-            rows = load_platform_load_information_items(facility_code)
-            table_rows = self._db_rows_to_table_rows(rows) if rows else [self._blank_table_row()]
-            try:
-                rebuild_projects = list_rebuild_directories(
-                    facility_code,
-                    project_type="history_rebuild",
-                )
-            except Exception as exc:
-                rebuild_projects = []
-                QMessageBox.warning(
-                    self,
-                    "读取失败",
-                    f"读取历次改造项目失败，平台载荷信息将保留已保存内容：\n{exc}",
-                )
-            if rebuild_projects:
-                table_rows = _merge_history_rebuild_projects_into_load_rows(
-                    table_rows,
-                    rebuild_projects,
-                    column_count=len(self._columns()),
-                )
-            if table_rows:
-                self._apply_data(table_rows)
-            else:
-                self._apply_data([self._blank_table_row()])
-        except Exception as exc:
-            QMessageBox.warning(self, "读取失败", f"读取平台载荷信息数据库数据失败：\n{exc}")
-            self._apply_data([self._blank_table_row()])
-        finally:
-            self._switching_platform = False
+        self._show_platform_data_loading_placeholder()
+        self._start_async_current_platform_load()
 
     def _find_data_end_row(self) -> int:
         """找到填表说明起始行（不含），作为数据区结束行。"""

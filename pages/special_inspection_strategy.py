@@ -112,7 +112,7 @@ class SpecialInspectionStrategy(NewSpecialInspectionPage):
         ]
 
     def _on_top_filter_changed(self, key: str, value: str) -> None:
-        if key in {"facility_code", "facility_name"}:
+        if key in {"branch", "op_company", "oilfield", "facility_code", "facility_name"}:
             self._sync_platform_ui(changed_key=key)
 
     def _sync_platform_ui(self, changed_key: str | None = None) -> None:
