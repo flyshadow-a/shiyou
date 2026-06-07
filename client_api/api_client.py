@@ -124,12 +124,28 @@ class ApiClient:
     def _raise_for_status_with_detail(self, resp: requests.Response, path: str) -> None:
         if resp.status_code < 400:
             return
+
         try:
-            detail = resp.json()
+            data = resp.json()
         except Exception:
-            detail = resp.text
+            data = resp.text
+
+        if isinstance(data, dict):
+            detail = data.get("detail") or data.get("message") or data.get("error") or data
+        else:
+            detail = data
+
+        if isinstance(detail, (dict, list)):
+            import json
+            detail_text = json.dumps(detail, ensure_ascii=False, indent=2)
+        else:
+            detail_text = str(detail or "").strip()
+
+        # 兼容某些路径中已经把换行转义成了字面量 \n 的情况
+        detail_text = detail_text.replace("\\n", "\n")
+
         raise requests.HTTPError(
-            f"后端接口调用失败：{path}\nHTTP {resp.status_code}\n{detail}",
+            f"后端接口调用失败：{path}\nHTTP {resp.status_code}\n{detail_text}",
             response=resp,
         )
 

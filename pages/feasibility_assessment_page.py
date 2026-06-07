@@ -101,6 +101,7 @@ class FeasibilityRunWorker(QObject):
             self.finished.emit(result)
         except Exception as exc:
             message = str(exc)
+            message = message.replace("\\n", "\n")
             if "当前已有 SACS 计算任务正在运行" in message:
                 start = message.find("当前已有 SACS 计算任务正在运行")
                 message = message[start:].strip()
