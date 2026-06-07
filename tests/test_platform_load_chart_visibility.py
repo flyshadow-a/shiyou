@@ -69,7 +69,7 @@ class PlatformLoadChartVisibilityTests(unittest.TestCase):
         self.assertGreaterEqual(left_label_box.x0, 0)
         self.assertLessEqual(right_label_box.x1, figure_width)
 
-    def test_axis_margins_expand_for_large_scientific_tick_labels(self) -> None:
+    def test_scaled_large_axis_values_do_not_need_extra_scientific_label_margin(self) -> None:
         small_chart = MultiLineChart(
             "Small",
             [0, 1, 2, 3],
@@ -98,11 +98,46 @@ class PlatformLoadChartVisibilityTests(unittest.TestCase):
         small_chart.draw()
         large_chart.draw()
 
-        self.assertGreater(large_chart.figure.subplotpars.left, small_chart.figure.subplotpars.left)
-        self.assertGreater(
+        self.assertLessEqual(large_chart.figure.subplotpars.left, small_chart.figure.subplotpars.left)
+        self.assertLessEqual(
             1 - large_chart.figure.subplotpars.right,
             1 - small_chart.figure.subplotpars.right,
         )
+
+    def test_large_and_small_series_are_scaled_for_display_without_changing_raw_points(self) -> None:
+        chart = MultiLineChart(
+            "Operation Load",
+            [0, 1, 2],
+            [
+                ("Fx", [120000.0, 130000.0, 140000.0], "left"),
+                ("Fz", [2.2e6, 2.3e6, 2.4e6], "left"),
+            ],
+            left_ylabel="Fx,Fz(kN)",
+        )
+        self.addCleanup(chart.deleteLater)
+
+        fx_plotted = list(chart._lines["Fx"].get_ydata())
+        fz_plotted = list(chart._lines["Fz"].get_ydata())
+
+        self.assertEqual([1.2, 1.3, 1.4], fx_plotted)
+        self.assertEqual([2.2, 2.3, 2.4], fz_plotted)
+        self.assertEqual([120000.0, 130000.0, 140000.0], chart._points["Fx"][1])
+        self.assertEqual([2.2e6, 2.3e6, 2.4e6], chart._points["Fz"][1])
+
+    def test_legend_labels_show_display_scale(self) -> None:
+        chart = MultiLineChart(
+            "Operation Load",
+            [0, 1],
+            [
+                ("Fx", [100000.0, 120000.0], "left"),
+                ("Fz", [2100000.0, 2300000.0], "left"),
+            ],
+            left_ylabel="Fx,Fz(kN)",
+        )
+        self.addCleanup(chart.deleteLater)
+
+        self.assertEqual("Fx (×1e5)", chart._display_labels["Fx"])
+        self.assertEqual("Fz (×1e6)", chart._display_labels["Fz"])
 
     def test_hover_text_includes_sequence_and_series_value(self) -> None:
         text = MultiLineChart._format_hover_text("Fx", 30, 123456.0)

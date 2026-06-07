@@ -16,6 +16,7 @@
 
 import os
 import ctypes
+import math
 import random
 import re
 import subprocess
@@ -707,6 +708,7 @@ class MultiLineChart(FigureCanvas):
         self._lines: Dict[str, object] = {}
         self._display_labels: Dict[str, str] = {}
         self._points: Dict[str, Tuple[List[float], List[float]]] = {}
+        self._display_points: Dict[str, Tuple[List[float], List[float]]] = {}
         self._point_axes: Dict[str, object] = {}
         self._line_markers: Dict[str, str] = {}
         self._line_styles: Dict[str, Dict[str, str]] = {}
@@ -796,18 +798,38 @@ class MultiLineChart(FigureCanvas):
         self,
         x: List[float],
         lines: List[Tuple[str, List[float], str]],
-    ) -> List[Tuple[str, str, List[float], str, Dict[str, str]]]:
-        adjusted: List[Tuple[str, List[float], str, float, Dict[str, str]]] = []
+    ) -> List[Tuple[str, str, List[float], List[float], str, Dict[str, str]]]:
+        adjusted: List[Tuple[str, str, List[float], List[float], str, Dict[str, str]]] = []
         for line_index, line_def in enumerate(lines):
             label, y, axis_name = line_def[:3]
             style = line_def[3] if len(line_def) > 3 else None
             if len(y) != len(x):
                 y = (y + [0.0] * len(x))[:len(x)]
             y_values = [float(v) for v in y]
-            max_abs = max([abs(v) for v in y_values] or [0.0])
-            adjusted.append((label, y_values, axis_name, max_abs, self._merged_line_style(line_index, style)))
+            scale = self._display_scale_for_values(y_values)
+            display_values = [value / scale for value in y_values]
+            display_label = self._display_label_with_scale(label, scale)
+            adjusted.append((label, display_label, y_values, display_values, axis_name, self._merged_line_style(line_index, style)))
 
-        return [(label, label, y_values, axis_name, style) for label, y_values, axis_name, _max_abs, style in adjusted]
+        return [
+            (label, display_label, y_values, display_values, axis_name, style)
+            for label, display_label, y_values, display_values, axis_name, style in adjusted
+        ]
+
+    @staticmethod
+    def _display_scale_for_values(values: List[float]) -> float:
+        max_abs = max([abs(float(value)) for value in values] or [0.0])
+        if max_abs < 10000:
+            return 1.0
+        exponent = int(math.floor(math.log10(max_abs)))
+        return float(10 ** exponent)
+
+    @staticmethod
+    def _display_label_with_scale(label: str, scale: float) -> str:
+        if scale == 1.0:
+            return label
+        exponent = int(round(math.log10(scale)))
+        return f"{label} (×1e{exponent})"
 
     def _normalise_visibility(self, labels: List[str]) -> None:
         self._line_visibility = _normalise_chart_line_visibility(self._line_visibility, labels)
@@ -951,6 +973,7 @@ class MultiLineChart(FigureCanvas):
             del self._lines[label]
             self._display_labels.pop(label, None)
             self._points.pop(label, None)
+            self._display_points.pop(label, None)
             self._point_axes.pop(label, None)
             self._line_markers.pop(label, None)
             self._line_styles.pop(label, None)
@@ -959,22 +982,24 @@ class MultiLineChart(FigureCanvas):
         normalised_lines = self._normalise_line_scales(x, lines)
         self._normalise_visibility([str(line_def[0]) for line_def in normalised_lines])
 
-        for _line_index, (label, display_label, y, axis_name, style) in enumerate(normalised_lines):
+        for _line_index, (label, display_label, raw_y, display_y, axis_name, style) in enumerate(normalised_lines):
             x_values = [float(v) for v in x]
-            y_values = [float(v) for v in y]
+            raw_y_values = [float(v) for v in raw_y]
+            display_y_values = [float(v) for v in display_y]
             target_ax = self.ax_right if axis_name == "right" and self.ax_right is not None else self.ax
             marker = style.get("marker", "o")
             self._display_labels[label] = display_label
-            self._points[label] = (x_values, y_values)
+            self._points[label] = (x_values, raw_y_values)
+            self._display_points[label] = (x_values, display_y_values)
             self._point_axes[label] = target_ax
             self._line_markers[label] = marker
             self._line_styles[label] = style
             if label in self._lines:
-                self._lines[label].set_data(x_values, y_values)
+                self._lines[label].set_data(x_values, display_y_values)
                 self._lines[label].set_label(display_label)
                 self._lines[label].set(**style)
             else:
-                (line,) = target_ax.plot(x_values, y_values, label=display_label, **style)
+                (line,) = target_ax.plot(x_values, display_y_values, label=display_label, **style)
                 self._lines[label] = line
             self._lines[label].set_visible(self._line_visibility.get(label, True))
 
@@ -1023,30 +1048,31 @@ class MultiLineChart(FigureCanvas):
 
         best = None
         max_distance_px = 12.0
-        for label, (xs, ys) in self._points.items():
+        for label, (xs, display_ys) in self._display_points.items():
             axis = self._point_axes.get(label, self.ax)
-            for x_value, y_value in zip(xs, ys):
-                px, py = axis.transData.transform((x_value, y_value))
+            raw_ys = self._points.get(label, ([], []))[1]
+            for x_value, display_y_value, raw_y_value in zip(xs, display_ys, raw_ys):
+                px, py = axis.transData.transform((x_value, display_y_value))
                 distance = ((px - event.x) ** 2 + (py - event.y) ** 2) ** 0.5
                 if distance <= max_distance_px and (best is None or distance < best[0]):
-                    best = (distance, label, x_value, y_value, axis)
+                    best = (distance, label, x_value, display_y_value, raw_y_value, axis)
 
         if best is None:
             self._hide_hover(event)
             return
 
-        _, label, x_value, y_value, axis = best
+        _, label, x_value, display_y_value, raw_y_value, axis = best
         bbox = self.ax.get_window_extent()
         offset_x = -12 if event.x > bbox.x0 + bbox.width * 0.72 else 12
         offset_y = -24 if event.y > bbox.y0 + bbox.height * 0.72 else 12
         self._hide_hover(event)
         annot = self._hover_annots[axis]
-        annot.xy = (x_value, y_value)
+        annot.xy = (x_value, display_y_value)
         annot.set_position((offset_x, offset_y))
         annot.set_ha("right" if offset_x < 0 else "left")
         annot.set_va("top" if offset_y < 0 else "bottom")
         display_label = self._display_labels.get(label, label)
-        annot.set_text(self._format_hover_text(display_label, x_value, y_value))
+        annot.set_text(self._format_hover_text(display_label, x_value, raw_y_value))
         annot.set_visible(True)
         self.draw_idle()
 
