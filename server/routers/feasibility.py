@@ -40,12 +40,10 @@ def _run_feasibility_task(
     sacs_lock_token: str | None = None,
 ) -> dict:
     """
-    服务端 SACS 计算任务。
+    真正执行 SACS 可行性评估计算的后台任务。
 
-    注意：
-    - SACS 全局锁在 /run 接口提交任务前占用；
-    - 即使客户端关闭，服务端线程仍会继续运行；
-    - 任务完成/失败后，finally 中释放锁。
+    SACS 锁在接口入口处先占用；这里用 finally 确保无论计算成功还是失败，
+    后台任务结束时都会释放锁。
     """
     try:
         return run_feasibility_analysis(
@@ -61,9 +59,8 @@ def run_feasibility(req: FeasibilityRunRequest):
     """
     启动结构强度/改造可行性评估计算。
 
-    SACS 只有一个时，必须全局串行：
-    - 如果当前已有 SACS 任务运行，直接返回 HTTP 409；
-    - 不再提交第二个计算任务，避免两个 SACS 进程抢同一运行目录/结果文件。
+    服务端只有一个 SACS 时，必须在提交后台任务之前占用全局锁。
+    如果已经有任务运行，直接返回 HTTP 409，客户端弹窗提示，不再进入计算目录。
     """
     try:
         sacs_lock_token = acquire_sacs_lock(
