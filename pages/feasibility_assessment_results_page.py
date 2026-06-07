@@ -85,6 +85,9 @@ from pages.sacs_storage_service import get_job_runtime_dir, get_job_sea_file
 from services.history_rebuild_auto_service import get_latest_rebuild_compare_model_paths
 
 
+# 页面关闭时，如果后台 QThread 还在运行，需要临时保活，避免 “QThread: Destroyed while thread is still running”。
+_DETACHED_QTHREAD_JOBS = []
+
 REPORT_MODULE_ROOT = Path(__file__).resolve().parent / "output_feasibility_analysis_report"
 if str(REPORT_MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(REPORT_MODULE_ROOT))
@@ -196,10 +199,12 @@ def _get_remote_analysis_results_for_results(payload: dict[str, Any]) -> dict[st
     if not facility_code:
         return {}
     try:
-        data = ApiClient().get_feasibility_result(
-            facility_code,
-            pile_capacity_input_rows=payload.get("pile_capacity_input_rows") or [],
-        )
+        run_id = payload.get("run_id")
+        try:
+            run_id = int(run_id) if run_id not in (None, "") else None
+        except Exception:
+            run_id = None
+        data = ApiClient().get_feasibility_result(facility_code, run_id=run_id)
     except Exception as exc:
         print("[FeasibilityAssessmentResultsPage] remote analysis result unavailable:", exc)
         return {}
@@ -371,20 +376,40 @@ class AnalysisResultsWorker(QObject):
             if project_root_text not in sys.path:
                 sys.path.insert(0, project_root_text)
 
-            remote_payload = dict(self._path_payload)
-            remote_payload["pile_capacity_input_rows"] = self._pile_capacity_input_rows
-            results: dict[str, Any] = _get_remote_analysis_results_for_results(remote_payload)
-
-            if not results:
+            def build_local_results() -> dict[str, Any]:
                 from src.report_service import build_analysis_results_for_ui
 
                 factor_path = self._factor_path
                 if not factor_path:
                     factor_path = _get_current_job_factor_path_for_results(self._path_payload)
-                results = build_analysis_results_for_ui(
+                return build_analysis_results_for_ui(
                     factor_path,
                     pile_capacity_input_rows=self._pile_capacity_input_rows,
                 )
+
+            remote_payload = dict(self._path_payload)
+            results: dict[str, Any] = _get_remote_analysis_results_for_results(remote_payload)
+
+            # 注意：
+            # /api/feasibility/result/{facility_code} 只能返回服务端已经解析好的结果。
+            # 但“桩基承载力”表需要客户端当前油气田/平台维护的承载力输入
+            # pile_capacity_input_rows 参与二次计算。GET 接口不能携带这批行数据，
+            # 因此远程结果常常会出现 operation/extreme_table_rows 为空。
+            #
+            # 只要客户端成功读到了桩基承载力输入，就用客户端可访问的 psilst.factor
+            # 重新构建一次结果，保证两个承载力表和汇总行有数据。
+            if results and self._pile_capacity_input_rows:
+                try:
+                    results = build_local_results()
+                except Exception as exc:
+                    print(
+                        "[FeasibilityAssessmentResultsPage] local rebuild with pile capacity rows failed:",
+                        exc,
+                    )
+
+            if not results:
+                results = build_local_results()
+
             if self._pile_capacity_input_error:
                 results["pile_capacity_input_error"] = self._pile_capacity_input_error
             self.finished.emit(results)
@@ -663,6 +688,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._remote_model_cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.current_tab = "构件"
+        self._is_closing = False
+        self._close_cleanup_started = False
         self._report_thread = None
         self._report_worker = None
         self._report_progress = None
@@ -700,9 +727,126 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._start_initial_loading()
 
     def _start_initial_loading(self) -> None:
+        if self._is_page_closing():
+            return
         self._show_analysis_status_in_tables("正在解析数据...")
         self.reload_model_view()
         self.start_analysis_results_loading()
+
+    def _is_page_closing(self) -> bool:
+        return bool(getattr(self, "_is_closing", False))
+
+    def _register_thread_job(self, thread, worker=None) -> None:
+        """
+        线程一启动就登记到全局保活列表。
+
+        原因：主窗口/TabWidget 关闭标签页时，不一定会触发本页面的 closeEvent；
+        如果此时 Python 对页面对象释放，页面属性里的 QThread 也会被释放，
+        就会出现 “QThread: Destroyed while thread is still running”。
+        所以不能只在 closeEvent 里 detach，必须在线程创建时就保活。
+        """
+        if thread is None:
+            return
+
+        try:
+            thread.setParent(None)
+        except Exception:
+            pass
+
+        job = {"thread": thread, "worker": worker}
+        _DETACHED_QTHREAD_JOBS.append(job)
+
+        def _cleanup_thread_job():
+            try:
+                if job in _DETACHED_QTHREAD_JOBS:
+                    _DETACHED_QTHREAD_JOBS.remove(job)
+            except Exception:
+                pass
+
+        try:
+            thread.finished.connect(_cleanup_thread_job)
+        except Exception:
+            pass
+
+    def _detach_running_thread(self, thread, worker=None) -> None:
+        """
+        兼容旧调用：如果线程还没登记到全局保活列表，则登记一次。
+        """
+        if thread is None:
+            return
+        try:
+            if not thread.isRunning():
+                return
+        except Exception:
+            return
+
+        for job in list(_DETACHED_QTHREAD_JOBS):
+            if job.get("thread") is thread:
+                return
+        self._register_thread_job(thread, worker)
+
+    def _stop_and_detach_thread(self, thread_attr: str, worker_attr: str) -> None:
+        thread = getattr(self, thread_attr, None)
+        worker = getattr(self, worker_attr, None)
+        if thread is None:
+            setattr(self, worker_attr, None)
+            return
+
+        try:
+            if thread.isRunning():
+                self._detach_running_thread(thread, worker)
+                thread.quit()
+        except Exception:
+            pass
+
+        setattr(self, thread_attr, None)
+        setattr(self, worker_attr, None)
+
+    def _begin_close_cleanup(self) -> None:
+        """关闭/删除页面前统一做异步任务清理。"""
+        if getattr(self, "_close_cleanup_started", False):
+            return
+        self._close_cleanup_started = True
+        self._is_closing = True
+
+        try:
+            self._model_load_seq += 1
+        except Exception:
+            pass
+
+        try:
+            self._close_report_progress()
+        except Exception:
+            pass
+
+        for thread_attr, worker_attr in (
+            ("_report_thread", "_report_worker"),
+            ("_analysis_thread", "_analysis_worker"),
+            ("_model_load_thread", "_model_load_worker"),
+            ("_outline_export_thread", "_outline_export_worker"),
+        ):
+            try:
+                self._stop_and_detach_thread(thread_attr, worker_attr)
+            except Exception:
+                pass
+
+        try:
+            panel = getattr(self, "model_panel", None)
+            if panel is not None and hasattr(panel, "safe_close"):
+                panel.safe_close()
+        except Exception:
+            pass
+
+    def deleteLater(self) -> None:
+        """
+        Tab 关闭时很多主窗口代码会直接 widget.deleteLater()，这不会触发 closeEvent。
+        因此这里也必须先清理后台线程。
+        """
+        try:
+            self._begin_close_cleanup()
+        except Exception:
+            pass
+        super().deleteLater()
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -881,6 +1025,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 table.setColumnWidth(0, target_width)
 
     def _show_analysis_status_in_tables(self, message: str) -> None:
+        if self._is_page_closing():
+            return
         if hasattr(self, "tbl_summary"):
             for r in range(2, self.tbl_summary.rowCount()):
                 for c in range(1, self.tbl_summary.columnCount()):
@@ -898,7 +1044,6 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 text = message if c == 0 else "-"
                 self._set_cell(table, header_rows, c, text, editable=False, align_center=False)
 
-    # ---------------- 上方 快速评估汇总信息表 ----------------
     def _build_summary_table(self) -> QWidget:
         box = QGroupBox()
         box.setTitle("")
@@ -1212,6 +1357,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
     # ------------------- 表格行数控制与事件 --------------------
     def _update_current_table_rows(self):
         """根据下拉框的值，动态调整当前显示表格的行数并填充空单元格"""
+        if self._is_page_closing():
+            return
         idx = self.table_stack.currentIndex()
         if idx == -1:
             return
@@ -1225,21 +1372,16 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 self._render_standard_detail_rows(current_tbl, stored_rows)
             return
 
-        limit_text = self.cb_row_limit.currentText()
         limit = self._current_row_limit(default_all=200)
-
         header_rows = int(current_tbl.property("header_rows") or 2)
-
-        # 目标总行数 = 2行表头 + 数据行
         target_rows = header_rows + limit
         current_tbl.setRowCount(target_rows)
 
-        # 补充新增出来的行数据（如果是减少行数，setRowCount 会自动截断）
         for i in range(limit):
+            if self._is_page_closing():
+                return
             r = header_rows + i
             current_tbl.setRowHeight(r, 32)
-
-            # 判断第0列（序号）是否为空，为空说明是新生成的行，需要初始化格式
             if current_tbl.item(r, 0) is None:
                 self._set_cell(current_tbl, r, 0, str(i + 1), bg=self.INDEX_BG, bold=False, editable=False)
                 for c in range(1, current_tbl.columnCount()):
@@ -1506,16 +1648,26 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 table.viewport().update()
 
     def _render_deferred_detail_job(self, job: Tuple[str, str, list], *, sync_width: bool = False) -> None:
-        self._render_detail_job(job)
-        if sync_width:
-            self._sync_pile_capacity_head_column_width()
+        if self._is_page_closing():
+            return
+        try:
+            self._render_detail_job(job)
+            if sync_width and not self._is_page_closing():
+                self._sync_pile_capacity_head_column_width()
+        except RuntimeError:
+            # 页面关闭后，底层 Qt C++ 对象可能已经释放，忽略延迟渲染回调。
+            return
 
     def _schedule_detail_render_jobs(self, jobs: List[Tuple[str, str, list]]) -> None:
+        if self._is_page_closing():
+            return
         current_tab = str(getattr(self, "current_tab", "") or "")
         current_jobs = [job for job in jobs if job[1] == current_tab]
         deferred_jobs = [job for job in jobs if job[1] != current_tab]
 
         for job in current_jobs:
+            if self._is_page_closing():
+                return
             self._render_detail_job(job)
 
         if not deferred_jobs:
@@ -1533,13 +1685,15 @@ class FeasibilityAssessmentResultsPage(BasePage):
             )
 
     def _fill_detail_tables_from_analysis(self, results: dict) -> None:
+        if self._is_page_closing():
+            return
         jobs = self._build_detail_render_jobs(results)
 
         pile_capacity_message = results.get("pile_capacity_input_error")
         if pile_capacity_message:
             self._set_pile_capacity_tables_message(str(pile_capacity_message))
             self._clear_pile_capacity_summary_rows(str(pile_capacity_message))
-            if not self._pile_capacity_input_warning_shown:
+            if not self._pile_capacity_input_warning_shown and not self._is_page_closing():
                 self._pile_capacity_input_warning_shown = True
                 QMessageBox.warning(self, "桩基信息不完整", str(pile_capacity_message))
             return
@@ -1569,6 +1723,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return payload
 
     def start_analysis_results_loading(self) -> None:
+        if self._is_page_closing():
+            return
         if self._analysis_thread is not None and self._analysis_thread.isRunning():
             return
 
@@ -1579,7 +1735,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             self._analysis_results = {}
             return
 
-        thread = QThread(self)
+        thread = QThread()
         worker = AnalysisResultsWorker(
             project_root,
             "",
@@ -1601,69 +1757,51 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         self._analysis_thread = thread
         self._analysis_worker = worker
+        self._register_thread_job(thread, worker)
         thread.start()
 
     def _on_analysis_results_loaded(self, results: dict) -> None:
+        if self._is_page_closing():
+            return
         self._analysis_results = results
         self._fill_summary_table_from_analysis(results.get("analysis_summary", {}))
         self._fill_detail_tables_from_analysis(results)
 
     def _on_analysis_results_failed(self, message: str) -> None:
+        if self._is_page_closing():
+            return
         self._analysis_results = {}
         self._show_analysis_status_in_tables(f"解析数据失败：{message}")
 
     def _on_analysis_thread_finished(self) -> None:
+        if self._is_page_closing():
+            return
         self._analysis_thread = None
         self._analysis_worker = None
 
     def closeEvent(self, event):
         try:
-            if self._report_thread is not None and self._report_thread.isRunning():
-                self._report_thread.quit()
-                self._report_thread.wait(3000)
-                self._report_thread = None
-                self._report_worker = None
-
-            if self._analysis_thread is not None and self._analysis_thread.isRunning():
-                self._analysis_thread.quit()
-                self._analysis_thread.wait(3000)
-                self._analysis_thread = None
-                self._analysis_worker = None
-
-            if self._model_load_thread is not None and self._model_load_thread.isRunning():
-                self._model_load_thread.quit()
-                self._model_load_thread.wait(3000)
-                self._model_load_thread = None
-                self._model_load_worker = None
-
-            if self._outline_export_thread is not None and self._outline_export_thread.isRunning():
-                self._outline_export_thread.quit()
-                self._outline_export_thread.wait(3000)
-                self._outline_export_thread = None
-                self._outline_export_worker = None
-
-            if hasattr(self, "_report_progress_timer") and self._report_progress_timer.isActive():
-                self._report_progress_timer.stop()
-
+            self._begin_close_cleanup()
         except Exception:
             pass
-
         super().closeEvent(event)
 
     def _on_row_limit_changed(self, text):
         """下拉框数值改变时触发"""
+        if self._is_page_closing():
+            return
         self._update_current_table_rows()
 
     def _on_tab_clicked(self, btn: QPushButton):
         """点击标签页切换时触发"""
+        if self._is_page_closing():
+            return
         self.current_tab = btn.text().strip()
         idx = self.tab_group.id(btn)
         if idx != -1:
             self.table_stack.setCurrentIndex(idx)
-            # 切换表格后，确保新表格的行数也和右上角的下拉框保持一致
             self._update_current_table_rows()
 
-    # ---------------- 生成报告按钮 ----------------
     def _build_report_button(self) -> QWidget:
         wrap = QWidget()
         lay = QHBoxLayout(wrap)
@@ -2691,6 +2829,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _show_report_progress(self, text: str = "正在生成报告") -> None:
         """显示生成报告进度窗口。"""
+        if self._is_page_closing():
+            return
         base_text = str(text or "正在生成报告").strip() or "正在生成报告"
         self._report_progress_base_text = base_text
         self._report_progress_tick = 0
@@ -2715,6 +2855,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
             self._report_progress_timer.start()
 
     def _update_report_progress_text(self) -> None:
+        if self._is_page_closing():
+            return
         if self._report_progress is None or not self._report_progress_base_text:
             return
         dot_count = (self._report_progress_tick % 3) + 1
@@ -2746,14 +2888,18 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._report_worker = None
 
     def _on_report_thread_finished(self) -> None:
+        if self._is_page_closing():
+            return
         self._report_thread = None
         self._report_worker = None
 
     def _start_report_generation_worker(self, payload: dict) -> None:
+        if self._is_page_closing():
+            return
         self._set_report_running(True)
         self._show_report_progress("正在生成报告")
 
-        thread = QThread(self)
+        thread = QThread()
         worker = ReportGenerationWorker(self, payload)
         worker.moveToThread(thread)
 
@@ -2769,9 +2915,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         self._report_thread = thread
         self._report_worker = worker
+        self._register_thread_job(thread, worker)
         thread.start()
 
     def _on_report_generation_finished(self, result: dict) -> None:
+        if self._is_page_closing():
+            return
         self._close_report_progress()
         self._set_report_running(False)
         self._set_report_button_busy(False)
@@ -2787,6 +2936,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
             QMessageBox.warning(self, "打开目录失败", "PDF 报告已生成，但未能自动打开并选中生成文件。")
 
     def _on_report_generation_failed(self, message: str) -> None:
+        if self._is_page_closing():
+            return
         self._close_report_progress()
         self._set_report_running(False)
         self._set_report_button_busy(False)
@@ -2973,9 +3124,13 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return original, original, float(default_workpoint)
 
     def reload_model_view(self):
+        if self._is_page_closing():
+            return
         return self._start_model_view_loading()
 
     def _start_model_view_loading(self):
+        if self._is_page_closing():
+            return
         if self._model_load_thread is not None and self._model_load_thread.isRunning():
             return
         self._model_load_seq += 1
@@ -2988,7 +3143,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             except Exception:
                 pass
 
-        thread = QThread(self)
+        thread = QThread()
         worker = ModelViewLoadWorker(payload)
         worker.moveToThread(thread)
 
@@ -3004,27 +3159,38 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         self._model_load_thread = thread
         self._model_load_worker = worker
+        self._register_thread_job(thread, worker)
         thread.start()
 
     def _on_model_view_loaded(self, payload: dict) -> None:
+        if self._is_page_closing():
+            return
         if payload.get("seq") != self._model_load_seq:
             return
         try:
             old_file = str(payload.get("old_file") or "").strip()
             new_file = str(payload.get("new_file") or "").strip()
             workpoint = float(payload.get("workpoint") or 9.1)
+            if self._is_page_closing():
+                return
             self.model_panel.load_files(old_file, new_file, target_z=workpoint)
         except Exception as e:
+            if self._is_page_closing():
+                return
             if hasattr(self, "model_panel"):
                 self.model_panel.path_label.setText("模型加载失败")
                 self.model_panel.compare_view.clear_view(f"右侧模型加载失败：\n{e}")
 
     def _on_model_view_failed(self, message: str) -> None:
+        if self._is_page_closing():
+            return
         if hasattr(self, "model_panel"):
             self.model_panel.path_label.setText("模型加载失败")
             self.model_panel.compare_view.clear_view(f"右侧模型加载失败：\n{message}")
 
     def _on_model_view_thread_finished(self) -> None:
+        if self._is_page_closing():
+            return
         self._model_load_thread = None
         self._model_load_worker = None
 
@@ -3049,6 +3215,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return "", []
 
     def _set_report_button_busy(self, busy: bool, text: str = "生成评估报告") -> None:
+        if self._is_page_closing():
+            return
         btn = getattr(self, "btn_generate_report", None)
         if btn is None:
             return
@@ -3063,6 +3231,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
         注意：轮廓图仍然会导出，只是界面统一显示“正在生成报告...”，
         不再单独显示“正在导出轮廓图...”。
         """
+        if self._is_page_closing():
+            return False
         if self._outline_export_thread is not None and self._outline_export_thread.isRunning():
             QMessageBox.information(self, "提示", "报告正在生成中，请稍候。")
             return False
@@ -3078,7 +3248,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         except Exception:
             run_id = None
 
-        thread = QThread(self)
+        thread = QThread()
         worker = RemoteOutlineImageExportWorker(
             facility_code=self.facility_code,
             run_id=run_id,
@@ -3097,15 +3267,20 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         self._outline_export_thread = thread
         self._outline_export_worker = worker
+        self._register_thread_job(thread, worker)
         thread.start()
         return True
 
     def _on_remote_outline_export_thread_finished(self) -> None:
+        if self._is_page_closing():
+            return
         self._outline_export_thread = None
         self._outline_export_worker = None
 
     def _on_remote_outline_export_finished(self) -> None:
         """服务端轮廓图导出完成后，继续生成报告。"""
+        if self._is_page_closing():
+            return
         if self._pending_generate_report_after_outline:
             self._pending_generate_report_after_outline = False
             self._show_report_progress("正在生成报告")
@@ -3116,6 +3291,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _on_remote_outline_export_failed(self, message: str) -> None:
         """服务端轮廓图导出失败。"""
+        if self._is_page_closing():
+            return
         self._pending_generate_report_after_outline = False
         self._pending_report_payload_after_outline = {}
         self._close_report_progress()
@@ -3129,6 +3306,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _on_outline_export_error(self, error):
         """旧 QProcess 错误回调，保留兼容。"""
+        if self._is_page_closing():
+            return
         self._pending_generate_report_after_outline = False
         self._pending_report_payload_after_outline = {}
         self._close_report_progress()
@@ -3142,6 +3321,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _on_outline_export_finished(self, exit_code: int, _status):
         """旧 QProcess 完成回调，保留兼容。"""
+        if self._is_page_closing():
+            return
         self._outline_export_process = None
 
         if int(exit_code) != 0:
@@ -3166,6 +3347,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _do_generate_report_after_outline_export(self):
         """轮廓图导出完成后生成报告。"""
+        if self._is_page_closing():
+            return
         try:
             payload = dict(getattr(self, "_pending_report_payload_after_outline", {}) or {})
             self._pending_report_payload_after_outline = {}
@@ -3179,6 +3362,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
             self._start_report_generation_worker(payload)
 
         except Exception as exc:
+            if self._is_page_closing():
+                return
             self._close_report_progress()
             self._set_report_button_busy(False)
             QMessageBox.critical(self, "生成报告失败", str(exc))
@@ -3194,6 +3379,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
         4. 服务端生成报告并下载到用户选择路径；
         5. 按钮恢复为“生成评估报告”。
         """
+        if self._is_page_closing():
+            return
         if self._report_thread is not None and self._report_thread.isRunning():
             QMessageBox.information(self, "生成报告", "报告正在生成中，请稍候。")
             return
