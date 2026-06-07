@@ -1,13 +1,11 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import hashlib
 import os
 import json
 import shutil
 import subprocess
 import sys
-import threading
 import time
 import zipfile
 from datetime import datetime
@@ -37,7 +35,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SERVER_OUTPUT_DIR = PROJECT_ROOT / "server_outputs"
 FEASIBILITY_REPORT_DIR = SERVER_OUTPUT_DIR / "feasibility_reports"
 FEASIBILITY_EXPORT_DIR = SERVER_OUTPUT_DIR / "feasibility_exports"
-FEASIBILITY_RESULT_CACHE_VERSION = 1
 
 
 def _norm(path: object) -> str:
@@ -58,115 +55,6 @@ def _load_latest_analysis_state(facility_code: str) -> dict[str, Any]:
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
-
-
-def _json_cache_default(value: Any) -> Any:
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, datetime):
-        return value.isoformat()
-    item = getattr(value, "item", None)
-    if callable(item):
-        try:
-            return item()
-        except Exception:
-            pass
-    return str(value)
-
-
-def _normalise_pile_capacity_input_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    if not rows:
-        return []
-    normalised: list[dict[str, Any]] = []
-    for row in rows:
-        if isinstance(row, dict):
-            normalised.append(dict(row))
-    return normalised
-
-
-def _result_file_signature(path: str) -> dict[str, Any]:
-    stat = os.stat(path)
-    return {
-        "path": os.path.normcase(os.path.abspath(path)),
-        "size": int(stat.st_size),
-        "mtime_ns": int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))),
-    }
-
-
-def _analysis_result_cache_path(
-    *,
-    work_dir: str,
-    result_file: str,
-    pile_capacity_input_rows: list[dict[str, Any]],
-) -> Path:
-    key_payload = {
-        "version": FEASIBILITY_RESULT_CACHE_VERSION,
-        "result_file": _result_file_signature(result_file),
-        "pile_capacity_input_rows": pile_capacity_input_rows,
-    }
-    key_text = json.dumps(
-        key_payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        default=_json_cache_default,
-        separators=(",", ":"),
-    )
-    digest = hashlib.sha256(key_text.encode("utf-8")).hexdigest()
-    cache_dir = Path(work_dir) / "feasibility_result_cache"
-    return cache_dir / f"{digest}.json"
-
-
-def _load_analysis_result_cache(cache_path: Path) -> dict[str, Any] | None:
-    if not cache_path.exists() or not cache_path.is_file():
-        return None
-    try:
-        cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if not isinstance(cached, dict):
-        return None
-    if int(cached.get("version", 0) or 0) != FEASIBILITY_RESULT_CACHE_VERSION:
-        return None
-    results = cached.get("results")
-    return results if isinstance(results, dict) else None
-
-
-def _save_analysis_result_cache(cache_path: Path, results: dict[str, Any]) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "version": FEASIBILITY_RESULT_CACHE_VERSION,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "results": results,
-    }
-    tmp_path = cache_path.with_suffix(".tmp")
-    tmp_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, default=_json_cache_default),
-        encoding="utf-8",
-    )
-    os.replace(tmp_path, cache_path)
-
-
-def _preheat_feasibility_result_cache(facility_code: str) -> None:
-    try:
-        load_feasibility_result_bundle(
-            facility_code=facility_code,
-            pile_capacity_input_rows=[],
-        )
-    except Exception as exc:
-        print("[FeasibilityRuntime] preheat feasibility result cache failed:", exc, flush=True)
-
-
-def _start_feasibility_result_cache_preheat(facility_code: str) -> None:
-    code = str(facility_code or "").strip()
-    if not code:
-        return
-    thread = threading.Thread(
-        target=_preheat_feasibility_result_cache,
-        args=(code,),
-        name=f"feasibility-result-cache-{code}",
-        daemon=True,
-    )
-    thread.start()
 
 
 def _read_tail_text(path: str, max_bytes: int = 256 * 1024) -> str:
@@ -272,35 +160,98 @@ def _analysis_output_has_error(work_dir: str, result_file: str) -> str:
     return ""
 
 
-def _cleanup_previous_analysis_outputs(work_dir: str) -> None:
-    work_dir = _norm(work_dir)
-    if not work_dir or not os.path.isdir(work_dir):
-        return
+def _is_previous_analysis_output_name(file_name: str) -> bool:
+    low = str(file_name or "").strip().lower()
+    if not low:
+        return False
 
-    delete_names = {
+    exact_names = {
         "analysis_exitcode.txt",
         "analysis_summary.log",
         "analysis_stdout.log",
         "analysis_stderr.log",
     }
+    return (
+        low in exact_names
+        or low.startswith("psilst")
+        or low.endswith(".listing")
+    )
 
-    for fn in list(os.listdir(work_dir)):
-        low = fn.lower()
-        full = os.path.join(work_dir, fn)
-        should_delete = (
-            low in delete_names
-            or low.startswith("psilst")
-            or low.endswith(".listing")
-        )
-        if not should_delete:
-            continue
+
+def _remove_analysis_output_with_retry(path: str, *, retries: int = 12, interval: float = 0.5) -> None:
+    """
+    删除旧 SACS 输出文件。
+
+    关键点：
+    - 旧代码删除失败只打印日志然后继续计算，容易导致第二次计算继续向旧 psilst.factor 追加；
+    - 这里删除失败必须抛错，阻止新计算启动，避免新旧结果混在同一个文件里。
+    """
+    full = _norm(path)
+    if not full or not os.path.exists(full):
+        return
+
+    last_exc: Exception | None = None
+    for attempt in range(1, int(retries) + 1):
         try:
+            if not os.path.exists(full):
+                return
+
+            try:
+                os.chmod(full, 0o666)
+            except Exception:
+                pass
+
             if os.path.isdir(full):
-                shutil.rmtree(full, ignore_errors=True)
+                shutil.rmtree(full)
             else:
                 os.remove(full)
+
+            if not os.path.exists(full):
+                return
         except Exception as exc:
-            print("[FeasibilityRuntime] cleanup old analysis output failed:", full, exc, flush=True)
+            last_exc = exc
+            time.sleep(max(0.1, float(interval)))
+
+    raise RuntimeError(f"旧计算结果文件无法删除，可能仍被 SACS 或其他进程占用：{full}\n{last_exc}")
+
+
+def _cleanup_previous_analysis_outputs(work_dir: str) -> None:
+    """
+    每次 SACS 计算前强制清理上一轮输出。
+
+    如果 psilst.factor 等旧输出没有被删除，SACS 可能会在旧文件后面继续追加写入，
+    导致第二次计算结果和第一次结果混在一起。因此这里不能只打印错误后继续，
+    必须在清理失败时中止本次计算。
+    """
+    work_dir = _norm(work_dir)
+    if not work_dir or not os.path.isdir(work_dir):
+        return
+
+    targets: list[str] = []
+    for fn in list(os.listdir(work_dir)):
+        if _is_previous_analysis_output_name(fn):
+            targets.append(os.path.join(work_dir, fn))
+
+    if not targets:
+        return
+
+    failed_messages: list[str] = []
+    for full in targets:
+        try:
+            _remove_analysis_output_with_retry(full)
+        except Exception as exc:
+            failed_messages.append(str(exc))
+
+    if failed_messages:
+        raise RuntimeError(
+            "无法清理上一轮 SACS 计算结果，已停止本次计算，避免新结果追加到旧结果文件。\n"
+            + "\n".join(failed_messages)
+        )
+
+    print(
+        f"[FeasibilityRuntime] cleaned previous analysis outputs: count={len(targets)}, work_dir={work_dir}",
+        flush=True,
+    )
 
 
 def _wait_for_fresh_result_file(
@@ -574,8 +525,6 @@ def run_feasibility_analysis(
     except Exception:
         pass
 
-    _start_feasibility_result_cache_preheat(code)
-
     return state
 
 
@@ -583,7 +532,6 @@ def load_feasibility_result_bundle(
     *,
     facility_code: str,
     run_id: int | None = None,
-    pile_capacity_input_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     code = str(facility_code or "").strip()
     work_dir = _norm(get_job_runtime_dir(code))
@@ -603,20 +551,10 @@ def load_feasibility_result_bundle(
     except Exception:
         from src.report_service import build_analysis_results_for_ui
 
-    pile_rows = _normalise_pile_capacity_input_rows(pile_capacity_input_rows)
-    cache_path = _analysis_result_cache_path(
-        work_dir=work_dir,
-        result_file=result_file,
-        pile_capacity_input_rows=pile_rows,
+    results = build_analysis_results_for_ui(
+        result_file,
+        pile_capacity_input_rows=[],
     )
-    results = _load_analysis_result_cache(cache_path)
-    cache_hit = results is not None
-    if results is None:
-        results = build_analysis_results_for_ui(
-            result_file,
-            pile_capacity_input_rows=pile_rows,
-        )
-        _save_analysis_result_cache(cache_path, results)
 
     return {
         "facility_code": code,
@@ -625,8 +563,6 @@ def load_feasibility_result_bundle(
         "factor_path": result_file,
         "results": results,
         "state_path": str(Path(work_dir) / "feasibility_analysis_state.json"),
-        "cache_hit": cache_hit,
-        "cache_path": str(cache_path),
     }
 
 
@@ -637,87 +573,6 @@ def _default_report_output_path(facility_code: str) -> Path:
     return FEASIBILITY_REPORT_DIR / f"{safe_code}_{timestamp}_feasibility_report.pdf"
 
 
-def _feasibility_report_project_root() -> Path:
-    """
-    获取可行性评估报告模块根目录。
-
-    源码运行：
-        pages/output_feasibility_analysis_report
-
-    打包运行：
-        ShiyouServer/output_feasibility_analysis_report
-
-    这样服务端打包后不会继续错误地只找源码目录。
-    """
-    candidates: list[Path] = []
-
-    # 打包后 exe 同级目录
-    if getattr(sys, "frozen", False):
-        try:
-            candidates.append(Path(sys.executable).resolve().parent / "output_feasibility_analysis_report")
-        except Exception:
-            pass
-
-    # 当前工作目录
-    candidates.append(Path.cwd() / "output_feasibility_analysis_report")
-
-    # 项目根目录外置目录
-    candidates.append(PROJECT_ROOT / "output_feasibility_analysis_report")
-
-    # 源码目录
-    candidates.append(PROJECT_ROOT / "pages" / "output_feasibility_analysis_report")
-
-    for candidate in candidates:
-        if (candidate / "config" / "path_config.json").exists():
-            return candidate
-
-    return candidates[0]
-
-
-def _ensure_feasibility_report_resource_available(project_root: Path) -> None:
-    config_path = project_root / "config" / "path_config.json"
-    if not config_path.exists():
-        raise FileNotFoundError(
-            "可行性评估报告配置文件缺失：\n"
-            f"{config_path}\n\n"
-            "请确认服务端打包目录中包含：\n"
-            "output_feasibility_analysis_report/config/path_config.json\n"
-            "建议使用 build_server.ps1 一键打包，不要手动复制零散文件。"
-        )
-
-
-def _ensure_outline_images_before_feasibility_report(
-    *,
-    facility_code: str,
-    run_id: int | None = None,
-) -> None:
-    """
-    服务端生成可行性评估报告前，先导出二维立面轮廓图。
-
-    轮廓图仍然需要，但必须在服务端导出。
-    """
-    code = str(facility_code or "").strip()
-    if not code:
-        raise ValueError("facility_code 不能为空，无法导出报告轮廓图。")
-
-    try:
-        from services.report_image_batch_export_process import export_report_images
-
-        print(
-            f"[FeasibilityReportAPI] export outline images before report: facility={code}, run_id={run_id}",
-            flush=True,
-        )
-
-        export_report_images(
-            facility_code=code,
-            run_id=run_id,
-            mode="outline",
-            show_level_ii=False,
-        )
-
-    except Exception as exc:
-        raise RuntimeError(f"服务端导出可行性评估报告轮廓图失败：{exc}") from exc
-
 def generate_feasibility_report(
     *,
     facility_code: str,
@@ -727,14 +582,9 @@ def generate_feasibility_report(
     output_path: str | None = None,
 ) -> dict[str, Any]:
     code = str(facility_code or "").strip()
-    if not code:
-        raise ValueError("facility_code 不能为空，无法生成可行性评估报告。")
-
     payload = dict(report_payload or {})
 
-    project_root = _feasibility_report_project_root()
-    _ensure_feasibility_report_resource_available(project_root)
-
+    project_root = PROJECT_ROOT / "pages" / "output_feasibility_analysis_report"
     src_root = project_root / "src"
     for path in (str(project_root), str(src_root)):
         if path not in sys.path:
@@ -760,15 +610,8 @@ def generate_feasibility_report(
 
     final_output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 报告需要二维立面轮廓图，服务端生成报告前兜底导出。
-    _ensure_outline_images_before_feasibility_report(
-        facility_code=code,
-        run_id=run_id,
-    )
-
     print(
-        f"[FeasibilityReportAPI] generate report: "
-        f"facility={code}, factor={factor_path}, output={final_output_path}, project_root={project_root}",
+        f"[FeasibilityReportAPI] generate report: facility={code}, factor={factor_path}, output={final_output_path}",
         flush=True,
     )
 
@@ -789,7 +632,6 @@ def generate_feasibility_report(
         "output_path": result_path,
         "output_exists": os.path.exists(result_path),
         "factor_path": factor_path,
-        "project_root": str(project_root),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
 

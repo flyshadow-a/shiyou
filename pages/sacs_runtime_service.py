@@ -98,6 +98,14 @@ set "EXITCODE_FILE={exitcode_file}"
 
 cd /d "%MODEL_DIR%"
 
+rem 每次计算前再次清理旧 SACS 输出，避免 psilst.factor 继续追加上一轮结果。
+rem Python 侧也会严格清理一次；这里是 BAT 侧兜底。
+del /f /q "psilst*" >nul 2>nul
+del /f /q "*.listing" >nul 2>nul
+del /f /q "%STDOUT_LOG%" >nul 2>nul
+del /f /q "%STDERR_LOG%" >nul 2>nul
+del /f /q "%EXITCODE_FILE%" >nul 2>nul
+
 echo MODEL_DIR=%MODEL_DIR% > "%SUMMARY_LOG%"
 echo SACS_EXE=%SACS_EXE% >> "%SUMMARY_LOG%"
 echo SACS_HOME=%SACS_HOME% >> "%SUMMARY_LOG%"
