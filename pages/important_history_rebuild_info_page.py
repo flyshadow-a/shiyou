@@ -736,6 +736,16 @@ class ImportantHistoryDetailWidget(QWidget):
                 self._select_project_row(row)
                 break
 
+    def _notify_platform_load_rebuild_projects_changed(self) -> None:
+        tab_widget = getattr(self.window(), "tab_widget", None)
+        if tab_widget is None:
+            return
+        for index in range(tab_widget.count()):
+            page = tab_widget.widget(index)
+            refresh = getattr(page, "refresh_from_rebuild_projects", None)
+            if callable(refresh):
+                refresh()
+
     def _on_project_selection_changed(self):
         row = self.top_table.currentRow()
         if row < 0 and self.top_table.rowCount():
@@ -874,6 +884,7 @@ class ImportantHistoryDetailWidget(QWidget):
             QMessageBox.warning(self, "新增失败", str(exc))
             return
         self._reload_current_folder(selected_id=created.get("id"))
+        self._notify_platform_load_rebuild_projects_changed()
 
     def _get_doc_man_upload_dir(self, path_segments):
         root = os.path.join(self._project_root, "upload", "history_rebuild")
@@ -911,6 +922,7 @@ class ImportantHistoryDetailWidget(QWidget):
             QMessageBox.warning(self, "保存失败", str(exc))
             return
         self._reload_current_folder(selected_id=int(project["id"]))
+        self._notify_platform_load_rebuild_projects_changed()
 
     @staticmethod
     def _exec_dialog(dialog: QDialog) -> int:
@@ -943,6 +955,7 @@ class ImportantHistoryDetailWidget(QWidget):
             QMessageBox.warning(self, "删除失败", str(exc))
             return
         self._reload_current_folder()
+        self._notify_platform_load_rebuild_projects_changed()
         QMessageBox.information(self, "删除成功", "删除成功")
 
     def set_facility_code(self, code: str):

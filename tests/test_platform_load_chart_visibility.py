@@ -139,6 +139,24 @@ class PlatformLoadChartVisibilityTests(unittest.TestCase):
         self.assertEqual("Fx (×1e5)", chart._display_labels["Fx"])
         self.assertEqual("Fz (×1e6)", chart._display_labels["Fz"])
 
+    def test_center_chart_can_show_raw_large_coordinates_without_display_scale(self) -> None:
+        chart = MultiLineChart(
+            "Center",
+            [0, 1],
+            [
+                ("干重心Gx", [123456.0, 123556.0], "left"),
+                ("操作重心Gy", [223456.0, 223556.0], "left"),
+            ],
+            left_ylabel="Gx,Gy(m)",
+            scale_values=False,
+        )
+        self.addCleanup(chart.deleteLater)
+
+        self.assertEqual([123456.0, 123556.0], list(chart._lines["干重心Gx"].get_ydata()))
+        self.assertEqual([223456.0, 223556.0], list(chart._lines["操作重心Gy"].get_ydata()))
+        self.assertEqual("干重心Gx", chart._display_labels["干重心Gx"])
+        self.assertEqual("操作重心Gy", chart._display_labels["操作重心Gy"])
+
     def test_hover_text_includes_sequence_and_series_value(self) -> None:
         text = MultiLineChart._format_hover_text("Fx", 30, 123456.0)
 

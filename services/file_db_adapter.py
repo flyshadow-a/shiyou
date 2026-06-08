@@ -41,6 +41,15 @@ def _invalidate_rebuild_directory_cache() -> None:
     _REBUILD_DIRECTORIES_CACHE.clear()
 
 
+def _invalidate_platform_load_cache() -> None:
+    try:
+        from services import platform_load_preheat
+
+        platform_load_preheat.clear_platform_load_data_cache()
+    except Exception:
+        pass
+
+
 def clear_file_list_cache() -> None:
     _invalidate_file_list_cache()
 
@@ -530,6 +539,7 @@ def create_rebuild_directory(
         summary_text=summary_text,
     )
     _invalidate_rebuild_directory_cache()
+    _invalidate_platform_load_cache()
     return result
 
 
@@ -550,6 +560,7 @@ def update_rebuild_directory(
         summary_text=summary_text,
     )
     _invalidate_rebuild_directory_cache()
+    _invalidate_platform_load_cache()
     return result
 
 
@@ -560,6 +571,7 @@ def delete_rebuild_directory(
 ) -> None:
     _get_service(config_path).delete_rebuild_directory(int(directory_id))
     _invalidate_rebuild_directory_cache()
+    _invalidate_platform_load_cache()
 
 
 def delete_rebuild_directory_with_files(
@@ -577,6 +589,7 @@ def delete_rebuild_directory_with_files(
         facility_code=facility_code,
     )
     _invalidate_rebuild_directory_cache()
+    _invalidate_platform_load_cache()
     _invalidate_file_list_cache()
     return deleted
 

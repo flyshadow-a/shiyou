@@ -80,6 +80,9 @@ RESULT_FACTOR_KEYS = [
 ]
 
 OVERALL_ASSESSMENT_COL = 25
+VISIBLE_LOAD_COLUMN_COUNT = 27
+REBUILD_DIRECTORY_ID_INDEX = VISIBLE_LOAD_COLUMN_COUNT
+DETAIL_DESIGN_PROJECT_NAME = "详细设计"
 
 
 def _overall_assessment_options() -> List[str]:
@@ -106,46 +109,88 @@ def _history_rebuild_project_values(project: Dict[str, object]) -> Tuple[str, st
     return name, date, content
 
 
+def _normalise_rebuild_directory_id(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() == "none":
+        return ""
+    try:
+        return str(int(float(text)))
+    except (TypeError, ValueError):
+        return text
+
+
+def _is_detail_design_load_row(
+    row: List[str],
+    metadata_index: int = REBUILD_DIRECTORY_ID_INDEX,
+) -> bool:
+    name = str(row[1] if len(row) > 1 else "").strip()
+    rebuild_id = _normalise_rebuild_directory_id(
+        row[metadata_index] if len(row) > metadata_index else ""
+    )
+    if rebuild_id:
+        return False
+    return name in {"", "详细设计", "原设计", "OriginalDesign"}
+
+
 def _merge_history_rebuild_projects_into_load_rows(
     existing_rows: List[List[str]],
     history_projects: List[Dict[str, object]],
     *,
     column_count: int,
 ) -> List[List[str]]:
-    if not history_projects:
-        return existing_rows
-
+    metadata_count = column_count + 1
     normalized_rows: List[List[str]] = []
+    rows_by_id: Dict[str, int] = {}
     rows_by_name: Dict[str, int] = {}
     for row in existing_rows:
-        normalized = list(row[:column_count]) + [""] * max(0, column_count - len(row))
+        normalized = list(row[:metadata_count]) + [""] * max(0, metadata_count - len(row))
         normalized_rows.append(normalized)
         name = normalized[1].strip() if len(normalized) > 1 else ""
         if name and name not in rows_by_name:
             rows_by_name[name] = len(normalized_rows) - 1
+        rebuild_id = _normalise_rebuild_directory_id(normalized[column_count])
+        if rebuild_id and rebuild_id not in rows_by_id:
+            rows_by_id[rebuild_id] = len(normalized_rows) - 1
 
-    merged: List[List[str]] = []
+    detail_row = next((row for row in normalized_rows if _is_detail_design_load_row(row, column_count)), None)
+    if detail_row is None:
+        detail_row = [""] * metadata_count
+    else:
+        detail_row = list(detail_row)
+    detail_row[0] = "0"
+    detail_row[1] = DETAIL_DESIGN_PROJECT_NAME
+    detail_row[column_count] = ""
+
+    merged: List[List[str]] = [detail_row[:metadata_count]]
     used_existing_indexes: set[int] = set()
-    for index, project in enumerate(history_projects):
+    for project in history_projects:
         name, date, content = _history_rebuild_project_values(project)
-        source_index = rows_by_name.get(name)
+        rebuild_id = _normalise_rebuild_directory_id(project.get("id"))
+        source_index = rows_by_id.get(rebuild_id) if rebuild_id else None
+        if source_index is None:
+            source_index = rows_by_name.get(name)
         source = normalized_rows[source_index] if source_index is not None else None
         if source_index is not None:
             used_existing_indexes.add(source_index)
-        row = list(source or [""] * column_count)
-        if len(row) < column_count:
-            row.extend([""] * (column_count - len(row)))
-        row[0] = str(index)
+        row = list(source or [""] * metadata_count)
+        if len(row) < metadata_count:
+            row.extend([""] * (metadata_count - len(row)))
+        row[0] = str(len(merged))
         row[1] = name
         row[2] = date
         row[3] = content
-        merged.append(row[:column_count])
+        row[column_count] = rebuild_id
+        merged.append(row[:metadata_count])
     for source_index, source in enumerate(normalized_rows):
         if source_index in used_existing_indexes:
             continue
-        row = list(source[:column_count]) + [""] * max(0, column_count - len(source))
+        if _is_detail_design_load_row(source, column_count):
+            continue
+        if _normalise_rebuild_directory_id(source[column_count]):
+            continue
+        row = list(source[:metadata_count]) + [""] * max(0, metadata_count - len(source))
         row[0] = str(len(merged))
-        merged.append(row[:column_count])
+        merged.append(row[:metadata_count])
     return merged
 
 
@@ -688,6 +733,7 @@ class MultiLineChart(FigureCanvas):
         left_ylabel: str = "",
         right_ylabel: str = "",
         parent=None,
+        scale_values: bool = True,
     ):
         if not MultiLineChart._font_inited:
             _setup_chinese_matplotlib_font()
@@ -703,6 +749,7 @@ class MultiLineChart(FigureCanvas):
         self._xlabel = xlabel
         self._left_ylabel = left_ylabel
         self._right_ylabel = right_ylabel
+        self._scale_values = scale_values
         self._lines: Dict[str, object] = {}
         self._display_labels: Dict[str, str] = {}
         self._points: Dict[str, Tuple[List[float], List[float]]] = {}
@@ -804,7 +851,7 @@ class MultiLineChart(FigureCanvas):
             if len(y) != len(x):
                 y = (y + [0.0] * len(x))[:len(x)]
             y_values = [float(v) for v in y]
-            scale = self._display_scale_for_values(y_values)
+            scale = self._display_scale_for_values(y_values) if self._scale_values else 1.0
             display_values = [value / scale for value in y_values]
             display_label = self._display_label_with_scale(label, scale)
             adjusted.append((label, display_label, y_values, display_values, axis_name, self._merged_line_style(line_index, style)))
@@ -1220,6 +1267,7 @@ class PlatformWeightCenterCurveWidget(QWidget):
             ],
         ),
     ]
+    UNSCALED_CHART_KEYS = {"center"}
 
     def __init__(self, facility_code: str, series: Dict[str, List[float]], parent=None):
         super().__init__(parent)
@@ -1279,12 +1327,14 @@ class PlatformWeightCenterCurveWidget(QWidget):
                     left_ylabel=left_unit,
                     right_ylabel=right_unit,
                     parent=holder,
+                    scale_values=key not in self.UNSCALED_CHART_KEYS,
                 )
                 layout.addWidget(canvas)
                 row, col = divmod(i, 2)
                 self.grid.addWidget(holder, row, col)
                 self._chart_canvases[key] = canvas
             else:
+                canvas._scale_values = key not in self.UNSCALED_CHART_KEYS
                 canvas.update_data(x, lines)
 
 
@@ -1378,6 +1428,7 @@ class PlatformLoadInformationPage(BasePage):
         self._platform_load_worker: Optional[PlatformLoadDataWorker] = None
         self._pending_platform_load_request: Optional[Tuple[str, Dict[str, str]]] = None
         self._is_platform_data_loading = False
+        self._has_unsaved_changes = False
         self._switching_platform = False
         self._build_ui()
         self._ensure_demo_files()
@@ -1581,7 +1632,7 @@ class PlatformLoadInformationPage(BasePage):
         self.btn_save.setMinimumWidth(100)
         self.btn_export.setMinimumWidth(100)
 
-        self.btn_save.clicked.connect(self._on_save)
+        self.btn_save.clicked.connect(lambda _checked=False: self._on_save())
         self.btn_export.clicked.connect(self._on_export)
 
         page_root.addWidget(top_wrap, 0)
@@ -1944,12 +1995,11 @@ class PlatformLoadInformationPage(BasePage):
         rows = payload.get("rows")
         table_rows = self._db_rows_to_table_rows(rows) if isinstance(rows, list) and rows else []
         rebuild_projects = payload.get("rebuild_projects")
-        if isinstance(rebuild_projects, list) and rebuild_projects:
-            table_rows = _merge_history_rebuild_projects_into_load_rows(
-                table_rows or [self._blank_table_row()],
-                rebuild_projects,
-                column_count=len(self._columns()),
-            )
+        table_rows = _merge_history_rebuild_projects_into_load_rows(
+            table_rows,
+            rebuild_projects if isinstance(rebuild_projects, list) else [],
+            column_count=len(self._columns()),
+        )
 
         rebuild_error = str(payload.get("rebuild_error") or "").strip()
         if rebuild_error:
@@ -1959,6 +2009,7 @@ class PlatformLoadInformationPage(BasePage):
                 f"读取历次改造项目失败，平台载荷信息将保留已保存内容：\n{rebuild_error}",
             )
         self._apply_data(table_rows or [self._platform_data_empty_row(facility_code)])
+        self._has_unsaved_changes = False
         self._set_platform_data_loading_state(False)
 
     def _on_async_current_platform_failed(self, facility_code: str, error: str) -> None:
@@ -2109,7 +2160,14 @@ class PlatformLoadInformationPage(BasePage):
             'QComboBox { background: #ffffff; border: none; padding: 2px 6px; }'
             'QComboBox::drop-down { border: none; width: 18px; }'
         )
+        combo.currentTextChanged.connect(self._on_overall_assessment_changed)
         self.table.setCellWidget(row, OVERALL_ASSESSMENT_COL, combo)
+
+    def _on_overall_assessment_changed(self, _value: str) -> None:
+        if getattr(self, "_loading_data", False):
+            return
+        self._has_unsaved_changes = True
+        self._refresh_curve_view()
 
     def _build_main_table_skeleton(self) -> HoverTipTable:
         cols = self._columns()
@@ -2192,7 +2250,7 @@ class PlatformLoadInformationPage(BasePage):
 
     # ---------------- 数据加载 ----------------
     def _blank_table_row(self) -> List[str]:
-        row = [""] * len(self._columns())
+        row = [""] * (len(self._columns()) + 1)
         row[0] = "0"
         return row
 
@@ -2227,8 +2285,14 @@ class PlatformLoadInformationPage(BasePage):
                 str(row.get("safety_extreme") or ""),
                 str(row.get("overall_assessment") or ""),
                 str(row.get("assessment_org") or ""),
+                _normalise_rebuild_directory_id(row.get("rebuild_directory_id")),
             ])
         return table_rows
+
+    def _row_rebuild_directory_id(self, row: int) -> str:
+        return _normalise_rebuild_directory_id(
+            getattr(self, "_row_rebuild_directory_ids", {}).get(row, "")
+        )
 
     def _format_weight_delta_text(self, value: object) -> str:
         text = "" if value is None else str(value).strip()
@@ -2277,6 +2341,7 @@ class PlatformLoadInformationPage(BasePage):
                     "safety_extreme": self._cell_text(row, 24).strip(),
                     "overall_assessment": self._cell_text(row, 25).strip(),
                     "assessment_org": self._cell_text(row, 26).strip(),
+                    "rebuild_directory_id": self._row_rebuild_directory_id(row),
                     "sort_order": str(sort_order),
                 }
             )
@@ -2372,7 +2437,24 @@ class PlatformLoadInformationPage(BasePage):
                 self.table.blockSignals(False)
 
         if base_rows <= row < data_end:
+            self._has_unsaved_changes = True
             self._refresh_curve_view()
+
+    def refresh_from_rebuild_projects(self) -> None:
+        """Refresh when history rebuild projects change in the file-management page."""
+        if getattr(self, "_has_unsaved_changes", False):
+            if not ask_yes_no(
+                self,
+                "刷新平台载荷信息",
+                "历次改造项目已变化，是否保存当前平台载荷信息并刷新？",
+            ):
+                platform_load_preheat.clear_platform_load_data_cache()
+                return
+            if not self._on_save(show_message=False):
+                return
+        platform_load_preheat.clear_platform_load_data_cache()
+        self._show_platform_data_loading_placeholder()
+        self._start_async_current_platform_load()
 
     def _text_pixel_width(self, text: str, fm: QFontMetrics) -> int:
         lines = str(text).splitlines() or [str(text)]
@@ -2418,6 +2500,7 @@ class PlatformLoadInformationPage(BasePage):
 
         try:
             self._clear_data_area_artifacts()
+            self._row_rebuild_directory_ids: Dict[int, str] = {}
             total = base_rows + len(rows) + len(explain)
             self.table.setRowCount(total)
 
@@ -2430,7 +2513,12 @@ class PlatformLoadInformationPage(BasePage):
 
             for i, row in enumerate(rows):
                 rr = base_rows + i
-                for c, val in enumerate(row):
+                rebuild_id = _normalise_rebuild_directory_id(
+                    row[REBUILD_DIRECTORY_ID_INDEX] if len(row) > REBUILD_DIRECTORY_ID_INDEX else ""
+                )
+                self._row_rebuild_directory_ids[rr] = rebuild_id
+                visible_row = list(row[: self.table.columnCount()])
+                for c, val in enumerate(visible_row):
                     if c == 7:
                         val = self._format_weight_delta_text(val)
                     if c == OVERALL_ASSESSMENT_COL:
@@ -2707,6 +2795,7 @@ class PlatformLoadInformationPage(BasePage):
             if bg_color: it.setBackground(bg_color)
         self._auto_fit_main_table_columns()
         self._refresh_curve_view()
+        self._has_unsaved_changes = True
 
     def _read_result_excel_generic(self, path: str) -> Dict[str, object]:
         wb = openpyxl.load_workbook(path, data_only=True)
@@ -2753,6 +2842,12 @@ class PlatformLoadInformationPage(BasePage):
         data_end = self._find_data_end_row()
         insert_row = max(base_rows, min(row, data_end))
         self.table.insertRow(insert_row)
+        row_ids = getattr(self, "_row_rebuild_directory_ids", {})
+        self._row_rebuild_directory_ids = {
+            (row_idx + 1 if row_idx >= insert_row else row_idx): rebuild_id
+            for row_idx, rebuild_id in row_ids.items()
+        }
+        self._row_rebuild_directory_ids[insert_row] = ""
         
         # 初始化新行的样式
         cols = self.table.columnCount()
@@ -2781,6 +2876,9 @@ class PlatformLoadInformationPage(BasePage):
         if not target_rows:
             QMessageBox.information(self, "提示", "请先勾选要删除的行。")
             return
+        if base_rows in target_rows:
+            QMessageBox.information(self, "提示", "第0行“详细设计”不可删除。")
+            return
         if target_rows[0] < base_rows or target_rows[-1] >= data_end:
             return
         if len(target_rows) >= data_end - base_rows:
@@ -2796,8 +2894,15 @@ class PlatformLoadInformationPage(BasePage):
 
         for row in reversed(target_rows):
             self.table.removeRow(row)
+            row_ids = getattr(self, "_row_rebuild_directory_ids", {})
+            self._row_rebuild_directory_ids = {
+                (row_idx - 1 if row_idx > row else row_idx): rebuild_id
+                for row_idx, rebuild_id in row_ids.items()
+                if row_idx != row
+            }
 
         self._refresh_table_layout_and_seq()
+        self._has_unsaved_changes = True
 
     def _refresh_table_layout_and_seq(self):
         """统一刷新序号、单选框、行高及表格总高度。"""
@@ -3290,17 +3395,18 @@ class PlatformLoadInformationPage(BasePage):
             it.setText(str(val))
             if int(col) in _upper_block_context_menu_columns(): it.setBackground(calc_bg)
         self._auto_fit_main_table_columns()
+        self._has_unsaved_changes = True
         self._refresh_curve_view()
 
     def _ensure_demo_files(self):
         # 打包环境下演示数据位于 _internal/data，无需在 exe 同级预创建空 data 目录。
         return
 
-    def _on_save(self):
+    def _on_save(self, show_message: bool = True) -> bool:
         facility_code = self._get_top_value("设施编码").strip()
         if not facility_code:
             QMessageBox.warning(self, "保存失败", "当前缺少设施编码，无法保存平台载荷信息。")
-            return
+            return False
 
         try:
             replace_platform_load_information_items(facility_code, self._collect_table_rows_for_db())
@@ -3310,10 +3416,14 @@ class PlatformLoadInformationPage(BasePage):
                     self._platform_defaults_for_worker(facility_code),
                 )
             )
+            self._has_unsaved_changes = False
             self._notify_summary_pages_refresh()
-            QMessageBox.information(self, "保存成功", "平台载荷信息已保存到数据库。")
+            if show_message:
+                QMessageBox.information(self, "保存成功", "平台载荷信息已保存到数据库。")
+            return True
         except Exception as exc:
             QMessageBox.critical(self, "保存失败", f"平台载荷信息保存失败：\n{exc}")
+            return False
 
     def _notify_summary_pages_refresh(self):
         mw = self.window()

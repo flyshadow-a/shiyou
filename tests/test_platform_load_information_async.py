@@ -12,6 +12,7 @@ import pages.platform_load_information_page as platform_load_page  # noqa: E402
 import services.platform_load_preheat as platform_load_preheat  # noqa: E402
 from pages.file_management_platforms import default_platform  # noqa: E402
 from pages.platform_load_information_page import (  # noqa: E402
+    DETAIL_DESIGN_PROJECT_NAME,
     PlatformLoadDataWorker,
     PlatformLoadInformationPage,
 )
@@ -99,9 +100,10 @@ class PlatformLoadInformationAsyncLoadTests(unittest.TestCase):
             self.addCleanup(page.deleteLater)
 
         self.assertFalse(page._is_platform_data_loading)
-        self.assertEqual("CachedProject", page.table.item(page.DATA_START_ROW, 1).text())
-        self.assertEqual("2026", page.table.item(page.DATA_START_ROW, 2).text())
-        self.assertEqual("CachedContent", page.table.item(page.DATA_START_ROW, 3).text())
+        self.assertEqual(DETAIL_DESIGN_PROJECT_NAME, page.table.item(page.DATA_START_ROW, 1).text())
+        self.assertEqual("CachedProject", page.table.item(page.DATA_START_ROW + 1, 1).text())
+        self.assertEqual("2026", page.table.item(page.DATA_START_ROW + 1, 2).text())
+        self.assertEqual("CachedContent", page.table.item(page.DATA_START_ROW + 1, 3).text())
 
     def test_page_construction_starts_async_load_without_sync_database_reads(self) -> None:
         started = []
@@ -240,7 +242,7 @@ class PlatformLoadInformationAsyncLoadTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual("OriginalDesign", page.table.item(page.DATA_START_ROW, 1).text())
+        self.assertEqual(DETAIL_DESIGN_PROJECT_NAME, page.table.item(page.DATA_START_ROW, 1).text())
         self.assertEqual("2024", page.table.item(page.DATA_START_ROW, 2).text())
         self.assertEqual("TestContent", page.table.item(page.DATA_START_ROW, 3).text())
 
@@ -274,9 +276,10 @@ class PlatformLoadInformationAsyncLoadTests(unittest.TestCase):
                 time.sleep(0.01)
 
         self.assertIsNone(page._platform_load_thread)
-        self.assertEqual("AutoProject", page.table.item(page.DATA_START_ROW, 1).text())
-        self.assertEqual("2026", page.table.item(page.DATA_START_ROW, 2).text())
-        self.assertEqual("AutoContent", page.table.item(page.DATA_START_ROW, 3).text())
+        self.assertEqual(DETAIL_DESIGN_PROJECT_NAME, page.table.item(page.DATA_START_ROW, 1).text())
+        self.assertEqual("AutoProject", page.table.item(page.DATA_START_ROW + 1, 1).text())
+        self.assertEqual("2026", page.table.item(page.DATA_START_ROW + 1, 2).text())
+        self.assertEqual("AutoContent", page.table.item(page.DATA_START_ROW + 1, 3).text())
 
     def test_initial_async_load_failure_shows_error_row(self) -> None:
         with patch.object(PlatformLoadInformationPage, "_start_async_current_platform_load", lambda self: None):
@@ -320,8 +323,8 @@ class PlatformLoadInformationAsyncLoadTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("暂无数据", page.table.item(page.DATA_START_ROW, 1).text())
-        self.assertIn(facility_code, page.table.item(page.DATA_START_ROW, 3).text())
+        self.assertEqual(DETAIL_DESIGN_PROJECT_NAME, page.table.item(page.DATA_START_ROW, 1).text())
+        self.assertEqual("", page.table.item(page.DATA_START_ROW, 3).text())
 
     def test_loaded_rows_clear_previous_explanation_row_spans(self) -> None:
         with patch.object(PlatformLoadInformationPage, "_start_async_current_platform_load", lambda self: None):
@@ -344,6 +347,39 @@ class PlatformLoadInformationAsyncLoadTests(unittest.TestCase):
         self.assertEqual("Project1", page.table.item(second_data_row, 1).text())
         self.assertEqual("2021", page.table.item(second_data_row, 2).text())
         self.assertEqual("Content1", page.table.item(second_data_row, 3).text())
+
+    def test_curve_series_reads_dry_and_operation_center_columns(self) -> None:
+        with patch.object(PlatformLoadInformationPage, "_start_async_current_platform_load", lambda self: None):
+            page = PlatformLoadInformationPage()
+            self.addCleanup(page.deleteLater)
+
+        row = page._blank_table_row()
+        row[8] = "11.1,22.2,33.3"
+        row[9] = "44.4,55.5,66.6"
+        page._apply_data([row])
+
+        series = page._collect_series_for_curve()
+
+        self.assertEqual([11.1], series["dry_cgx"])
+        self.assertEqual([22.2], series["dry_cgy"])
+        self.assertEqual([33.3], series["dry_cgz"])
+        self.assertEqual([44.4], series["op_cgx"])
+        self.assertEqual([55.5], series["op_cgy"])
+        self.assertEqual([66.6], series["op_cgz"])
+
+    def test_save_button_click_shows_success_message(self) -> None:
+        with patch.object(PlatformLoadInformationPage, "_start_async_current_platform_load", lambda self: None):
+            page = PlatformLoadInformationPage()
+            self.addCleanup(page.deleteLater)
+
+        with patch.object(platform_load_page, "replace_platform_load_information_items") as replace_items, \
+                patch.object(platform_load_page.platform_load_preheat, "load_platform_load_payload", return_value={}), \
+                patch.object(platform_load_page.platform_load_preheat, "store_platform_load_data_cache"), \
+                patch.object(QMessageBox, "information", return_value=QMessageBox.Ok) as information:
+            page.btn_save.click()
+
+        replace_items.assert_called_once()
+        information.assert_called_once_with(page, "保存成功", "平台载荷信息已保存到数据库。")
 
     def test_empty_reload_clears_old_data_row_widgets_from_explanation_rows(self) -> None:
         with patch.object(PlatformLoadInformationPage, "_start_async_current_platform_load", lambda self: None):

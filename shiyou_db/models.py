@@ -201,6 +201,7 @@ class PlatformLoadInformationItem(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     facility_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    rebuild_directory_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     seq_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     project_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     rebuild_time: Mapped[str | None] = mapped_column(String(100), nullable=True)

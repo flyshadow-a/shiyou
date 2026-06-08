@@ -177,6 +177,10 @@ class FileMetadataService:
 
         load_columns = {str(col.get("name") or "") for col in inspector.get_columns("platform_load_information_items")}
         load_statements: list[str] = []
+        if "rebuild_directory_id" not in load_columns:
+            load_statements.append(
+                "ALTER TABLE platform_load_information_items ADD COLUMN rebuild_directory_id BIGINT NULL AFTER facility_code"
+            )
         if "dry_weight_mt" not in load_columns:
             load_statements.append("ALTER TABLE platform_load_information_items ADD COLUMN dry_weight_mt VARCHAR(100) NULL AFTER rebuild_content")
         if "dry_center_xyz" not in load_columns:
@@ -995,8 +999,13 @@ class FileMetadataService:
                 session.delete(row)
 
             for index, item in enumerate(rows, start=1):
+                rebuild_directory_id = None
+                rebuild_directory_raw = str(item.get("rebuild_directory_id") or "").strip()
+                if rebuild_directory_raw:
+                    rebuild_directory_id = int(float(rebuild_directory_raw))
                 record = PlatformLoadInformationItem(
                     facility_code=code,
+                    rebuild_directory_id=rebuild_directory_id,
                     seq_no=int(item.get("seq_no") or item.get("seq") or item.get("sort_order") or index - 1),
                     project_name=(item.get("project_name") or "").strip() or None,
                     rebuild_time=(item.get("rebuild_time") or "").strip() or None,
@@ -1449,6 +1458,7 @@ class FileMetadataService:
         return {
             "id": row.id,
             "facility_code": row.facility_code,
+            "rebuild_directory_id": row.rebuild_directory_id,
             "seq_no": row.seq_no,
             "project_name": row.project_name,
             "rebuild_time": row.rebuild_time,
