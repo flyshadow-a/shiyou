@@ -235,6 +235,7 @@ def test_oilfield_preheated_top_data_feeds_page_without_requery(monkeypatch):
     app = QApplication.instance() or QApplication([])
     profile_calls: list[str] = []
     records_calls: list[str] = []
+    platform_profile_calls: list[str] = []
 
     monkeypatch.setattr(
         oilfield_water_level_page,
@@ -265,9 +266,17 @@ def test_oilfield_preheated_top_data_feeds_page_without_requery(monkeypatch):
     )
 
     oilfield_water_level_page.clear_oilfield_top_data_cache()
+    monkeypatch.setattr(
+        oilfield_water_level_page,
+        "platform_profiles",
+        lambda: platform_profile_calls.append("platforms") or [
+            {"facility_code": "P1", "branch": "B1", "op_company": "O1", "oilfield": "F1"}
+        ],
+    )
     oilfield_water_level_page.preheat_oilfield_top_data(force=True)
     assert profile_calls == ["P1"]
-    assert records_calls == ["records"]
+    assert records_calls == []
+    assert platform_profile_calls == ["platforms"]
 
     def fail_load_facility_profile(*args, **kwargs):
         raise AssertionError("facility profile should come from preheated cache")
@@ -288,6 +297,100 @@ def test_oilfield_preheated_top_data_feeds_page_without_requery(monkeypatch):
         assert page.dropdown_bar.get_value("branch") == "B1"
         assert page.dropdown_bar.get_value("op_company") == "O1"
         assert page.dropdown_bar.get_value("oilfield") == "F1"
+    finally:
+        page.deleteLater()
+        app.processEvents()
+        oilfield_water_level_page.clear_oilfield_top_data_cache()
+
+
+def test_oilfield_top_records_follow_platform_profiles_not_legacy_env_profiles(monkeypatch):
+    from pages import oilfield_water_level_page
+
+    monkeypatch.setattr(
+        oilfield_water_level_page,
+        "default_platform",
+        lambda: {
+            "facility_code": "P1",
+            "branch": "B1",
+            "op_company": "O1",
+            "oilfield": "F1",
+        },
+    )
+    monkeypatch.setattr(
+        oilfield_water_level_page,
+        "platform_profiles",
+        lambda: [
+            {"facility_code": "P1", "branch": "B1", "op_company": "O1", "oilfield": "F1"},
+            {"facility_code": "P2", "branch": "B2", "op_company": "O2", "oilfield": "F2"},
+        ],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        oilfield_water_level_page,
+        "load_facility_profile",
+        lambda facility_code, defaults=None: {
+            "facility_code": facility_code,
+            "branch": "B1",
+            "op_company": "O1",
+            "oilfield": "F1",
+        },
+    )
+    monkeypatch.setattr(
+        oilfield_water_level_page,
+        "load_env_profiles",
+        lambda: [{"分公司": "B_legacy", "作业公司": "O_legacy", "油气田": "F_legacy"}],
+    )
+    monkeypatch.setattr(oilfield_water_level_page, "get_env_profile_id", lambda **kwargs: None)
+
+    oilfield_water_level_page.clear_oilfield_top_data_cache()
+    assert oilfield_water_level_page.preheat_oilfield_top_data(force=True)
+    cached = oilfield_water_level_page._get_oilfield_top_data_cache()
+
+    assert cached is not None
+    assert cached["records"] == [
+        {"branch": "B1", "op_company": "O1", "oilfield": "F1"},
+        {"branch": "B2", "op_company": "O2", "oilfield": "F2"},
+    ]
+    oilfield_water_level_page.clear_oilfield_top_data_cache()
+
+
+def test_oilfield_refresh_platform_options_clears_cache_and_reloads(monkeypatch):
+    from PyQt5.QtWidgets import QApplication
+
+    from pages import oilfield_water_level_page
+
+    app = QApplication.instance() or QApplication([])
+    starts: list[str] = []
+
+    monkeypatch.setattr(
+        oilfield_water_level_page,
+        "default_platform",
+        lambda: {
+            "facility_code": "P1",
+            "branch": "B1",
+            "op_company": "O1",
+            "oilfield": "F1",
+        },
+    )
+    monkeypatch.setattr(
+        oilfield_water_level_page.OilfieldWaterLevelPage,
+        "_start_async_current_profile_load",
+        lambda self: starts.append("start"),
+    )
+
+    oilfield_water_level_page.clear_oilfield_top_data_cache()
+    page = oilfield_water_level_page.OilfieldWaterLevelPage()
+    try:
+        starts.clear()
+        with oilfield_water_level_page._OILFIELD_TOP_DATA_CACHE_LOCK:
+            oilfield_water_level_page._OILFIELD_TOP_DATA_CACHE = {
+                "records": [{"branch": "B_old", "op_company": "O_old", "oilfield": "F_old"}]
+            }
+
+        page.refresh_platform_options()
+
+        assert oilfield_water_level_page._get_oilfield_top_data_cache() is None
+        assert starts == ["start"]
     finally:
         page.deleteLater()
         app.processEvents()

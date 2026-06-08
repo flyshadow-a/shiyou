@@ -818,7 +818,7 @@ def load_docman_record_page(
         if str(item or "").replace("\\", "/").strip().strip("/")
     ]
     safe_page = max(0, int(page or 0))
-    safe_page_size = max(1, int(page_size or 30))
+    requested_page_size = 30 if page_size is None else int(page_size)
     if prefixes:
         total = count_files(
             module_code=DOC_MAN_MODULE_CODE,
@@ -837,8 +837,13 @@ def load_docman_record_page(
             document_title_query=document_title_query,
             config_path=config_path,
         )
-    max_page = max(0, (total - 1) // safe_page_size) if total else 0
-    safe_page = min(safe_page, max_page)
+    if requested_page_size <= 0:
+        safe_page_size = max(1, total)
+        safe_page = 0
+    else:
+        safe_page_size = max(1, requested_page_size)
+        max_page = max(0, (total - 1) // safe_page_size) if total else 0
+        safe_page = min(safe_page, max_page)
     offset = safe_page * safe_page_size
     if prefixes:
         rows = list_files(

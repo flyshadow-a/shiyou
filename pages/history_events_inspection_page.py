@@ -32,7 +32,11 @@ from PyQt5.QtWidgets import (
 from core.base_page import BasePage
 from core.message_boxes import ask_yes_no
 from pages.construction_docs_widget import ConstructionDocsWidget
-from pages.file_management_platforms import default_platform, sync_platform_dropdowns
+from pages.file_management_platforms import (
+    apply_platform_defaults_to_fields,
+    default_platform,
+    sync_platform_dropdowns,
+)
 from pages.file_management_filter_search_bar import FileManagementFilterSearchBar
 from pages.file_management_ui_constants import FILE_MANAGEMENT_SIDEBAR_WIDTH
 from pages.important_history_rebuild_info_page import ImportantHistoryEventsPage
@@ -293,21 +297,7 @@ class HistoryEventsInspectionPage(BasePage):
             {"key": "design_life", "label": "\u8bbe\u8ba1\u5e74\u9650", "options": ["15"], "default": "15"},
         ]
         platform_defaults = default_platform()
-        field_map = {item["key"]: item for item in fields}
-        field_map["oilfield"]["options"] = [platform_defaults["oilfield"]]
-        field_map["oilfield"]["default"] = platform_defaults["oilfield"]
-        field_map["facility_code"]["options"] = ["WC19-1D", "WC9-7"]
-        field_map["facility_code"]["default"] = platform_defaults["facility_code"]
-        field_map["facility_name"]["options"] = ["WC19-1D平台", "WC9-7平台"]
-        field_map["facility_name"]["default"] = platform_defaults["facility_name"]
-        field_map["facility_type"]["options"] = [platform_defaults["facility_type"]]
-        field_map["facility_type"]["default"] = platform_defaults["facility_type"]
-        field_map["category"]["options"] = [platform_defaults["category"]]
-        field_map["category"]["default"] = platform_defaults["category"]
-        field_map["start_time"]["options"] = [platform_defaults["start_time"]]
-        field_map["start_time"]["default"] = platform_defaults["start_time"]
-        field_map["design_life"]["options"] = [platform_defaults["design_life"]]
-        field_map["design_life"]["default"] = platform_defaults["design_life"]
+        apply_platform_defaults_to_fields(fields, platform_defaults)
         self.filter_search_bar = FileManagementFilterSearchBar(fields, self)
         self.dropdown_bar = self.filter_search_bar.dropdown_bar
         self.filter_search_bar.searchRequested.connect(self._search_documents)

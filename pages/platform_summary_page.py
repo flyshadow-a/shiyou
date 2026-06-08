@@ -36,6 +36,7 @@ from services.inspection_business_db_adapter import (
     save_platform_summary_snapshot,
 )
 from services.platform_summary_source import load_platform_summary_source
+from pages.file_management_platforms import refresh_platform_profiles_cache
 
 try:
     import pandas as pd
@@ -1162,6 +1163,7 @@ class PlatformSummaryPage(BasePage):
         if self.table is None:
             return
 
+        preferred_facility_code = self._preferred_new_facility_code_for_refresh()
         try:
             save_platform_summary_snapshot(
                 self.columns,
@@ -1174,8 +1176,9 @@ class PlatformSummaryPage(BasePage):
             return
 
         saved, skipped, errors = self._sync_profiles_to_database()
+        refresh_platform_profiles_cache()
         self._store_session_profiles_cache()
-        self._notify_summary_pages_refresh()
+        self._notify_summary_pages_refresh(preferred_facility_code=preferred_facility_code)
         msg = f"已保存 {saved} 条平台档案到数据库。"
         if skipped:
             msg += f"\n跳过 {skipped} 条未识别到设施编码的记录。"
@@ -1183,14 +1186,59 @@ class PlatformSummaryPage(BasePage):
             msg += "\n\n失败记录：\n" + "\n".join(errors[:5])
         QMessageBox.information(self, "保存", msg)
 
-    def _notify_summary_pages_refresh(self):
+    def _preferred_new_facility_code_for_refresh(self) -> str:
+        try:
+            existing_profiles = load_platform_summary_source(snapshot_key="latest").profiles
+        except Exception:
+            existing_profiles = []
+
+        existing_codes = {
+            str(profile.get("facility_code") or "").strip().lower()
+            for profile in existing_profiles
+            if str(profile.get("facility_code") or "").strip()
+        }
+        for profile in reversed(self.current_facility_profiles()):
+            code = str(profile.get("facility_code") or "").strip()
+            if code and code.lower() not in existing_codes:
+                return code
+        return ""
+
+    def _notify_summary_pages_refresh(self, preferred_facility_code: str | None = None):
         mw = self.window()
         tab_widget = getattr(mw, "tab_widget", None)
         if tab_widget is None:
             return
+        preferred_code = str(preferred_facility_code or "").strip()
         for index in range(tab_widget.count()):
             page = tab_widget.widget(index)
             refresh = getattr(page, "refresh_from_database", None)
             if callable(refresh):
                 refresh()
+            refresh_platform_options = getattr(page, "refresh_platform_options", None)
+            if callable(refresh_platform_options):
+                refresh_platform_options()
+                continue
+            sync_platform_ui = getattr(page, "_sync_platform_ui", None)
+            if callable(sync_platform_ui):
+                changed_key = None
+                if preferred_code and PlatformSummaryPage._set_preferred_facility_code(page, preferred_code):
+                    changed_key = "facility_code"
+                if changed_key:
+                    try:
+                        sync_platform_ui(changed_key=changed_key)
+                    except TypeError:
+                        sync_platform_ui()
+                else:
+                    sync_platform_ui()
+
+    @staticmethod
+    def _set_preferred_facility_code(page, facility_code: str) -> bool:
+        dropdown_bar = getattr(page, "dropdown_bar", None)
+        if dropdown_bar is None:
+            return False
+        try:
+            dropdown_bar.set_options("facility_code", [facility_code], facility_code)
+            return True
+        except Exception:
+            return False
 

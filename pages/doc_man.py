@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QComboBox,
     QPushButton,
     QProgressDialog,
     QHeaderView,
@@ -634,6 +635,10 @@ class UploadStagingDialog(QDialog):
 
 
 class DocManWidget(QFrame):
+    DEFAULT_PAGE_SIZE = 30
+    PAGE_SIZE_ALL_TEXT = "全部"
+    PAGE_SIZE_OPTIONS = ("30", "50", "100", PAGE_SIZE_ALL_TEXT)
+
     COL_CHECK = 0
     COL_INDEX = 1
     COL_STAGE = 2
@@ -661,7 +666,7 @@ class DocManWidget(QFrame):
         self._custom_new_upload_handler = None
         self._custom_delete_handler = None
         self._custom_download_handler = None
-        self._page_size = 30
+        self._page_size = self.DEFAULT_PAGE_SIZE
         self._current_page = 0
         self._db_total_rows = 0
         self._db_total_pages = 1
@@ -822,6 +827,34 @@ class DocManWidget(QFrame):
         self.btn_prev_page.setProperty("class", "DocManBlueButton")
         self.btn_prev_page.clicked.connect(self._go_prev_page)
         action_row.addWidget(self.btn_prev_page)
+
+        page_size_label = QLabel("每页", self)
+        page_size_label.setStyleSheet("QLabel { color: #12344d; font-size: 12pt; }")
+        action_row.addWidget(page_size_label)
+
+        self.page_size_combo = QComboBox(self)
+        self.page_size_combo.addItems(list(self.PAGE_SIZE_OPTIONS))
+        self.page_size_combo.setCurrentText(str(self.DEFAULT_PAGE_SIZE))
+        self.page_size_combo.setFixedHeight(32)
+        self.page_size_combo.setMinimumWidth(82)
+        self.page_size_combo.setStyleSheet(
+            """
+            QComboBox {
+                background-color: #ffffff;
+                border: 1px solid #b9c7d6;
+                border-radius: 6px;
+                color: #12344d;
+                font-size: 12pt;
+                padding: 3px 8px;
+            }
+            QComboBox::drop-down {
+                width: 18px;
+                border-left: 1px solid #d7e1ec;
+            }
+            """
+        )
+        self.page_size_combo.currentTextChanged.connect(self._on_page_size_changed)
+        action_row.addWidget(self.page_size_combo)
 
         self.page_label = QLabel("第 1 / 1 页", self)
         self.page_label.setAlignment(Qt.AlignCenter)
@@ -1022,7 +1055,7 @@ class DocManWidget(QFrame):
             page_data = load_docman_record_page(
                 self._path_segments,
                 page=self._current_page,
-                page_size=self._page_size,
+                page_size=self._page_size_for_query(),
                 facility_code=self._facility_code,
                 document_code_query=self._document_code_query,
                 document_title_query=self._document_title_query,
@@ -1031,7 +1064,8 @@ class DocManWidget(QFrame):
             self._records = list(page_data.get("records") or [])
             self._db_total_rows = int(page_data.get("total") or 0)
             self._current_page = int(page_data.get("page") or 0)
-            self._db_total_pages = max(1, (self._db_total_rows + self._page_size - 1) // self._page_size)
+            page_size = self._page_size_for_total(self._db_total_rows)
+            self._db_total_pages = max(1, (self._db_total_rows + page_size - 1) // page_size)
         except FileBackendError:
             pass
 
@@ -1045,7 +1079,7 @@ class DocManWidget(QFrame):
             token=load_token,
             path_segments=list(self._path_segments),
             page=self._current_page,
-            page_size=self._page_size,
+            page_size=self._page_size_for_query(),
             facility_code=self._facility_code,
             document_code_query=self._document_code_query,
             document_title_query=self._document_title_query,
@@ -1074,7 +1108,8 @@ class DocManWidget(QFrame):
             self._records = list(page_data.get("records") or [])
             self._db_total_rows = int(page_data.get("total") or 0)
             self._current_page = int(page_data.get("page") or 0)
-            self._db_total_pages = max(1, (self._db_total_rows + self._page_size - 1) // self._page_size)
+            page_size = self._page_size_for_total(self._db_total_rows)
+            self._db_total_pages = max(1, (self._db_total_rows + page_size - 1) // page_size)
         self._set_db_loading(False)
         self._normalize_records()
         self.refresh()
@@ -1095,6 +1130,10 @@ class DocManWidget(QFrame):
             self.page_label.setText("正在加载...")
             self.btn_prev_page.setEnabled(False)
             self.btn_next_page.setEnabled(False)
+            if hasattr(self, "page_size_combo"):
+                self.page_size_combo.setEnabled(False)
+        elif hasattr(self, "page_size_combo"):
+            self.page_size_combo.setEnabled(True)
 
     def _normalize_records(self):
         for index, rec in enumerate(self._records, start=1):
@@ -1149,15 +1188,17 @@ class DocManWidget(QFrame):
 
         if self._db_list_mode:
             total_rows = self._db_total_rows if self._db_total_rows else len(all_visible_row_indices)
-            total_pages = max(1, (total_rows + self._page_size - 1) // self._page_size)
+            page_size = self._page_size_for_total(total_rows)
+            total_pages = max(1, (total_rows + page_size - 1) // page_size)
             self._db_total_pages = total_pages
             self._visible_row_indices = all_visible_row_indices
         else:
             total_rows = len(all_visible_row_indices)
-            total_pages = max(1, (total_rows + self._page_size - 1) // self._page_size)
+            page_size = self._page_size_for_total(total_rows)
+            total_pages = max(1, (total_rows + page_size - 1) // page_size)
             self._current_page = max(0, min(self._current_page, total_pages - 1))
-            start = self._current_page * self._page_size
-            end = start + self._page_size
+            start = self._current_page * page_size
+            end = start + page_size
             self._visible_row_indices = all_visible_row_indices[start:end]
 
         self._apply_profile_headers()
@@ -2028,9 +2069,37 @@ class DocManWidget(QFrame):
     def _update_pagination_controls(self, total_rows: int, total_pages: int) -> None:
         if not hasattr(self, "page_label"):
             return
+        if hasattr(self, "page_size_combo"):
+            current_text = self._page_size_text()
+            if self.page_size_combo.currentText() != current_text:
+                self.page_size_combo.blockSignals(True)
+                self.page_size_combo.setCurrentText(current_text)
+                self.page_size_combo.blockSignals(False)
         self.page_label.setText(f"第 {self._current_page + 1} / {total_pages} 页，共 {total_rows} 条")
         self.btn_prev_page.setEnabled(self._current_page > 0)
         self.btn_next_page.setEnabled(self._current_page < total_pages - 1)
+
+    def _page_size_for_query(self) -> int:
+        return 0 if self._page_size <= 0 else self._page_size
+
+    def _page_size_for_total(self, total_rows: int) -> int:
+        if self._page_size <= 0:
+            return max(1, int(total_rows or len(self._records) or self.DEFAULT_PAGE_SIZE))
+        return max(1, int(self._page_size))
+
+    def _page_size_text(self) -> str:
+        return self.PAGE_SIZE_ALL_TEXT if self._page_size <= 0 else str(self._page_size)
+
+    def _on_page_size_changed(self, text: str) -> None:
+        page_size = 0 if text == self.PAGE_SIZE_ALL_TEXT else int(text or self.DEFAULT_PAGE_SIZE)
+        if page_size == self._page_size:
+            return
+        self._page_size = page_size
+        self._current_page = 0
+        if self._db_list_mode:
+            self._start_record_page_load()
+            return
+        self.refresh()
 
     def _go_prev_page(self) -> None:
         if self._current_page <= 0:

@@ -42,7 +42,11 @@ from services.file_db_adapter import (
 from shiyou_db.document_code_parser import OTHER_FILE_CLASS_NAMES, parse_document_code_from_name
 from .file_management_filter_search_bar import FileManagementFilterSearchBar
 from .file_management_ui_constants import FILE_MANAGEMENT_SIDEBAR_WIDTH
-from .file_management_platforms import default_platform, sync_platform_dropdowns
+from .file_management_platforms import (
+    apply_platform_defaults_to_fields,
+    default_platform,
+    sync_platform_dropdowns,
+)
 from .construction_docs_widget import ConstructionDocsWidget
 from .doc_man import DocManWidget, apply_docman_table_style
 from .file_path_bar import PathBreadcrumbBar
@@ -1219,21 +1223,7 @@ class ImportantHistoryEventsPage(BasePage):
             {"key": "design_life", "label": "设计年限", "options": ["15"], "default": "15"},
         ]
         platform_defaults = default_platform()
-        field_map = {item["key"]: item for item in fields}
-        field_map["oilfield"]["options"] = [platform_defaults["oilfield"]]
-        field_map["oilfield"]["default"] = platform_defaults["oilfield"]
-        field_map["facility_code"]["options"] = ["WC19-1D", "WC9-7"]
-        field_map["facility_code"]["default"] = platform_defaults["facility_code"]
-        field_map["facility_name"]["options"] = ["WC19-1D平台", "WC9-7平台"]
-        field_map["facility_name"]["default"] = platform_defaults["facility_name"]
-        field_map["facility_type"]["options"] = [platform_defaults["facility_type"]]
-        field_map["facility_type"]["default"] = platform_defaults["facility_type"]
-        field_map["category"]["options"] = [platform_defaults["category"]]
-        field_map["category"]["default"] = platform_defaults["category"]
-        field_map["start_time"]["options"] = [platform_defaults["start_time"]]
-        field_map["start_time"]["default"] = platform_defaults["start_time"]
-        field_map["design_life"]["options"] = [platform_defaults["design_life"]]
-        field_map["design_life"]["default"] = platform_defaults["design_life"]
+        apply_platform_defaults_to_fields(fields, platform_defaults)
         self.filter_search_bar = FileManagementFilterSearchBar(fields, page)
         self.dropdown_bar = self.filter_search_bar.dropdown_bar
         self.filter_search_bar.searchRequested.connect(self._search_documents)

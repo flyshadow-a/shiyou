@@ -24,7 +24,7 @@ from feasibility_analysis_services.oilfield_env_service import (
     replace_water_level_items,
 )
 from services.inspection_business_db_adapter import load_facility_profile
-from pages.file_management_platforms import default_platform
+from pages.file_management_platforms import default_platform, platform_profiles
 
 
 
@@ -44,6 +44,34 @@ def _normalize_top_cache_value(value: object) -> str:
     if txt.endswith(".0") and txt[:-2].isdigit():
         return txt[:-2]
     return txt
+
+
+def _dedupe_top_records(records: list[dict[str, str]]) -> list[dict[str, str]]:
+    deduped: list[dict[str, str]] = []
+    seen = set()
+    for row in records:
+        key = (row.get("branch", ""), row.get("op_company", ""), row.get("oilfield", ""))
+        if not all(key) or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
+def _top_record_from_profile(profile: dict[str, Any]) -> dict[str, str]:
+    return {
+        "branch": _normalize_top_cache_value(profile.get("branch") or ""),
+        "op_company": _normalize_top_cache_value(profile.get("op_company") or ""),
+        "oilfield": _normalize_top_cache_value(profile.get("oilfield") or ""),
+    }
+
+
+def _platform_top_records() -> list[dict[str, str]]:
+    try:
+        records = [_top_record_from_profile(profile) for profile in platform_profiles()]
+    except Exception:
+        records = []
+    return _dedupe_top_records(records)
 
 
 def clear_oilfield_top_data_cache() -> None:
@@ -92,14 +120,7 @@ def preheat_oilfield_top_data(force: bool = False) -> bool:
         facility_code = str(platform_defaults.get("facility_code") or "").strip()
         profile = dict(load_facility_profile(facility_code, defaults=platform_defaults))
 
-        records: list[dict[str, str]] = []
-        for row in load_env_profiles():
-            records.append({
-                "branch": _normalize_top_cache_value(row.get("分公司", "")),
-                "op_company": _normalize_top_cache_value(row.get("作业公司", "")),
-                "oilfield": _normalize_top_cache_value(row.get("油气田", "")),
-            })
-
+        records = _platform_top_records()
         records.append({
             "branch": _normalize_top_cache_value(profile.get("branch") or platform_defaults.get("branch") or ""),
             "op_company": _normalize_top_cache_value(
@@ -109,15 +130,7 @@ def preheat_oilfield_top_data(force: bool = False) -> bool:
                 profile.get("oilfield") or platform_defaults.get("oilfield") or ""
             ),
         })
-
-        deduped: list[dict[str, str]] = []
-        seen = set()
-        for row in records:
-            key = (row.get("branch", ""), row.get("op_company", ""), row.get("oilfield", ""))
-            if not all(key) or key in seen:
-                continue
-            seen.add(key)
-            deduped.append(row)
+        deduped = _dedupe_top_records(records)
 
         top_data = {
             "platform_defaults": platform_defaults,
@@ -591,6 +604,11 @@ class OilfieldWaterLevelPage(BasePage):
         self._set_table_status_message("数据读取失败，请稍后重试")
         self._set_save_enabled(False)
 
+    def refresh_platform_options(self) -> None:
+        clear_oilfield_top_data_cache()
+        if hasattr(self, "dropdown_bar"):
+            self._start_async_current_profile_load()
+
     def _collect_water_level_items(self) -> list[dict[str, Any]]:
         if self.water_table is None:
             return []
@@ -687,7 +705,7 @@ class OilfieldWaterLevelPage(BasePage):
             label = self.KEY_TO_FIELD[key]
             fallback = defaults[key]
             opts = self._unique_record_values(records, key)
-            if fallback and fallback not in opts:
+            if fallback and not opts:
                 opts.insert(0, fallback)
             default = fallback
 

@@ -47,7 +47,11 @@ from PyQt5.QtWidgets import (
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar
 from core.message_boxes import ask_yes_no
-from pages.file_management_platforms import default_platform, sync_platform_dropdowns
+from pages.file_management_platforms import (
+    apply_platform_defaults_to_fields,
+    default_platform,
+    sync_platform_dropdowns,
+)
 from pages.doc_man import DocManWidget, apply_docman_table_style
 from pages.file_path_bar import PathBreadcrumbBar
 from services.inspection_business_db_adapter import (
@@ -490,21 +494,7 @@ class HistoryInspectionSummaryPage(BasePage):
             {"key": "design_life", "label": "设计年限", "options": ["15"], "default": "15"},
         ]
         platform_defaults = default_platform()
-        field_map = {item["key"]: item for item in fields}
-        field_map["oilfield"]["options"] = [platform_defaults["oilfield"]]
-        field_map["oilfield"]["default"] = platform_defaults["oilfield"]
-        field_map["facility_code"]["options"] = ["WC19-1D", "WC9-7"]
-        field_map["facility_code"]["default"] = platform_defaults["facility_code"]
-        field_map["facility_name"]["options"] = ["WC19-1D平台", "WC9-7平台"]
-        field_map["facility_name"]["default"] = platform_defaults["facility_name"]
-        field_map["facility_type"]["options"] = [platform_defaults["facility_type"]]
-        field_map["facility_type"]["default"] = platform_defaults["facility_type"]
-        field_map["category"]["options"] = [platform_defaults["category"]]
-        field_map["category"]["default"] = platform_defaults["category"]
-        field_map["start_time"]["options"] = [platform_defaults["start_time"]]
-        field_map["start_time"]["default"] = platform_defaults["start_time"]
-        field_map["design_life"]["options"] = [platform_defaults["design_life"]]
-        field_map["design_life"]["default"] = platform_defaults["design_life"]
+        apply_platform_defaults_to_fields(fields, platform_defaults)
         self.dropdown_bar = DropdownBar(fields, parent=self)
         self.main_layout.addWidget(self.dropdown_bar, 0)
 

@@ -18,7 +18,11 @@ from PyQt5.QtWidgets import (
 from core.base_page import BasePage
 from pages.document_library_widget import DocumentLibraryWidget
 from pages.file_management_filter_search_bar import FileManagementFilterSearchBar
-from pages.file_management_platforms import default_platform, sync_platform_dropdowns
+from pages.file_management_platforms import (
+    apply_platform_defaults_to_fields,
+    default_platform,
+    sync_platform_dropdowns,
+)
 from shiyou_db.document_code_parser import OTHER_FILE_CLASS_NAMES, parse_document_code_from_name
 from pages.file_management_header import build_platform_description
 from services.inspection_business_db_adapter import load_facility_profile, save_facility_profile
@@ -182,25 +186,7 @@ class ConstructionDocsPage(BasePage):
             },
         )
         self._initial_profile = dict(profile_defaults)
-        field_map = {item["key"]: item for item in fields}
-        field_map["division"]["options"] = [profile_defaults["branch"]]
-        field_map["division"]["default"] = profile_defaults["branch"]
-        field_map["company"]["options"] = [profile_defaults["op_company"]]
-        field_map["company"]["default"] = profile_defaults["op_company"]
-        field_map["field"]["options"] = [profile_defaults["oilfield"]]
-        field_map["field"]["default"] = profile_defaults["oilfield"]
-        field_map["facility_code"]["options"] = ["WC19-1D", "WC9-7"]
-        field_map["facility_code"]["default"] = profile_defaults["facility_code"]
-        field_map["facility_name"]["options"] = ["WC19-1D平台", "WC9-7平台"]
-        field_map["facility_name"]["default"] = profile_defaults["facility_name"]
-        field_map["facility_type"]["options"] = [profile_defaults["facility_type"]]
-        field_map["facility_type"]["default"] = profile_defaults["facility_type"]
-        field_map["category"]["options"] = [profile_defaults["category"]]
-        field_map["category"]["default"] = profile_defaults["category"]
-        field_map["start_time"]["options"] = [profile_defaults["start_time"]]
-        field_map["start_time"]["default"] = profile_defaults["start_time"]
-        field_map["design_years"]["options"] = [profile_defaults["design_life"]]
-        field_map["design_years"]["default"] = profile_defaults["design_life"]
+        apply_platform_defaults_to_fields(fields, profile_defaults)
         self.filter_search_bar = FileManagementFilterSearchBar(fields, self)
         self.dropdown_bar = self.filter_search_bar.dropdown_bar
         self.filter_search_bar.searchRequested.connect(self._search_documents)
