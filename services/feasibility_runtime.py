@@ -402,37 +402,55 @@ def _wait_for_fresh_result_file(
     return result_file or "", detail
 
 
+def _canonical_result_m1_path(work_dir: str) -> str:
+    return os.path.join(_norm(work_dir), "psilst.M1")
+
+
+def _ensure_result_file_suffix_m1(work_dir: str, result_file: str) -> str:
+    """确保最终对外使用的计算结果文件后缀为 .M1。
+
+    如果 RUNX 已经生成 psilst.M1，则直接返回；如果 SACS 仍生成 psilst.factor /
+    psilst.lst 等旧名称，则在确认文件稳定后复制一份为 psilst.M1，后续查看结果、
+    生成报告和导出文件都使用 psilst.M1。
+    """
+    src = _norm(result_file)
+    if not src or not os.path.isfile(src):
+        return src
+
+    target = _canonical_result_m1_path(work_dir)
+    if os.path.normcase(src) == os.path.normcase(target):
+        return target
+
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    try:
+        shutil.copy2(src, target)
+        return target
+    except Exception as exc:
+        print(
+            "[FeasibilityRuntime] copy result to psilst.M1 failed:",
+            src,
+            "->",
+            target,
+            exc,
+            flush=True,
+        )
+        return src
+
+
 def _rewrite_runx_for_analysis(
     runx_path: str,
     *,
     analysis_mode: str,
     runtime_bundle: dict[str, Any],
 ) -> str:
+    """新流程统一把 RUNX 输入文件名修正为 M1。
+
+    即使三个新增数据表为空，也会先创建等价于原模型的 M1 文件，
+    所以计算阶段不再恢复 sacinp.JKnew / seainp.JKnew FACTOR。
+    """
     runx_path = _norm(runx_path)
     if not runx_path:
         return ""
-
-    if analysis_mode == "original":
-        model_file = str(runtime_bundle.get("new_model_file") or runtime_bundle.get("runtime_model_file") or "")
-        sea_file = str(runtime_bundle.get("new_sea_file") or runtime_bundle.get("runtime_sea_file") or "")
-        model_filename = os.path.basename(model_file)
-        sea_filename = os.path.basename(sea_file) if sea_file else ""
-
-        return rewrite_runx_input_file_names(
-            runx_path,
-            model_filename=model_filename,
-            sea_filename=sea_filename,
-            model_candidates=[
-                os.path.basename(str(runtime_bundle.get("model_file") or "")),
-                "sacinp.M1",
-                "sacinp.JKnew",
-            ],
-            sea_candidates=[
-                os.path.basename(str(runtime_bundle.get("sea_file") or "")),
-                "seainp.M1",
-                "seainp.JKnew FACTOR",
-            ],
-        )
 
     return rewrite_runx_input_file_names(
         runx_path,
@@ -441,15 +459,20 @@ def _rewrite_runx_for_analysis(
         model_candidates=[
             os.path.basename(str(runtime_bundle.get("model_file") or "")),
             os.path.basename(str(runtime_bundle.get("new_model_file") or "")),
+            os.path.basename(str(runtime_bundle.get("runtime_model_file") or "")),
             "sacinp.JKnew",
             "sacinp.M1",
         ],
         sea_candidates=[
             os.path.basename(str(runtime_bundle.get("sea_file") or "")),
             os.path.basename(str(runtime_bundle.get("new_sea_file") or "")),
+            os.path.basename(str(runtime_bundle.get("runtime_sea_file") or "")),
             "seainp.JKnew FACTOR",
             "seainp.M1",
         ],
+        psiinp_filename="psiinp.M1",
+        jcninp_filename="Jcninp.M1",
+        result_filename="psilst.M1",
     )
 
 
@@ -505,22 +528,16 @@ def run_feasibility_analysis(
     if requested_mode not in {"auto", "original", "rebuild"}:
         requested_mode = "auto"
 
-    # 客户端会根据页面状态传 original/rebuild。
-    # 如果没传，就默认 rebuild；如果没有 M1，服务函数会自动回退原模型。
-    actual_mode = requested_mode if requested_mode != "auto" else "rebuild"
+    # 新流程不再单独计算原模型。
+    # 页面必须先保存数据并创建 M1；当三张表为空时，创建出的 M1 等价于原模型。
+    actual_mode = "rebuild"
 
     mysql_url = get_mysql_url()
 
-    if actual_mode == "original":
-        runtime_bundle = prepare_original_runtime_for_analysis(
-            mysql_url=mysql_url,
-            job_name=code,
-        )
-    else:
-        runtime_bundle = prepare_latest_rebuild_runtime_for_analysis(
-            mysql_url=mysql_url,
-            job_name=code,
-        )
+    runtime_bundle = prepare_latest_rebuild_runtime_for_analysis(
+        mysql_url=mysql_url,
+        job_name=code,
+    )
 
     work_dir = str(runtime_bundle.get("model_dir") or "").strip() or get_job_runtime_dir(code)
     work_dir = _norm(work_dir)
@@ -541,8 +558,8 @@ def run_feasibility_analysis(
     bat_path = ensure_analysis_bat(
         work_dir=work_dir,
         runx_path=runx_path,
-        psiinp_path=support_files.get("psiinp", "") or os.path.join(work_dir, "psiinp.19-1d"),
-        jcninp_path=support_files.get("jcninp", "") or os.path.join(work_dir, "Jcninp.19-1d"),
+        psiinp_path=support_files.get("psiinp", "") or os.path.join(work_dir, "psiinp.M1"),
+        jcninp_path=support_files.get("jcninp", "") or os.path.join(work_dir, "Jcninp.M1"),
     )
 
     _cleanup_previous_analysis_outputs(work_dir)
@@ -578,6 +595,8 @@ def run_feasibility_analysis(
             f"计算目录：{work_dir}\n{wait_detail}"
         )
 
+    result_file = _ensure_result_file_suffix_m1(work_dir, result_file)
+
     error_token = _analysis_output_has_error(work_dir, result_file)
     if error_token:
         raise RuntimeError(
@@ -585,13 +604,9 @@ def run_feasibility_analysis(
             f"结果文件：{result_file}"
         )
 
+    # 新流程取消“原模型结果自动保存到模型文件页面”。
+    # 计算结果只保留在运行目录，用户通过“导出文件”手动导出。
     archived_path = ""
-    if actual_mode == "original":
-        archived_path = _archive_original_analysis_result(
-            facility_code=code,
-            result_file=result_file,
-            runtime_bundle=runtime_bundle,
-        )
 
     # 等待输出文件释放后再把后台任务标记为完成，避免用户立即开始第二次计算时旧文件仍被占用。
     _wait_for_analysis_outputs_released(work_dir)
@@ -742,18 +757,18 @@ def _collect_export_files(
 
     candidates: list[str] = []
 
-    mode = str(analysis_mode or "auto").lower().strip()
-    if mode == "auto":
-        mode = str(state.get("analysis_mode") or "original").lower().strip() or "original"
-
-    should_include_model = include_model_files and mode != "original"
-    if should_include_model:
-        candidates.append(_norm(get_job_new_model_file(code)))
-        candidates.append(_norm(get_job_new_sea_file(code)))
-        candidates.append(os.path.join(work_dir, "sacinp.M1"))
-        candidates.append(os.path.join(work_dir, "seainp.M1"))
+    if include_model_files:
+        candidates.extend([
+            _norm(get_job_new_model_file(code)),
+            _norm(get_job_new_sea_file(code)),
+            os.path.join(work_dir, "sacinp.M1"),
+            os.path.join(work_dir, "seainp.M1"),
+            os.path.join(work_dir, "psiinp.M1"),
+            os.path.join(work_dir, "Jcninp.M1"),
+        ])
 
     if include_result_file:
+        candidates.append(os.path.join(work_dir, "psilst.M1"))
         result_file = _norm(state.get("result_file")) if state else ""
         if not result_file or not os.path.isfile(result_file):
             result_file = find_result_file(work_dir)

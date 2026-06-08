@@ -49,6 +49,8 @@ def _pick_latest_result_file(folder: str) -> str:
         return ""
 
     preferred = [
+        "psilst.M1",
+        "psilst.m1",
         "psilst.factor",
         "psilst.lst",
         "psilst.lis",
@@ -105,15 +107,15 @@ def _normalize_export_info(export_info: Optional[Dict[str, Any]], job_name: str)
     )
     runx_file = (
         export_info.get("runx_file")
-        or _pick_existing_file(model_dir, ["psiFACTOR.runx", "psifactor.runx"])
+        or _pick_existing_file(model_dir, ["psiM1.runx", "psim1.runx"])
     )
     psiinp_file = (
         export_info.get("psiinp_file")
-        or _pick_existing_file(model_dir, ["psiinp.19-1d", "psiinp"])
+        or _pick_existing_file(model_dir, ["psiinp.M1", "psiinp.m1", "psiinp.19-1d", "psiinp"])
     )
     jcninp_file = (
         export_info.get("jcninp_file")
-        or _pick_existing_file(model_dir, ["Jcninp.19-1d", "jcninp.19-1d", "jcninp"])
+        or _pick_existing_file(model_dir, ["Jcninp.M1", "jcninp.M1", "jcninp.m1", "Jcninp.19-1d", "jcninp.19-1d", "jcninp"])
     )
     bat_file = (
         export_info.get("bat_file")
@@ -253,9 +255,9 @@ def create_new_model_files(
     基于当前已保存的输入数据创建新模型。
 
     当前业务规则：
-    1. “保存数据”逻辑不变，三类输入数据可任意组合；
+    1. “保存数据”允许三类输入数据全部为空；为空时生成的 M1 等价于原模型；
     2. 每次点击“创建新模型”时，都重新以【模型文件/当前模型】中用户上传的原始模型作为基础模型；
-    3. 生成的 sacinp.M1、seainp.M1、RUNX、BAT 等文件仍统一保存到系统内部运行目录；
+    3. 生成/复制的 sacinp.M1、seainp.M1、psiinp.M1、Jcninp.M1、RUNX、BAT 等文件仍统一保存到系统内部运行目录；
     4. 不再自动生成【历史改造文件】中的历史改造项目；
     5. 如果传入 user_export_dir，则额外把本次生成文件复制到用户选择的目录。
     """
@@ -272,12 +274,6 @@ def create_new_model_files(
             "risers": _count_table_rows(conn, "risers", job_name),
             "topside_weights": _count_table_rows(conn, "topside_weights", job_name),
         }
-
-        if sum(input_counts.values()) <= 0:
-            raise ValueError(
-                f"job={job_name} 没有任何已保存的新增数据。"
-                "请先填写井槽、立管/电缆或组块载荷中的至少一种，并点击保存数据。"
-            )
 
     # 创建新模型前，固定重新同步用户上传的原始模型作为本次改造基础。
     # 这里不再读取“历史改造文件”中的 M1，也不再在创建后自动生成历史改造项目。

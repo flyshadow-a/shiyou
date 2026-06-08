@@ -44,9 +44,8 @@ def resolve_runx_path(model_info: ModelInfo) -> str:
     # 这样即使 db_config.json 里配置了失效的模板路径，也不会阻塞计算。
     model_dir = os.path.dirname(model_info.new_model_file)
     candidates = [
-        os.path.join(model_dir, "psiFACTOR.runx"),
-        os.path.join(model_dir, "psifactor.runx"),
-        os.path.join(model_dir, "psiSTATIC.runx"),
+        os.path.join(model_dir, "psiM1.runx"),
+        os.path.join(model_dir, "psim1.runx"),
     ]
     for p in candidates:
         if os.path.isfile(p):
@@ -58,7 +57,8 @@ def resolve_runx_path(model_info: ModelInfo) -> str:
 
     configured_hint = f"；当前 db_config.json 配置为：{configured}" if configured else ""
     raise FileNotFoundError(
-        "未找到 RUNX 文件。请把 psiFACTOR.runx 上传到【模型文件/当前模型/其他/用户上传/其他】，"
+        "未找到 RUNX 文件。新流程下 RUNX 不再由用户上传，"
+        "请将服务端固定模板放到 项目根目录下的 psiM1.runx，"
         "或在 db_config.json 中设置有效的 sacs_default_runx_path" + configured_hint
     )
 
@@ -620,7 +620,9 @@ def export_model_bundle(mysql_url: str, job_name: str, generate_bat_flag: bool =
 
         runtime_dir = get_job_runtime_dir(job_name)
 
-        # 先从“当前模型/其他/用户上传/其他”复制用户上传的 RUNX/PSIINP/JCNINP。
+        # 复制计算辅助文件：
+        # - RUNX 来自服务端固定模板；
+        # - PSIINP / JCNINP 来自当前模型静力目录，复制后统一命名为 M1。
         # generate_bat_flag=True 时这些文件是计算必需文件，因此做强校验。
         support_files = stage_support_files_for_job(job_name, require_all=generate_bat_flag)
 

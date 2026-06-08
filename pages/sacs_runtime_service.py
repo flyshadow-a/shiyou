@@ -31,16 +31,13 @@ def ensure_runx_in_workdir(work_dir: str, runx_path: str = "") -> str:
     work_dir = os.path.normpath(work_dir)
     ensure_dir(work_dir)
 
-    target = os.path.join(work_dir, "psiFACTOR.runx")
+    target = os.path.join(work_dir, "psiM1.runx")
 
     # 1. 优先用传入的 runx
     candidate = os.path.normpath(runx_path) if runx_path else ""
     if candidate and os.path.exists(candidate):
-        if os.path.normcase(candidate) == os.path.normcase(target):
-            return target
-        if os.path.normcase(os.path.dirname(candidate)) == os.path.normcase(work_dir):
-            return candidate
-        shutil.copy2(candidate, target)
+        if os.path.normcase(candidate) != os.path.normcase(target):
+            shutil.copy2(candidate, target)
         return target
 
     # 2. 如果运行目录里已经有用户上传/前序步骤复制过来的 runx，直接使用。
@@ -54,11 +51,22 @@ def ensure_runx_in_workdir(work_dir: str, runx_path: str = "") -> str:
         shutil.copy2(default_runx, target)
         return target
 
+    # 4. 新流程下 RUNX 应来自服务端固定模板。这里再兜底调用一次，
+    #    避免旧调用未显式传入 runx_path 时仍依赖 db_config.json。
+    try:
+        from pages.sacs_storage_service import stage_server_runx_for_job
+        job_name = os.path.basename(work_dir)
+        fixed_runx = stage_server_runx_for_job(job_name, required=False)
+        if fixed_runx and os.path.exists(fixed_runx):
+            return fixed_runx
+    except Exception:
+        pass
+
     if default_runx:
         raise FileNotFoundError(
-            f"默认 RUNX 文件不存在：{default_runx}。请上传 psiFACTOR.runx 到当前模型/其他，或修正 db_config.json。"
+            f"默认 RUNX 文件不存在：{default_runx}。请将服务端固定 RUNX 模板放到项目 server 目录下的 psiM1.runx，或修正 db_config.json。"
         )
-    raise ValueError("db_config.json 中未配置 sacs_default_runx_path，且运行目录中没有 psiFACTOR.runx")
+    raise ValueError("运行目录中没有 psiM1.runx，且未找到服务端固定 RUNX 模板 server/psiM1.runx")
 
 
 def build_bat_text(exe_path: str, runx_path: str, work_dir: str) -> str:
@@ -136,7 +144,7 @@ def ensure_analysis_bat(
     ensure_dir(work_dir)
 
     # 注意：
-    # _on_run_analysis 中会先把用户上传的 psiFACTOR.runx 复制到运行目录，
+    # _on_run_analysis 中会先把用户上传的 psiM1.runx 复制到运行目录，
     # 然后根据“原模型 / 改造后模型”把 RUNX 中的 sacinp/seainp 文件名改好。
     #
     # 旧逻辑这里又调用了一次 stage_support_files_for_job()，会把用户上传的
@@ -183,6 +191,8 @@ def find_result_file(work_dir: str) -> str:
         return ""
 
     preferred = [
+        "psilst.M1",
+        "psilst.m1",
         "psilst.factor",
         "psilst.lst",
         "psilst.lis",
@@ -250,15 +260,16 @@ def ensure_support_inputs_in_workdir(
     psiinp_path: str = "",
     jcninp_path: str = "",
 ) -> tuple[str, str]:
+    """确保 PSIINP / JCNINP 位于工作目录，并统一改名为 M1。"""
     psiinp_file = ensure_named_input_in_workdir(
         work_dir=work_dir,
-        target_name="psiinp.19-1d",
+        target_name="psiinp.M1",
         source_path=psiinp_path,
         default_path=get_sacs_default_psiinp_path(),
     )
     jcninp_file = ensure_named_input_in_workdir(
         work_dir=work_dir,
-        target_name="Jcninp.19-1d",
+        target_name="Jcninp.M1",
         source_path=jcninp_path,
         default_path=get_sacs_default_jcninp_path(),
     )
@@ -287,22 +298,25 @@ def rewrite_runx_input_file_names(
     *,
     model_filename: str,
     sea_filename: str = "",
+    psiinp_filename: str = "psiinp.M1",
+    jcninp_filename: str = "Jcninp.M1",
+    result_filename: str = "psilst.M1",
     model_candidates: list[str] | None = None,
     sea_candidates: list[str] | None = None,
+    psiinp_candidates: list[str] | None = None,
+    jcninp_candidates: list[str] | None = None,
+    result_candidates: list[str] | None = None,
 ) -> str:
-    """把 RUNX 中引用的模型/海况文件名修正为当前运行目录中的文件名。
+    """把 RUNX 中引用的输入/输出文件名统一修正为 M1 文件名。
 
-    背景：用户上传的 psiFACTOR.runx 通常引用原始模型名，例如：
-        sacinp.JKnew
-        seainp.JKnew FACTOR
-
-    计算改造后模型时，运行目录中真正参与计算的文件是：
+    新流程中所有平台统一使用运行目录中的：
         sacinp.M1
         seainp.M1
+        psiinp.M1
+        Jcninp.M1
+        psilst.M1
 
-    因此需要在运行前把 RUNX 中的输入文件名替换为当前应计算的文件名。
-    反过来，当当前页面没有任何新增数据、需要计算原模型时，也可以把 RUNX
-    从 M1 引用恢复为原始文件名，避免误算最新改造模型。
+    因此 RUNX 模板可以固定命名为 psiM1.runx，并在计算前做一次兜底替换。
     """
     runx_path = os.path.normpath(str(runx_path or "").strip())
     if not runx_path or not os.path.isfile(runx_path):
@@ -310,6 +324,10 @@ def rewrite_runx_input_file_names(
 
     target_model = str(model_filename or "").strip()
     target_sea = str(sea_filename or "").strip()
+    target_psiinp = str(psiinp_filename or "").strip()
+    target_jcninp = str(jcninp_filename or "").strip()
+    target_result = str(result_filename or "").strip()
+
     if not target_model:
         raise ValueError("model_filename 不能为空，无法修正 RUNX 文件")
 
@@ -318,33 +336,41 @@ def rewrite_runx_input_file_names(
 
     model_names = _unique_non_empty(
         list(model_candidates or [])
-        + [
-            "sacinp.JKnew",
-            "sacinp.M1",
-            target_model,
-        ]
+        + ["sacinp.JKnew", "sacinp.M1", target_model]
     )
     sea_names = _unique_non_empty(
         list(sea_candidates or [])
-        + [
-            "seainp.JKnew FACTOR",
-            "seainp.M1",
-            target_sea,
-        ]
+        + ["seainp.JKnew FACTOR", "seainp.M1", target_sea]
+    )
+    psiinp_names = _unique_non_empty(
+        list(psiinp_candidates or [])
+        + ["psiinp.19-1d", "psiinp.M1", "psiinp", target_psiinp]
+    )
+    jcninp_names = _unique_non_empty(
+        list(jcninp_candidates or [])
+        + ["Jcninp.19-1d", "jcninp.19-1d", "Jcninp.M1", "jcninp.M1", "jcninp", target_jcninp]
+    )
+    result_names = _unique_non_empty(
+        list(result_candidates or [])
+        + ["psilst.factor", "psilst.lst", "psilst.lis", "psilst.M1", target_result]
     )
 
     def replace_names(content: str, names: list[str], target: str) -> str:
         if not target:
             return content
-        # 长文件名优先，例如先替换 "seainp.JKnew FACTOR"，再替换 "seainp.M1"。
+        # 使用文件名边界替换，避免把 psilst.M1 中的 psilst 再替换成 psilst.M1.M1。
         for old in sorted(names, key=len, reverse=True):
             if not old or old.lower() == target.lower():
                 continue
-            content = re.sub(re.escape(old), target, content, flags=re.IGNORECASE)
+            pattern = r"(?<![A-Za-z0-9_.-])" + re.escape(old) + r"(?![A-Za-z0-9_.-])"
+            content = re.sub(pattern, target, content, flags=re.IGNORECASE)
         return content
 
     new_text = replace_names(raw, model_names, target_model)
     new_text = replace_names(new_text, sea_names, target_sea)
+    new_text = replace_names(new_text, psiinp_names, target_psiinp)
+    new_text = replace_names(new_text, jcninp_names, target_jcninp)
+    new_text = replace_names(new_text, result_names, target_result)
 
     if new_text != raw:
         with open(runx_path, "w", encoding="utf-8", newline="\r\n") as fp:

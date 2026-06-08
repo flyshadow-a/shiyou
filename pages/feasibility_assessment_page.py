@@ -1463,14 +1463,7 @@ class FeasibilityAssessmentPage(BasePage):
             QMessageBox.information(self, "提示", "数据已经保存，不能重复修改。")
             return
 
-        if not self._has_any_valid_input_data():
-            QMessageBox.warning(
-                self,
-                "无法保存",
-                "三个表格中没有填写任何有效数据。\n"
-                "请至少填写井槽、立管/电缆或组块载荷中的一种数据后再保存。"
-            )
-            return
+        has_input_data = self._has_any_valid_input_data()
 
         if not self._confirm_save_locked("新增数据"):
             return
@@ -1483,10 +1476,18 @@ class FeasibilityAssessmentPage(BasePage):
             self._input_data_saved = True
             self._lock_input_tables_after_save()
 
+            if has_input_data:
+                message = "新增数据已保存。"
+            else:
+                message = (
+                    "三个新增数据表为空，已保存为空数据。\n"
+                    "后续创建的新模型将等价于原模型。"
+                )
+
             QMessageBox.information(
                 self,
                 "保存成功",
-                "新增数据已保存。"
+                message
             )
         except Exception as e:
             self._input_data_saved = False
@@ -1603,7 +1604,7 @@ class FeasibilityAssessmentPage(BasePage):
         if not self.current_runx_file:
             self.current_runx_file = self._find_first_existing_file(
                 self.current_model_dir,
-                ["psiFACTOR.runx", "psifactor.runx"]
+                ["psiM1.runx", "psim1.runx"]
             )
 
         self.current_bat_file = str(export_info.get("bat_file") or result.get("bat_path") or "").strip()
@@ -1688,7 +1689,7 @@ class FeasibilityAssessmentPage(BasePage):
 
         self.current_runx_file = self._find_first_existing_file(
             root,
-            ["psiFACTOR.runx", "psifactor.runx"]
+            ["psiM1.runx", "psim1.runx"]
         )
 
         self.current_bat_file = self._find_first_existing_file(
@@ -1709,6 +1710,8 @@ class FeasibilityAssessmentPage(BasePage):
             return ""
 
         preferred = [
+            "psilst.M1",
+            "psilst.m1",
             "psilst.factor",
             "psilst.lst",
             "psilst",
@@ -1743,22 +1746,13 @@ class FeasibilityAssessmentPage(BasePage):
         return candidates[0][1]
 
     def _should_calculate_original_model(self) -> bool:
-        """是否应直接计算原模型。
+        """兼容旧调用：新流程不再单独计算原模型。
 
-        业务规则：
-        - 三个新增数据表均为空；
-        - 本次没有点击“保存数据”；
-        - 本次没有点击“创建新模型”。
-
-        满足以上条件时，点击“计算分析”应计算原始上传模型，而不是默认计算
-        最新历史改造项目下的 M1。
+        现在即使三个新增数据表为空，也要求先保存为空数据、创建 M1 文件，
+        再统一计算 sacinp.M1 / seainp.M1。空数据生成的 M1 等价于原模型，
+        因此这里固定返回 False。
         """
-        return (
-            not self._has_any_valid_input_data()
-            and not getattr(self, "_input_data_saved", False)
-            and not getattr(self, "_input_data_locked", False)
-            and not getattr(self, "_model_created_in_session", False)
-        )
+        return False
 
     def _archive_analysis_result_file(self, result_file: str, *, analysis_mode: str, runtime_bundle: dict) -> str:
         """把 SACS 计算结果文件按业务规则归档。
@@ -1837,12 +1831,16 @@ class FeasibilityAssessmentPage(BasePage):
         return copied
 
     def _collect_generated_export_files(self) -> list[str]:
-        """
-        收集“导出文件”按钮需要复制的文件。
+        """收集“导出文件”按钮需要复制的文件。
 
-        业务规则：
-        - 新模型/改造后计算：导出 sacinp.M1、seainp.M1 和本次 psilst 结果文件；
-        - 原模型计算：结果已自动保存到模型文件页面，这里最多只导出当前结果文件，不混入旧 M1。
+        新流程下不再区分“原模型计算 / 新模型计算”。
+        即使三个表为空，也会先创建等价于原模型的 M1 运行文件，
+        因此导出时统一导出：
+        - sacinp.M1
+        - seainp.M1
+        - psiinp.M1
+        - Jcninp.M1
+        - 本次 SACS 结果文件
         """
         self._refresh_runtime_paths_from_disk()
 
@@ -1850,15 +1848,13 @@ class FeasibilityAssessmentPage(BasePage):
         work_dir = os.path.normpath(work_dir) if work_dir else ""
 
         candidates: list[str] = []
-        last_mode = str(getattr(self, "_last_analysis_mode", "") or "").strip()
-
-        should_export_m1 = (
-            bool(getattr(self, "_model_created_in_session", False))
-            or last_mode == "rebuild"
-        )
-        if work_dir and should_export_m1:
-            candidates.append(os.path.join(work_dir, "sacinp.M1"))
-            candidates.append(os.path.join(work_dir, "seainp.M1"))
+        if work_dir:
+            candidates.extend([
+                os.path.join(work_dir, "sacinp.M1"),
+                os.path.join(work_dir, "seainp.M1"),
+                os.path.join(work_dir, "psiinp.M1"),
+                os.path.join(work_dir, "Jcninp.M1"),
+            ])
 
         result_file = getattr(self, "current_result_file", "").strip()
         if not result_file and work_dir:
@@ -2254,30 +2250,34 @@ class FeasibilityAssessmentPage(BasePage):
         check_once()
 
     def _on_run_analysis(self):
-        """服务端模式：计算分析交给 FastAPI 服务端执行。"""
+        """服务端模式：统一计算创建后的 M1 模型。
+
+        新流程不再单独计算原模型。三个新增数据表为空时，也需要先保存为空数据、
+        创建 sacinp.M1 / seainp.M1 / psiinp.M1 / Jcninp.M1，然后计算 M1；
+        此时 M1 与原模型等价。
+        """
         if self._remote_analysis_thread is not None and self._remote_analysis_thread.isRunning():
             QMessageBox.information(self, "提示", "当前已有计算任务正在运行。")
             return
 
         try:
-            has_input_data = self._has_any_valid_input_data()
-            if has_input_data and not getattr(self, "_input_data_saved", False):
+            if not getattr(self, "_input_data_saved", False):
                 QMessageBox.warning(
                     self,
                     "请先保存数据",
-                    "检测到新增井槽、立管/电缆或组块载荷数据，请先点击“保存数据”。",
+                    "请先点击“保存数据”。即使三个表为空，也需要保存为空数据后再创建新模型。",
                 )
                 return
 
-            if has_input_data and not getattr(self, "_model_created_in_session", False):
+            if not getattr(self, "_model_created_in_session", False):
                 QMessageBox.warning(
                     self,
                     "请先创建新模型",
-                    "新增数据已保存后，需要先点击“创建新模型”，再进行计算分析。",
+                    "请先点击“创建新模型”，生成 M1 运行文件后再进行计算分析。",
                 )
                 return
 
-            analysis_mode = "original" if self._should_calculate_original_model() else "rebuild"
+            analysis_mode = "rebuild"
             self._last_analysis_mode = analysis_mode
         except Exception:
             analysis_mode = "rebuild"
