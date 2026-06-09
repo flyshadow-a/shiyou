@@ -13,6 +13,7 @@ from server.schemas import (
 )
 from server.task_manager import get_active_task, get_task, submit_task, submit_task_if_no_active
 from services.feasibility_runtime import (
+    assert_analysis_outputs_ready_before_analysis,
     assert_sacs_not_running_before_analysis,
     export_feasibility_generated_files,
     generate_feasibility_report,
@@ -21,6 +22,7 @@ from services.feasibility_runtime import (
 )
 from server.schemas import FeasibilityCreateModelRequest
 from pages.sacs_create_model_service import create_new_model_files
+from pages.sacs_storage_service import get_job_runtime_dir
 from shiyou_db.runtime_db import get_mysql_url
 
 
@@ -51,6 +53,7 @@ def run_feasibility(req: FeasibilityRunRequest):
     """
     try:
         assert_sacs_not_running_before_analysis()
+        assert_analysis_outputs_ready_before_analysis(get_job_runtime_dir(req.facility_code))
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

@@ -93,6 +93,8 @@ SACS_COMMAND_LINE_TOKENS = (
     "seainp.m1",
 )
 
+NON_BLOCKING_ANALYSIS_OUTPUT_PREFIXES = ("psvdb",)
+
 
 def _decode_command_output(raw: bytes) -> str:
     for encoding in ("utf-8", "gbk", "mbcs", "cp936", "latin-1"):
@@ -441,6 +443,15 @@ def _is_previous_analysis_output_name(file_name: str) -> bool:
         or low.endswith(".listing")
     )
 
+
+def _is_non_blocking_analysis_output_name(file_name: str) -> bool:
+    low = str(file_name or "").strip().lower()
+    return any(low.startswith(prefix) for prefix in NON_BLOCKING_ANALYSIS_OUTPUT_PREFIXES)
+
+
+def _is_blocking_analysis_output_name(file_name: str) -> bool:
+    return _is_previous_analysis_output_name(file_name) and not _is_non_blocking_analysis_output_name(file_name)
+
 def _remove_analysis_output_with_retry(path: str, *, retries: int = 12, interval: float = 0.5) -> None:
     """
     删除旧 SACS 输出文件。
@@ -487,6 +498,18 @@ def _analysis_output_paths(work_dir: str) -> list[str]:
     paths: list[str] = []
     for fn in list(os.listdir(work_dir)):
         if _is_previous_analysis_output_name(fn):
+            paths.append(os.path.join(work_dir, fn))
+    return paths
+
+
+def _blocking_analysis_output_paths(work_dir: str) -> list[str]:
+    work_dir = _norm(work_dir)
+    if not work_dir or not os.path.isdir(work_dir):
+        return []
+
+    paths: list[str] = []
+    for fn in list(os.listdir(work_dir)):
+        if _is_blocking_analysis_output_name(fn):
             paths.append(os.path.join(work_dir, fn))
     return paths
 
@@ -548,7 +571,7 @@ def _wait_for_analysis_outputs_released(
 
     while time.time() - start <= float(timeout_seconds):
         locked: list[str] = []
-        for path in _analysis_output_paths(work_dir):
+        for path in _blocking_analysis_output_paths(work_dir):
             if not _can_rename_for_lock_check(path):
                 locked.append(path)
 
@@ -567,6 +590,26 @@ def _wait_for_analysis_outputs_released(
         "SACS 计算已结束，但输出文件仍被占用，暂不能开始下一次计算。\n"
         "请稍后重试；如果长时间不释放，请检查服务端任务管理器中是否仍有 AnalysisEngine.exe / SACS / cmd.exe 进程。\n"
         "被占用文件：\n" + "\n".join(last_locked)
+    )
+
+
+def _locked_blocking_analysis_output_paths(work_dir: str) -> list[str]:
+    locked: list[str] = []
+    for path in _blocking_analysis_output_paths(work_dir):
+        if not _can_rename_for_lock_check(path):
+            locked.append(path)
+    return locked
+
+
+def assert_analysis_outputs_ready_before_analysis(work_dir: str) -> None:
+    locked = _locked_blocking_analysis_output_paths(work_dir)
+    if not locked:
+        return
+
+    raise RuntimeError(
+        "上一轮 SACS 关键计算结果文件仍被占用，请等待文件释放后再试。\n"
+        "为避免新结果追加到旧结果文件，本次计算未启动。\n"
+        "被占用的关键文件：\n" + "\n".join(locked)
     )
 
 
@@ -589,11 +632,21 @@ def _cleanup_previous_analysis_outputs(work_dir: str) -> None:
         return
 
     failed_messages: list[str] = []
+    skipped_messages: list[str] = []
     for full in targets:
         try:
             _remove_analysis_output_with_retry(full)
         except Exception as exc:
-            failed_messages.append(str(exc))
+            if _is_non_blocking_analysis_output_name(os.path.basename(full)):
+                skipped_messages.append(str(exc))
+            else:
+                failed_messages.append(str(exc))
+
+    if skipped_messages:
+        print(
+            "[FeasibilityRuntime] skipped non-blocking SACS outputs:\n" + "\n".join(skipped_messages),
+            flush=True,
+        )
 
     if failed_messages:
         raise RuntimeError(
@@ -821,6 +874,7 @@ def run_feasibility_analysis(
 
     # 确认计算目录后再查一次，可识别执行当前 RUNX/BAT 的 cmd/powershell 进程。
     _assert_sacs_not_running_before_analysis(work_dir=work_dir)
+    assert_analysis_outputs_ready_before_analysis(work_dir)
 
     model_src = _norm(get_job_new_model_file(code))
     sea_src = _norm(get_job_new_sea_file(code))
