@@ -333,15 +333,23 @@ def find_closest_existing_joint(
     target_z: float,
     existing_joints: List[ExistingJoint],
     warned_levels: Set[Tuple[float, float]],
+    forbidden_ids: Optional[Set[str]] = None,
     z_tol: float = Z_TOL,
 ) -> ExistingJoint:
+    if forbidden_ids:
+        forbidden = {str(jid).strip() for jid in forbidden_ids if str(jid).strip()}
+        existing_joints = [
+            joint for joint in existing_joints
+            if str(joint.joint_id).strip() not in forbidden
+        ]
+
     same_z = [j for j in existing_joints if abs(j.z - target_z) <= z_tol]
     if same_z:
         return min(same_z, key=lambda j: (j.x - target_x) ** 2 + (j.y - target_y) ** 2)
 
     unique_z = sorted(set(j.z for j in existing_joints))
     if not unique_z:
-        raise ValueError("原模型 joints 为空，无法寻找连接点")
+        raise ValueError("过滤 DUMMY 禁连节点后，原模型 joints 为空，无法寻找连接点")
 
     nearest_z = min(unique_z, key=lambda z: abs(z - target_z))
     nearest_layer_joints = [j for j in existing_joints if abs(j.z - nearest_z) <= z_tol]
@@ -361,6 +369,7 @@ def build_one_riser(
     connections: List[RiserConnection],
     workpoint: float,
     existing_joints: List[ExistingJoint],
+    forbidden_ids: Optional[Set[str]],
     group_id_gen: IdGenerator,
     joint_id_gen: IdGenerator,
     warned_levels: Set[Tuple[float, float]],
@@ -500,6 +509,7 @@ def build_one_riser(
             target_z=current_joint.z,
             existing_joints=existing_joints,
             warned_levels=warned_levels,
+            forbidden_ids=forbidden_ids,
         )
 
         ctype = conn.connection_type.strip()
@@ -746,6 +756,7 @@ def generate_riser_to_db(mysql_url: str, job_name: str, overwrite_job: bool = Tr
                 connections=riser_conns,
                 workpoint=workpoint,
                 existing_joints=existing_joints,
+                forbidden_ids=forbidden_ids,
                 group_id_gen=group_id_gen,
                 joint_id_gen=joint_id_gen,
                 warned_levels=warned_levels,
