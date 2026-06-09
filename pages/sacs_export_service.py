@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -404,17 +405,60 @@ def fetch_wellslot_top_loads(conn, job_name: str) -> List[WellSlotTopLoad]:
     ]
 
 
+def _is_zero_value(value) -> bool:
+    try:
+        return abs(float(value)) < 1e-12
+    except Exception:
+        return False
+
+
+def fill_parameters_vba(value, width: int, str_type: str = "String") -> str:
+    """尽量模拟 VBA 的 FillParameters。"""
+    if value is None or _is_zero_value(value):
+        text = ""
+    elif str_type.lower() == "number":
+        text = str(value)
+        if "e" in text.lower():
+            text = f"{float(value):.6f}".rstrip("0").rstrip(".")
+        if "." not in text:
+            text = text + "."
+    else:
+        if isinstance(value, float):
+            if abs(value - int(value)) < 1e-9:
+                text = str(int(value))
+            else:
+                text = f"{value:.3f}".rstrip("0").rstrip(".")
+        else:
+            text = str(value)
+
+    if len(text) > width:
+        return text[:width]
+    return text.rjust(width)
+
+
 def build_group_lines(groups: List[ExportGroup]) -> List[str]:
+    """按 VBA 的 GRUP 输出方式生成新增组。"""
     lines: List[str] = []
     for g in groups:
-        line = (
+        gid = fill_parameters_vba(str(g.group_id or "").strip(), 3)
+        od_cm = float(g.od_mm or 0.0) / 10.0
+        wt_cm = float(g.wt_mm or 0.0) / 10.0
+        head = (
             "GRUP "
-            + fill_parameters(g.group_id, 3)
+            + gid
             + "         "
-            + fill_parameters(g.od_mm / 10.0, 6, 2)
-            + fill_parameters(g.wt_mm / 10.0, 6, 2)
+            + fill_parameters_vba(od_cm, 6, "Number")
+            + fill_parameters_vba(wt_cm, 6, "Number")
+            + " 20.008.00035.50 9    1.001.00     0.500"
         )
-        lines.append(line + "\n")
+        group_type = str(g.group_type or "").strip().upper()
+        if group_type == "SUPPORT":
+            tail = "N7.8490   "
+        elif group_type == "WISHBONE":
+            tail = " 1.00-3   "
+        else:
+            tail = "F7.8490   "
+        lines.append(head + tail + "\n")
     return lines
 
 
@@ -423,49 +467,56 @@ def build_joint_lines(joints: List[ExportJoint]) -> List[str]:
     for j in joints:
         base = (
             "JOINT "
-            + fill_parameters(j.joint_id, 4)
-            + fill_parameters(j.x, 7, 2)
-            + fill_parameters(j.y, 7, 2)
-            + fill_parameters(j.z, 7, 2)
+            + fill_parameters_vba(str(j.joint_id or "").strip(), 4)
+            + " "
+            + fill_parameters_vba(float(j.x), 7)
+            + fill_parameters_vba(float(j.y), 7)
+            + fill_parameters_vba(float(j.z), 7)
+            + "                      "
         )
         if j.fixity:
-            base += " " + j.fixity
-        lines.append(base + "\n")
+            base += str(j.fixity).strip()
+        lines.append(base.rstrip() + "\n")
     return lines
 
 
+def _offset_mm_to_cm(value_mm: float) -> float:
+    return float(value_mm or 0.0) / 10.0
+
+
+def _member_has_offset(m: ExportMember) -> bool:
+    return any([
+        abs(float(m.offset_ax_mm or 0.0)) > 1e-9,
+        abs(float(m.offset_ay_mm or 0.0)) > 1e-9,
+        abs(float(m.offset_az_mm or 0.0)) > 1e-9,
+        abs(float(m.offset_bx_mm or 0.0)) > 1e-9,
+        abs(float(m.offset_by_mm or 0.0)) > 1e-9,
+        abs(float(m.offset_bz_mm or 0.0)) > 1e-9,
+    ])
+
+
 def build_member_lines(members: List[ExportMember]) -> List[str]:
+    """按 VBA 的 MEMBER / MEMBER OFFSETS 写法输出新增构件。"""
     lines: List[str] = []
     for m in members:
-        base = (
-            "MEMBER "
-            + fill_parameters(m.joint_a, 4)
-            + fill_parameters(m.joint_b, 4)
-            + fill_parameters(m.group_id, 3)
-        )
-        lines.append(base + "\n")
+        joint_a = fill_parameters_vba(str(m.joint_a or "").strip(), 4)
+        joint_b = fill_parameters_vba(str(m.joint_b or "").strip(), 4)
+        group_id = fill_parameters_vba(str(m.group_id or "").strip(), 3)
 
-        has_offset = any([
-            abs(m.offset_ax_mm) > 1e-9,
-            abs(m.offset_ay_mm) > 1e-9,
-            abs(m.offset_az_mm) > 1e-9,
-            abs(m.offset_bx_mm) > 1e-9,
-            abs(m.offset_by_mm) > 1e-9,
-            abs(m.offset_bz_mm) > 1e-9,
-        ])
-        if has_offset:
-            off = (
-                "MEMB2  OFFSETS "
-                + fill_parameters(m.joint_a, 4)
-                + fill_parameters(m.joint_b, 4)
-                + fill_parameters(m.offset_ax_mm, 7, 1)
-                + fill_parameters(m.offset_ay_mm, 7, 1)
-                + fill_parameters(m.offset_az_mm, 7, 1)
-                + fill_parameters(m.offset_bx_mm, 7, 1)
-                + fill_parameters(m.offset_by_mm, 7, 1)
-                + fill_parameters(m.offset_bz_mm, 7, 1)
+        if _member_has_offset(m):
+            lines.append("MEMBER1" + joint_a + joint_b + " " + group_id + "\n")
+            offset_line = (
+                "MEMBER OFFSETS                     "
+                + fill_parameters_vba(_offset_mm_to_cm(m.offset_ax_mm), 6)
+                + fill_parameters_vba(_offset_mm_to_cm(m.offset_ay_mm), 6)
+                + fill_parameters_vba(_offset_mm_to_cm(m.offset_az_mm), 6)
+                + fill_parameters_vba(_offset_mm_to_cm(m.offset_bx_mm), 6)
+                + fill_parameters_vba(_offset_mm_to_cm(m.offset_by_mm), 6)
+                + fill_parameters_vba(_offset_mm_to_cm(m.offset_bz_mm), 6)
             )
-            lines.append(off + "\n")
+            lines.append(offset_line.rstrip() + "\n")
+        else:
+            lines.append("MEMBER " + joint_a + joint_b + " " + group_id + "\n")
     return lines
 
 
@@ -503,6 +554,9 @@ def build_dead_load_lines(
 
 
 def append_before_final_end(original_lines: List[str], insert_lines: List[str]) -> List[str]:
+    if not insert_lines:
+        return list(original_lines)
+
     out = list(original_lines)
     end_idx = None
     for i in range(len(out) - 1, -1, -1):
@@ -519,33 +573,152 @@ def append_before_final_end(original_lines: List[str], insert_lines: List[str]) 
     return out[:end_idx] + insert_lines + out[end_idx:]
 
 
+def _line_starts_with(line: str, keyword: str) -> bool:
+    return str(line or "").upper().startswith(keyword.upper())
+
+
+def _is_comment_line(line: str) -> bool:
+    return str(line or "").lstrip().startswith("*")
+
+
+def _is_group_line(line: str) -> bool:
+    return _line_starts_with(line, "GRUP")
+
+
+def _is_joint_line(line: str) -> bool:
+    return _line_starts_with(line, "JOINT")
+
+
+def _is_member_line(line: str) -> bool:
+    return str(line or "").upper().startswith("MEMBER")
+
+
+def _new_block(title: str, data_lines: List[str]) -> List[str]:
+    if not data_lines:
+        return []
+    now_text = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    return [
+        f"***************  New added {title}  {now_text}\n",
+        *data_lines,
+        f"***************  End New added {title}\n",
+    ]
+
+
+def _strip_existing_new_sections(lines: List[str]) -> List[str]:
+    """清理本程序生成的 New added 块，避免重复叠加。"""
+    start_markers = (
+        "NEW ADDED GROUPS",
+        "NEW ADDED MEMBERS",
+        "NEW ADDED JOINTS",
+        "** NEW GROUPS START",
+        "** NEW MEMBERS START",
+        "** NEW JOINTS START",
+    )
+    end_markers = (
+        "END NEW ADDED GROUPS",
+        "END NEW ADDED MEMBERS",
+        "END NEW ADDED JOINTS",
+        "** NEW GROUPS END",
+        "** NEW MEMBERS END",
+        "** NEW JOINTS END",
+    )
+
+    out: List[str] = []
+    skipping = False
+    for line in lines:
+        upper = str(line or "").strip().upper()
+        if not skipping and any(marker in upper for marker in start_markers):
+            skipping = True
+            continue
+        if skipping:
+            if any(marker in upper for marker in end_markers):
+                skipping = False
+            continue
+        out.append(line)
+    return out
+
+
+def _insert_new_blocks_like_vba(
+    input_lines: List[str],
+    group_block: List[str],
+    member_block: List[str],
+    joint_block: List[str],
+) -> List[str]:
+    """按 VBA UpdateModel 的方式插入新增块。"""
+    if not (group_block or member_block or joint_block):
+        return list(input_lines)
+
+    output: List[str] = []
+    process_group = False
+    process_member = False
+    process_joint = False
+    group_inserted = not bool(group_block)
+    member_inserted = not bool(member_block)
+    joint_inserted = not bool(joint_block)
+
+    for raw in input_lines:
+        line = str(raw or "")
+
+        if process_group and (not _is_group_line(line)) and (not _is_comment_line(line)):
+            if not group_inserted:
+                output.extend(group_block)
+                group_inserted = True
+            process_group = False
+
+        if process_member and (not _is_member_line(line)) and (not _is_comment_line(line)) and (not _line_starts_with(line, "MEMB2")):
+            if not member_inserted:
+                output.extend(member_block)
+                member_inserted = True
+            process_member = False
+
+        if process_joint and (not _is_joint_line(line)) and (not _is_comment_line(line)):
+            if not joint_inserted:
+                output.extend(joint_block)
+                joint_inserted = True
+            process_joint = False
+
+        if _is_group_line(line):
+            process_group = True
+        if _is_member_line(line):
+            process_member = True
+        if _is_joint_line(line):
+            process_joint = True
+
+        output.append(raw)
+
+    tail_blocks: List[str] = []
+    if not group_inserted:
+        tail_blocks.extend(group_block)
+    if not member_inserted:
+        tail_blocks.extend(member_block)
+    if not joint_inserted:
+        tail_blocks.extend(joint_block)
+
+    if tail_blocks:
+        output = append_before_final_end(output, tail_blocks)
+
+    return output
+
+
 def export_model_file(
     model_info: ModelInfo,
     new_groups: List[ExportGroup],
     new_joints: List[ExportJoint],
     new_members: List[ExportMember],
 ) -> None:
-    input_lines = read_text_lines(model_info.model_file)
+    input_lines = _strip_existing_new_sections(read_text_lines(model_info.model_file))
 
-    insert_lines: List[str] = []
-    insert_lines.append("\n")
-    insert_lines.append("** ----------------------------\n")
-    insert_lines.append("** NEW GROUPS\n")
-    insert_lines.append("** ----------------------------\n")
-    insert_lines.extend(build_group_lines(new_groups))
-    insert_lines.append("\n")
-    insert_lines.append("** ----------------------------\n")
-    insert_lines.append("** NEW JOINTS\n")
-    insert_lines.append("** ----------------------------\n")
-    insert_lines.extend(build_joint_lines(new_joints))
-    insert_lines.append("\n")
-    insert_lines.append("** ----------------------------\n")
-    insert_lines.append("** NEW MEMBERS\n")
-    insert_lines.append("** ----------------------------\n")
-    insert_lines.extend(build_member_lines(new_members))
-    insert_lines.append("\n")
+    group_block = _new_block("Groups", build_group_lines(new_groups))
+    member_block = _new_block("Members", build_member_lines(new_members))
+    joint_block = _new_block("Joints", build_joint_lines(new_joints))
 
-    output_lines = append_before_final_end(input_lines, insert_lines)
+    output_lines = _insert_new_blocks_like_vba(
+        input_lines,
+        group_block=group_block,
+        member_block=member_block,
+        joint_block=joint_block,
+    )
+
     write_text_lines(model_info.new_model_file, output_lines)
 
 

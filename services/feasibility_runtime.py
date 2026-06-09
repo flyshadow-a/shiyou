@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+import csv
 import shutil
 import subprocess
 import sys
@@ -40,6 +41,177 @@ FEASIBILITY_EXPORT_DIR = SERVER_OUTPUT_DIR / "feasibility_exports"
 def _norm(path: object) -> str:
     text = str(path or "").strip()
     return os.path.normpath(text) if text else ""
+
+
+def _make_analysis_work_dir(base_work_dir: str, facility_code: str) -> str:
+    """为每一次 SACS 计算创建独立工作目录。
+
+    原流程复用 feasibility_assessment_runtime/<平台> 目录，每次计算前会删除旧的
+    psilst.factor / psilst.M1。Windows/共享盘上这些文件经常被 SACS、杀毒软件、
+    文件预览或用户打开占用，导致下一次计算在清理旧文件阶段直接失败。
+
+    新流程把每次计算放到独立子目录：
+        feasibility_assessment_runtime/<平台>/analysis_runs/run_YYYYMMDD_HHMMSS_xxxxxx
+
+    这样新计算不再依赖删除上一轮结果，即使旧 psilst.factor 暂时被占用，也不会
+    阻塞本次计算。
+    """
+    base = Path(_norm(base_work_dir))
+    safe_code = str(facility_code or "facility").replace("/", "_").replace("\\", "_").strip() or "facility"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    work_dir = base / "analysis_runs" / f"run_{stamp}_{safe_code}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    return os.path.normpath(str(work_dir))
+
+
+def _copy_input_to_analysis_dir(src_path: str, work_dir: str, target_name: str, *, required: bool = True) -> str:
+    """复制输入文件到本次独立计算目录，并按目标文件名统一命名。"""
+    src = _norm(src_path)
+    dst = os.path.join(_norm(work_dir), target_name)
+    if not src or not os.path.isfile(src):
+        if required:
+            raise FileNotFoundError(f"缺少计算输入文件：{target_name}，源文件：{src}")
+        return ""
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.normcase(src) != os.path.normcase(dst):
+        shutil.copy2(src, dst)
+    return dst
+
+
+
+
+SACS_BUSY_PROCESS_NAMES = {
+    "analysisengine.exe",
+    "sacwsea.exe",
+    "sacwpre.exe",
+    "sacwslv.exe",
+    "sacwpsi.exe",
+    "sacwpst.exe",
+    "sacwjcn.exe",
+    "sacwpvi.exe",
+    "sacwdb.exe",
+}
+
+
+def _decode_command_output(raw: bytes) -> str:
+    for encoding in ("utf-8", "gbk", "mbcs", "cp936", "latin-1"):
+        try:
+            return raw.decode(encoding, errors="ignore")
+        except Exception:
+            continue
+    return raw.decode("utf-8", errors="ignore")
+
+
+def _is_sacs_process_running() -> tuple[bool, str]:
+    """判断服务端是否已有 SACS 计算进程在运行。
+
+    按当前需求：不做平台锁/数据库锁，只在启动计算前检查服务端 Windows
+    进程列表。只要发现 AnalysisEngine 或 SACW* 计算模块正在运行，就拒绝
+    新任务，从而避免多个用户同时占用 SACS。
+
+    注意：这是运行前进程检测，不是严格原子锁；但对普通客户端点击场景
+    已能避免重复启动。独立计算目录仍保留，用于避免旧结果文件占用。
+    """
+    if os.name != "nt":
+        return False, ""
+
+    try:
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        proc = subprocess.run(
+            ["tasklist", "/FO", "CSV", "/NH"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=creationflags,
+            timeout=10,
+        )
+    except Exception as exc:
+        print("[FeasibilityRuntime] tasklist check failed:", exc, flush=True)
+        return False, ""
+
+    output = _decode_command_output(proc.stdout)
+    if not output.strip():
+        return False, ""
+
+    running: list[str] = []
+    try:
+        for row in csv.reader(output.splitlines()):
+            if not row:
+                continue
+            name = str(row[0] or "").strip().lower()
+            if name in SACS_BUSY_PROCESS_NAMES:
+                running.append(name)
+    except Exception:
+        # CSV 解析异常时使用保守的文本包含判断。
+        low = output.lower()
+        for name in SACS_BUSY_PROCESS_NAMES:
+            if name in low:
+                running.append(name)
+
+    if running:
+        names = ", ".join(sorted(set(running)))
+        return True, names
+    return False, ""
+
+
+def _assert_sacs_not_running_before_analysis() -> None:
+    busy, process_names = _is_sacs_process_running()
+    if not busy:
+        return
+    raise RuntimeError(
+        "当前服务端已有 SACS 计算任务正在运行，请等待当前计算完成后再试。\n"
+        f"检测到运行中的 SACS 进程：{process_names}"
+    )
+
+def _latest_state_result_file(code: str) -> tuple[str, str, dict[str, Any]]:
+    """返回最新计算状态中的结果文件、工作目录和状态。
+
+    优先读取平台运行根目录下的 feasibility_analysis_state.json。
+    这是导出文件/查看结果的唯一主依据，避免多个独立计算目录并存时混乱。
+    如果旧版本没有写根目录 state，则兜底扫描 analysis_runs 下最新的
+    feasibility_analysis_state.json。
+    """
+    state = _load_latest_analysis_state(code)
+    work_dir = _norm(state.get("work_dir") or get_job_runtime_dir(code))
+    result_file = _norm(state.get("result_file"))
+
+    if result_file and os.path.isfile(result_file):
+        return result_file, work_dir, state
+
+    if work_dir:
+        found = find_result_file(work_dir)
+        if found and os.path.isfile(found):
+            return _norm(found), work_dir, state
+
+    base_dir = _norm(get_job_runtime_dir(code))
+    runs_root = os.path.join(base_dir, "analysis_runs")
+    state_candidates: list[tuple[float, str]] = []
+    if os.path.isdir(runs_root):
+        for root, _dirs, files in os.walk(runs_root):
+            if "feasibility_analysis_state.json" not in files:
+                continue
+            p = os.path.join(root, "feasibility_analysis_state.json")
+            try:
+                state_candidates.append((os.path.getmtime(p), p))
+            except Exception:
+                pass
+
+    for _mtime, state_file in sorted(state_candidates, reverse=True):
+        try:
+            payload = json.loads(Path(state_file).read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        candidate_work_dir = _norm(payload.get("work_dir") or os.path.dirname(state_file))
+        candidate_result = _norm(payload.get("result_file"))
+        if candidate_result and os.path.isfile(candidate_result):
+            return candidate_result, candidate_work_dir, payload
+        found = find_result_file(candidate_work_dir)
+        if found and os.path.isfile(found):
+            return _norm(found), candidate_work_dir, payload
+
+    found = find_result_file(base_dir)
+    return _norm(found), base_dir, state
 
 
 def _analysis_state_path(facility_code: str) -> Path:
@@ -522,6 +694,10 @@ def run_feasibility_analysis(
     if not code:
         raise ValueError("facility_code 不能为空")
 
+    # 全局单任务：只要服务端已有 SACS 相关 exe 正在运行，就拒绝本次计算。
+    # 不使用平台锁/数据库锁，按用户要求直接基于 SACS 进程占用状态判断。
+    _assert_sacs_not_running_before_analysis()
+
     metadata = metadata or {}
     requested_mode = str(analysis_mode or "auto").strip().lower()
 
@@ -539,29 +715,60 @@ def run_feasibility_analysis(
         job_name=code,
     )
 
-    work_dir = str(runtime_bundle.get("model_dir") or "").strip() or get_job_runtime_dir(code)
-    work_dir = _norm(work_dir)
+    base_work_dir = str(runtime_bundle.get("model_dir") or "").strip() or get_job_runtime_dir(code)
+    base_work_dir = _norm(base_work_dir)
 
-    if not work_dir or not os.path.isdir(work_dir):
-        raise FileNotFoundError(f"未找到模型运行目录：{work_dir}")
+    if not base_work_dir or not os.path.isdir(base_work_dir):
+        raise FileNotFoundError(f"未找到模型运行目录：{base_work_dir}")
 
+    # 先把服务端固定 RUNX、PSI、JCN 复制/规范化到平台运行根目录。
     support_files = stage_support_files_for_job(code, require_all=True)
 
-    runx_path = support_files.get("runx", "") or ""
-    if runx_path:
-        runx_path = _rewrite_runx_for_analysis(
-            runx_path,
-            analysis_mode=actual_mode,
-            runtime_bundle=runtime_bundle,
-        )
+    # 每次计算使用独立目录，避免上一轮 psilst.factor / psilst.M1 被占用时阻塞新计算。
+    work_dir = _make_analysis_work_dir(base_work_dir, code)
+
+    model_src = _norm(get_job_new_model_file(code))
+    sea_src = _norm(get_job_new_sea_file(code))
+    if not os.path.isfile(model_src):
+        model_src = _norm(runtime_bundle.get("new_model_file") or runtime_bundle.get("model_file"))
+    if not os.path.isfile(sea_src):
+        sea_src = _norm(runtime_bundle.get("new_sea_file") or runtime_bundle.get("sea_file"))
+
+    _copy_input_to_analysis_dir(model_src, work_dir, "sacinp.M1", required=True)
+    _copy_input_to_analysis_dir(sea_src, work_dir, "seainp.M1", required=True)
+    psiinp_path = _copy_input_to_analysis_dir(
+        support_files.get("psiinp", "") or os.path.join(base_work_dir, "psiinp.M1"),
+        work_dir,
+        "psiinp.M1",
+        required=True,
+    )
+    jcninp_path = _copy_input_to_analysis_dir(
+        support_files.get("jcninp", "") or os.path.join(base_work_dir, "Jcninp.M1"),
+        work_dir,
+        "Jcninp.M1",
+        required=True,
+    )
+    runx_path = _copy_input_to_analysis_dir(
+        support_files.get("runx", "") or os.path.join(base_work_dir, "psiM1.runx"),
+        work_dir,
+        "psiM1.runx",
+        required=True,
+    )
+
+    runx_path = _rewrite_runx_for_analysis(
+        runx_path,
+        analysis_mode=actual_mode,
+        runtime_bundle=runtime_bundle,
+    )
 
     bat_path = ensure_analysis_bat(
         work_dir=work_dir,
         runx_path=runx_path,
-        psiinp_path=support_files.get("psiinp", "") or os.path.join(work_dir, "psiinp.M1"),
-        jcninp_path=support_files.get("jcninp", "") or os.path.join(work_dir, "Jcninp.M1"),
+        psiinp_path=psiinp_path,
+        jcninp_path=jcninp_path,
     )
 
+    # 独立目录理论上没有旧结果；保留清理只是兜底，不会再受平台根目录旧 psilst.factor 影响。
     _cleanup_previous_analysis_outputs(work_dir)
     start_time = time.time()
 
@@ -618,8 +825,13 @@ def run_feasibility_analysis(
         "run_id": run_id,
         "analysis_mode": actual_mode,
         "work_dir": work_dir,
+        "base_work_dir": base_work_dir,
         "bat_path": bat_path,
         "runx_path": runx_path,
+        "model_file": os.path.join(work_dir, "sacinp.M1"),
+        "sea_file": os.path.join(work_dir, "seainp.M1"),
+        "psiinp_file": os.path.join(work_dir, "psiinp.M1"),
+        "jcninp_file": os.path.join(work_dir, "Jcninp.M1"),
         "result_file": result_file,
         "archived_path": archived_path,
         "runtime_bundle": runtime_bundle,
@@ -627,11 +839,15 @@ def run_feasibility_analysis(
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
 
-    state_path = Path(work_dir) / "feasibility_analysis_state.json"
-    try:
-        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    # 同时写入：
+    # 1）本次独立计算目录，便于追溯；
+    # 2）平台运行根目录，作为“查看结果/导出文件”的唯一最新入口，避免多个 run 目录混乱。
+    for state_path in (Path(work_dir) / "feasibility_analysis_state.json", _analysis_state_path(code)):
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            print("[FeasibilityRuntime] write analysis state failed:", state_path, exc, flush=True)
 
     return state
 
@@ -642,8 +858,7 @@ def load_feasibility_result_bundle(
     run_id: int | None = None,
 ) -> dict[str, Any]:
     code = str(facility_code or "").strip()
-    work_dir = _norm(get_job_runtime_dir(code))
-    result_file = find_result_file(work_dir)
+    result_file, work_dir, _state = _latest_state_result_file(code)
 
     if not result_file or not os.path.isfile(result_file):
         raise FileNotFoundError(f"未找到可行性评估结果文件：{work_dir}")
@@ -705,8 +920,7 @@ def generate_feasibility_report(
 
     factor_path = _norm(payload.get("factor_path"))
     if not factor_path or not os.path.exists(factor_path):
-        runtime_dir = _norm(get_job_runtime_dir(code))
-        factor_path = find_result_file(runtime_dir)
+        factor_path, _work_dir, _state = _latest_state_result_file(code)
 
     if not factor_path or not os.path.exists(factor_path):
         raise FileNotFoundError(f"未找到可行性评估结果文件，无法生成报告：{code}")
@@ -759,6 +973,10 @@ def _collect_export_files(
 
     if include_model_files:
         candidates.extend([
+            _norm(state.get("model_file")),
+            _norm(state.get("sea_file")),
+            _norm(state.get("psiinp_file")),
+            _norm(state.get("jcninp_file")),
             _norm(get_job_new_model_file(code)),
             _norm(get_job_new_sea_file(code)),
             os.path.join(work_dir, "sacinp.M1"),
