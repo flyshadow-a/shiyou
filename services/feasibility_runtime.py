@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from shiyou_db.config import get_sacs_analysis_engine_exe
 from shiyou_db.runtime_db import get_mysql_url
 
 from pages.sacs_runtime_service import (
@@ -83,6 +84,15 @@ SACS_BUSY_PROCESS_NAMES = {
     "sacwdb.exe",
 }
 
+SACS_COMMAND_LINE_TOKENS = (
+    "analysisengine.exe",
+    "autorun.bat",
+    "analysis.bat",
+    "psim1.runx",
+    "sacinp.m1",
+    "seainp.m1",
+)
+
 
 def _decode_command_output(raw: bytes) -> str:
     for encoding in ("utf-8", "gbk", "mbcs", "cp936", "latin-1"):
@@ -93,7 +103,107 @@ def _decode_command_output(raw: bytes) -> str:
     return raw.decode("utf-8", errors="ignore")
 
 
-def _is_sacs_process_running() -> tuple[bool, str]:
+def _configured_sacs_process_names() -> set[str]:
+    names = set(SACS_BUSY_PROCESS_NAMES)
+    try:
+        exe_path = str(get_sacs_analysis_engine_exe() or "").strip()
+    except Exception:
+        exe_path = ""
+    exe_name = os.path.basename(exe_path).strip().lower()
+    if exe_name:
+        names.add(exe_name)
+    return names
+
+
+def _is_sacs_process_name(name: str) -> bool:
+    low = str(name or "").strip().lower()
+    if not low:
+        return False
+    if low in _configured_sacs_process_names():
+        return True
+    if not low.endswith(".exe"):
+        return False
+    return low.startswith("sacw") or low.startswith("sacs") or "sacs" in low
+
+
+def _is_sacs_command_line(name: str, command_line: str, work_dir: str | None = None) -> bool:
+    proc_name = str(name or "").strip().lower()
+    cmd = str(command_line or "").strip().lower()
+    if not cmd:
+        return False
+    if proc_name not in {"cmd.exe", "powershell.exe", "pwsh.exe"}:
+        return False
+
+    normalized_cmd = cmd.replace("\\", "/")
+    if work_dir:
+        normalized_work_dir = _norm(work_dir).lower().replace("\\", "/")
+        if normalized_work_dir and normalized_work_dir not in normalized_cmd:
+            return False
+
+    return any(token in normalized_cmd for token in SACS_COMMAND_LINE_TOKENS)
+
+
+def _run_process_listing_command(command: list[str]) -> str:
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    proc = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=creationflags,
+        timeout=10,
+    )
+    return _decode_command_output(proc.stdout)
+
+
+def _read_tasklist_process_names() -> list[str]:
+    try:
+        output = _run_process_listing_command(["tasklist", "/FO", "CSV", "/NH"])
+    except Exception as exc:
+        print("[FeasibilityRuntime] tasklist check failed:", exc, flush=True)
+        return []
+
+    names: list[str] = []
+    if not output.strip():
+        return names
+
+    try:
+        for row in csv.reader(output.splitlines()):
+            if row:
+                names.append(str(row[0] or "").strip())
+    except Exception:
+        low = output.lower()
+        for candidate in _configured_sacs_process_names():
+            if candidate in low:
+                names.append(candidate)
+    return names
+
+
+def _read_windows_process_details() -> list[tuple[str, str]]:
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_Process | Select-Object Name,CommandLine | ConvertTo-Csv -NoTypeInformation",
+    ]
+    try:
+        output = _run_process_listing_command(command)
+    except Exception as exc:
+        print("[FeasibilityRuntime] process command line check failed:", exc, flush=True)
+        return []
+
+    details: list[tuple[str, str]] = []
+    if not output.strip():
+        return details
+
+    try:
+        for row in csv.DictReader(output.splitlines()):
+            details.append((str(row.get("Name") or "").strip(), str(row.get("CommandLine") or "").strip()))
+    except Exception:
+        return []
+    return details
+
+
+def _is_sacs_process_running(work_dir: str | None = None) -> tuple[bool, str]:
     """判断服务端是否已有 SACS 计算进程在运行。
 
     按当前需求：不做平台锁/数据库锁，只在启动计算前检查服务端 Windows
@@ -101,42 +211,21 @@ def _is_sacs_process_running() -> tuple[bool, str]:
     新任务，从而避免多个用户同时占用 SACS。
 
     注意：这是运行前进程检测，不是严格原子锁；但对普通客户端点击场景
-    已能避免重复启动。独立计算目录仍保留，用于避免旧结果文件占用。
+    已能避免重复启动。实际清理阶段仍会保护旧结果文件不被追加。
     """
     if os.name != "nt":
         return False, ""
 
-    try:
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        proc = subprocess.run(
-            ["tasklist", "/FO", "CSV", "/NH"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=creationflags,
-            timeout=10,
-        )
-    except Exception as exc:
-        print("[FeasibilityRuntime] tasklist check failed:", exc, flush=True)
-        return False, ""
-
-    output = _decode_command_output(proc.stdout)
-    if not output.strip():
-        return False, ""
-
     running: list[str] = []
-    try:
-        for row in csv.reader(output.splitlines()):
-            if not row:
-                continue
-            name = str(row[0] or "").strip().lower()
-            if name in SACS_BUSY_PROCESS_NAMES:
-                running.append(name)
-    except Exception:
-        # CSV 解析异常时使用保守的文本包含判断。
-        low = output.lower()
-        for name in SACS_BUSY_PROCESS_NAMES:
-            if name in low:
-                running.append(name)
+
+    for name in _read_tasklist_process_names():
+        if _is_sacs_process_name(name):
+            running.append(str(name).strip().lower())
+
+    if work_dir:
+        for name, command_line in _read_windows_process_details():
+            if _is_sacs_command_line(name, command_line, work_dir=work_dir):
+                running.append(f"{str(name).strip().lower()} ({command_line})")
 
     if running:
         names = ", ".join(sorted(set(running)))
@@ -144,14 +233,18 @@ def _is_sacs_process_running() -> tuple[bool, str]:
     return False, ""
 
 
-def _assert_sacs_not_running_before_analysis() -> None:
-    busy, process_names = _is_sacs_process_running()
+def assert_sacs_not_running_before_analysis(work_dir: str | None = None) -> None:
+    busy, process_names = _is_sacs_process_running(work_dir=work_dir)
     if not busy:
         return
     raise RuntimeError(
         "当前服务端已有 SACS 计算任务正在运行，请等待当前计算完成后再试。\n"
         f"检测到运行中的 SACS 进程：{process_names}"
     )
+
+
+def _assert_sacs_not_running_before_analysis(work_dir: str | None = None) -> None:
+    assert_sacs_not_running_before_analysis(work_dir=work_dir)
 
 def _latest_state_result_file(code: str) -> tuple[str, str, dict[str, Any]]:
     """返回最新计算状态中的结果文件、工作目录和状态。
@@ -725,6 +818,9 @@ def run_feasibility_analysis(
     # 当前需求：直接在平台运行目录内计算，不再创建 analysis_runs/run_xxx。
     # 并发控制依赖 SACS 进程检测；计算前会清理上一轮输出。
     work_dir = _make_analysis_work_dir(base_work_dir, code)
+
+    # 确认计算目录后再查一次，可识别执行当前 RUNX/BAT 的 cmd/powershell 进程。
+    _assert_sacs_not_running_before_analysis(work_dir=work_dir)
 
     model_src = _norm(get_job_new_model_file(code))
     sea_src = _norm(get_job_new_sea_file(code))

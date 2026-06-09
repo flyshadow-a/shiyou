@@ -13,6 +13,7 @@ from server.schemas import (
 )
 from server.task_manager import get_active_task, get_task, submit_task, submit_task_if_no_active
 from services.feasibility_runtime import (
+    assert_sacs_not_running_before_analysis,
     export_feasibility_generated_files,
     generate_feasibility_report,
     load_feasibility_result_bundle,
@@ -48,6 +49,11 @@ def run_feasibility(req: FeasibilityRunRequest):
     - 如果已有 feasibility_run 任务处于 pending/running，直接返回 409；
     - 如果没有正在运行的计算任务，才提交新的后台计算。
     """
+    try:
+        assert_sacs_not_running_before_analysis()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     task_id, active_task = submit_task_if_no_active(
         name="feasibility_run",
         payload=req.model_dump(),
