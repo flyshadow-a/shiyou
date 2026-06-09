@@ -17,7 +17,12 @@ from src.parsers.load_case_status_parser import parse_load_case_status
 from src.parsers.pile_axial_capacity_summary_parser import parse_pile_axial_capacity_summary
 from src.parsers.pile_head_capacity_summary_builder import build_pile_head_capacity_summary
 from src.parsers.pile_head_force_parser import parse_pile_head_forces
-from src.parsers.psilst_reader import read_ui_analysis_lines
+from src.parsers.basic_case_desc_parser import parse_basic_case_desc
+from src.parsers.basic_case_loads_parser import parse_basic_case_loads
+from src.parsers.joint_can_summary_builder import build_joint_can_summary
+from src.parsers.joint_can_summary_parser import parse_joint_can_summary
+from src.parsers.member_group_summary_parser import parse_member_group_summary
+from src.parsers.psilst_reader import read_lines, read_ui_analysis_lines
 
 
 FACTOR_PATH_TEXT = os.environ.get("FEASIBILITY_FACTOR_PATH", "").strip()
@@ -122,6 +127,27 @@ class FeasibilityFactorParserChainTests(unittest.TestCase):
         self.assertEqual(1, len(result["rows"]))
         self.assertEqual("001P", result["rows"][0]["pile_head_id"])
 
+    def test_joint_summary_builder_uses_original_strength_uc_like_readpsilist(self) -> None:
+        lines = [
+            "* * J O I N T   C A N   S U M M A R Y * *",
+            "(UNITY CHECK ORDER)",
+            "      **************** ORIGINAL ******************   ************ LOAD DESIGN ***********   *** STRENGTH ANALYSIS ****",
+            "                                      LOAD    STRN                                  LOAD    STRN    BRACE   LOAD",
+            "JOINT DIAMETER THICKNESS  YLD STRS    UC      UC     DIAMETER THICKNESS  YLD STRS    UC      UC     JOINT   CASE",
+            " 636W  61.000    1.600    355.000   0.329   2.600     61.000    1.600    355.000   0.329     0.100   W643   EL1A",
+            " 175L 320.001    8.500    355.000   1.431   0.844    320.001    8.500    355.000   1.431     5.000   205L   EL14",
+            "P I L E  G R O U P  S U M M A R Y",
+        ]
+
+        parsed = parse_joint_can_summary(lines)
+        built = build_joint_can_summary(parsed)
+
+        self.assertEqual(2.6, parsed["rows"][0]["orig_strn_uc"])
+        self.assertEqual(0.1, parsed["rows"][0]["design_strn_uc"])
+        self.assertEqual("636W", built["max_joint"])
+        self.assertEqual("EL1A", built["max_case"])
+        self.assertEqual(2.6, built["max_uc"])
+
     def test_read_ui_analysis_lines_extracts_relevant_blocks_from_file(self) -> None:
         import tempfile
 
@@ -132,6 +158,9 @@ class FeasibilityFactorParserChainTests(unittest.TestCase):
                     [
                         "unrelated header",
                         *MINIMAL_FACTOR_LINES,
+                        "* *  P I L E  G R O U P  S U M M A R Y  * *",
+                        "       0.0    25.937   7.294 0.00478    85014.8   7470.5 -52465.2  215.62  -75.03   21.37 -290.65   P201     EL16      0.872",
+                        "\x0c",
                         "unrelated tail should not be required",
                     ]
                 ),
@@ -144,7 +173,152 @@ class FeasibilityFactorParserChainTests(unittest.TestCase):
         self.assertTrue(any("FINAL PILE HEAD FORCES" in line for line in lines))
         self.assertTrue(any("PILE HEAD COORDINATES" in line for line in lines))
         self.assertTrue(any("S O I L  M A X I M U M" in line for line in lines))
-        self.assertIn("PILE GROUP SUMMARY", lines)
+        self.assertTrue(any("P I L E  G R O U P  S U M M A R Y" in line for line in lines))
+
+    def test_read_ui_analysis_lines_extracts_member_and_joint_summary_blocks(self) -> None:
+        import tempfile
+
+        member_marker = "* * *  M E M B E R  G R O U P  S U M M A R Y  * * *"
+        joint_marker = "* * J O I N T   C A N   S U M M A R Y * *"
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            factor_path = Path(tmp_dir) / "psilst.factor"
+            factor_path.write_bytes(
+                "\n".join(
+                    [
+                        "          **** LOAD CASE STATUS REPORT ****",
+                        "                               * * *  S O I L  M A X I M U M  A X I A L  C A P A C I T Y  S U M M A R Y  * * *",
+                        "001P PA  243.80  9.50 6002.4 133.0  -89154.0  -46458.6  -46458.6 EL16   1.92   96017.2    7875.0    7875.0 LTL3  12.19     0.78 EL16",
+                        "***** SACS LOAD CASE REPORT *****",
+                        "unrelated middle content",
+                        member_marker,
+                        "1A1 601L-611L OP17   0.43   0.9    -54.5   33.1    1.8   .2E+03 .6E+06 .3E+03 .3E+03   HYDRO    0.92   0.92   0.85   0.85",
+                        "\x0c",
+                        member_marker,
+                        "1B1 501L-511L OP16   0.68  11.8   -112.1   -7.1   -2.5    177.5  979.2  235.1  235.1   HYDRO   23.61  23.61   0.85   0.85",
+                        "\x0c",
+                        joint_marker,
+                        " 636W  61.000    1.600    355.000   0.329   2.600     61.000    1.600    355.000   0.329     2.600   W643   EL1A",
+                        "\x0c",
+                        joint_marker,
+                        " 615W  61.000    1.600    355.000   0.453   2.594     61.000    1.600    355.000   0.453     2.594   W613   OL17",
+                        "\x0c",
+                    ]
+                ).encode("latin-1")
+            )
+
+            lines = read_ui_analysis_lines(str(factor_path))
+
+        self.assertTrue(any(member_marker in line for line in lines))
+        self.assertTrue(any("601L-611L" in line for line in lines))
+        self.assertTrue(any("501L-511L" in line for line in lines))
+        self.assertTrue(any(joint_marker in line for line in lines))
+        self.assertTrue(any("636W" in line for line in lines))
+        self.assertTrue(any("615W" in line for line in lines))
+
+    def test_large_report_read_lines_keeps_basic_case_sections(self) -> None:
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            factor_path = Path(tmp_dir) / "psilst.M1"
+            factor_path.write_bytes(
+                "\n".join(
+                    [
+                        "noise before",
+                        "** SEASTATE BASIC LOAD CASE DESCRIPTIONS **",
+                        "CASE LABEL DESCRIPTION",
+                        "1 OP1 OPERATING CASE",
+                        "2 EL1 EXTREME CASE",
+                        "****** SEASTATE BASIC LOAD CASE SUMMARY ******",
+                        "CASE LABEL FX FY FZ MX MY MZ DEAD BUOY",
+                        "1 OP1 1 2 3 4 5 6 7 8",
+                        "2 EL1 9 10 11 12 13 14 15 16",
+                        "***** SEASTATE COMBINED LOAD CASES *****",
+                        "COMBINED BASIC LOAD CASE",
+                        "101 OL1 1 1.0",
+                        "****** SEASTATE COMBINED LOAD CASE SUMMARY ******",
+                        "101 OL1 1 2 3 4 5 6",
+                        *MINIMAL_FACTOR_LINES,
+                        "tail",
+                    ]
+                ).encode("latin-1")
+            )
+
+            with patch("src.parsers.psilst_reader.os.path.getsize", return_value=1024 * 1024 * 1024):
+                lines = read_lines(str(factor_path))
+
+        self.assertEqual(2, len(parse_basic_case_desc(lines)))
+        self.assertEqual(2, len(parse_basic_case_loads(lines)))
+
+    def test_member_and_joint_raw_blocks_include_all_paginated_sections(self) -> None:
+        member_marker = "* * *  M E M B E R  G R O U P  S U M M A R Y  * * *"
+        joint_marker = "* * J O I N T   C A N   S U M M A R Y * *"
+        joint_headers = [
+            "(UNITY CHECK ORDER)",
+            "      **************** ORIGINAL ******************   ************ LOAD DESIGN ***********   *** STRENGTH ANALYSIS ****",
+            "                                      LOAD    STRN                                  LOAD    STRN    BRACE   LOAD",
+            "JOINT DIAMETER THICKNESS  YLD STRS    UC      UC     DIAMETER THICKNESS  YLD STRS    UC      UC     JOINT   CASE",
+        ]
+        lines = [
+            member_marker,
+            "1A1 601L-611L OP17   0.43   0.9    -54.5   33.1    1.8   .2E+03 .6E+06 .3E+03 .3E+03   HYDRO    0.92   0.92   0.85   0.85",
+            member_marker,
+            "1B1 501L-511L OP16   0.68  11.8   -112.1   -7.1   -2.5    177.5  979.2  235.1  235.1   HYDRO   23.61  23.61   0.85   0.85",
+            joint_marker,
+            *joint_headers,
+            " 636W  61.000    1.600    355.000   0.329   2.600     61.000    1.600    355.000   0.329     2.600   W643   EL1A",
+            joint_marker,
+            *joint_headers,
+            " 615W  61.000    1.600    355.000   0.453   2.594     61.000    1.600    355.000   0.453     2.594   W613   OL17",
+            "P I L E  G R O U P  S U M M A R Y",
+        ]
+
+        member = parse_member_group_summary(lines)
+        joint = parse_joint_can_summary(lines)
+
+        self.assertEqual(2, len(member["rows"]))
+        self.assertIn("601L-611L", member["raw_block"])
+        self.assertIn("501L-511L", member["raw_block"])
+        self.assertEqual(2, len(joint["rows"]))
+        self.assertIn("636W", joint["raw_block"])
+        self.assertIn("615W", joint["raw_block"])
+
+    def test_joint_can_parser_ignores_non_unity_check_summary_blocks(self) -> None:
+        lines = [
+            "* * J O I N T   C A N   S U M M A R Y * *",
+            "SOME OTHER REPORT ORDER",
+            " 202X  61.000    1.600    355.000 202.680  14.040     61.000    1.600    355.000   0.329     2.600   W643   EL1A",
+            "P I L E  G R O U P  S U M M A R Y",
+        ]
+
+        joint = parse_joint_can_summary(lines)
+
+        self.assertEqual([], joint["rows"])
+        self.assertEqual("", joint["raw_block"])
+
+    def test_joint_can_parser_keeps_large_uc_values_in_valid_unity_check_block(self) -> None:
+        lines = [
+            "* * J O I N T   C A N   S U M M A R Y * *",
+            "(UNITY CHECK ORDER)",
+            "      **************** ORIGINAL ******************   ************ LOAD DESIGN ***********   *** STRENGTH ANALYSIS ****",
+            "                                      LOAD    STRN                                  LOAD    STRN    BRACE   LOAD",
+            "JOINT DIAMETER THICKNESS  YLD STRS    UC      UC     DIAMETER THICKNESS  YLD STRS    UC      UC     JOINT   CASE",
+            " 999X  61.000    1.600    355.000  202.68  114.04     61.000    1.600    355.000   0.329     0.100   W643   EL1A",
+            " 636W  61.000    1.600    355.000   0.329   2.600     61.000    1.600    355.000   0.329     0.100   W643   EL1A",
+            "P I L E  G R O U P  S U M M A R Y",
+        ]
+
+        parsed = parse_joint_can_summary(lines)
+        built = build_joint_can_summary(parsed)
+
+        self.assertEqual(2, len(parsed["rows"]))
+        self.assertEqual("999X", parsed["rows"][0]["joint"])
+        self.assertEqual(202.68, parsed["rows"][0]["orig_load_uc"])
+        self.assertEqual(114.04, parsed["rows"][0]["orig_strn_uc"])
+        self.assertEqual("999X", built["max_joint"])
+        self.assertEqual("EL1A", built["max_case"])
+        self.assertEqual(114.04, built["max_uc"])
 
 
 @unittest.skipUnless(

@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from typing import TypedDict
 
-from .block_utils import extract_block, find_first_index, find_next_index, join_block
+from .block_utils import extract_block, join_block
 
 
 NUM = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?"
@@ -160,7 +160,6 @@ def _parse_rows(block_lines: list[str]) -> list[MemberGroupSummaryRow]:
 
 
 def parse_member_group_summary(lines: list[str]) -> MemberGroupSummaryResult:
-    start_index = find_first_index(lines, START_MARKER)
     block_lines = extract_block(
         lines=lines,
         start_marker=START_MARKER,
@@ -168,13 +167,7 @@ def parse_member_group_summary(lines: list[str]) -> MemberGroupSummaryResult:
         include_start=True,
     )
 
-    raw_block_lines = block_lines
-    if start_index != -1:
-        raw_end_index = find_next_index(lines, [START_MARKER] + END_MARKERS, start_index + 1)
-        if raw_end_index != -1:
-            raw_block_lines = lines[start_index:raw_end_index]
-
-    raw_block = join_block(raw_block_lines)
+    raw_block = join_block(block_lines)
     code_name = _extract_code_name(block_lines)
     rows = _parse_rows(block_lines)
 

@@ -1340,6 +1340,92 @@ class PlatformStrengthPage(BasePage):
             return
         item.setText(text)
 
+    def _default_marine_layer_items(self) -> List[Dict[str, object]]:
+        return [{
+            "layer_no": 1,
+            "upper_limit_m": None,
+            "lower_limit_m": None,
+            "thickness_mm": None,
+            "density_t_per_m3": None,
+            "sort_order": 1,
+        }]
+
+    def _marine_layer_count_from_items(self, items: List[Dict]) -> int:
+        max_layer_no = 0
+        for index, item in enumerate(items or [], start=1):
+            try:
+                layer_no = int(item.get("layer_no", 0) or 0)
+            except Exception:
+                layer_no = 0
+            max_layer_no = max(max_layer_no, layer_no, index)
+        return max(1, max_layer_no)
+
+    def _marine_layer_count(self) -> int:
+        if not hasattr(self, "tbl_marine"):
+            return len(self._default_marine_layer_items())
+        return max(1, self.tbl_marine.columnCount() - 3)
+
+    def _configure_marine_display_table(self, layer_count: int) -> None:
+        tbl_marine = self.tbl_marine
+        layer_count = max(1, int(layer_count or 1))
+        tbl_marine.clearSpans()
+        tbl_marine.setColumnCount(3 + layer_count)
+
+        tbl_marine.setSpan(0, 0, 1, 3)
+        self._set_center_item(tbl_marine, 0, 0, "层数", editable=False)
+        for i in range(layer_count):
+            self._set_center_item(tbl_marine, 0, 3 + i, str(i + 1), editable=False)
+
+        tbl_marine.setSpan(1, 0, 2, 2)
+        self._set_center_item(tbl_marine, 1, 0, "高度区域", editable=False)
+        self._set_center_item(tbl_marine, 1, 2, "上限(m)", editable=False)
+        self._set_center_item(tbl_marine, 2, 2, "下限(m)", editable=False)
+
+        tbl_marine.setSpan(3, 0, 1, 2)
+        self._set_center_item(tbl_marine, 3, 0, "海生物", editable=False)
+        self._set_center_item(tbl_marine, 3, 2, "厚度(mm)", editable=False)
+
+        tbl_marine.setSpan(4, 0, 1, 3)
+        tbl_marine.setSpan(4, 3, 1, layer_count)
+        self._set_center_item(tbl_marine, 4, 0, "海生物密度（t/m^3）", editable=False)
+
+    def _populate_marine_display_table(self, items: List[Dict]) -> None:
+        source_items = items or self._default_marine_items or self._default_marine_layer_items()
+        layer_count = self._marine_layer_count_from_items(source_items)
+        self._configure_marine_display_table(layer_count)
+        by_layer = {
+            int(item.get("layer_no", 0) or 0): item
+            for item in source_items
+            if int(item.get("layer_no", 0) or 0) > 0
+        }
+        density_text = ""
+        for i in range(layer_count):
+            layer_no = i + 1
+            source = by_layer.get(layer_no, {})
+            col = 3 + i
+            self._set_table_text(self.tbl_marine, 1, col, self._format_optional_number(source.get("upper_limit_m")))
+            self._set_table_text(self.tbl_marine, 2, col, self._format_optional_number(source.get("lower_limit_m")))
+            self._set_table_text(self.tbl_marine, 3, col, self._format_optional_number(source.get("thickness_mm")))
+            if not density_text:
+                density_text = self._format_optional_number(source.get("density_t_per_m3"))
+        self._set_table_text(self.tbl_marine, 4, 3, density_text)
+
+    def _collect_marine_items_from_display_table(self) -> List[Dict[str, object]]:
+        items: List[Dict[str, object]] = []
+        density_text = self._table_text(self.tbl_marine, 4, 3)
+        density_value = self._parse_optional_float(density_text)
+        for i in range(self._marine_layer_count()):
+            col = 3 + i
+            items.append({
+                "layer_no": i + 1,
+                "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 1, col)),
+                "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 2, col)),
+                "thickness_mm": self._parse_optional_float(self._table_text(self.tbl_marine, 3, col)),
+                "density_t_per_m3": density_value,
+                "sort_order": i + 1,
+            })
+        return items
+
     def _capture_default_strength_env_tables(self):
         self._default_splash_items = [{
             "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_splash, 0, 0)),
@@ -1352,17 +1438,7 @@ class PlatformStrengthPage(BasePage):
             "uplift_capacity_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 2)),
             "submerged_weight_t": self._parse_optional_float(self._table_text(self.tbl_pile, 0, 3)),
         }]
-        density_value = self._parse_optional_float(self._table_text(self.tbl_marine, 4, 3))
-        self._default_marine_items = []
-        for i in range(9):
-            col = 3 + i
-            self._default_marine_items.append({
-                "layer_no": i + 1,
-                "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 1, col)),
-                "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 2, col)),
-                "thickness_mm": self._parse_optional_float(self._table_text(self.tbl_marine, 3, col)),
-                "density_t_per_m3": density_value,
-            })
+        self._default_marine_items = self._collect_marine_items_from_display_table()
 
     def _apply_splash_items(self, items: List[Dict]):
         source = items[0] if items else (self._default_splash_items[0] if self._default_splash_items else {})
@@ -1390,23 +1466,7 @@ class PlatformStrengthPage(BasePage):
         return self._default_pile_items[0] if self._default_pile_items else {}
 
     def _apply_marine_items(self, items: List[Dict]):
-        source_items = items if items else self._default_marine_items
-        by_layer = {
-            int(item.get("layer_no", 0) or 0): item
-            for item in source_items
-            if int(item.get("layer_no", 0) or 0) > 0
-        }
-        density_text = ""
-        for i in range(9):
-            layer_no = i + 1
-            source = by_layer.get(layer_no, {})
-            col = 3 + i
-            self._set_table_text(self.tbl_marine, 1, col, self._format_optional_number(source.get("upper_limit_m")))
-            self._set_table_text(self.tbl_marine, 2, col, self._format_optional_number(source.get("lower_limit_m")))
-            self._set_table_text(self.tbl_marine, 3, col, self._format_optional_number(source.get("thickness_mm")))
-            if not density_text:
-                density_text = self._format_optional_number(source.get("density_t_per_m3"))
-        self._set_table_text(self.tbl_marine, 4, 3, density_text)
+        self._populate_marine_display_table(items)
 
     def _schedule_initial_page_load(self) -> None:
         QTimer.singleShot(0, self._start_async_strength_env_load)
@@ -1710,19 +1770,7 @@ class PlatformStrengthPage(BasePage):
             "sort_order": 1,
         }]
 
-        marine_items = []
-        density_text = self._table_text(self.tbl_marine, 4, 3)
-        density_value = self._parse_optional_float(density_text)
-        for i in range(9):
-            col = 3 + i
-            marine_items.append({
-                "layer_no": i + 1,
-                "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 1, col)),
-                "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 2, col)),
-                "thickness_mm": self._parse_optional_float(self._table_text(self.tbl_marine, 3, col)),
-                "density_t_per_m3": density_value,
-                "sort_order": i + 1,
-            })
+        marine_items = self._collect_marine_items_from_display_table()
 
         replace_platform_strength_splash_items(profile_id, facility_code, splash_items)
         replace_platform_strength_marine_items(profile_id, facility_code, marine_items)
@@ -2374,20 +2422,27 @@ class PlatformStrengthPage(BasePage):
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.addStretch(1)
+        btn_add_layer = QPushButton("增加层")
+        btn_del_layer = QPushButton("删除选中层")
         btn_read = QPushButton("读取海况文件")
-        self._style_dialog_tool_button(btn_read)
+        for btn in (btn_add_layer, btn_del_layer, btn_read):
+            self._style_dialog_tool_button(btn)
+        top.addWidget(btn_add_layer, 0)
+        top.addWidget(btn_del_layer, 0)
         top.addWidget(btn_read, 0)
         card_layout.addLayout(top)
 
-        edit_table = QTableWidget(4, 10, dialog)
-        edit_table.setHorizontalHeaderLabels(["项目"] + [str(i) for i in range(1, 10)])
+        layer_count = self._marine_layer_count()
+        edit_table = QTableWidget(4, layer_count + 1, dialog)
+        edit_table.setHorizontalHeaderLabels(["项目"] + [str(i) for i in range(1, layer_count + 1)])
         self._init_table_common(edit_table, show_vertical_header=False)
         self._style_dialog_table(edit_table)
+        self._install_dialog_table_clipboard(edit_table)
         labels = ["上限(m)", "下限(m)", "厚度(mm)", "密度(t/m^3)"]
         density = self._table_text(self.tbl_marine, 4, 3)
         for r, label in enumerate(labels):
             self._set_center_item(edit_table, r, 0, label, editable=False)
-        for i in range(9):
+        for i in range(layer_count):
             source_col = 3 + i
             target_col = 1 + i
             self._set_center_item(edit_table, 0, target_col, self._table_text(self.tbl_marine, 1, source_col))
@@ -2419,14 +2474,55 @@ class PlatformStrengthPage(BasePage):
         bottom.addWidget(btn_cancel)
         root.addLayout(bottom)
 
+        def refresh_layer_headers() -> None:
+            edit_table.setHorizontalHeaderLabels(
+                ["项目"] + [str(i) for i in range(1, edit_table.columnCount())]
+            )
+            edit_table.setColumnWidth(0, 110)
+
+        def ensure_min_layer_column() -> None:
+            if edit_table.columnCount() > 1:
+                return
+            edit_table.setColumnCount(2)
+            for row in range(edit_table.rowCount()):
+                self._set_center_item(edit_table, row, 1, "")
+            refresh_layer_headers()
+
+        def add_layer_column() -> None:
+            col = edit_table.columnCount()
+            edit_table.insertColumn(col)
+            for row in range(edit_table.rowCount()):
+                self._set_center_item(edit_table, row, col, "")
+            refresh_layer_headers()
+
+        def delete_selected_layer_columns() -> None:
+            target_columns = sorted(
+                {index.column() for index in edit_table.selectedIndexes() if index.column() > 0},
+                reverse=True,
+            )
+            if not target_columns:
+                QMessageBox.information(dialog, "请选择层", "请先选中要删除的海生物层。")
+                return
+            for col in target_columns:
+                if col < edit_table.columnCount():
+                    edit_table.removeColumn(col)
+            ensure_min_layer_column()
+            refresh_layer_headers()
+            edit_table.clearSelection()
+
         def apply_items_to_edit_table(items: List[Dict[str, object]]) -> None:
+            layer_count = self._marine_layer_count_from_items(items)
+            edit_table.setColumnCount(layer_count + 1)
+            refresh_layer_headers()
+            for r, label in enumerate(labels):
+                self._set_center_item(edit_table, r, 0, label, editable=False)
             by_layer = {
                 int(item.get("layer_no", 0) or 0): item
                 for item in items
                 if int(item.get("layer_no", 0) or 0) > 0
             }
             first_density = ""
-            for i in range(9):
+            for i in range(layer_count):
                 item = by_layer.get(i + 1, {})
                 density_text = self._format_optional_number(item.get("density_t_per_m3"))
                 if not first_density and density_text:
@@ -2436,7 +2532,7 @@ class PlatformStrengthPage(BasePage):
                 self._set_table_text(edit_table, 2, i + 1, self._format_optional_number(item.get("thickness_mm")))
                 self._set_table_text(edit_table, 3, i + 1, density_text)
             if first_density:
-                for i in range(9):
+                for i in range(layer_count):
                     if not self._table_text(edit_table, 3, i + 1):
                         self._set_table_text(edit_table, 3, i + 1, first_density)
 
@@ -2459,7 +2555,7 @@ class PlatformStrengthPage(BasePage):
             try:
                 items = []
                 first_density = None
-                for i in range(9):
+                for i in range(max(0, edit_table.columnCount() - 1)):
                     col = 1 + i
                     density_value = self._parse_optional_float(self._table_text(edit_table, 3, col))
                     if first_density is None and density_value is not None:
@@ -2485,6 +2581,8 @@ class PlatformStrengthPage(BasePage):
             dialog.accept()
 
         btn_read.clicked.connect(read_from_seainp)
+        btn_add_layer.clicked.connect(add_layer_column)
+        btn_del_layer.clicked.connect(delete_selected_layer_columns)
         btn_save.clicked.connect(save_dialog)
         btn_cancel.clicked.connect(dialog.reject)
         dialog.exec_()
@@ -2504,19 +2602,7 @@ class PlatformStrengthPage(BasePage):
 
     def _save_marine_table_to_db(self) -> None:
         profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
-        density_text = self._table_text(self.tbl_marine, 4, 3)
-        density_value = self._parse_optional_float(density_text)
-        items = []
-        for i in range(9):
-            col = 3 + i
-            items.append({
-                "layer_no": i + 1,
-                "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 1, col)),
-                "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 2, col)),
-                "thickness_mm": self._parse_optional_float(self._table_text(self.tbl_marine, 3, col)),
-                "density_t_per_m3": density_value,
-                "sort_order": i + 1,
-            })
+        items = self._collect_marine_items_from_display_table()
         replace_platform_strength_marine_items(profile_id, facility_code, items)
 
     def _on_update_horizontal_levels_to_db(self) -> None:
@@ -3201,20 +3287,7 @@ class PlatformStrengthPage(BasePage):
         }]
 
     def _collect_quick_assessment_marine_items(self) -> List[Dict[str, object]]:
-        items: List[Dict[str, object]] = []
-        density_text = self._table_text(self.tbl_marine, 4, 3)
-        density_value = self._parse_optional_float(density_text)
-        for i in range(9):
-            col = 3 + i
-            items.append({
-                "layer_no": i + 1,
-                "upper_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 1, col)),
-                "lower_limit_m": self._parse_optional_float(self._table_text(self.tbl_marine, 2, col)),
-                "thickness_mm": self._parse_optional_float(self._table_text(self.tbl_marine, 3, col)),
-                "density_t_per_m3": density_value,
-                "sort_order": i + 1,
-            })
-        return items
+        return self._collect_marine_items_from_display_table()
 
     def _build_quick_assessment_payload(self, facility_code: str, model_path: str) -> dict[str, Any]:
         return {
@@ -4292,7 +4365,8 @@ class PlatformStrengthPage(BasePage):
         marine_layout.setContentsMargins(8, 8, 8, 8)
         marine_layout.addWidget(self._make_marine_button_row(), 0)
 
-        tbl_marine = QTableWidget(5, 12, marine_box)
+        default_marine_items = self._default_marine_layer_items()
+        tbl_marine = QTableWidget(5, 3 + len(default_marine_items), marine_box)
         self.tbl_marine = tbl_marine
         self._init_table_common(tbl_marine, show_vertical_header=False)
         tbl_marine.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -4300,34 +4374,8 @@ class PlatformStrengthPage(BasePage):
         tbl_marine.verticalHeader().setVisible(False)
         tbl_marine.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        tbl_marine.setSpan(0, 0, 1, 3)
-        self._set_center_item(tbl_marine, 0, 0, "层数", editable=False)
-        for i in range(9):
-            self._set_center_item(tbl_marine, 0, 3 + i, str(i + 1))
-
-        tbl_marine.setSpan(1, 0, 2, 2)
-        self._set_center_item(tbl_marine, 1, 0, "高度区域", editable=False)
-        self._set_center_item(tbl_marine, 1, 2, "上限(m)", editable=False)
-        self._set_center_item(tbl_marine, 2, 2, "下限(m)", editable=False)
-
-        upper = ["0", "-15", "-30", "-50", "-60", "-70", "-80", "-95", "-110"]
-        lower = ["-15", "-30", "-50", "-60", "-70", "-80", "-95", "-110", "-122"]
-        for i in range(9):
-            self._set_center_item(tbl_marine, 1, 3 + i, upper[i])
-            self._set_center_item(tbl_marine, 2, 3 + i, lower[i])
-
-        tbl_marine.setSpan(3, 0, 1, 2)
-        self._set_center_item(tbl_marine, 3, 0, "海生物", editable=False)
-        self._set_center_item(tbl_marine, 3, 2, "厚度(mm)", editable=False)
-        thickness = ["10", "10", "10", "4.5", "4.5", "4.5", "4", "4", "4"]
-        for i in range(9):
-            self._set_center_item(tbl_marine, 3, 3 + i, thickness[i])
-        self._set_center_item(tbl_marine, 3, 11, "1.4")
-
-        tbl_marine.setSpan(4, 0, 1, 3)
-        tbl_marine.setSpan(4, 3, 1, 9)
-        self._set_center_item(tbl_marine, 4, 0, "海生物密度（t/m^3）", editable=False)
-        self._set_center_item(tbl_marine, 4, 3, "1.4")
+        self._default_marine_items = default_marine_items
+        self._populate_marine_display_table(self._default_marine_items)
 
         tbl_marine.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         tbl_marine.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)

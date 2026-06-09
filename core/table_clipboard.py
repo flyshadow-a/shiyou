@@ -113,12 +113,16 @@ class TableClipboardController(QObject):
 
     def _paste_start_cell(self) -> tuple[int, int]:
         indexes = self._table.selectedIndexes()
+        current = (max(0, self._table.currentRow()), max(0, self._table.currentColumn()))
         if indexes:
+            selected = {(index.row(), index.column()) for index in indexes}
+            if len(selected) <= 1 or current not in selected:
+                return current
             return (
                 min(index.row() for index in indexes),
                 min(index.column() for index in indexes),
             )
-        return max(0, self._table.currentRow()), max(0, self._table.currentColumn())
+        return current
 
     def _cell_text(self, row: int, col: int) -> str:
         widget = self._table.cellWidget(row, col)

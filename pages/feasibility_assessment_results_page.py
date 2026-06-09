@@ -127,6 +127,15 @@ def _is_existing_file_for_results(path: object) -> bool:
     return bool(text and os.path.exists(text) and os.path.isfile(text))
 
 
+def _is_psilst_result_name_for_results(file_name: str) -> bool:
+    return os.path.basename(str(file_name or "")).lower().startswith("psilst")
+
+
+def _norm_optional_path_for_results(path: object) -> str:
+    text = str(path or "").strip()
+    return os.path.normpath(text) if text else ""
+
+
 def _pick_file_by_names_for_results(
     paths: list[str],
     exact_names: set[str],
@@ -145,18 +154,100 @@ def _pick_file_by_names_for_results(
     return ""
 
 
+def _find_result_file_in_dir_for_results(work_dir: str) -> str:
+    work_dir = os.path.normpath(str(work_dir or "").strip())
+    if not work_dir or not os.path.isdir(work_dir):
+        return ""
+
+    preferred = (
+        "psilst.M1",
+        "psilst.m1",
+        "psilst.factor",
+        "psilst.lst",
+        "psilst.lis",
+        "psilst",
+    )
+    for name in preferred:
+        path = os.path.join(work_dir, name)
+        if os.path.isfile(path):
+            return os.path.normpath(path)
+
+    candidates: list[tuple[float, str]] = []
+    for file_name in os.listdir(work_dir):
+        low = file_name.lower()
+        if _is_psilst_result_name_for_results(low):
+            path = os.path.join(work_dir, file_name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                mtime = 0.0
+            candidates.append((mtime, os.path.normpath(path)))
+
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def _load_result_state_for_results(path: str) -> dict[str, Any]:
+    path = _norm_optional_path_for_results(path)
+    if not path or not os.path.isfile(path):
+        return {}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _pick_result_from_state_for_results(state: dict[str, Any]) -> str:
+    if not isinstance(state, dict):
+        return ""
+
+    result_file = _norm_optional_path_for_results(state.get("result_file"))
+    if result_file and os.path.isfile(result_file) and _is_psilst_result_name_for_results(result_file):
+        return result_file
+
+    work_dir = _norm_optional_path_for_results(state.get("work_dir"))
+    return _find_result_file_in_dir_for_results(work_dir)
+
+
+def _find_latest_state_result_for_results(runtime_dir: str) -> str:
+    runtime_dir = os.path.normpath(str(runtime_dir or "").strip())
+    if not runtime_dir:
+        return ""
+
+    state_path = os.path.join(runtime_dir, "feasibility_analysis_state.json")
+    result_file = _pick_result_from_state_for_results(_load_result_state_for_results(state_path))
+    if result_file:
+        return result_file
+
+    runs_root = os.path.join(runtime_dir, "analysis_runs")
+    state_candidates: list[tuple[float, str]] = []
+    if os.path.isdir(runs_root):
+        for root, _dirs, files in os.walk(runs_root):
+            if "feasibility_analysis_state.json" not in files:
+                continue
+            path = os.path.join(root, "feasibility_analysis_state.json")
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                mtime = 0.0
+            state_candidates.append((mtime, path))
+
+    for _mtime, path in sorted(state_candidates, reverse=True):
+        result_file = _pick_result_from_state_for_results(_load_result_state_for_results(path))
+        if result_file:
+            return result_file
+
+    return _find_result_file_in_dir_for_results(runtime_dir)
+
+
 def _download_feasibility_outputs_for_results(payload: dict[str, Any]) -> list[str]:
     mode = str(payload.get("analysis_mode") or "auto").strip() or "auto"
     cache_dir = _feasibility_cache_dir(payload.get("cache_root") or "", "feasibility_outputs", mode)
-    if bool(payload.get("reuse_cached_outputs")):
-        cached_paths = [
-            str(path)
-            for path in cache_dir.rglob("*")
-            if path.is_file() and not path.name.lower().endswith(".zip")
-        ]
-        if cached_paths:
-            cached_paths.sort()
-            return cached_paths
 
     return ApiClient().export_feasibility_files_and_extract(
         facility_code=str(payload.get("facility_code") or "").strip(),
@@ -167,50 +258,35 @@ def _download_feasibility_outputs_for_results(payload: dict[str, Any]) -> list[s
 
 def _get_current_job_factor_path_for_results(payload: dict[str, Any]) -> str:
     job_name = str(payload.get("job_name") or "").strip()
-    server_result_file = os.path.normpath(str(payload.get("server_result_file") or "").strip())
+    server_result_file = _norm_optional_path_for_results(payload.get("server_result_file"))
 
     runtime_dir = os.path.normpath(get_job_runtime_dir(job_name))
-    local_factor_path = os.path.join(runtime_dir, "psilst.factor")
-    if os.path.exists(local_factor_path):
-        return local_factor_path
+    local_result_path = _find_latest_state_result_for_results(runtime_dir)
+    if local_result_path:
+        return local_result_path
 
-    if server_result_file and os.path.exists(server_result_file):
+    if (
+        server_result_file
+        and os.path.exists(server_result_file)
+        and _is_psilst_result_name_for_results(server_result_file)
+    ):
         return server_result_file
 
     extracted = _download_feasibility_outputs_for_results(payload)
     factor_path = _pick_file_by_names_for_results(
         extracted,
-        exact_names={"psilst.factor", "psilst.lst", "psilst"},
+        exact_names={"psilst.m1", "psilst.factor", "psilst.lst", "psilst"},
         prefix_names=("psilst",),
     )
-    if factor_path:
+    if factor_path and _is_psilst_result_name_for_results(factor_path):
         return factor_path
 
     raise FileNotFoundError(
         "未找到当前任务生成的结果文件。\n"
-        f"本地目录：{local_factor_path}\n"
+        f"本地目录：{runtime_dir}\n"
         f"服务端结果路径：{server_result_file or '未返回'}\n"
-        "请先完成当前任务的“计算分析”，或检查服务端 /api/feasibility/files/export 是否可用。"
+        "请先完成当前任务的“计算分析”。"
     )
-
-
-def _get_remote_analysis_results_for_results(payload: dict[str, Any]) -> dict[str, Any]:
-    facility_code = str(payload.get("facility_code") or "").strip()
-    if not facility_code:
-        return {}
-    try:
-        run_id = payload.get("run_id")
-        try:
-            run_id = int(run_id) if run_id not in (None, "") else None
-        except Exception:
-            run_id = None
-        data = ApiClient().get_feasibility_result(facility_code, run_id=run_id)
-    except Exception as exc:
-        print("[FeasibilityAssessmentResultsPage] remote analysis result unavailable:", exc)
-        return {}
-    results = data.get("results") if isinstance(data, dict) else None
-    return results if isinstance(results, dict) else {}
-
 
 def _download_latest_original_model_for_results(payload: dict[str, Any]) -> str:
     facility_code = str(payload.get("facility_code") or "").strip()
@@ -382,33 +458,14 @@ class AnalysisResultsWorker(QObject):
                 factor_path = self._factor_path
                 if not factor_path:
                     factor_path = _get_current_job_factor_path_for_results(self._path_payload)
-                return build_analysis_results_for_ui(
+                results = build_analysis_results_for_ui(
                     factor_path,
                     pile_capacity_input_rows=self._pile_capacity_input_rows,
                 )
+                results["_factor_path"] = factor_path
+                return results
 
-            remote_payload = dict(self._path_payload)
-            results: dict[str, Any] = _get_remote_analysis_results_for_results(remote_payload)
-
-            # 注意：
-            # /api/feasibility/result/{facility_code} 只能返回服务端已经解析好的结果。
-            # 但“桩基承载力”表需要客户端当前油气田/平台维护的承载力输入
-            # pile_capacity_input_rows 参与二次计算。GET 接口不能携带这批行数据，
-            # 因此远程结果常常会出现 operation/extreme_table_rows 为空。
-            #
-            # 只要客户端成功读到了桩基承载力输入，就用客户端可访问的 psilst.factor
-            # 重新构建一次结果，保证两个承载力表和汇总行有数据。
-            if results and self._pile_capacity_input_rows:
-                try:
-                    results = build_local_results()
-                except Exception as exc:
-                    print(
-                        "[FeasibilityAssessmentResultsPage] local rebuild with pile capacity rows failed:",
-                        exc,
-                    )
-
-            if not results:
-                results = build_local_results()
+            results = build_local_results()
 
             if self._pile_capacity_input_error:
                 results["pile_capacity_input_error"] = self._pile_capacity_input_error
@@ -682,8 +739,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
         # analysis_mode: original / rebuild / auto。原模型计算时，右侧模型图使用服务端当前 sacinp 下载缓存作为 old/new 双侧显示。
         # server_result_file/server_work_dir: 服务端计算返回的结果文件/工作目录，仅作记录；客户端不会直接访问这些服务端 D 盘路径。
         self.analysis_mode = str(analysis_mode or "").strip()
-        self.server_result_file = os.path.normpath(str(server_result_file or "").strip()) if server_result_file else ""
-        self.server_work_dir = os.path.normpath(str(server_work_dir or "").strip()) if server_work_dir else ""
+        self.server_result_file = _norm_optional_path_for_results(server_result_file)
+        self.server_work_dir = _norm_optional_path_for_results(server_work_dir)
         self._remote_model_cache_dir = Path.cwd() / ".client_cache" / "feasibility" / self.facility_code
         self._remote_model_cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -703,6 +760,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._analysis_worker = None
         self._analysis_results = {}
         self._detail_table_rows = {}
+        self.lbl_result_file_path = None
         self._pile_capacity_input_warning_shown = False
         self._model_load_thread = None
         self._model_load_worker = None
@@ -734,7 +792,13 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self.start_analysis_results_loading()
 
     def _is_page_closing(self) -> bool:
-        return bool(getattr(self, "_is_closing", False))
+        return bool(self._instance_state("_is_closing", False))
+
+    def _instance_state(self, name: str, default: Any = None) -> Any:
+        try:
+            return object.__getattribute__(self, "__dict__").get(name, default)
+        except Exception:
+            return default
 
     def _register_thread_job(self, thread, worker=None) -> None:
         """
@@ -1027,6 +1091,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
     def _show_analysis_status_in_tables(self, message: str) -> None:
         if self._is_page_closing():
             return
+        self._set_result_file_path_label("")
         if hasattr(self, "tbl_summary"):
             for r in range(2, self.tbl_summary.rowCount()):
                 for c in range(1, self.tbl_summary.columnCount()):
@@ -1050,6 +1115,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
         lay = QVBoxLayout(box)
         lay.setContentsMargins(10, 8, 10, 10)
         lay.setSpacing(6)
+
+        self.lbl_result_file_path = QLabel("当前结果文件：-")
+        self.lbl_result_file_path.setStyleSheet("font-size: 9pt; color: #666;")
+        self.lbl_result_file_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.lbl_result_file_path.setToolTip("当前页面实际解析的 psilst 结果文件路径")
+        lay.addWidget(self.lbl_result_file_path, 0)
 
         # 1 行标题 + 1 行表头 + 5 行数据
         rows = 1 + 1 + 7
@@ -1122,6 +1193,18 @@ class FeasibilityAssessmentResultsPage(BasePage):
         lay.addWidget(self.tbl_summary, 0)
 
         return box
+
+    def _set_result_file_path_label(self, factor_path: str) -> None:
+        label = self.__dict__.get("lbl_result_file_path")
+        if label is None:
+            return
+        path_text = os.path.normpath(str(factor_path or "").strip()) if factor_path else ""
+        display_text = path_text if path_text else "-"
+        try:
+            label.setText(f"当前结果文件：{display_text}")
+            label.setToolTip(display_text)
+        except RuntimeError:
+            return
 
     # ---------------- 下方详情区（标签 + 详情表） ----------------
     def _build_detail_section(self) -> QWidget:
@@ -1588,12 +1671,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
         joint_rows = []
         joint_source_rows = sorted(
             results.get("joint_can_summary", {}).get("rows", []),
-            key=lambda row: self._sort_key_float_desc(row, "design_strn_uc"),
+            key=lambda row: self._sort_key_float_desc(row, "orig_strn_uc"),
             reverse=True,
         )
         for index, row in enumerate(joint_source_rows, start=1):
-            load_uc = row.get("design_load_uc")
-            strength_uc = row.get("design_strn_uc")
+            load_uc = row.get("orig_load_uc")
+            strength_uc = row.get("orig_strn_uc")
             pass_value = strength_uc if strength_uc not in (None, "") else load_uc
             joint_rows.append([
                 str(index),
@@ -1764,6 +1847,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
         if self._is_page_closing():
             return
         self._analysis_results = results
+        self._set_result_file_path_label(str(results.get("_factor_path") or ""))
+        print(
+            "[FeasibilityAssessmentResultsPage] parsed factor path:",
+            str(results.get("_factor_path") or ""),
+            flush=True,
+        )
         self._fill_summary_table_from_analysis(results.get("analysis_summary", {}))
         self._fill_detail_tables_from_analysis(results)
 
@@ -1771,6 +1860,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         if self._is_page_closing():
             return
         self._analysis_results = {}
+        self._set_result_file_path_label("")
         self._show_analysis_status_in_tables(f"解析数据失败：{message}")
 
     def _on_analysis_thread_finished(self) -> None:
@@ -1845,7 +1935,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
     def _load_pile_capacity_input_rows(self) -> List[dict]:
         if not (self.mysql_url and self.env_branch and self.env_op_company and self.env_oilfield):
-            raise ValueError("请完整输入承载力和桩身重是数据")
+            raise ValueError("请完整输入承载力和桩身重量数据")
         profile_id = get_env_profile_id(
             branch=self.env_branch,
             op_company=self.env_op_company,
@@ -1854,7 +1944,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             create_if_missing=False,
         )
         if not profile_id:
-            raise ValueError("请完整输入承载力和桩身重是数据")
+            raise ValueError("请完整输入承载力和桩身重量数据")
         rows = load_platform_strength_pile_items(
             profile_id,
             self.facility_code,
@@ -1865,59 +1955,55 @@ class FeasibilityAssessmentResultsPage(BasePage):
             if str(row.get("pile_head_id") or "").strip()
         ]
         if not input_rows:
-            raise ValueError("请完整输入承载力和桩身重是数据")
+            raise ValueError("请完整输入承载力和桩身重量数据")
         required_fields = ("compressive_capacity_t", "uplift_capacity_t", "submerged_weight_t")
         for row in input_rows:
             if any(str(row.get(field) if row.get(field) is not None else "").strip() == "" for field in required_fields):
-                raise ValueError("请完整输入承载力和桩身重是数据")
+                raise ValueError("请完整输入承载力和桩身重量数据")
         return input_rows
 
     def _load_pile_capacity_input_rows_for_analysis(self) -> Tuple[List[dict], str]:
         try:
             return self._load_pile_capacity_input_rows(), ""
         except ValueError as exc:
-            return [], str(exc) or "请完整输入承载力和桩身重是数据"
+            return [], str(exc) or "请完整输入承载力和桩身重量数据"
 
     def _get_current_job_factor_path(self, *, allow_remote_export: bool = True) -> str:
-        """获取客户端可访问的 psilst.factor。
+        """获取客户端可访问的 SACS 结果文件。
 
-        C/S 模式下服务端返回的 result_file 往往是服务端本机路径，客户端不能直接读取。
-        因此这里按顺序尝试：
-        1. 本地运行目录中的 psilst.factor；
-        2. 服务端 result_file 恰好是客户端可访问路径；
-        3. 调用 /api/feasibility/files/export 下载服务端打包结果到客户端缓存，再查找 psilst/factor。
-
-        生成报告时传 allow_remote_export=False：报告由服务端读取结果文件，客户端不再
-        为生成报告下载/解压计算输出包，避免和上一页“导出文件”按钮重复。
+        优先读取本地运行目录/state 记录中的结果文件；如果服务端返回路径
+        恰好在客户端可访问，也可以直接使用。最后才下载原始输出包到客户端
+        缓存目录并在本地解析，不读取服务端预解析结果缓存。
         """
         runtime_dir = os.path.normpath(get_job_runtime_dir(self.job_name))
-        local_factor_path = os.path.join(runtime_dir, "psilst.factor")
-        if os.path.exists(local_factor_path):
-            return local_factor_path
+        local_result_path = _find_latest_state_result_for_results(runtime_dir)
+        if local_result_path:
+            return local_result_path
 
-        if self.server_result_file and os.path.exists(self.server_result_file):
+        if (
+            self.server_result_file
+            and os.path.exists(self.server_result_file)
+            and _is_psilst_result_name_for_results(self.server_result_file)
+        ):
             return self.server_result_file
 
-        if not allow_remote_export:
-            return self.server_result_file or ""
-
-        try:
+        if allow_remote_export:
             extracted = self._download_feasibility_outputs_for_client_cache()
             factor_path = self._pick_factor_file_from_paths(extracted)
-            if factor_path:
+            if factor_path and _is_psilst_result_name_for_results(factor_path):
                 return factor_path
-        except Exception as exc:
-            print("[FeasibilityAssessmentResultsPage] remote factor download failed:", exc)
 
         raise FileNotFoundError(
             "未找到当前任务生成的结果文件。\n"
-            f"本地目录：{local_factor_path}\n"
+            f"本地目录：{runtime_dir}\n"
             f"服务端结果路径：{self.server_result_file or '未返回'}\n"
-            "请先完成当前任务的“计算分析”，或检查服务端 /api/feasibility/files/export 是否可用。"
+            "请先完成当前任务的“计算分析”。"
         )
 
     def _build_report_payload(self) -> dict:
-        factor_path = self._get_current_job_factor_path(allow_remote_export=False)
+        factor_path = str((self._analysis_results or {}).get("_factor_path") or "").strip()
+        if not factor_path or not os.path.isfile(factor_path):
+            factor_path = self._get_current_job_factor_path(allow_remote_export=True)
 
         platform_overview = ""
         platform_overview_blocks = []
@@ -2773,40 +2859,10 @@ class FeasibilityAssessmentResultsPage(BasePage):
         return {"message": "report generated (local)", "output_path": result}
 
     def _generate_report(self, payload: dict) -> dict:
-        """
-        FastAPI 服务端生成可行性评估报告，客户端下载到用户选择路径。
-
-        本函数保留原返回格式：
-            {"message": "...", "output_path": "..."}
-        这样下面 _on_report_generation_finished 不需要改。
-        """
         output_path = str(payload.get("output_path", "")).strip()
         if not output_path:
             raise ValueError("未选择报告保存路径。")
-
-        api = ApiClient()
-
-        task_id = api.generate_feasibility_report(
-            facility_code=self.facility_code,
-            run_id=None,
-            report_payload=payload,
-            metadata={},
-            output_path=None,
-        )
-
-        task = api.wait_feasibility_report_task(task_id, interval=1.0)
-        if str(task.get("status") or "").lower() != "success":
-            raise RuntimeError(str(task.get("error") or task.get("message") or "服务端报告生成失败"))
-
-        local_path = api.download_feasibility_report(
-            task_id,
-            output_path,
-        )
-
-        return {
-            "message": "report generated (remote)",
-            "output_path": local_path,
-        }
+        return self._generate_report_locally(payload)
 
     def _open_report_output_directory(self, output_path: str) -> bool:
         target = Path(str(output_path or "").strip())
@@ -2864,11 +2920,13 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._report_progress_tick += 1
 
     def _close_report_progress(self) -> None:
-        if hasattr(self, "_report_progress_timer") and self._report_progress_timer.isActive():
-            self._report_progress_timer.stop()
-        if self._report_progress is not None:
+        progress_timer = self._instance_state("_report_progress_timer")
+        if progress_timer is not None and progress_timer.isActive():
+            progress_timer.stop()
+        progress = self._instance_state("_report_progress")
+        if progress is not None:
             try:
-                self._report_progress.close()
+                progress.close()
             except Exception:
                 pass
             self._report_progress = None
@@ -2928,7 +2986,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         output_path = str(result.get("output_path", "")).strip()
         if not output_path:
-            QMessageBox.critical(self, "生成报告失败", f"报告服务返回异常：{result}")
+            QMessageBox.critical(self, "生成报告失败", f"报告生成返回异常：{result}")
             return
         opened = self._open_report_output_directory(output_path)
         QMessageBox.information(self, "生成成功", f"PDF 报告已生成：\n{output_path}")
@@ -3018,7 +3076,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
     def _pick_factor_file_from_paths(self, paths: list[str]) -> str:
         return self._pick_file_by_names(
             paths,
-            exact_names={"psilst.factor", "psilst.lst", "psilst"},
+            exact_names={"psilst.m1", "psilst.factor", "psilst.lst", "psilst"},
             prefix_names=("psilst",),
         )
 
@@ -3217,7 +3275,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
     def _set_report_button_busy(self, busy: bool, text: str = "生成评估报告") -> None:
         if self._is_page_closing():
             return
-        btn = getattr(self, "btn_generate_report", None)
+        btn = self._instance_state("btn_generate_report")
         if btn is None:
             return
         btn.setEnabled(not busy)
@@ -3350,7 +3408,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         if self._is_page_closing():
             return
         try:
-            payload = dict(getattr(self, "_pending_report_payload_after_outline", {}) or {})
+            payload = dict(self._instance_state("_pending_report_payload_after_outline", {}) or {})
             self._pending_report_payload_after_outline = {}
             if not payload:
                 self._close_report_progress()
@@ -3376,7 +3434,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         1. 用户先选择报告保存目录；
         2. 弹出一个进度窗口；
         3. 服务端导出轮廓图；
-        4. 服务端生成报告并下载到用户选择路径；
+        4. 客户端使用同一份结果文件生成报告；
         5. 按钮恢复为“生成评估报告”。
         """
         if self._is_page_closing():

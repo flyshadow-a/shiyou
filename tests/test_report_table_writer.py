@@ -15,6 +15,7 @@ if str(REPORT_MODULE_ROOT) not in sys.path:
 from src.renderers.table_writer import (  # noqa: E402
     NON_BREAKING_HYPHEN,
     write_basic_case_loads_table,
+    write_environment_marine_growth_table,
     write_pile_capacity_table,
 )
 
@@ -84,6 +85,66 @@ class ReportTableWriterTests(unittest.TestCase):
         self.assertEqual("47124", row[7].text)
         self.assertEqual("2.42", row[8].text)
         self.assertEqual("2.90", row[9].text)
+
+    def test_marine_growth_table_trims_to_actual_layer_count(self) -> None:
+        document = Document()
+        table = document.add_table(rows=5, cols=11)
+        for column_index in range(11):
+            table.rows[0].cells[column_index].text = str(column_index)
+
+        write_environment_marine_growth_table(
+            table,
+            [
+                {
+                    "layer_no": 1,
+                    "upper_limit_m": "0",
+                    "lower_limit_m": "-15",
+                    "thickness_mm": "10",
+                    "density_t_per_m3": "1.4",
+                },
+                {
+                    "layer_no": 4,
+                    "upper_limit_m": "-50",
+                    "lower_limit_m": "-60",
+                    "thickness_mm": "4.5",
+                    "density_t_per_m3": "1.4",
+                },
+            ],
+        )
+
+        self.assertEqual(6, len(table.columns))
+        self.assertEqual(["0", "1", "1", "2", "3", "4"], [cell.text for cell in table.rows[0].cells])
+        self.assertEqual("0", table.rows[1].cells[2].text)
+        self.assertEqual("", table.rows[1].cells[3].text)
+        self.assertEqual("", table.rows[1].cells[4].text)
+        self.assertEqual(f"{NON_BREAKING_HYPHEN}50", table.rows[1].cells[5].text)
+        self.assertEqual(f"{NON_BREAKING_HYPHEN}60", table.rows[2].cells[5].text)
+        self.assertEqual("4.5", table.rows[3].cells[5].text)
+        self.assertEqual(["1.4", "1.4", "1.4", "1.4"], [cell.text for cell in table.rows[4].cells[2:]])
+
+    def test_marine_growth_table_expands_beyond_template_layer_count(self) -> None:
+        document = Document()
+        table = document.add_table(rows=5, cols=11)
+
+        write_environment_marine_growth_table(
+            table,
+            [
+                {
+                    "layer_no": 12,
+                    "upper_limit_m": "-120",
+                    "lower_limit_m": "-130",
+                    "thickness_mm": "3",
+                    "density_t_per_m3": "1.3",
+                }
+            ],
+        )
+
+        self.assertEqual(14, len(table.columns))
+        self.assertEqual("12", table.rows[0].cells[13].text)
+        self.assertEqual(f"{NON_BREAKING_HYPHEN}120", table.rows[1].cells[13].text)
+        self.assertEqual(f"{NON_BREAKING_HYPHEN}130", table.rows[2].cells[13].text)
+        self.assertEqual("3", table.rows[3].cells[13].text)
+        self.assertEqual("1.3", table.rows[4].cells[13].text)
 
 
 if __name__ == "__main__":

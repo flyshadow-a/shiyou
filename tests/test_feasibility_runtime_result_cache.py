@@ -15,8 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from services.feasibility_runtime import load_feasibility_result_bundle
 
 
-class FeasibilityRuntimeResultCacheTests(unittest.TestCase):
-    def test_load_result_bundle_reuses_cache_for_same_factor_and_pile_inputs(self) -> None:
+class FeasibilityRuntimeResultTests(unittest.TestCase):
+    def test_load_result_bundle_reads_result_file_each_time_without_cache_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             work_dir = Path(tmp_dir)
             factor_path = work_dir / "psilst.factor"
@@ -28,9 +28,7 @@ class FeasibilityRuntimeResultCacheTests(unittest.TestCase):
                 calls.append((path, pile_capacity_input_rows))
                 return {
                     "analysis_summary": {"items": [{"check_item": "member"}]},
-                    "pile_axial_capacity_summary": {
-                        "operation_table_rows": list(pile_capacity_input_rows or [])
-                    },
+                    "call_count": len(calls),
                 }
 
             fake_report_service = types.SimpleNamespace(
@@ -38,57 +36,22 @@ class FeasibilityRuntimeResultCacheTests(unittest.TestCase):
             )
 
             with patch(
-                "services.feasibility_runtime.get_job_runtime_dir",
-                return_value=str(work_dir),
-            ), patch(
-                "services.feasibility_runtime.find_result_file",
-                return_value=str(factor_path),
+                "services.feasibility_runtime._latest_state_result_file",
+                return_value=(str(factor_path), str(work_dir), {}),
             ), patch.dict(
                 sys.modules,
                 {"report_service": fake_report_service},
             ):
-                first = load_feasibility_result_bundle(
-                    facility_code="WC19-1D",
-                    pile_capacity_input_rows=[{"pile_head_id": "P1"}],
-                )
-                second = load_feasibility_result_bundle(
-                    facility_code="WC19-1D",
-                    pile_capacity_input_rows=[{"pile_head_id": "P1"}],
-                )
+                first = load_feasibility_result_bundle(facility_code="WC19-1D")
+                second = load_feasibility_result_bundle(facility_code="WC19-1D")
 
-        self.assertEqual(1, len(calls))
-        self.assertEqual(
-            [{"pile_head_id": "P1"}],
-            first["results"]["pile_axial_capacity_summary"]["operation_table_rows"],
-        )
-        self.assertEqual(first["results"], second["results"])
-        self.assertEqual(True, second["cache_hit"])
-
-    def test_preheat_starts_without_blocking_analysis_return(self) -> None:
-        from services import feasibility_runtime
-
-        started = []
-
-        class FakeThread:
-            def __init__(self, *, target, args, name, daemon):
-                started.append(
-                    {
-                        "target": target,
-                        "args": args,
-                        "name": name,
-                        "daemon": daemon,
-                    }
-                )
-
-            def start(self):
-                started[-1]["started"] = True
-
-        with patch.object(feasibility_runtime.threading, "Thread", FakeThread):
-            feasibility_runtime._start_feasibility_result_cache_preheat("WC19-1D")
-
-        self.assertEqual(("WC19-1D",), started[0]["args"])
-        self.assertEqual(True, started[0]["daemon"])
-        self.assertEqual(True, started[0]["started"])
+        self.assertEqual(2, len(calls))
+        self.assertEqual((str(factor_path), []), calls[0])
+        self.assertEqual((str(factor_path), []), calls[1])
+        self.assertEqual(1, first["results"]["call_count"])
+        self.assertEqual(2, second["results"]["call_count"])
+        self.assertNotIn("cache_hit", first)
+        self.assertNotIn("cache_hit", second)
 
 
 if __name__ == "__main__":

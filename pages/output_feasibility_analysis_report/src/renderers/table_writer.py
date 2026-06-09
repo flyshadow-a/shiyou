@@ -134,6 +134,23 @@ def trim_table_row_count(table: Table, required_rows: int) -> None:
         table._tbl.remove(table.rows[-1]._tr)
 
 
+def ensure_table_column_count(table: Table, required_columns: int) -> None:
+    while len(table.columns) < required_columns:
+        table.add_column(Pt(36))
+
+
+def trim_table_column_count(table: Table, required_columns: int) -> None:
+    while len(table.columns) > required_columns:
+        column_index = len(table.columns) - 1
+        for row in table.rows:
+            row._tr.remove(row.cells[column_index]._tc)
+
+        tbl_grid = table._tbl.tblGrid
+        grid_columns = tbl_grid.gridCol_lst
+        if len(grid_columns) > required_columns:
+            tbl_grid.remove(grid_columns[-1])
+
+
 def clear_row(row) -> None:
     for cell in row.cells:
         write_cell(cell, "")
@@ -278,14 +295,28 @@ def write_environment_metric_table(table: Table, items: Sequence[Mapping[str, An
 
 
 def write_environment_marine_growth_table(table: Table, items: Sequence[Mapping[str, Any]]) -> None:
-    rows_by_layer = {
-        int(item.get("layer_no", 0) or 0): item
-        for item in items
-        if str(item.get("layer_no", "")).strip()
-    }
-    for layer_no in range(1, 10):
+    rows_by_layer = {}
+    for item in items:
+        raw_layer_no = str(item.get("layer_no", "")).strip()
+        if not raw_layer_no:
+            continue
+        try:
+            layer_no = int(float(raw_layer_no))
+        except ValueError:
+            continue
+        if layer_no < 1:
+            continue
+        rows_by_layer[layer_no] = item
+
+    max_layer_no = max(rows_by_layer.keys(), default=1)
+    required_columns = 2 + max_layer_no
+    ensure_table_column_count(table, required_columns)
+    trim_table_column_count(table, required_columns)
+
+    for layer_no in range(1, max_layer_no + 1):
         item = rows_by_layer.get(layer_no, {})
         column_index = layer_no + 1
+        write_cell(table.rows[0].cells[column_index], str(layer_no))
         write_cell(table.rows[1].cells[column_index], _protect_negative_number(str(item.get("upper_limit_m", ""))))
         write_cell(table.rows[2].cells[column_index], _protect_negative_number(str(item.get("lower_limit_m", ""))))
         write_cell(table.rows[3].cells[column_index], _protect_negative_number(str(item.get("thickness_mm", ""))))
@@ -295,7 +326,7 @@ def write_environment_marine_growth_table(table: Table, items: Sequence[Mapping[
         density = str(item.get("density_t_per_m3", "")).strip()
         if density:
             break
-    for column_index in range(2, 11):
+    for column_index in range(2, required_columns):
         write_cell(table.rows[4].cells[column_index], _protect_negative_number(density))
 
 

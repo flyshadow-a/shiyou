@@ -8,6 +8,7 @@ _FACTOR_SEARCH_CHUNK_SIZE = 1024 * 1024
 _FACTOR_MARKER_OVERLAP = 4096
 _FACTOR_FORCE_SECTION_MAX_BYTES = 600_000
 _FACTOR_FORCE_HEADER_LOOKAHEAD_BYTES = 20_000
+_FACTOR_SUMMARY_SECTION_MAX_BYTES = 1_000_000
 _FALLBACK_EDGE_BYTES = 2 * 1024 * 1024
 
 
@@ -64,6 +65,72 @@ def _read_factor_bytes_range(path: str, start: int, end: int) -> bytes:
     with open(path, "rb") as handle:
         handle.seek(max(0, int(start)))
         return handle.read(max(0, int(end) - int(start)))
+
+
+def _find_next_form_feed(path: str, start: int, end: int) -> int:
+    offset = max(0, int(start or 0))
+    end = max(offset, int(end))
+
+    with open(path, "rb") as handle:
+        handle.seek(offset)
+        while offset < end:
+            chunk = handle.read(min(_FACTOR_SEARCH_CHUNK_SIZE, end - offset))
+            if not chunk:
+                return -1
+            index = chunk.find(b"\x0c")
+            if index != -1:
+                return offset + index
+            offset += len(chunk)
+
+    return -1
+
+
+def _find_line_start_before(path: str, position: int) -> int:
+    position = max(0, int(position or 0))
+    search_start = max(0, position - _FACTOR_MARKER_OVERLAP)
+    data = _read_factor_bytes_range(path, search_start, position)
+    line_break = max(data.rfind(b"\n"), data.rfind(b"\r"))
+    if line_break == -1:
+        return search_start
+    return search_start + line_break + 1
+
+
+def _read_factor_form_feed_sections(path: str, markers: List[bytes], file_size: int) -> List[bytes]:
+    chunks: List[bytes] = []
+
+    for marker in markers:
+        for marker_pos in _iter_factor_bytes_marker_positions(path, marker):
+            section_start = _find_line_start_before(path, marker_pos)
+            max_section_end = min(file_size, section_start + _FACTOR_SUMMARY_SECTION_MAX_BYTES)
+            form_feed_pos = _find_next_form_feed(path, section_start + 1, max_section_end)
+            section_end = form_feed_pos if form_feed_pos != -1 else max_section_end
+            chunks.append(_read_factor_bytes_range(path, section_start, section_end))
+
+    return chunks
+
+
+def _read_factor_marker_ranges(
+    path: str,
+    section_markers: List[tuple[bytes, List[bytes]]],
+    file_size: int,
+) -> List[bytes]:
+    chunks: List[bytes] = []
+
+    for start_marker, end_markers in section_markers:
+        marker_pos = _find_factor_bytes_marker(path, start_marker)
+        if marker_pos == -1:
+            continue
+        section_start = _find_line_start_before(path, marker_pos)
+        end_candidates = [
+            end_pos
+            for end_marker in end_markers
+            for end_pos in [_find_factor_bytes_marker(path, end_marker, marker_pos + len(start_marker))]
+            if end_pos != -1
+        ]
+        section_end = min(end_candidates) if end_candidates else file_size
+        chunks.append(_read_factor_bytes_range(path, section_start, section_end))
+
+    return chunks
 
 
 def _read_factor_force_chunks(path: str, start: int, file_size: int) -> List[bytes]:
@@ -123,6 +190,54 @@ def _read_result_factor_marker_lines(path: str) -> List[str]:
         early_end = min(early_end_candidates) if early_end_candidates else min(file_size, max(early_starts) + 800_000)
         chunks.append(_read_factor_bytes_range(path, early_start, early_end))
 
+    chunks.extend(
+        _read_factor_marker_ranges(
+            path,
+            [
+                (
+                    b"SEASTATE BASIC LOAD CASE DESCRIPTIONS",
+                    [
+                        b"SEASTATE BASIC LOAD CASE SUMMARY",
+                        b"SEASTATE COMBINED LOAD CASES",
+                    ],
+                ),
+                (
+                    b"SEASTATE BASIC LOAD CASE SUMMARY",
+                    [
+                        b"SEASTATE COMBINED LOAD CASES",
+                        b"SEASTATE COMBINED LOAD CASE SUMMARY",
+                    ],
+                ),
+                (
+                    b"SEASTATE COMBINED LOAD CASES",
+                    [
+                        b"SEASTATE COMBINED LOAD CASE SUMMARY",
+                    ],
+                ),
+                (
+                    b"SEASTATE COMBINED LOAD CASE SUMMARY",
+                    [
+                        b"SEASTATE LOAD CASE CENTER REPORT",
+                        b"SACS-IV   MEMBER UNITY CHECK RANGE SUMMARY",
+                        b"M E M B E R  G R O U P  S U M M A R Y",
+                    ],
+                ),
+            ],
+            file_size,
+        )
+    )
+
+    chunks.extend(
+        _read_factor_form_feed_sections(
+            path,
+            [
+                b"M E M B E R  G R O U P  S U M M A R Y",
+                b"J O I N T   C A N   S U M M A R Y",
+                b"P I L E  G R O U P  S U M M A R Y",
+            ],
+            file_size,
+        )
+    )
     chunks.extend(_read_factor_force_chunks(path, max(status_start, 0), file_size))
     return _decode_factor_chunks(chunks)
 

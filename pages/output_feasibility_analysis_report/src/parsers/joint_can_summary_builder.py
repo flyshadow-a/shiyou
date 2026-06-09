@@ -24,8 +24,10 @@ def build_joint_can_summary(joint_can_summary: Mapping[str, Any]) -> JointCanSum
     """
     基于 joint_can_summary_parser 的输出，生成 4.5.2 摘要信息。
 
-    当前默认采用 design_load_uc 作为“节点冲剪UC”的统计口径。
-    若后续确认应使用其他列，可在此统一调整。
+    与 ReadPSIlist VBA 保持一致：VBA 通过 Mid(a,36,6)/Mid(a,44,6)
+    读取 Sheet7 的 Load/Strength UC，这两列对应 SACS JOINT CAN SUMMARY
+    中 ORIGINAL 区域的 UC；FindMaxJointUC 再按 Sheet7 的 Strength UC 降序。
+    因此统计口径使用 orig_strn_uc，缺失 Strength UC 时回退到 orig_load_uc。
     """
     rows = joint_can_summary.get("rows", [])
     code_name = joint_can_summary.get("code_name", "").strip()
@@ -49,9 +51,15 @@ def build_joint_can_summary(joint_can_summary: Mapping[str, Any]) -> JointCanSum
             },
         }
 
-    # 口径：优先 design_load_uc
-    max_row = max(rows, key=lambda x: x["design_load_uc"])
-    max_uc = float(max_row["design_load_uc"])
+    def _control_uc(row: Mapping[str, Any]) -> float:
+        value = row.get("orig_strn_uc")
+        if value not in (None, ""):
+            return float(value)
+        return float(row.get("orig_load_uc", 0.0) or 0.0)
+
+    # 口径：ReadPSIlist 的 FindMaxJointUC 按 ORIGINAL Strength UC 列降序。
+    max_row = max(rows, key=_control_uc)
+    max_uc = _control_uc(max_row)
     max_joint = max_row["joint"]
     max_case = max_row["load_case"]
     max_position = max_joint
