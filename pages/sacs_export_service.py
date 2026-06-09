@@ -9,11 +9,15 @@ from typing import Dict, List, Optional
 from sqlalchemy import text
 from shiyou_db.database import build_engine_from_url
 from shiyou_db.config import get_sacs_analysis_engine_exe, get_sacs_default_runx_path
+from pages.sacs_runtime_service import ensure_analysis_bat, ensure_runx_in_workdir
 
 from pages.sacs_storage_service import (
     get_job_runtime_dir,
     get_job_new_model_file,
     get_job_new_sea_file,
+    get_job_runx_file,
+    get_job_psiinp_file,
+    get_job_jcninp_file,
     stage_support_files_for_job,
 )
 from pages.sacs_runtime_service import (
@@ -27,6 +31,37 @@ DEFAULT_NEW_SEA_NAME = "seainp.M1"
 
 GENERATE_BAT = False
 
+def resolve_sacs_analysis_engine_exe() -> str:
+    exe_path = os.path.normpath(str(get_sacs_analysis_engine_exe() or "").strip())
+    if not exe_path:
+        raise ValueError("未配置 SACS AnalysisEngine.exe 路径，请在 db_config.json 中设置 sacs_analysis_engine_exe")
+    if not os.path.isfile(exe_path):
+        raise FileNotFoundError(f"SACS AnalysisEngine.exe 不存在: {exe_path}")
+    return exe_path
+
+
+def resolve_runx_path(model_info: ModelInfo) -> str:
+    # 优先使用已经复制到运行目录的 RUNX。
+    # 这样即使 db_config.json 里配置了失效的模板路径，也不会阻塞计算。
+    model_dir = os.path.dirname(model_info.new_model_file)
+    candidates = [
+        os.path.join(model_dir, "psiM1.runx"),
+        os.path.join(model_dir, "psim1.runx"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return os.path.normpath(p)
+
+    configured = os.path.normpath(str(get_sacs_default_runx_path() or "").strip())
+    if configured and os.path.isfile(configured):
+        return configured
+
+    configured_hint = f"；当前 db_config.json 配置为：{configured}" if configured else ""
+    raise FileNotFoundError(
+        "未找到 RUNX 文件。新流程下 RUNX 不再由用户上传，"
+        "请将服务端固定模板放到 项目根目录下的 psiM1.runx，"
+        "或在 db_config.json 中设置有效的 sacs_default_runx_path" + configured_hint
+    )
 
 @dataclass
 class ModelInfo:
@@ -86,39 +121,6 @@ class WellSlotTopLoad:
     slot_no: int
     top_load_fz: float
     joint_id: str
-
-
-def resolve_sacs_analysis_engine_exe() -> str:
-    exe_path = os.path.normpath(str(get_sacs_analysis_engine_exe() or "").strip())
-    if not exe_path:
-        raise ValueError("未配置 SACS AnalysisEngine.exe 路径，请在 db_config.json 中设置 sacs_analysis_engine_exe")
-    if not os.path.isfile(exe_path):
-        raise FileNotFoundError(f"SACS AnalysisEngine.exe 不存在: {exe_path}")
-    return exe_path
-
-
-def resolve_runx_path(model_info: ModelInfo) -> str:
-    # 优先使用已经复制到运行目录的 RUNX。
-    # 这样即使 db_config.json 里配置了失效的模板路径，也不会阻塞计算。
-    model_dir = os.path.dirname(model_info.new_model_file)
-    candidates = [
-        os.path.join(model_dir, "psiM1.runx"),
-        os.path.join(model_dir, "psim1.runx"),
-    ]
-    for p in candidates:
-        if os.path.isfile(p):
-            return os.path.normpath(p)
-
-    configured = os.path.normpath(str(get_sacs_default_runx_path() or "").strip())
-    if configured and os.path.isfile(configured):
-        return configured
-
-    configured_hint = f"；当前 db_config.json 配置为：{configured}" if configured else ""
-    raise FileNotFoundError(
-        "未找到 RUNX 文件。新流程下 RUNX 不再由用户上传，"
-        "请将服务端固定模板放到 项目根目录下的 psiM1.runx，"
-        "或在 db_config.json 中设置有效的 sacs_default_runx_path" + configured_hint
-    )
 
 
 def read_text_lines(file_path: str) -> List[str]:
@@ -518,6 +520,14 @@ def build_member_lines(members: List[ExportMember]) -> List[str]:
     return lines
 
 
+def _is_valid_nonzero_number(value) -> bool:
+    """判断数值是否有效且非零，避免写出空 LOAD 或 0 LOAD。"""
+    try:
+        return value is not None and abs(float(value)) > 1e-12
+    except Exception:
+        return False
+
+
 def build_dead_load_lines(
     wellslot_top_loads: List[WellSlotTopLoad],
     topside_leg_loads: List[TopsideLegLoad],
@@ -525,11 +535,14 @@ def build_dead_load_lines(
     lines: List[str] = []
 
     for w in wellslot_top_loads:
+        if not _is_valid_nonzero_number(w.top_load_fz):
+            continue
+
         line = (
             "LOAD   "
-            + fill_parameters(w.joint_id, 4)
+            + fill_parameters(str(w.joint_id or "").strip(), 4)
             + "                  "
-            + fill_parameters(-1.0 * w.top_load_fz, 7, 2)
+            + fill_parameters(-1.0 * float(w.top_load_fz), 7, 2)
             + "                       GLOB JOIN   SLOT"
             + str(w.slot_no)
         )
@@ -537,18 +550,169 @@ def build_dead_load_lines(
 
     seq = 0
     for r in topside_leg_loads:
+        if not _is_valid_nonzero_number(r.leg_load):
+            continue
+
         seq += 1
         line = (
             "LOAD   "
-            + fill_parameters(r.joint_id, 4)
+            + fill_parameters(str(r.joint_id or "").strip(), 4)
             + "                  "
-            + fill_parameters(-1.0 * r.leg_load, 7, 2)
+            + fill_parameters(-1.0 * float(r.leg_load), 7, 2)
             + "                       GLOB JOIN   STWN"
             + str(seq)
         )
         lines.append(line + "\n")
 
     return lines
+
+
+def build_sea_grpo_lines(new_groups: List[ExportGroup]) -> List[str]:
+    """
+    给 SEA 文件新增 Wishbone 组的 GRPOV。
+    对应 VBA 中给新增 wishbone 支撑组写海生物参数的逻辑。
+    """
+    lines: List[str] = []
+
+    for g in new_groups:
+        gid = str(g.group_id or "").strip()
+        if not gid:
+            continue
+
+        group_type = str(g.group_type or "").strip().upper()
+        if group_type != "WISHBONE":
+            continue
+
+        lines.append(
+            "GRPOV          "
+            + fill_parameters_vba(gid, 3)
+            + "                        0.01  0.01                   \n"
+        )
+
+    return lines
+
+
+def _strip_old_generated_sea_lines(
+    lines: List[str],
+    new_groups: List[ExportGroup],
+) -> List[str]:
+    """
+    清理旧的程序生成内容，避免重复生成：
+    1. 旧的 NEW DEAD LOADS 标记；
+    2. 旧的 SLOT / STWN LOAD 行；
+    3. 旧的新增 Wishbone GRPOV 行。
+    """
+    wishbone_ids = {
+        str(g.group_id or "").strip().upper()
+        for g in new_groups
+        if str(g.group_type or "").strip().upper() == "WISHBONE"
+        and str(g.group_id or "").strip()
+    }
+
+    out: List[str] = []
+
+    for line in lines:
+        text = str(line or "")
+        upper = text.upper()
+        stripped = upper.strip()
+
+        if "NEW DEAD LOADS" in upper:
+            continue
+        if "----------------------------" in upper:
+            continue
+
+        if stripped.startswith("LOAD") and (" SLOT" in upper or " STWN" in upper):
+            continue
+
+        if stripped.startswith("GRPOV") and wishbone_ids:
+            parts = text.split()
+            if len(parts) >= 2 and parts[1].strip().upper() in wishbone_ids:
+                continue
+
+        out.append(line)
+
+    return out
+
+
+def _insert_load_lines_after_each_dead_block(
+    input_lines: List[str],
+    load_lines: List[str],
+) -> List[str]:
+    """
+    按 VBA 思路处理 SEA：
+    遇到 DEAD 工况块，在该 DEAD 块结束后插入新增 LOAD。
+    不是把新增 LOAD 统一追加到文件最后。
+    """
+    if not load_lines:
+        return list(input_lines)
+
+    output: List[str] = []
+    pending_dead_block = False
+
+    for raw in input_lines:
+        text = str(raw or "")
+        stripped = text.strip().upper()
+
+        is_dead_line = stripped.startswith("DEAD")
+        is_blank = stripped == ""
+        is_comment = stripped.startswith("*")
+
+        if pending_dead_block and (not is_dead_line) and (not is_blank) and (not is_comment):
+            output.extend(load_lines)
+            pending_dead_block = False
+
+        output.append(raw)
+
+        if is_dead_line:
+            pending_dead_block = True
+
+    if pending_dead_block:
+        output.extend(load_lines)
+
+    return output
+
+
+def _insert_lines_after_card_section(
+    input_lines: List[str],
+    card_prefix: str,
+    insert_lines: List[str],
+) -> List[str]:
+    """
+    像 sacinp 的 Groups/Members/Joints 一样：
+    找到某一类卡片段，在该类卡片连续段结束后插入新增内容。
+    这里用于 GRPOV。
+    """
+    if not insert_lines:
+        return list(input_lines)
+
+    output: List[str] = []
+    in_section = False
+    inserted = False
+    prefix = str(card_prefix or "").upper()
+
+    for raw in input_lines:
+        text = str(raw or "")
+        upper = text.upper()
+        is_target_card = upper.startswith(prefix)
+
+        if in_section and (not is_target_card) and (not inserted):
+            output.extend(insert_lines)
+            inserted = True
+            in_section = False
+
+        if is_target_card:
+            in_section = True
+
+        output.append(raw)
+
+    if in_section and not inserted:
+        output.extend(insert_lines)
+        inserted = True
+
+    if not inserted:
+        output = append_before_final_end(output, insert_lines)
+
+    return output
 
 
 def append_before_final_end(original_lines: List[str], insert_lines: List[str]) -> List[str]:
@@ -639,12 +803,7 @@ def _strip_existing_new_sections(lines: List[str]) -> List[str]:
 def _gcol_rgb_text(r: int, g: int, b: int) -> str:
     """
     生成 SACS 组颜色文本。
-
-    VBA 中 ColorNumber(255) 会写成 255，
-    ColorNumber(0) 会写成带空格对齐的 0。
-    这里生成类似：
-        M255   0   0
-        M  0 255 255
+    例如：M255   0   0 / M  0 255 255。
     """
     return f"M{int(r):>3}{int(g):>4}{int(b):>4}"
 
@@ -652,11 +811,8 @@ def _gcol_rgb_text(r: int, g: int, b: int) -> str:
 def build_group_color_lines(groups: List[ExportGroup]) -> List[str]:
     """
     按 VBA 逻辑为新增构件组生成颜色 **GCOL** 行。
-
-    VBA 规则：
-    - 井槽 WellSlot：红色 RGB(255, 0, 0)
-    - 立管/管线 RiserCable：青色 RGB(0, 255, 255)
-    - 每个对象只给前两个组上色：主构件组 + SUPPORT 组
+    - 井槽 WELLSLOT：红色 RGB(255, 0, 0)
+    - 立管/管线 RISER：青色 RGB(0, 255, 255)
     - WISHBONE 组不单独上色
     - 每行最多写 4 个 group
     """
@@ -670,8 +826,6 @@ def build_group_color_lines(groups: List[ExportGroup]) -> List[str]:
         source_type = str(g.source_type or "").strip().upper()
         group_type = str(g.group_type or "").strip().upper()
 
-        # VBA 中只显示 Conductor/Support、RiserCable/Support，
-        # Wishbone 组不单独设置颜色。
         if group_type == "WISHBONE":
             continue
 
@@ -697,10 +851,7 @@ def _strip_existing_gcol_for_new_groups(
 ) -> List[str]:
     """
     清理旧的新增组颜色行，避免重复生成 **GCOL**。
-
-    注意：
-    - 只删除包含本次新增 group_id 的 **GCOL** 行；
-    - 不删除原模型已有的颜色设置行。
+    只删除包含本次新增 group_id 的 **GCOL** 行，不删除原模型已有颜色行。
     """
     new_group_ids = {
         str(g.group_id or "").strip().upper()
@@ -715,11 +866,9 @@ def _strip_existing_gcol_for_new_groups(
 
     for line in lines:
         upper = str(line or "").upper()
-
         if "**GCOL**" in upper:
             if any((gid + "M") in upper for gid in new_group_ids):
                 continue
-
         out.append(line)
 
     return out
@@ -729,9 +878,7 @@ def _insert_color_lines_after_first_end(
     lines: List[str],
     color_lines: List[str],
 ) -> List[str]:
-    """
-    按 VBA 逻辑，在第一个 END 行后插入新增构件颜色。
-    """
+    """按 VBA 逻辑，在第一个 END 行后插入新增构件颜色。"""
     if not color_lines:
         return list(lines)
 
@@ -740,7 +887,6 @@ def _insert_color_lines_after_first_end(
 
     for line in lines:
         out.append(line)
-
         if not inserted and str(line or "").strip().upper() == "END":
             out.extend(color_lines)
             inserted = True
@@ -778,12 +924,7 @@ def _insert_new_blocks_like_vba(
                 group_inserted = True
             process_group = False
 
-        if (
-            process_member
-            and (not _is_member_line(line))
-            and (not _is_comment_line(line))
-            and (not _line_starts_with(line, "MEMB2"))
-        ):
+        if process_member and (not _is_member_line(line)) and (not _is_comment_line(line)) and (not _line_starts_with(line, "MEMB2")):
             if not member_inserted:
                 output.extend(member_block)
                 member_inserted = True
@@ -854,21 +995,28 @@ def export_sea_file(
     model_info: ModelInfo,
     wellslot_top_loads: List[WellSlotTopLoad],
     topside_leg_loads: List[TopsideLegLoad],
+    new_groups: Optional[List[ExportGroup]] = None,
 ) -> None:
     if not model_info.sea_file or not model_info.new_sea_file:
         return
 
+    new_groups = new_groups or []
     input_lines = read_text_lines(model_info.sea_file)
 
-    insert_lines: List[str] = []
-    insert_lines.append("\n")
-    insert_lines.append("** ----------------------------\n")
-    insert_lines.append("** NEW DEAD LOADS\n")
-    insert_lines.append("** ----------------------------\n")
-    insert_lines.extend(build_dead_load_lines(wellslot_top_loads, topside_leg_loads))
-    insert_lines.append("\n")
+    # 清理旧的程序生成内容，避免多次创建模型后重复叠加。
+    input_lines = _strip_old_generated_sea_lines(input_lines, new_groups)
 
-    output_lines = append_before_final_end(input_lines, insert_lines)
+    load_lines = build_dead_load_lines(wellslot_top_loads, topside_leg_loads)
+    grpo_lines = build_sea_grpo_lines(new_groups)
+
+    output_lines = input_lines
+
+    # 1. 新增 LOAD 插入到每个 DEAD 工况块后。
+    output_lines = _insert_load_lines_after_each_dead_block(output_lines, load_lines)
+
+    # 2. 新增 GRPOV 插入到 GRPOV 卡片段最后。
+    output_lines = _insert_lines_after_card_section(output_lines, "GRPOV", grpo_lines)
+
     write_text_lines(model_info.new_sea_file, output_lines)
 
 
@@ -915,6 +1063,7 @@ def export_model_bundle(mysql_url: str, job_name: str, generate_bat_flag: bool =
                 model_info=model_info,
                 wellslot_top_loads=wellslot_top_loads,
                 topside_leg_loads=topside_leg_loads,
+                new_groups=new_groups,
             )
 
         runtime_dir = get_job_runtime_dir(job_name)

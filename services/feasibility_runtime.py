@@ -44,25 +44,16 @@ def _norm(path: object) -> str:
 
 
 def _make_analysis_work_dir(base_work_dir: str, facility_code: str) -> str:
-    """为每一次 SACS 计算创建独立工作目录。
-
-    原流程复用 feasibility_assessment_runtime/<平台> 目录，每次计算前会删除旧的
-    psilst.factor / psilst.M1。Windows/共享盘上这些文件经常被 SACS、杀毒软件、
-    文件预览或用户打开占用，导致下一次计算在清理旧文件阶段直接失败。
-
-    新流程把每次计算放到独立子目录：
-        feasibility_assessment_runtime/<平台>/analysis_runs/run_YYYYMMDD_HHMMSS_xxxxxx
-
-    这样新计算不再依赖删除上一轮结果，即使旧 psilst.factor 暂时被占用，也不会
-    阻塞本次计算。
     """
-    base = Path(_norm(base_work_dir))
-    safe_code = str(facility_code or "facility").replace("/", "_").replace("\\", "_").strip() or "facility"
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    work_dir = base / "analysis_runs" / f"run_{stamp}_{safe_code}"
+    当前需求：不再为每次 SACS 计算创建 analysis_runs/run_xxx 独立目录，
+    直接复用 feasibility_assessment_runtime/<平台> 作为计算目录。
+
+    并发判断仍然依赖 _assert_sacs_not_running_before_analysis()：
+    只要服务端检测到 AnalysisEngine.exe / SACW*.exe 正在运行，就拒绝新任务。
+    """
+    work_dir = Path(_norm(base_work_dir))
     work_dir.mkdir(parents=True, exist_ok=True)
     return os.path.normpath(str(work_dir))
-
 
 def _copy_input_to_analysis_dir(src_path: str, work_dir: str, target_name: str, *, required: bool = True) -> str:
     """复制输入文件到本次独立计算目录，并按目标文件名统一命名。"""
@@ -342,13 +333,20 @@ def _is_previous_analysis_output_name(file_name: str) -> bool:
         "analysis_summary.log",
         "analysis_stdout.log",
         "analysis_stderr.log",
+        "psicsf",
+        "psinpf",
+        "psincf",
+        "psvtmp",
+        "psvtemp",
     }
+
     return (
         low in exact_names
         or low.startswith("psilst")
+        or low.startswith("seaoci")
+        or low.startswith("psvdb")
         or low.endswith(".listing")
     )
-
 
 def _remove_analysis_output_with_retry(path: str, *, retries: int = 12, interval: float = 0.5) -> None:
     """
@@ -724,7 +722,8 @@ def run_feasibility_analysis(
     # 先把服务端固定 RUNX、PSI、JCN 复制/规范化到平台运行根目录。
     support_files = stage_support_files_for_job(code, require_all=True)
 
-    # 每次计算使用独立目录，避免上一轮 psilst.factor / psilst.M1 被占用时阻塞新计算。
+    # 当前需求：直接在平台运行目录内计算，不再创建 analysis_runs/run_xxx。
+    # 并发控制依赖 SACS 进程检测；计算前会清理上一轮输出。
     work_dir = _make_analysis_work_dir(base_work_dir, code)
 
     model_src = _norm(get_job_new_model_file(code))
@@ -768,7 +767,7 @@ def run_feasibility_analysis(
         jcninp_path=jcninp_path,
     )
 
-    # 独立目录理论上没有旧结果；保留清理只是兜底，不会再受平台根目录旧 psilst.factor 影响。
+    # 复用同一个计算目录，启动前必须清理上一轮 SACS 输出。
     _cleanup_previous_analysis_outputs(work_dir)
     start_time = time.time()
 
@@ -840,8 +839,8 @@ def run_feasibility_analysis(
     }
 
     # 同时写入：
-    # 1）本次独立计算目录，便于追溯；
-    # 2）平台运行根目录，作为“查看结果/导出文件”的唯一最新入口，避免多个 run 目录混乱。
+    # 当前 work_dir 就是平台运行根目录；这里保留双路径写入兼容旧逻辑。
+    # 两个路径相同时会覆盖写入同一个 state 文件。
     for state_path in (Path(work_dir) / "feasibility_analysis_state.json", _analysis_state_path(code)):
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
