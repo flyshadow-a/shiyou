@@ -48,12 +48,9 @@ NAV_CONFIG = [
         "page": lazy_page("pages.personal_center_page.PersonalCenterPage"),
     },
     {
-        "text": "汇总信息",
-        "page": lazy_page("pages.platform_summary_page.PlatformSummaryPage"),
-    },
-    {
         "text": "文件管理",
         "children": [
+            {"text": "汇总信息","page": lazy_page("pages.platform_summary_page.PlatformSummaryPage")},
             {"text": "设计文件", "page": lazy_page("pages.construction_docs_page.ConstructionDocsPage")},
             {"text": "历次改造文件", "page": lazy_page("pages.history_rebuild_files_page.HistoryRebuildFilesPage")},
             {"text": "检测记录文件", "page": lazy_page("pages.history_events_inspection_page.HistoryEventsInspectionPage")},

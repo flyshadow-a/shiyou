@@ -107,6 +107,44 @@ class PlatformLoadUpperBlockContextTests(unittest.TestCase):
         self.assertIn("border: 1px solid #1d4ed8", page.btn_save.styleSheet())
         self.assertEqual(page.btn_save.styleSheet(), page.btn_back.styleSheet())
 
+    def test_platform_load_clipboard_policy_skips_selector_combo_and_readonly_cells(self) -> None:
+        from pages.platform_load_information_page import (
+            OVERALL_ASSESSMENT_COL,
+            PlatformLoadInformationPage,
+        )
+
+        page = PlatformLoadInformationPage()
+        self.addCleanup(page.deleteLater)
+        page._apply_data([page._blank_table_row()])
+
+        data_row = page.DATA_START_ROW
+
+        self.assertFalse(page._can_paste_main_table_cell(data_row, 0))
+        self.assertFalse(page._can_paste_main_table_cell(data_row, OVERALL_ASSESSMENT_COL))
+        self.assertTrue(page._can_paste_main_table_cell(data_row, 1))
+        self.assertFalse(page._can_paste_main_table_cell(0, 1))
+        self.assertFalse(page._can_paste_main_table_cell(page._find_data_end_row(), 1))
+
+    def test_platform_load_clipboard_has_overflow_notification_callback(self) -> None:
+        from pages.platform_load_information_page import PlatformLoadInformationPage
+
+        page = PlatformLoadInformationPage()
+        self.addCleanup(page.deleteLater)
+
+        callback = page._table_clipboard._on_paste_rows_ignored
+        self.assertIs(callback.__self__, page)
+        self.assertIs(callback.__func__, page._show_paste_rows_ignored_tip.__func__)
+
+    def test_platform_load_clipboard_has_protected_cell_notification_callback(self) -> None:
+        from pages.platform_load_information_page import PlatformLoadInformationPage
+
+        page = PlatformLoadInformationPage()
+        self.addCleanup(page.deleteLater)
+
+        callback = page._table_clipboard._on_paste_cells_skipped
+        self.assertIs(callback.__self__, page)
+        self.assertIs(callback.__func__, page._show_paste_cells_skipped_tip.__func__)
+
 
 if __name__ == "__main__":
     unittest.main()

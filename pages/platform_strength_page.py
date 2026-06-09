@@ -29,11 +29,13 @@ from PyQt5.QtWidgets import (
     QGraphicsScene, QMessageBox, QPushButton, QHeaderView, QSlider, QDialog,
     QApplication,
     QProgressDialog,
+    QToolTip,
 )
 
 from core.app_paths import first_existing_path
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar
+from core.table_clipboard import TableClipboardController
 from feasibility_analysis_services.oilfield_env_service import (
     get_env_profile_id,
     load_platform_strength_marine_items,
@@ -2145,8 +2147,7 @@ class PlatformStrengthPage(BasePage):
         edit_table.setHorizontalHeaderLabels(headers)
         self._init_table_common(edit_table, show_vertical_header=False)
         self._style_dialog_table(edit_table)
-        edit_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        edit_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._install_dialog_table_clipboard(edit_table)
         edit_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         edit_table.verticalHeader().setDefaultSectionSize(34)
         card_layout.addWidget(edit_table, 1)
@@ -2235,10 +2236,12 @@ class PlatformStrengthPage(BasePage):
             QMessageBox.information(dialog, "读取完成", f"已读取 {len(heads)} 个桩头，新增 {added} 行。")
 
         def add_empty_row() -> None:
-            append_row("", default_values())
+            append_row("")
 
         def delete_current_row() -> None:
             row = edit_table.currentRow()
+            if row < 0 and edit_table.selectedIndexes():
+                row = edit_table.selectedIndexes()[0].row()
             if row < 0:
                 QMessageBox.information(dialog, "请选择行", "请先选择要删除的桩基信息行。")
                 return
@@ -2323,6 +2326,42 @@ class PlatformStrengthPage(BasePage):
 
         fill_initial_rows()
         dialog.exec_()
+
+    def _install_dialog_table_clipboard(self, table: QTableWidget) -> None:
+        table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
+        )
+        table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        table._table_clipboard = TableClipboardController(
+            table,
+            can_paste_cell=lambda row, col, target=table: self._can_paste_dialog_table_cell(target, row, col),
+            on_paste_rows_ignored=lambda count, target=table: self._show_dialog_table_tip(
+                target,
+                f"粘贴内容超出现有数据区，已忽略 {count} 行。",
+            ),
+            on_paste_cells_skipped=lambda count, target=table: self._show_dialog_table_tip(
+                target,
+                f"部分单元格不可粘贴，已跳过 {count} 个单元格。",
+            ),
+        )
+
+    def _can_paste_dialog_table_cell(self, table: QTableWidget, row: int, col: int) -> bool:
+        if not (0 <= row < table.rowCount() and 0 <= col < table.columnCount()):
+            return False
+        if table.cellWidget(row, col) is not None:
+            return False
+        item = table.item(row, col)
+        if item is None:
+            return True
+        return bool(item.flags() & Qt.ItemIsEditable)
+
+    def _show_dialog_table_tip(self, table: QTableWidget, message: str) -> None:
+        rect = table.viewport().rect()
+        pos = table.viewport().mapToGlobal(rect.center())
+        QToolTip.showText(pos, message, table, rect, 2500)
 
     def _open_marine_edit_dialog(self) -> None:
         dialog = QDialog(self)
@@ -2503,7 +2542,7 @@ class PlatformStrengthPage(BasePage):
         edit_threshold.setFixedWidth(120)
         btn_auto = QPushButton("自动更新水平高程")
         btn_add = QPushButton("新增高程列")
-        btn_del = QPushButton("删除最后一列")
+        btn_del = QPushButton("删除选中列")
         for btn in (btn_auto, btn_add, btn_del):
             self._style_dialog_tool_button(btn)
         top.addWidget(lbl, 0)
@@ -2519,12 +2558,25 @@ class PlatformStrengthPage(BasePage):
         edit_table.setHorizontalHeaderLabels(["编号"])
         self._init_table_common(edit_table, show_vertical_header=False)
         self._style_dialog_table(edit_table)
+        edit_table.setEditTriggers(QAbstractItemView.DoubleClicked)
+        edit_table.setStyleSheet(edit_table.styleSheet() + """
+            QTableWidget::item:selected {
+                background-color: #dbeafe;
+            }
+        """)
         edit_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         edit_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        edit_table.setSelectionBehavior(QAbstractItemView.SelectColumns)
+        edit_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         edit_table.setRowHeight(0, 34)
         self._set_center_item(edit_table, 0, 0, "Z(m)", editable=False)
         card_layout.addWidget(edit_table, 1)
         root.addWidget(card, 1)
+
+        def refresh_column_headers() -> None:
+            edit_table.setHorizontalHeaderLabels(
+                ["编号"] + [str(c) for c in range(1, edit_table.columnCount())]
+            )
 
         def fill_table(levels: List[Tuple[float, int, bool]]):
             col_count = max(1, len(levels) + 1)
@@ -2558,18 +2610,27 @@ class PlatformStrengthPage(BasePage):
         def add_column():
             c = edit_table.columnCount()
             edit_table.insertColumn(c)
-            edit_table.setHorizontalHeaderItem(c, QTableWidgetItem(str(c)))
             self._set_center_item(edit_table, 0, c, "", editable=True)
             edit_table.setColumnWidth(c, 88)
+            refresh_column_headers()
 
-        def delete_last_column():
-            if edit_table.columnCount() <= 1:
+        def delete_selected_columns():
+            target_columns = sorted(
+                {index.column() for index in edit_table.selectedIndexes() if index.column() > 0},
+                reverse=True,
+            )
+            if not target_columns:
+                QMessageBox.information(dialog, "请选择列", "请先选中要删除的高程列。")
                 return
-            edit_table.removeColumn(edit_table.columnCount() - 1)
+            for col in target_columns:
+                if col < edit_table.columnCount():
+                    edit_table.removeColumn(col)
+            refresh_column_headers()
+            edit_table.clearSelection()
 
         btn_auto.clicked.connect(auto_update)
         btn_add.clicked.connect(add_column)
-        btn_del.clicked.connect(delete_last_column)
+        btn_del.clicked.connect(delete_selected_columns)
 
         bottom = QHBoxLayout()
         bottom.addStretch(1)

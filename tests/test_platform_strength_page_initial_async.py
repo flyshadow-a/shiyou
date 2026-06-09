@@ -475,3 +475,227 @@ def test_autoload_model_preview_does_not_resolve_model_path_on_ui_thread(monkeyp
     finally:
         page.deleteLater()
         app.processEvents()
+
+
+def test_pile_edit_dialog_table_uses_excel_clipboard_controller(monkeypatch):
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QKeyEvent
+    from PyQt5.QtWidgets import QApplication, QAbstractItemView, QDialog, QTableWidget, QWidget
+
+    from core.table_clipboard import TableClipboardController
+    from pages import platform_strength_page
+
+    app = QApplication.instance() or QApplication([])
+
+    monkeypatch.setattr(
+        platform_strength_page,
+        "default_platform",
+        lambda: {
+            "branch": "B1",
+            "op_company": "O1",
+            "oilfield": "F1",
+            "facility_code": "P1",
+            "facility_name": "Platform 1",
+            "facility_type": "平台",
+            "category": "井口平台",
+            "start_time": "2020-01-01",
+            "design_life": "20",
+        },
+    )
+    monkeypatch.setattr(
+        platform_strength_page,
+        "load_facility_profile",
+        lambda facility_code, defaults=None: dict(defaults or {}, facility_code=facility_code),
+    )
+    monkeypatch.setattr(
+        platform_strength_page.PlatformStrengthPage,
+        "_schedule_initial_page_load",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        platform_strength_page.PlatformStrengthPage,
+        "_get_strength_profile_context",
+        lambda self, create_if_missing=False: (123, "P1"),
+    )
+    monkeypatch.setattr(
+        platform_strength_page,
+        "load_platform_strength_pile_items",
+        lambda profile_id, facility_code: [
+            {
+                "pile_head_id": "A001",
+                "scour_depth_m": 1.0,
+                "compressive_capacity_t": 2.0,
+                "uplift_capacity_t": 3.0,
+                "submerged_weight_t": 4.0,
+                "is_display_row": True,
+            },
+            {
+                "pile_head_id": "A002",
+                "scour_depth_m": 5.0,
+                "compressive_capacity_t": 6.0,
+                "uplift_capacity_t": 7.0,
+                "submerged_weight_t": 8.0,
+            },
+        ],
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_exec(dialog: QDialog) -> int:
+        captured["dialog"] = dialog
+        tables = dialog.findChildren(QTableWidget)
+        captured["table"] = tables[-1]
+        return QDialog.Rejected
+
+    monkeypatch.setattr(QDialog, "exec_", fake_exec)
+
+    page = platform_strength_page.PlatformStrengthPage(main_window=None)
+    try:
+        for col, value in enumerate(["11", "22", "33", "44"]):
+            page._set_table_text(page.tbl_pile, 0, col, value)
+
+        page._open_pile_edit_dialog()
+        edit_table = captured["table"]
+
+        assert isinstance(edit_table._table_clipboard, TableClipboardController)
+        assert edit_table.selectionBehavior() == QAbstractItemView.SelectItems
+        assert edit_table.selectionMode() == QAbstractItemView.ExtendedSelection
+        assert edit_table.editTriggers() == (
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
+        )
+        assert edit_table._table_clipboard._can_paste_cell(0, 0) is True
+        assert edit_table._table_clipboard._can_paste_cell(0, 4) is True
+        assert edit_table._table_clipboard._can_paste_cell(2, 0) is False
+
+        item = edit_table.item(0, 0)
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        assert edit_table._table_clipboard._can_paste_cell(0, 0) is False
+
+        item.setFlags(item.flags() | Qt.ItemIsEditable)
+        QApplication.clipboard().clear()
+        edit_table.clearSelection()
+        edit_table.setCurrentCell(0, 1)
+        copy_event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_C, Qt.ControlModifier)
+        QApplication.sendEvent(edit_table, copy_event)
+        assert QApplication.clipboard().text() == "1"
+
+        QApplication.clipboard().setText("99")
+        edit_table.clearSelection()
+        edit_table.setCurrentCell(1, 1)
+        paste_event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_V, Qt.ControlModifier)
+        QApplication.sendEvent(edit_table, paste_event)
+        assert edit_table.item(1, 1).text() == "99"
+
+        add_button = next(
+            button
+            for button in captured["dialog"].findChildren(QWidget)
+            if getattr(button, "text", lambda: "")() == "新增行"
+        )
+        add_button.click()
+
+        new_row = edit_table.rowCount() - 1
+        assert [edit_table.item(new_row, col).text() for col in range(edit_table.columnCount())] == [
+            "",
+            "",
+            "",
+            "",
+            "",
+        ]
+    finally:
+        page.deleteLater()
+        app.processEvents()
+
+
+def test_horizontal_level_dialog_deletes_selected_columns_and_renumbers(monkeypatch):
+    from PyQt5.QtCore import QItemSelectionModel
+    from PyQt5.QtWidgets import QApplication, QAbstractItemView, QDialog, QTableWidget, QWidget
+
+    from pages import platform_strength_page
+
+    app = QApplication.instance() or QApplication([])
+
+    monkeypatch.setattr(
+        platform_strength_page,
+        "default_platform",
+        lambda: {
+            "branch": "B1",
+            "op_company": "O1",
+            "oilfield": "F1",
+            "facility_code": "P1",
+            "facility_name": "Platform 1",
+            "facility_type": "平台",
+            "category": "井口平台",
+            "start_time": "2020-01-01",
+            "design_life": "20",
+        },
+    )
+    monkeypatch.setattr(
+        platform_strength_page,
+        "load_facility_profile",
+        lambda facility_code, defaults=None: dict(defaults or {}, facility_code=facility_code),
+    )
+    monkeypatch.setattr(
+        platform_strength_page.PlatformStrengthPage,
+        "_schedule_initial_page_load",
+        lambda self: None,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_exec(dialog: QDialog) -> int:
+        captured["dialog"] = dialog
+        captured["table"] = dialog.findChildren(QTableWidget)[-1]
+        return QDialog.Rejected
+
+    monkeypatch.setattr(QDialog, "exec_", fake_exec)
+
+    page = platform_strength_page.PlatformStrengthPage(main_window=None)
+    try:
+        page._horizontal_levels = [
+            (30.0, 1, True),
+            (20.0, 1, True),
+            (10.0, 1, True),
+            (0.0, 1, True),
+        ]
+
+        page._on_update_horizontal_levels_to_db()
+
+        edit_table = captured["table"]
+        assert edit_table.columnCount() == 5
+        assert edit_table.editTriggers() == QAbstractItemView.DoubleClicked
+        assert (
+            "QTableWidget::item:selected {\n"
+            "                background-color: #dbeafe;\n"
+            "            }"
+        ) in edit_table.styleSheet()
+        assert "QHeaderView::section:selected" not in edit_table.styleSheet()
+        assert "QTableWidget::item:selected" in edit_table.styleSheet()
+
+        for col in (2, 4):
+            selection = edit_table.selectionModel()
+            selection.select(
+                edit_table.model().index(0, col),
+                QItemSelectionModel.Select | QItemSelectionModel.Columns,
+            )
+        delete_button = next(
+            button
+            for button in captured["dialog"].findChildren(QWidget)
+            if getattr(button, "text", lambda: "")() == "删除选中列"
+        )
+        delete_button.click()
+
+        assert edit_table.columnCount() == 3
+        assert [edit_table.item(0, col).text() for col in range(edit_table.columnCount())] == [
+            "Z(m)",
+            "30",
+            "10",
+        ]
+        assert [
+            edit_table.horizontalHeaderItem(col).text()
+            for col in range(edit_table.columnCount())
+        ] == ["编号", "1", "2"]
+    finally:
+        page.deleteLater()
+        app.processEvents()

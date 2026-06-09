@@ -40,6 +40,7 @@ from core.app_paths import existing_dirs, external_path, first_existing_path
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar  # 复用平台基本信息页的顶部下拉条样式
 from core.message_boxes import ask_yes_no
+from core.table_clipboard import TableClipboardController
 from pages.hover_tip_table import HoverTipTable
 from pages.file_management_platforms import default_platform, sync_platform_dropdowns
 from services.file_db_adapter import list_rebuild_directories
@@ -1666,6 +1667,12 @@ class PlatformLoadInformationPage(BasePage):
 
         # 主表允许编辑（但我们会用 item flags 精细控制哪些格可编辑）
         self.table.setEditTriggers(QTableWidget.DoubleClicked | QTableWidget.SelectedClicked | QTableWidget.EditKeyPressed)
+        self._table_clipboard = TableClipboardController(
+            self.table,
+            can_paste_cell=self._can_paste_main_table_cell,
+            on_paste_rows_ignored=self._show_paste_rows_ignored_tip,
+            on_paste_cells_skipped=self._show_paste_cells_skipped_tip,
+        )
 
         root.addWidget(self.table, 1)
 
@@ -3358,6 +3365,41 @@ class PlatformLoadInformationPage(BasePage):
             return widget.currentText()
         it = self.table.item(row, col)
         return it.text() if it else ""
+
+    def _can_paste_main_table_cell(self, row: int, col: int) -> bool:
+        if not hasattr(self, "table"):
+            return False
+        data_end = self._find_data_end_row()
+        if not (self.DATA_START_ROW <= row < data_end):
+            return False
+        if col == 0 or col == OVERALL_ASSESSMENT_COL:
+            return False
+        if self.table.cellWidget(row, col) is not None:
+            return False
+        item = self.table.item(row, col)
+        if item is None:
+            return True
+        return bool(item.flags() & Qt.ItemIsEditable)
+
+    def _show_paste_rows_ignored_tip(self, ignored_rows: int) -> None:
+        if ignored_rows <= 0 or not hasattr(self, "table"):
+            return
+        self._show_main_table_tip(f"粘贴内容超出现有数据区，已忽略 {ignored_rows} 行。")
+
+    def _show_paste_cells_skipped_tip(self, skipped_cells: int) -> None:
+        if skipped_cells <= 0 or not hasattr(self, "table"):
+            return
+        self._show_main_table_tip(f"部分单元格不可粘贴，已跳过 {skipped_cells} 个单元格。")
+
+    def _show_main_table_tip(self, message: str) -> None:
+        pos = self.table.viewport().mapToGlobal(self.table.viewport().rect().center())
+        QToolTip.showText(
+            pos,
+            message,
+            self.table,
+            self.table.viewport().rect(),
+            2500,
+        )
 
     def _open_upper_block_subproject_page(self, src_row: int, src_col: int | None = None):
         mw = self.window()
