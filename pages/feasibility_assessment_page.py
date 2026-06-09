@@ -37,11 +37,13 @@ from PyQt5.QtWidgets import (
     QDialog,
     QTextEdit,
     QHeaderView,
+    QToolTip,
 )
 from PyQt5.QtGui import QDesktopServices
 
 from core.base_page import BasePage
 from core.message_boxes import ask_yes_no
+from core.table_clipboard import TableClipboardController
 
 from pages.feasibility_assessment_results_page import FeasibilityAssessmentResultsPage
 from pages.sacs_create_model_service import create_new_model_files
@@ -329,9 +331,13 @@ class FeasibilityAssessmentPage(BasePage):
     # ---------------- 通用表格风格 ----------------
     def _init_table_common(self, table: QTableWidget):
         table.setFont(self._songti_small_four_font())
-        table.setEditTriggers(QAbstractItemView.AllEditTriggers)
+        table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
+        )
         table.setSelectionBehavior(QAbstractItemView.SelectItems)
-        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         table.setAlternatingRowColors(True)
         table.setShowGrid(False)
 
@@ -355,6 +361,46 @@ class FeasibilityAssessmentPage(BasePage):
         table.horizontalHeader().setStretchLastSection(False)
         #table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed) 移除这一行，让列宽变得可调整
         table.verticalHeader().setDefaultSectionSize(26)
+
+    def _install_input_table_clipboard(self, table: QTableWidget, header_rows: int) -> None:
+        table._table_clipboard = TableClipboardController(
+            table,
+            can_paste_cell=lambda row, col, target=table, headers=header_rows:
+                self._can_paste_input_table_cell(target, row, col, headers),
+            on_paste_rows_ignored=lambda count, target=table:
+                self._show_input_table_tip(
+                    target,
+                    f"粘贴内容超出现有数据区，已忽略 {count} 行。",
+                ),
+            on_paste_cells_skipped=lambda count, target=table:
+                self._show_input_table_tip(
+                    target,
+                    f"部分单元格不可粘贴，已跳过 {count} 个单元格。",
+                ),
+        )
+
+    def _can_paste_input_table_cell(
+        self,
+        table: QTableWidget,
+        row: int,
+        col: int,
+        header_rows: int,
+    ) -> bool:
+        if not (header_rows <= row < table.rowCount()):
+            return False
+        if col == 0:
+            return False
+        if table.cellWidget(row, col) is not None:
+            return False
+        item = table.item(row, col)
+        if item is None:
+            return True
+        return bool(item.flags() & Qt.ItemIsEditable)
+
+    def _show_input_table_tip(self, table: QTableWidget, message: str) -> None:
+        rect = table.viewport().rect()
+        pos = table.viewport().mapToGlobal(rect.center())
+        QToolTip.showText(pos, message, table, rect, 2500)
 
     def _set_cell(
         self,
@@ -1140,6 +1186,7 @@ class FeasibilityAssessmentPage(BasePage):
         # self._install_row_hover_actions(self.tbl1, "tbl1", header_rows)
         # lay.addWidget(self.tbl1, 1)
         self._install_row_hover_actions(self.tbl1, "tbl1", header_rows)
+        self._install_input_table_clipboard(self.tbl1, header_rows)
 
         tbl1_scroll = self._wrap_table_in_scroll(self.tbl1, max_height=210)
         lay.addWidget(tbl1_scroll, 0)
@@ -1267,6 +1314,7 @@ class FeasibilityAssessmentPage(BasePage):
         # lay.addWidget(self.tbl2, 1)
 
         self._install_row_hover_actions(self.tbl2, "tbl2", header_rows)
+        self._install_input_table_clipboard(self.tbl2, header_rows)
 
         tbl2_scroll = self._wrap_table_in_scroll(self.tbl2, max_height=210)
         lay.addWidget(tbl2_scroll, 0)
@@ -1336,6 +1384,7 @@ class FeasibilityAssessmentPage(BasePage):
         # 单独把第0列（编号列）设置为按内容自适应，保持紧凑
         self.tbl3.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self._install_row_hover_actions(self.tbl3, "tbl3", header_rows)
+        self._install_input_table_clipboard(self.tbl3, header_rows)
         self.tbl3.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.tbl3.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         lay.addWidget(self.tbl3, 1)
