@@ -9,15 +9,11 @@ from typing import Dict, List, Optional
 from sqlalchemy import text
 from shiyou_db.database import build_engine_from_url
 from shiyou_db.config import get_sacs_analysis_engine_exe, get_sacs_default_runx_path
-from pages.sacs_runtime_service import ensure_analysis_bat, ensure_runx_in_workdir
 
 from pages.sacs_storage_service import (
     get_job_runtime_dir,
     get_job_new_model_file,
     get_job_new_sea_file,
-    get_job_runx_file,
-    get_job_psiinp_file,
-    get_job_jcninp_file,
     stage_support_files_for_job,
 )
 from pages.sacs_runtime_service import (
@@ -31,37 +27,6 @@ DEFAULT_NEW_SEA_NAME = "seainp.M1"
 
 GENERATE_BAT = False
 
-def resolve_sacs_analysis_engine_exe() -> str:
-    exe_path = os.path.normpath(str(get_sacs_analysis_engine_exe() or "").strip())
-    if not exe_path:
-        raise ValueError("未配置 SACS AnalysisEngine.exe 路径，请在 db_config.json 中设置 sacs_analysis_engine_exe")
-    if not os.path.isfile(exe_path):
-        raise FileNotFoundError(f"SACS AnalysisEngine.exe 不存在: {exe_path}")
-    return exe_path
-
-
-def resolve_runx_path(model_info: ModelInfo) -> str:
-    # 优先使用已经复制到运行目录的 RUNX。
-    # 这样即使 db_config.json 里配置了失效的模板路径，也不会阻塞计算。
-    model_dir = os.path.dirname(model_info.new_model_file)
-    candidates = [
-        os.path.join(model_dir, "psiM1.runx"),
-        os.path.join(model_dir, "psim1.runx"),
-    ]
-    for p in candidates:
-        if os.path.isfile(p):
-            return os.path.normpath(p)
-
-    configured = os.path.normpath(str(get_sacs_default_runx_path() or "").strip())
-    if configured and os.path.isfile(configured):
-        return configured
-
-    configured_hint = f"；当前 db_config.json 配置为：{configured}" if configured else ""
-    raise FileNotFoundError(
-        "未找到 RUNX 文件。新流程下 RUNX 不再由用户上传，"
-        "请将服务端固定模板放到 项目根目录下的 psiM1.runx，"
-        "或在 db_config.json 中设置有效的 sacs_default_runx_path" + configured_hint
-    )
 
 @dataclass
 class ModelInfo:
@@ -121,6 +86,39 @@ class WellSlotTopLoad:
     slot_no: int
     top_load_fz: float
     joint_id: str
+
+
+def resolve_sacs_analysis_engine_exe() -> str:
+    exe_path = os.path.normpath(str(get_sacs_analysis_engine_exe() or "").strip())
+    if not exe_path:
+        raise ValueError("未配置 SACS AnalysisEngine.exe 路径，请在 db_config.json 中设置 sacs_analysis_engine_exe")
+    if not os.path.isfile(exe_path):
+        raise FileNotFoundError(f"SACS AnalysisEngine.exe 不存在: {exe_path}")
+    return exe_path
+
+
+def resolve_runx_path(model_info: ModelInfo) -> str:
+    # 优先使用已经复制到运行目录的 RUNX。
+    # 这样即使 db_config.json 里配置了失效的模板路径，也不会阻塞计算。
+    model_dir = os.path.dirname(model_info.new_model_file)
+    candidates = [
+        os.path.join(model_dir, "psiM1.runx"),
+        os.path.join(model_dir, "psim1.runx"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return os.path.normpath(p)
+
+    configured = os.path.normpath(str(get_sacs_default_runx_path() or "").strip())
+    if configured and os.path.isfile(configured):
+        return configured
+
+    configured_hint = f"；当前 db_config.json 配置为：{configured}" if configured else ""
+    raise FileNotFoundError(
+        "未找到 RUNX 文件。新流程下 RUNX 不再由用户上传，"
+        "请将服务端固定模板放到 项目根目录下的 psiM1.runx，"
+        "或在 db_config.json 中设置有效的 sacs_default_runx_path" + configured_hint
+    )
 
 
 def read_text_lines(file_path: str) -> List[str]:
@@ -638,6 +636,121 @@ def _strip_existing_new_sections(lines: List[str]) -> List[str]:
     return out
 
 
+def _gcol_rgb_text(r: int, g: int, b: int) -> str:
+    """
+    生成 SACS 组颜色文本。
+
+    VBA 中 ColorNumber(255) 会写成 255，
+    ColorNumber(0) 会写成带空格对齐的 0。
+    这里生成类似：
+        M255   0   0
+        M  0 255 255
+    """
+    return f"M{int(r):>3}{int(g):>4}{int(b):>4}"
+
+
+def build_group_color_lines(groups: List[ExportGroup]) -> List[str]:
+    """
+    按 VBA 逻辑为新增构件组生成颜色 **GCOL** 行。
+
+    VBA 规则：
+    - 井槽 WellSlot：红色 RGB(255, 0, 0)
+    - 立管/管线 RiserCable：青色 RGB(0, 255, 255)
+    - 每个对象只给前两个组上色：主构件组 + SUPPORT 组
+    - WISHBONE 组不单独上色
+    - 每行最多写 4 个 group
+    """
+    items: List[str] = []
+
+    for g in groups:
+        gid = str(g.group_id or "").strip()
+        if not gid:
+            continue
+
+        source_type = str(g.source_type or "").strip().upper()
+        group_type = str(g.group_type or "").strip().upper()
+
+        # VBA 中只显示 Conductor/Support、RiserCable/Support，
+        # Wishbone 组不单独设置颜色。
+        if group_type == "WISHBONE":
+            continue
+
+        if source_type == "WELLSLOT":
+            rgb_text = _gcol_rgb_text(255, 0, 0)
+        elif source_type == "RISER":
+            rgb_text = _gcol_rgb_text(0, 255, 255)
+        else:
+            continue
+
+        items.append(f" {gid}{rgb_text}")
+
+    lines: List[str] = []
+    for i in range(0, len(items), 4):
+        lines.append(" **GCOL**" + "".join(items[i:i + 4]) + "\n")
+
+    return lines
+
+
+def _strip_existing_gcol_for_new_groups(
+    lines: List[str],
+    groups: List[ExportGroup],
+) -> List[str]:
+    """
+    清理旧的新增组颜色行，避免重复生成 **GCOL**。
+
+    注意：
+    - 只删除包含本次新增 group_id 的 **GCOL** 行；
+    - 不删除原模型已有的颜色设置行。
+    """
+    new_group_ids = {
+        str(g.group_id or "").strip().upper()
+        for g in groups
+        if str(g.group_id or "").strip()
+    }
+
+    if not new_group_ids:
+        return list(lines)
+
+    out: List[str] = []
+
+    for line in lines:
+        upper = str(line or "").upper()
+
+        if "**GCOL**" in upper:
+            if any((gid + "M") in upper for gid in new_group_ids):
+                continue
+
+        out.append(line)
+
+    return out
+
+
+def _insert_color_lines_after_first_end(
+    lines: List[str],
+    color_lines: List[str],
+) -> List[str]:
+    """
+    按 VBA 逻辑，在第一个 END 行后插入新增构件颜色。
+    """
+    if not color_lines:
+        return list(lines)
+
+    out: List[str] = []
+    inserted = False
+
+    for line in lines:
+        out.append(line)
+
+        if not inserted and str(line or "").strip().upper() == "END":
+            out.extend(color_lines)
+            inserted = True
+
+    if not inserted:
+        out.extend(color_lines)
+
+    return out
+
+
 def _insert_new_blocks_like_vba(
     input_lines: List[str],
     group_block: List[str],
@@ -665,7 +778,12 @@ def _insert_new_blocks_like_vba(
                 group_inserted = True
             process_group = False
 
-        if process_member and (not _is_member_line(line)) and (not _is_comment_line(line)) and (not _line_starts_with(line, "MEMB2")):
+        if (
+            process_member
+            and (not _is_member_line(line))
+            and (not _is_comment_line(line))
+            and (not _line_starts_with(line, "MEMB2"))
+        ):
             if not member_inserted:
                 output.extend(member_block)
                 member_inserted = True
@@ -706,11 +824,18 @@ def export_model_file(
     new_joints: List[ExportJoint],
     new_members: List[ExportMember],
 ) -> None:
-    input_lines = _strip_existing_new_sections(read_text_lines(model_info.model_file))
+    input_lines = read_text_lines(model_info.model_file)
+
+    # 清理旧的新增 Groups / Members / Joints 块，避免重复叠加。
+    input_lines = _strip_existing_new_sections(input_lines)
+
+    # 清理旧的新增构件颜色行，避免重复生成 **GCOL**。
+    input_lines = _strip_existing_gcol_for_new_groups(input_lines, new_groups)
 
     group_block = _new_block("Groups", build_group_lines(new_groups))
     member_block = _new_block("Members", build_member_lines(new_members))
     joint_block = _new_block("Joints", build_joint_lines(new_joints))
+    color_lines = build_group_color_lines(new_groups)
 
     output_lines = _insert_new_blocks_like_vba(
         input_lines,
@@ -718,6 +843,9 @@ def export_model_file(
         member_block=member_block,
         joint_block=joint_block,
     )
+
+    # 按 VBA 逻辑，在第一个 END 后插入新增构件颜色。
+    output_lines = _insert_color_lines_after_first_end(output_lines, color_lines)
 
     write_text_lines(model_info.new_model_file, output_lines)
 
@@ -742,8 +870,6 @@ def export_sea_file(
 
     output_lines = append_before_final_end(input_lines, insert_lines)
     write_text_lines(model_info.new_sea_file, output_lines)
-
-
 
 
 def generate_bat(model_info: ModelInfo) -> Optional[str]:
