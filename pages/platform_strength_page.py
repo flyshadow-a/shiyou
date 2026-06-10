@@ -359,6 +359,8 @@ def _find_current_model_file_from_db_for_preview(facility_code: str) -> str:
 def _find_best_inp_file_for_preview(facility_code: str, model_files_root: str, upload_dir: str) -> str:
     roots = [model_files_root, upload_dir]
     code = (facility_code or "").strip().lower()
+    if not code:
+        return ""
 
     candidates: list[tuple[int, float, str]] = []
     seen = set()
@@ -380,7 +382,9 @@ def _find_best_inp_file_for_preview(facility_code: str, model_files_root: str, u
                 name_low = fn.lower()
                 path_low = full.lower()
                 score = 0
-                if code and code in name_low:
+                if code not in path_low:
+                    continue
+                if code in name_low:
                     score += 200
                 if "model_files" in path_low:
                     score += 60
@@ -1667,7 +1671,7 @@ class PlatformStrengthPage(BasePage):
         try:
             if not payload.get("path"):
                 self.inp_path_label.setText("未找到可解析的 SACS 结构模型文件")
-                self._set_inp_view_placeholder_text(
+                self._clear_inp_view_or_placeholder(
                     "未找到可解析的 SACS 结构模型文件\n"
                     "请先上传文件名以 sacinp 开头（或扩展名为 .sacinp）的模型文件"
                 )
@@ -1703,7 +1707,7 @@ class PlatformStrengthPage(BasePage):
         if getattr(self, "_is_closing", False):
             return
         self.inp_path_label.setText("模型加载失败")
-        self._set_inp_view_placeholder_text(f"INP 加载失败：\n{error}")
+        self._clear_inp_view_or_placeholder(f"INP 加载失败：\n{error}")
         self._refresh_layers_table()
 
     def _load_strength_env_tables(self):
@@ -3673,6 +3677,20 @@ class PlatformStrengthPage(BasePage):
         if placeholder is not None:
             placeholder.setText(text)
 
+    def _clear_inp_view_or_placeholder(self, text: str) -> None:
+        view = getattr(self, "inp_view", None)
+        if view is not None:
+            try:
+                view.clear_view(text)
+                view._loaded_path = ""
+                view._nodes = {}
+                view._members = []
+                view._groups_od = {}
+            except Exception:
+                pass
+            return
+        self._set_inp_view_placeholder_text(text)
+
     def _open_inp_fullscreen_view(self):
         path = ""
         try:
@@ -3823,6 +3841,8 @@ class PlatformStrengthPage(BasePage):
     def _find_best_inp_file(self, facility_code: str) -> str:
         roots = [self.model_files_root, self.upload_dir]
         code = (facility_code or "").strip().lower()
+        if not code:
+            return ""
 
         candidates: List[Tuple[int, float, str]] = []
         seen = set()
@@ -3846,7 +3866,10 @@ class PlatformStrengthPage(BasePage):
                     score = 0
                     score = 0
 
-                    if code and code in name_low:
+                    if code not in path_low:
+                        continue
+
+                    if code in name_low:
                         score += 200
 
                     if "model_files" in path_low:
@@ -4078,7 +4101,7 @@ class PlatformStrengthPage(BasePage):
 
         except Exception as e:
             self.inp_path_label.setText("模型加载失败")
-            self._set_inp_view_placeholder_text(f"INP 加载失败：\n{e}")
+            self._clear_inp_view_or_placeholder(f"INP 加载失败：\n{e}")
             self._refresh_layers_table()
 
     # ---------------- 左侧表格 ----------------

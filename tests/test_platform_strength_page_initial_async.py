@@ -191,6 +191,74 @@ def test_empty_model_preview_result_keeps_placeholder_without_creating_vtk(monke
         app.processEvents()
 
 
+def test_empty_model_preview_result_clears_existing_vtk_view(monkeypatch):
+    from PyQt5.QtWidgets import QApplication, QWidget
+
+    from pages import platform_strength_page
+
+    app = QApplication.instance() or QApplication([])
+    cleared_messages: list[str] = []
+
+    monkeypatch.setattr(
+        platform_strength_page,
+        "default_platform",
+        lambda: {
+            "branch": "B1",
+            "op_company": "O1",
+            "oilfield": "F1",
+            "facility_code": "P1",
+            "facility_name": "Platform 1",
+            "facility_type": "平台",
+            "category": "井口平台",
+            "start_time": "2020-01-01",
+            "design_life": "20",
+        },
+    )
+    monkeypatch.setattr(
+        platform_strength_page,
+        "load_facility_profile",
+        lambda facility_code, defaults=None: dict(defaults or {}, facility_code=facility_code),
+    )
+
+    class FakeSacsView(QWidget):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._loaded_path = "C:/upload/model_files/sacinp.JKnew"
+
+        def bind_sliders(self, *_args, **_kwargs):
+            return None
+
+        def clear_view(self, message=""):
+            cleared_messages.append(str(message))
+            self._loaded_path = ""
+
+    monkeypatch.setattr(platform_strength_page, "PyVistaSacsView", FakeSacsView)
+    monkeypatch.setattr(
+        platform_strength_page.PlatformStrengthPage,
+        "_schedule_initial_page_load",
+        lambda self: None,
+    )
+
+    page = platform_strength_page.PlatformStrengthPage(main_window=None)
+    try:
+        assert page._ensure_inp_view_created() is True
+
+        page._on_model_preview_loaded(
+            {
+                "seq": page._model_preview_load_seq,
+                "path": "",
+                "target_z": 9.1,
+            }
+        )
+
+        assert cleared_messages
+        assert "未找到可解析的 SACS 结构模型文件" in cleared_messages[-1]
+        assert page.inp_view._loaded_path == ""
+    finally:
+        page.deleteLater()
+        app.processEvents()
+
+
 def test_load_strength_env_payload_collects_database_rows(monkeypatch):
     from pages import platform_strength_page
 
@@ -291,6 +359,26 @@ def test_load_model_preview_payload_resolves_empty_path_before_parsing(monkeypat
 
     assert parsed_paths == [str(model_path)]
     assert payload["path"] == str(model_path)
+
+
+def test_model_preview_fallback_scan_does_not_use_unscoped_upload_model_for_other_platform(tmp_path):
+    from pages import platform_strength_page
+
+    upload_root = tmp_path / "upload" / "model_files"
+    upload_root.mkdir(parents=True)
+    unscoped_model = upload_root / "sacinp.JKnew"
+    unscoped_model.write_text(
+        "JOINT A001      0.0    0.0    9.1\n"
+        "JOINT A002      1.0    0.0    9.1\n"
+        "MEMBER A001A002 G01\n",
+        encoding="utf-8",
+    )
+
+    assert platform_strength_page._find_best_inp_file_for_preview(
+        "NO_DATA_PLATFORM",
+        str(upload_root),
+        "",
+    ) == ""
 
 
 def test_autoload_model_preview_starts_worker_instead_of_parsing_on_ui_thread(monkeypatch, tmp_path):
