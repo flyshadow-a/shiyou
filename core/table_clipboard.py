@@ -89,10 +89,11 @@ class TableClipboardController(QObject):
         ignored_rows = 0
         skipped_cells = 0
         lines = text.splitlines()
-        for row_offset, line in enumerate(lines):
+        paste_lines = self._target_paste_lines(lines)
+        for row_offset, line in enumerate(paste_lines):
             row = start_row + row_offset
             if row >= self._table.rowCount():
-                ignored_rows += len(lines) - row_offset
+                ignored_rows += len(paste_lines) - row_offset
                 break
             row_written = False
             for col_offset, value in enumerate(line.split("\t")):
@@ -123,6 +124,16 @@ class TableClipboardController(QObject):
                 min(index.column() for index in indexes),
             )
         return current
+
+    def _target_paste_lines(self, lines: list[str]) -> list[str]:
+        if len(lines) != 1:
+            return lines
+
+        selected_rows = {index.row() for index in self._table.selectedIndexes()}
+        if len(selected_rows) <= 1:
+            return lines
+
+        return lines * len(selected_rows)
 
     def _cell_text(self, row: int, col: int) -> str:
         widget = self._table.cellWidget(row, col)

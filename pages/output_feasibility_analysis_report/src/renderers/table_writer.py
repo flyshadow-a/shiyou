@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any, Iterable, Mapping, Sequence
 
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
 from docx.table import Table
@@ -139,11 +140,53 @@ def ensure_table_column_count(table: Table, required_columns: int) -> None:
         table.add_column(Pt(36))
 
 
+def _tc_grid_span(tc) -> int:
+    tc_pr = tc.tcPr
+    grid_span = tc_pr.gridSpan if tc_pr is not None else None
+    if grid_span is None:
+        return 1
+    try:
+        return max(1, int(grid_span.val))
+    except Exception:
+        value = grid_span.get(qn("w:val"))
+        try:
+            return max(1, int(value))
+        except Exception:
+            return 1
+
+
+def _set_tc_grid_span(tc, span: int) -> None:
+    tc_pr = tc.get_or_add_tcPr()
+    grid_span = tc_pr.gridSpan
+    if span <= 1:
+        if grid_span is not None:
+            tc_pr.remove(grid_span)
+        return
+    if grid_span is None:
+        grid_span = OxmlElement("w:gridSpan")
+        tc_pr.append(grid_span)
+    grid_span.set(qn("w:val"), str(span))
+
+
+def _remove_grid_column_from_row(row, column_index: int) -> None:
+    grid_position = 0
+    for tc in list(row._tr.tc_lst):
+        span = _tc_grid_span(tc)
+        next_position = grid_position + span
+        if grid_position <= column_index < next_position:
+            if span > 1:
+                _set_tc_grid_span(tc, span - 1)
+            else:
+                row._tr.remove(tc)
+            return
+        grid_position = next_position
+
+
 def trim_table_column_count(table: Table, required_columns: int) -> None:
     while len(table.columns) > required_columns:
         column_index = len(table.columns) - 1
         for row in table.rows:
-            row._tr.remove(row.cells[column_index]._tc)
+            _remove_grid_column_from_row(row, column_index)
 
         tbl_grid = table._tbl.tblGrid
         grid_columns = tbl_grid.gridCol_lst

@@ -86,6 +86,20 @@ def test_platform_profiles_are_cached_until_explicit_refresh(monkeypatch):
     assert calls == ["load", "load"]
 
 
+def test_refresh_platform_profiles_cache_clears_oilfield_top_cache(monkeypatch):
+    calls = []
+    patch_summary_profiles(monkeypatch, [profile("NEW-1", "New Platform")])
+    monkeypatch.setattr(
+        platforms,
+        "_clear_oilfield_top_data_cache_if_loaded",
+        lambda: calls.append("clear-oilfield-top-cache"),
+    )
+
+    platforms.refresh_platform_profiles_cache()
+
+    assert calls == ["clear-oilfield-top-cache"]
+
+
 def test_apply_platform_defaults_to_fields_uses_cached_database_options(monkeypatch):
     patch_summary_profiles(
         monkeypatch,

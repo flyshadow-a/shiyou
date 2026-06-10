@@ -146,6 +146,40 @@ class ReportTableWriterTests(unittest.TestCase):
         self.assertEqual("3", table.rows[3].cells[13].text)
         self.assertEqual("1.3", table.rows[4].cells[13].text)
 
+    def test_marine_growth_table_trims_real_template_with_merged_density_row(self) -> None:
+        template_path = next(
+            path
+            for path in REPORT_MODULE_ROOT.glob("*.docx")
+            if len(Document(str(path)).tables) == 14 and "before" not in path.name.lower()
+        )
+        document = Document(str(template_path))
+        table = document.tables[5]
+
+        write_environment_marine_growth_table(
+            table,
+            [
+                {
+                    "layer_no": 1,
+                    "upper_limit_m": "0",
+                    "lower_limit_m": "-15",
+                    "thickness_mm": "10",
+                    "density_t_per_m3": "1.4",
+                },
+                {
+                    "layer_no": 4,
+                    "upper_limit_m": "-50",
+                    "lower_limit_m": "-60",
+                    "thickness_mm": "4.5",
+                    "density_t_per_m3": "1.4",
+                },
+            ],
+        )
+
+        self.assertEqual(6, len(table.columns))
+        self.assertEqual("4", table.rows[0].cells[5].text)
+        self.assertEqual(f"{NON_BREAKING_HYPHEN}50", table.rows[1].cells[5].text)
+        self.assertEqual("1.4", table.rows[4].cells[5].text)
+
 
 if __name__ == "__main__":
     unittest.main()

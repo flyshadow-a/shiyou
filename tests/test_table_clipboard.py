@@ -138,6 +138,22 @@ class TableClipboardControllerTests(unittest.TestCase):
         self.assertEqual("b", table.item(1, 1).text())
         self.assertEqual("c", table.item(1, 2).text())
 
+    def test_paste_repeats_single_clipboard_row_across_selected_rows(self) -> None:
+        table = self._table()
+        TableClipboardController(table)
+        table.setRangeSelected(QTableWidgetSelectionRange(0, 0, 2, 1), True)
+
+        QApplication.clipboard().setText("a\tb")
+        event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_V, Qt.ControlModifier)
+        QApplication.sendEvent(table, event)
+
+        self.assertEqual("a", table.item(0, 0).text())
+        self.assertEqual("b", table.item(0, 1).text())
+        self.assertEqual("a", table.item(1, 0).text())
+        self.assertEqual("b", table.item(1, 1).text())
+        self.assertEqual("a", table.item(2, 0).text())
+        self.assertEqual("b", table.item(2, 1).text())
+
     def test_paste_reports_rows_beyond_table_bottom(self) -> None:
         table = self._table()
         overflow_counts = []

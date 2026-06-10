@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unicodedata
+import sys
 from typing import Any
 
 from services.inspection_business_db_adapter import list_facility_profiles
@@ -99,9 +100,17 @@ def clear_platform_profiles_cache() -> None:
     _PLATFORM_PROFILES_CACHE = None
 
 
+def _clear_oilfield_top_data_cache_if_loaded() -> None:
+    module = sys.modules.get("pages.oilfield_water_level_page")
+    clear_cache = getattr(module, "clear_oilfield_top_data_cache", None) if module is not None else None
+    if callable(clear_cache):
+        clear_cache()
+
+
 def refresh_platform_profiles_cache() -> list[dict[str, str]]:
     global _PLATFORM_PROFILES_CACHE
     _PLATFORM_PROFILES_CACHE = _load_platform_profiles_from_source()
+    _clear_oilfield_top_data_cache_if_loaded()
     return _copy_profiles(_PLATFORM_PROFILES_CACHE)
 
 
