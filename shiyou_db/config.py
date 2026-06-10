@@ -70,6 +70,7 @@ class AppSettings:
     sacs_default_runx_path: str = ""
     sacs_default_psiinp_path: str = ""
     sacs_default_jcninp_path: str = ""
+    sacs_local_runtime_root: str = ""
 
 
 def resolve_config_path(config_path: str | None = None) -> Path:
@@ -133,6 +134,7 @@ def load_settings(config_path: str | None = None) -> AppSettings:
         sacs_default_runx_path=str(raw.get("sacs_default_runx_path", "") or "").strip(),
         sacs_default_psiinp_path=str(raw.get("sacs_default_psiinp_path", "") or "").strip(),
         sacs_default_jcninp_path=str(raw.get("sacs_default_jcninp_path", "") or "").strip(),
+        sacs_local_runtime_root=str(raw.get("sacs_local_runtime_root", "") or "").strip(),
     )
 
 
@@ -164,3 +166,8 @@ def get_sacs_default_psiinp_path(config_path: str | None = None) -> str:
 def get_sacs_default_jcninp_path(config_path: str | None = None) -> str:
     settings = load_settings(config_path)
     return str(settings.sacs_default_jcninp_path or "").strip()
+
+
+def get_sacs_local_runtime_root(config_path: str | None = None) -> str:
+    settings = load_settings(config_path)
+    return str(settings.sacs_local_runtime_root or "").strip()
