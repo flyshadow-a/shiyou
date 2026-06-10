@@ -29,6 +29,9 @@ from pages.sacs_runtime_service import (
 DEFAULT_NEW_MODEL_NAME = "sacinp.M1"
 DEFAULT_NEW_SEA_NAME = "seainp.M1"
 
+# 用户在界面输入的组块重量单位是 t，写入 SEA 的 STWN 荷载要转换为 kN。
+TON_TO_KN = 9.8
+
 GENERATE_BAT = False
 
 def resolve_sacs_analysis_engine_exe() -> str:
@@ -534,31 +537,41 @@ def build_dead_load_lines(
 ) -> List[str]:
     lines: List[str] = []
 
+    # 井槽顶端载荷：
+    # 当前标准文件中 SLOT1 = -1000.0 已经与用户输入一致，
+    # 因此井槽顶端载荷不在这里额外乘 9.8，避免重复换算。
     for w in wellslot_top_loads:
         if not _is_valid_nonzero_number(w.top_load_fz):
             continue
 
+        load_value = -1.0 * float(w.top_load_fz)
+
         line = (
             "LOAD   "
-            + fill_parameters(str(w.joint_id or "").strip(), 4)
+            + fill_parameters_vba(str(w.joint_id or "").strip(), 4)
             + "                  "
-            + fill_parameters(-1.0 * float(w.top_load_fz), 7, 2)
+            + fill_parameters_vba(load_value, 7, "Number")
             + "                       GLOB JOIN   SLOT"
             + str(w.slot_no)
         )
         lines.append(line + "\n")
 
+    # 组块重量载荷：
+    # 用户在表格中输入的单位是 t，VBA 写入 SEA 时会按 kN 输出，
+    # 所以这里必须乘 9.8。
     seq = 0
     for r in topside_leg_loads:
         if not _is_valid_nonzero_number(r.leg_load):
             continue
 
         seq += 1
+        load_value_kn = -1.0 * float(r.leg_load) * TON_TO_KN
+
         line = (
             "LOAD   "
-            + fill_parameters(str(r.joint_id or "").strip(), 4)
+            + fill_parameters_vba(str(r.joint_id or "").strip(), 4)
             + "                  "
-            + fill_parameters(-1.0 * float(r.leg_load), 7, 2)
+            + fill_parameters_vba(load_value_kn, 7, "Number")
             + "                       GLOB JOIN   STWN"
             + str(seq)
         )
@@ -639,9 +652,19 @@ def _insert_load_lines_after_each_dead_block(
     load_lines: List[str],
 ) -> List[str]:
     """
-    按 VBA 思路处理 SEA：
-    遇到 DEAD 工况块，在该 DEAD 块结束后插入新增 LOAD。
-    不是把新增 LOAD 统一追加到文件最后。
+    按 VBA 的 SEA 写法：
+    遇到连续 DEAD 卡片后，在 DEAD 块结束的位置立即插入新增 LOAD。
+
+    标准效果：
+        DEAD
+        DEAD      -Y        M
+        LOAD   CN18 ...
+        LOAD   L01L ...
+        ************************WIND LOAD - OPERATING CONDITION************
+
+    注意：
+    注释行也代表 DEAD 块已经结束，所以新增 LOAD 要插在注释行上面，
+    不能插到 WIND LOAD 标题下面。
     """
     if not load_lines:
         return list(input_lines)
@@ -652,12 +675,12 @@ def _insert_load_lines_after_each_dead_block(
     for raw in input_lines:
         text = str(raw or "")
         stripped = text.strip().upper()
-
         is_dead_line = stripped.startswith("DEAD")
-        is_blank = stripped == ""
-        is_comment = stripped.startswith("*")
 
-        if pending_dead_block and (not is_dead_line) and (not is_blank) and (not is_comment):
+        # 只要上一段是 DEAD，并且当前行已经不是 DEAD，
+        # 就说明 DEAD 块结束了。此时必须立刻插入 LOAD。
+        # 不能跳过注释行，否则会插到 WIND LOAD 标题下面。
+        if pending_dead_block and not is_dead_line:
             output.extend(load_lines)
             pending_dead_block = False
 
