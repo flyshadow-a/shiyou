@@ -1794,7 +1794,15 @@ class ModelFilesDocsWidget(QWidget):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
 
-        if dialog.exec_() != QDialog.Accepted:
+        if not isinstance(dialog, QDialog):
+            QMessageBox.critical(self, "上传窗口错误", "选择文件类别窗口初始化失败，请重新打开页面后再试。")
+            return
+        try:
+            dialog_result = QDialog.exec_(dialog)
+        except TypeError as exc:
+            QMessageBox.critical(self, "上传窗口错误", f"选择文件类别窗口打开失败：\n{exc}")
+            return
+        if dialog_result != QDialog.Accepted:
             return
 
         category = category_combo.currentText().strip()

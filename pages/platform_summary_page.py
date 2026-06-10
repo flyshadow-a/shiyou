@@ -30,6 +30,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core.base_page import BasePage
+from core.dialog_utils import exec_dialog_safely
 from core.message_boxes import ask_yes_no
 from services.inspection_business_db_adapter import (
     save_facility_profile,
@@ -968,7 +969,7 @@ class PlatformSummaryPage(BasePage):
 
     def open_batch_add_dialog(self):
         dialog = PlatformDetailDialog({}, self, is_new=True)
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog_safely(dialog, title="平台详情窗口错误", context="新增平台详情窗口", parent=self) != QDialog.Accepted:
             return
 
         values = dialog.get_values()
@@ -993,7 +994,7 @@ class PlatformSummaryPage(BasePage):
             return
         values = self._row_values_dict(row)
         dialog = PlatformDetailDialog(values, self, is_new=False)
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog_safely(dialog, title="平台详情窗口错误", context="平台详情编辑窗口", parent=self) != QDialog.Accepted:
             return
         self._write_row_values(row, dialog.get_values())
         self._update_table_columns()

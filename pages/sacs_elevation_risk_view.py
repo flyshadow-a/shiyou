@@ -29,6 +29,7 @@ from services.file_db_adapter import (
     list_storage_paths_by_prefix,
 )
 from core.app_paths import external_path, first_existing_path
+from core.dialog_utils import exec_dialog_safely
 
 import traceback
 from pages.sacs_storage_service import get_job_runtime_dir, get_job_source_dir
@@ -3309,7 +3310,7 @@ class SacsElevationRiskView(QGraphicsView):
             full_view._draw_message("当前没有可全屏显示的图形")
 
         dlg.showMaximized()
-        dlg.exec_()
+        exec_dialog_safely(dlg, title="立面图窗口错误", context="立面图全屏窗口", parent=self)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

@@ -1676,6 +1676,7 @@ def prepare_special_strategy_calculation(
             params_json=paths["params_json"],
             ftginp_files=[Path(str(x)).resolve() for x in resolved_inputs["ftginp"]],
             manual_fill_workbook=manual_fill_workbook,
+            manual_selector_overrides=manual_fill_entries,
             interactive_manual_fill=interactive_manual_fill,
             enable_topology_inference=bool(cfg.get("enable_topology_inference", False)),
         )

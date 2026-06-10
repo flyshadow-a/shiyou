@@ -473,7 +473,6 @@ class UploadStagingDialog(QDialog):
         "序号",
         "文件名",
         "编码",
-        "设计阶段",
         "专业类别",
         "专业",
         "文件分类",
@@ -611,7 +610,6 @@ class UploadStagingDialog(QDialog):
                 str(row + 1),
                 os.path.basename(item["path"]),
                 str(meta.get("document_code") or ""),
-                str(meta.get("design_stage_name") or ""),
                 str(meta.get("discipline_group") or ""),
                 str(meta.get("discipline_name") or ""),
                 str(meta.get("file_class_name") or item.get("category") or ""),
@@ -1520,7 +1518,15 @@ class DocManWidget(QFrame):
             require_recognized=self._requires_standard_document_code(),
             parent=self,
         )
-        if dialog.exec_() != QDialog.Accepted:
+        if not isinstance(dialog, QDialog):
+            QMessageBox.critical(self, "上传窗口错误", "上传文件分类窗口初始化失败，请重新打开页面后再试。")
+            return
+        try:
+            dialog_result = QDialog.exec_(dialog)
+        except TypeError as exc:
+            QMessageBox.critical(self, "上传窗口错误", f"上传文件分类窗口打开失败：\n{exc}")
+            return
+        if dialog_result != QDialog.Accepted:
             return
         items = dialog.selected_items()
         if not items:

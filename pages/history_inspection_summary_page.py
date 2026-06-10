@@ -45,6 +45,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core.base_page import BasePage
+from core.dialog_utils import exec_dialog_safely
 from core.dropdown_bar import DropdownBar
 from core.message_boxes import ask_yes_no
 from pages.file_management_platforms import (
@@ -983,7 +984,7 @@ class HistoryInspectionSummaryPage(BasePage):
 
     def _add_periodic_project(self):
         dialog = AddPeriodicInspectionDialog(self)
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog_safely(dialog, title="检测项目窗口错误", context="新增定期检测窗口", parent=self) != QDialog.Accepted:
             return
 
         values = dialog.get_values()
@@ -998,7 +999,7 @@ class HistoryInspectionSummaryPage(BasePage):
 
     def _add_special_event(self):
         dialog = AddSpecialEventInspectionDialog(self)
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog_safely(dialog, title="检测项目窗口错误", context="新增特殊事件检测窗口", parent=self) != QDialog.Accepted:
             return
 
         values = dialog.get_values()
@@ -1656,7 +1657,7 @@ class HistoryInspectionSummaryPage(BasePage):
             project_year=project.get("year", ""),
             parent=self,
         )
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog_safely(dialog, title="检测项目窗口错误", context="编辑定期检测窗口", parent=self) != QDialog.Accepted:
             return
         values = dialog.get_values()
         update_inspection_project(
@@ -1699,7 +1700,7 @@ class HistoryInspectionSummaryPage(BasePage):
             project_year=project.get("year", ""),
             parent=self,
         )
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog_safely(dialog, title="检测项目窗口错误", context="编辑特殊事件检测窗口", parent=self) != QDialog.Accepted:
             return
         values = dialog.get_values()
         update_inspection_project(
@@ -1747,7 +1748,7 @@ class HistoryInspectionSummaryPage(BasePage):
             conclusion=values[2],
             parent=self,
         )
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog_safely(dialog, title="检测记录窗口错误", context="编辑定期检测记录窗口", parent=self) != QDialog.Accepted:
             return
         result = dialog.get_values()
         self._loading_periodic_findings = True
@@ -1776,7 +1777,7 @@ class HistoryInspectionSummaryPage(BasePage):
             conclusion=values[2],
             parent=self,
         )
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog_safely(dialog, title="检测记录窗口错误", context="编辑特殊事件检测记录窗口", parent=self) != QDialog.Accepted:
             return
         result = dialog.get_values()
         self._loading_special_event_findings = True

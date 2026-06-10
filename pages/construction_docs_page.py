@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 from core.base_page import BasePage
+from core.dialog_utils import exec_dialog_safely
 from pages.document_library_widget import DocumentLibraryWidget
 from pages.file_management_filter_search_bar import FileManagementFilterSearchBar
 from pages.file_management_platforms import (
@@ -426,7 +427,7 @@ class ConstructionDocsPage(BasePage):
         profile = load_facility_profile(values.get("facility_code") or default_platform()["facility_code"])
         initial = profile.get("description_text") or build_platform_description(values)
         dialog = PlatformDescriptionDialog(initial, self)
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog_safely(dialog, title="平台描述窗口错误", context="平台描述编辑窗口", parent=self) != QDialog.Accepted:
             return
         text = dialog.get_value()
         if not text:

@@ -34,6 +34,7 @@ from PyQt5.QtWidgets import (
 
 from core.app_paths import first_existing_path
 from core.base_page import BasePage
+from core.dialog_utils import exec_dialog_safely
 from core.dropdown_bar import DropdownBar
 from core.table_clipboard import TableClipboardController
 from feasibility_analysis_services.oilfield_env_service import (
@@ -1975,7 +1976,7 @@ class PlatformStrengthPage(BasePage):
 
         btn_save.clicked.connect(save_dialog)
         btn_cancel.clicked.connect(dialog.reject)
-        dialog.exec_()
+        exec_dialog_safely(dialog, title="结构强度窗口错误", context="结构模型信息编辑窗口", parent=self)
 
     def _on_update_splash_table_to_db(self) -> None:
         self._open_splash_edit_dialog()
@@ -2146,7 +2147,7 @@ class PlatformStrengthPage(BasePage):
 
         btn_save.clicked.connect(save_dialog)
         btn_cancel.clicked.connect(dialog.reject)
-        dialog.exec_()
+        exec_dialog_safely(dialog, title="结构强度窗口错误", context=f"{title}窗口", parent=self)
 
     def _open_splash_edit_dialog(self) -> None:
         def save(values: List[float | None]) -> List[Dict[str, object]]:
@@ -2377,7 +2378,7 @@ class PlatformStrengthPage(BasePage):
         btn_cancel.clicked.connect(dialog.reject)
 
         fill_initial_rows()
-        dialog.exec_()
+        exec_dialog_safely(dialog, title="结构强度窗口错误", context="桩基信息编辑窗口", parent=self)
 
     def _install_dialog_table_clipboard(self, table: QTableWidget) -> None:
         table.setEditTriggers(
@@ -2589,7 +2590,7 @@ class PlatformStrengthPage(BasePage):
         btn_del_layer.clicked.connect(delete_selected_layer_columns)
         btn_save.clicked.connect(save_dialog)
         btn_cancel.clicked.connect(dialog.reject)
-        dialog.exec_()
+        exec_dialog_safely(dialog, title="结构强度窗口错误", context="海生物信息编辑窗口", parent=self)
 
     def _save_splash_table_to_db(self) -> None:
         profile_id, facility_code = self._get_strength_profile_context(create_if_missing=True)
@@ -2762,7 +2763,7 @@ class PlatformStrengthPage(BasePage):
 
         btn_save.clicked.connect(save_dialog)
         btn_cancel.clicked.connect(dialog.reject)
-        dialog.exec_()
+        exec_dialog_safely(dialog, title="结构强度窗口错误", context="水平层高程编辑窗口", parent=self)
 
     @staticmethod
     def _db_row_time(row: Dict[str, Any]) -> float:
@@ -3752,7 +3753,7 @@ class PlatformStrengthPage(BasePage):
 
         dlg.showMaximized()
         try:
-            dlg.exec_()
+            exec_dialog_safely(dlg, title="模型预览窗口错误", context="结构模型全屏预览窗口", parent=self)
         finally:
             try:
                 full_view.cleanup_vtk()

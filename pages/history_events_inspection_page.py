@@ -30,6 +30,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core.base_page import BasePage
+from core.dialog_utils import exec_dialog_safely
 from core.message_boxes import ask_yes_no
 from pages.construction_docs_widget import ConstructionDocsWidget
 from pages.file_management_platforms import (
@@ -643,7 +644,7 @@ class HistoryEventsInspectionPage(BasePage):
 
     def _add_inspection_project(self):
         dialog = AddInspectionProjectDialog(self._current_project_type(), self)
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog_safely(dialog, title="检测项目窗口错误", context="新增检测项目窗口", parent=self) != QDialog.Accepted:
             return
         values = dialog.get_values()
         project_type = values["project_type"]
@@ -681,7 +682,7 @@ class HistoryEventsInspectionPage(BasePage):
             summary_text=project.get("summary_text", ""),
             parent=self,
         )
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog_safely(dialog, title="检测项目窗口错误", context="编辑检测项目窗口", parent=self) != QDialog.Accepted:
             return
         values = dialog.get_values()
         try:
@@ -827,7 +828,7 @@ class HistoryEventsInspectionPage(BasePage):
             conclusion=values[2],
             parent=self,
         )
-        if dialog.exec_() != QDialog.Accepted:
+        if exec_dialog_safely(dialog, title="检测记录窗口错误", context="编辑抽检记录窗口", parent=self) != QDialog.Accepted:
             return
         result = dialog.get_values()
         self._loading_findings = True

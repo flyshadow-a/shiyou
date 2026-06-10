@@ -34,6 +34,7 @@ from services.file_db_adapter import (
 from pages.model_files_page import ModelFilesDocsWidget
 from pages.upgrade_special_inspection_result_page import UpgradeSpecialInspectionResultPage
 from services.special_strategy_runtime import (
+    check_special_strategy_manual_fill_rows,
     finalize_special_strategy_calculation,
     load_base_config,
     load_default_params,
@@ -246,12 +247,13 @@ class _RemoteStrategyApiClient:
         facility_code: str,
         param_overrides: dict[str, Any],
         input_overrides: dict[str, Any],
+        metadata: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         payload = {
             "facility_code": facility_code,
             "param_overrides": param_overrides or {},
             "input_overrides": input_overrides or {},
-            "metadata": {},
+            "metadata": metadata or {},
         }
         try:
             result = self._submit_and_wait("/api/strategy/prepare", payload)
@@ -350,6 +352,30 @@ class _RemoteStrategyApiClient:
             except Exception:
                 return result
         return result
+
+
+def _check_manual_fill_rows_for_client(
+    facility_code: str,
+    param_overrides: dict[str, Any],
+    input_overrides: dict[str, Any],
+) -> list[dict[str, Any]]:
+    metadata = {"disable_server_gui": True, "manual_fill_check_only": True}
+    if _use_fastapi_backend():
+        data = _RemoteStrategyApiClient().check_manual_fill(
+            facility_code=facility_code,
+            param_overrides=param_overrides,
+            input_overrides=input_overrides,
+            metadata=metadata,
+        )
+        rows = data.get("manual_fill_rows") or data.get("rows") or []
+    else:
+        rows = check_special_strategy_manual_fill_rows(
+            facility_code,
+            param_overrides=param_overrides,
+            input_overrides=input_overrides,
+            metadata=metadata,
+        )
+    return [dict(row) for row in (rows or []) if isinstance(row, dict)]
 
 
 class _SystemFilePickerDialog(QDialog):
@@ -765,6 +791,7 @@ class _SpecialStrategyCalculationWorker(QObject):
                         facility_code=self._facility_code,
                         param_overrides=self._param_overrides,
                         input_overrides=self._input_overrides,
+                        metadata=self._metadata,
                     )
                     self.finished.emit({"stage": emit_stage, "payload": result})
                     return
@@ -795,6 +822,7 @@ class _SpecialStrategyCalculationWorker(QObject):
                     self._facility_code,
                     param_overrides=self._param_overrides,
                     input_overrides=self._input_overrides,
+                    metadata=self._metadata,
                 )
             elif self._stage == "finalize":
                 if self._prepared_calculation is None:
@@ -813,6 +841,48 @@ class _SpecialStrategyCalculationWorker(QObject):
             self.finished.emit({"stage": self._stage, "payload": result})
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class _ManualFillCheckWorker(QObject):
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        facility_code: str,
+        *,
+        param_overrides: dict[str, Any] | None = None,
+        input_overrides: dict[str, Any] | None = None,
+    ):
+        super().__init__()
+        self._facility_code = facility_code
+        self._param_overrides = dict(param_overrides or {})
+        self._input_overrides = dict(input_overrides or {})
+
+    def run(self) -> None:
+        try:
+            rows = _check_manual_fill_rows_for_client(
+                self._facility_code,
+                self._param_overrides,
+                self._input_overrides,
+            )
+        except FileNotFoundError:
+            self.failed.emit(
+                "服务端缺少 /api/strategy/manual-fill/check 接口。\n"
+                "请先替换 server/routers/strategy.py 和 services/special_strategy_runtime.py。"
+            )
+            return
+        except Exception as exc:
+            self.failed.emit(f"检查疲劳输入人工补全项失败：\n{exc}")
+            return
+
+        self.finished.emit(
+            {
+                "rows": rows,
+                "param_overrides": self._param_overrides,
+                "input_overrides": self._input_overrides,
+            }
+        )
 
 
 def _sacinp_fixed_sub(line: str, start: int, length: int) -> str:
@@ -994,6 +1064,9 @@ class NewSpecialInspectionPage(BasePage):
         self._risk_progress_timer = QTimer(self)
         self._risk_progress_timer.setInterval(320)
         self._risk_progress_timer.timeout.connect(self._update_risk_progress_text)
+        self._manual_fill_check_progress: QProgressDialog | None = None
+        self._manual_fill_check_thread: QThread | None = None
+        self._manual_fill_check_worker: _ManualFillCheckWorker | None = None
         self._build_ui()
 
     def showEvent(self, event):
@@ -2039,25 +2112,77 @@ class NewSpecialInspectionPage(BasePage):
         self._set_risk_running(False)
         QMessageBox.warning(self, "更新风险等级失败", f"风险结果计算失败：\n{message}")
 
+    def _exec_dialog_safely(self, dialog: object, *, title: str, context: str) -> int | None:
+        if not isinstance(dialog, QDialog):
+            QMessageBox.critical(self, title, f"{context}窗口初始化失败，请重新打开页面后再试。")
+            return None
+        try:
+            return QDialog.exec_(dialog)
+        except TypeError as exc:
+            QMessageBox.critical(self, title, f"{context}窗口打开失败：\n{exc}")
+            return None
+
+    def _show_manual_fill_check_progress(self) -> QProgressDialog:
+        progress = QProgressDialog("正在检查缺失数据...", None, 0, 0, self)
+        progress.setWindowTitle("缺失数据检查")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
+        QApplication.processEvents()
+        return progress
+
+    @staticmethod
+    def _close_manual_fill_check_progress(progress: QProgressDialog | None) -> None:
+        if progress is None:
+            return
+        try:
+            progress.close()
+            progress.deleteLater()
+        except Exception:
+            pass
+
+    def _close_active_manual_fill_check_progress(self) -> None:
+        progress = getattr(self, "_manual_fill_check_progress", None)
+        self._manual_fill_check_progress = None
+        self._close_manual_fill_check_progress(progress)
+
+    def _prompt_client_manual_fill_entries(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        if not rows:
+            return []
+
+        dialog = ManualBraceClientDialog(rows, self)
+        dialog_result = self._exec_dialog_safely(
+            dialog,
+            title="ManualBrace 检查失败",
+            context="疲劳输入检查",
+        )
+        if dialog_result is None:
+            return None
+        if dialog_result != QDialog.Accepted:
+            return None
+        return dialog.result_entries
 
     def _collect_client_manual_fill_entries(
         self,
         param_overrides: dict[str, Any],
         input_overrides: dict[str, Any],
     ) -> list[dict[str, Any]] | None:
-        """远程模式下先让服务端做无 GUI 检查，再在客户端补充 ManualBrace。"""
-        if not _use_fastapi_backend():
-            return []
-
+        """先执行无 GUI 的 ManualBrace 检查，再统一用客户端弹窗补充。"""
+        progress: QProgressDialog | None = self._show_manual_fill_check_progress()
         try:
-            api = _RemoteStrategyApiClient()
-            data = api.check_manual_fill(
-                facility_code=self.facility_code,
-                param_overrides=param_overrides,
-                input_overrides=input_overrides,
-                metadata={"disable_server_gui": True, "manual_fill_check_only": True},
+            rows = _check_manual_fill_rows_for_client(
+                self.facility_code,
+                param_overrides,
+                input_overrides,
             )
+            self._close_manual_fill_check_progress(progress)
+            progress = None
         except FileNotFoundError:
+            self._close_manual_fill_check_progress(progress)
+            progress = None
             # 旧服务端没有检查接口时，为避免服务端继续弹 GUI，直接提示更新服务端。
             QMessageBox.warning(
                 self,
@@ -2067,23 +2192,108 @@ class NewSpecialInspectionPage(BasePage):
             )
             return None
         except Exception as exc:
+            self._close_manual_fill_check_progress(progress)
+            progress = None
             QMessageBox.warning(self, "ManualBrace 检查失败", f"检查疲劳输入人工补全项失败：\n{exc}")
             return None
+        finally:
+            if progress is not None:
+                self._close_manual_fill_check_progress(progress)
 
-        rows = data.get("manual_fill_rows") or data.get("rows") or []
-        if not rows:
-            return []
+        return self._prompt_client_manual_fill_entries(rows)
 
-        dialog = ManualBraceClientDialog(rows, self)
-        if dialog.exec_() != QDialog.Accepted:
-            return None
-        return dialog.result_entries
+    def _start_prepared_risk_calculation(
+        self,
+        param_overrides: dict[str, Any],
+        input_overrides: dict[str, Any],
+        manual_entries: list[dict[str, Any]],
+    ) -> None:
+        metadata = {
+            "manual_fill_entries": manual_entries,
+            "manual_fill_source": "client",
+            "disable_server_gui": True,
+        }
+        self._start_risk_calculation_worker(
+            stage="prepare",
+            param_overrides=param_overrides,
+            input_overrides=input_overrides,
+            metadata=metadata,
+        )
+
+    def _set_manual_fill_check_running(self, running: bool) -> None:
+        btn_update = getattr(self, "btn_update_risk", None)
+        btn_view = getattr(self, "btn_view_result", None)
+        if btn_update is not None:
+            btn_update.setEnabled(not running)
+        if btn_view is not None:
+            btn_view.setEnabled(not running)
+        if running:
+            self._manual_fill_check_progress = self._show_manual_fill_check_progress()
+        else:
+            self._close_active_manual_fill_check_progress()
+
+    def _on_manual_fill_check_thread_finished(self) -> None:
+        self._manual_fill_check_thread = None
+        self._manual_fill_check_worker = None
+
+    def _start_manual_fill_check_worker(
+        self,
+        param_overrides: dict[str, Any],
+        input_overrides: dict[str, Any],
+    ) -> None:
+        self._set_manual_fill_check_running(True)
+
+        thread = QThread(self)
+        worker = _ManualFillCheckWorker(
+            self.facility_code,
+            param_overrides=param_overrides,
+            input_overrides=input_overrides,
+        )
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_manual_fill_check_finished)
+        worker.failed.connect(self._on_manual_fill_check_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._on_manual_fill_check_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        self._manual_fill_check_thread = thread
+        self._manual_fill_check_worker = worker
+        thread.start()
+
+    def _on_manual_fill_check_finished(self, result_bundle: dict[str, Any]) -> None:
+        self._set_manual_fill_check_running(False)
+        rows = []
+        param_overrides: dict[str, Any] = {}
+        input_overrides: dict[str, Any] = {}
+        if isinstance(result_bundle, dict):
+            rows = list(result_bundle.get("rows") or [])
+            param_overrides = dict(result_bundle.get("param_overrides") or {})
+            input_overrides = dict(result_bundle.get("input_overrides") or {})
+
+        manual_entries = self._prompt_client_manual_fill_entries(rows)
+        if manual_entries is None:
+            QMessageBox.information(self, "更新风险等级", "已取消 ManualBrace 人工补全，本次计算未继续。")
+            return
+        self._start_prepared_risk_calculation(param_overrides, input_overrides, manual_entries)
+
+    def _on_manual_fill_check_failed(self, message: str) -> None:
+        self._set_manual_fill_check_running(False)
+        QMessageBox.warning(self, "ManualBrace 检查失败", str(message or "检查疲劳输入人工补全项失败。"))
 
     def _on_update_risk_level(self):
         if not self._validate_fatigue_groups():
             return
         if self._risk_thread is not None and self._risk_thread.isRunning():
             QMessageBox.information(self, "提示", "风险结果正在计算，请稍候。")
+            return
+        manual_fill_thread = getattr(self, "_manual_fill_check_thread", None)
+        if manual_fill_thread is not None and manual_fill_thread.isRunning():
+            QMessageBox.information(self, "提示", "缺失数据正在检查，请稍候。")
             return
         if not self._run_pre_risk_rule_dialog_sequence():
             return
@@ -2095,24 +2305,7 @@ class NewSpecialInspectionPage(BasePage):
             QMessageBox.warning(self, "参数错误", f"收集计算参数失败：\n{exc}")
             return
 
-        manual_entries = self._collect_client_manual_fill_entries(param_overrides, input_overrides)
-        if manual_entries is None:
-            QMessageBox.information(self, "更新风险等级", "已取消 ManualBrace 人工补全，本次计算未继续。")
-            return
-
-        metadata = {
-            "manual_fill_entries": manual_entries,
-            "manual_fill_source": "client",
-            "disable_server_gui": True,
-        }
-
-        # 远程模式保持原来的 /api/strategy/run 计算流程，只是把客户端补全项随 metadata 传给服务端。
-        self._start_risk_calculation_worker(
-            stage="run",
-            param_overrides=param_overrides,
-            input_overrides=input_overrides,
-            metadata=metadata,
-        )
+        self._start_manual_fill_check_worker(param_overrides, input_overrides)
 
     def _validate_fatigue_groups(self) -> bool:
         result_files = self._sorted_existing_paths(
@@ -2322,7 +2515,8 @@ class NewSpecialInspectionPage(BasePage):
             preview_available=preview_available,
             parent=self,
         )
-        if dialog.exec_() != QDialog.Accepted:
+        dialog_result = self._exec_dialog_safely(dialog, title="规则设置失败", context="规则设置")
+        if dialog_result != QDialog.Accepted:
             return None
         return normalize_rule_overrides(dialog.result_rules)
 
@@ -2400,7 +2594,13 @@ class NewSpecialInspectionPage(BasePage):
         return joint_ids, member_pairs, True
 
     def _run_post_risk_rule_dialog_sequence(self, prepared_calculation: dict[str, Any]) -> bool:
-        joint_ids, member_pairs, preview_available = self._load_post_risk_rule_preview_inputs(prepared_calculation)
+        return self._run_exclusion_rule_dialog_sequence(prepared_calculation)
+
+    def _run_exclusion_rule_dialog_sequence(self, prepared_calculation: dict[str, Any] | None = None) -> bool:
+        if isinstance(prepared_calculation, dict):
+            joint_ids, member_pairs, preview_available = self._load_post_risk_rule_preview_inputs(prepared_calculation)
+        else:
+            joint_ids, member_pairs, preview_available = self._load_rule_preview_inputs()
         current_rules = normalize_rule_overrides(self._rule_overrides)
         for mode in (
             RULE_MODE_MEMBER_EXCLUSION,
@@ -3408,7 +3608,8 @@ class NewSpecialInspectionPage(BasePage):
                 lambda path_key, model_key: self._system_library_rows_for_leaf(path_key, model_key, category, branch),
                 parent=self,
             )
-            if dialog.exec_() != QDialog.Accepted or not dialog.selected_row:
+            dialog_result = self._exec_dialog_safely(dialog, title="系统导入失败", context="系统文件选择")
+            if dialog_result != QDialog.Accepted or not dialog.selected_row:
                 return ""
 
             chosen_row = dict(dialog.selected_row)
@@ -3440,7 +3641,8 @@ class NewSpecialInspectionPage(BasePage):
             group_mode=True,
             parent=self,
         )
-        if dialog.exec_() != QDialog.Accepted:
+        dialog_result = self._exec_dialog_safely(dialog, title="系统导入失败", context="系统文件选择")
+        if dialog_result != QDialog.Accepted:
             return []
 
         chosen_rows = sorted(dialog.selected_rows, key=self._system_library_row_sort_key)
@@ -3462,7 +3664,8 @@ class NewSpecialInspectionPage(BasePage):
             QMessageBox.information(self, "系统导入", "系统文件库中暂无可用文件。")
             return ""
         dialog = _SystemFilePickerDialog(title, candidate_rows, self)
-        if dialog.exec_() != QDialog.Accepted:
+        dialog_result = self._exec_dialog_safely(dialog, title="系统导入失败", context="系统文件选择")
+        if dialog_result != QDialog.Accepted:
             return ""
         return dialog.selected_path
 

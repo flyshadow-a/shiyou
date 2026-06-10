@@ -42,6 +42,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QDesktopServices
 
 from core.base_page import BasePage
+from core.dialog_utils import exec_dialog_safely
 from core.message_boxes import ask_yes_no
 from core.table_clipboard import TableClipboardController
 
@@ -2573,7 +2574,7 @@ class FeasibilityAssessmentPage(BasePage):
         btn_row.addWidget(btn_close)
 
         v.addLayout(btn_row)
-        dlg.exec_()
+        exec_dialog_safely(dlg, title="详情窗口错误", context="文本详情窗口", parent=self)
 
 
     def _format_elevation_text(self, value) -> str:

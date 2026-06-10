@@ -4,9 +4,9 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication  # noqa: E402
+from PyQt5.QtWidgets import QApplication, QWidget  # noqa: E402
 
-from pages.doc_man import DocManWidget  # noqa: E402
+from pages.doc_man import DocManWidget, UploadStagingDialog  # noqa: E402
 from services import file_db_adapter  # noqa: E402
 
 
@@ -37,6 +37,48 @@ class DocManPageSizeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         _ensure_app()
+
+    def test_upload_staging_dialog_omits_design_stage_column(self) -> None:
+        dialog = UploadStagingDialog()
+        self.addCleanup(dialog.deleteLater)
+
+        headers = [
+            dialog.table.horizontalHeaderItem(index).text()
+            for index in range(dialog.table.columnCount())
+        ]
+
+        self.assertEqual(
+            ["序号", "文件名", "编码", "专业类别", "专业", "文件分类", "单体", "模块", "图号", "状态"],
+            headers,
+        )
+        self.assertNotIn("设计阶段", headers)
+
+        dialog._items = [
+            {
+                "path": os.path.join(tempfile.gettempdir(), "demo.pdf"),
+                "category": "规格书",
+                "meta": {
+                    "document_code": "DD-ST-SP-WC19-1D-001",
+                    "design_stage_name": "详细设计",
+                    "discipline_group": "设计文件",
+                    "discipline_name": "结构",
+                    "file_class_name": "规格书",
+                    "asset_unit_name": "WC19-1D平台",
+                    "module_unit_name": "上部组块",
+                    "drawing_no": "001",
+                    "recognition_status": "recognized",
+                },
+            }
+        ]
+        dialog._refresh_table()
+        row_values = [
+            dialog.table.item(0, index).text()
+            for index in range(dialog.table.columnCount())
+        ]
+
+        self.assertNotIn("详细设计", row_values)
+        self.assertEqual("设计文件", row_values[headers.index("专业类别")])
+        self.assertEqual("已识别", row_values[headers.index("状态")])
 
     def test_page_size_combo_starts_at_30_without_10(self) -> None:
         widget = DocManWidget(lambda _segments: tempfile.gettempdir())
@@ -88,3 +130,24 @@ def test_load_docman_record_page_treats_zero_page_size_as_all(monkeypatch):
     assert page["page_size"] == 3
     assert captured["kwargs"]["limit"] == 3
     assert captured["kwargs"]["offset"] == 0
+
+
+def test_open_upload_staging_handles_invalid_dialog_factory(monkeypatch):
+    _ensure_app()
+    widget = DocManWidget(lambda _segments: tempfile.gettempdir())
+    invalid_dialog = QWidget()
+    messages = []
+    try:
+        monkeypatch.setattr("pages.doc_man.UploadStagingDialog", lambda **_kwargs: invalid_dialog)
+        monkeypatch.setattr(
+            "pages.doc_man.QMessageBox.critical",
+            lambda _parent, title, text: messages.append((title, text)),
+        )
+
+        widget._open_upload_staging()
+
+        assert messages
+        assert "上传文件分类窗口" in messages[0][1]
+    finally:
+        invalid_dialog.deleteLater()
+        widget.deleteLater()

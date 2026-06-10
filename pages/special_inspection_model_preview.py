@@ -14,6 +14,8 @@ from PyQt5.QtWidgets import (
     QSizePolicy, QSlider, QWidget, QPushButton, QDialog
 )
 
+from core.dialog_utils import exec_dialog_safely
+
 
 def read_sacs_lines_with_fallback(file_path: str) -> List[str]:
     encodings = ["utf-8", "utf-8-sig", "gb18030", "gbk", "latin-1"]
@@ -519,7 +521,7 @@ class SpecialInspectionModelPreviewPanel(QFrame):
         )
 
         dlg.showMaximized()
-        dlg.exec_()
+        exec_dialog_safely(dlg, title="模型预览窗口错误", context="特检模型全屏预览窗口", parent=self)
 
     def _build_legend_item(self, text: str, color: str) -> QWidget:
         """

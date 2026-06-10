@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core.auth import AuthError, AuthService, UserSession
+from core.dialog_utils import exec_dialog_safely
 from pages.register_dialog import RegisterDialog
 
 
@@ -344,7 +345,7 @@ class LoginDialog(QDialog):
 
     def _on_register_clicked(self) -> None:
         dlg = RegisterDialog(self.auth_service, self)
-        if dlg.exec_() == dlg.Accepted and dlg.registered_username:
+        if exec_dialog_safely(dlg, title="注册窗口错误", context="注册窗口", parent=self) == dlg.Accepted and dlg.registered_username:
             self.user_edit.setText(dlg.registered_username)
             self.pwd_edit.clear()
             self.pwd_edit.setFocus()

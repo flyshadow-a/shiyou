@@ -5,15 +5,19 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from threading import Lock
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 
-from server.schemas import StrategyRunRequest
+from server.schemas import StrategyFinalizeRequest, StrategyRunRequest
 from server.task_manager import get_task, submit_task
 from services.special_strategy_runtime import (
     check_special_strategy_manual_fill_rows,
+    finalize_special_strategy_calculation,
     list_result_run_history,
     load_result_bundle,
+    prepare_special_strategy_calculation,
     run_special_strategy_calculation,
 )
 from services.special_strategy_state_db import (
@@ -23,6 +27,58 @@ from services.special_strategy_state_db import (
 
 
 router = APIRouter()
+_PREPARED_STRATEGY_CACHE: dict[str, dict[str, Any]] = {}
+_PREPARED_STRATEGY_CACHE_LOCK = Lock()
+
+
+def _cache_prepared_strategy(prepared: dict[str, Any]) -> str:
+    token = uuid4().hex
+    with _PREPARED_STRATEGY_CACHE_LOCK:
+        _PREPARED_STRATEGY_CACHE[token] = prepared
+    return token
+
+
+def _pop_prepared_strategy(token: str) -> dict[str, Any] | None:
+    key = str(token or "").strip()
+    if not key:
+        return None
+    with _PREPARED_STRATEGY_CACHE_LOCK:
+        return _PREPARED_STRATEGY_CACHE.pop(key, None)
+
+
+def _prepared_preview_payload(prepared: dict[str, Any]) -> dict[str, Any]:
+    pipeline = prepared.get("prepared_pipeline") if isinstance(prepared, dict) else {}
+    member_pairs: list[list[str]] = []
+    joint_ids: list[str] = []
+
+    if isinstance(pipeline, dict):
+        member_risk_df = pipeline.get("member_risk_df")
+        if hasattr(member_risk_df, "iterrows"):
+            try:
+                for _, row in member_risk_df.iterrows():
+                    joint_a = str(row.get("JointA") or "").strip()
+                    joint_b = str(row.get("JointB") or "").strip()
+                    if joint_a and joint_b:
+                        member_pairs.append([joint_a, joint_b])
+            except Exception:
+                member_pairs = []
+
+        forecast_df = pipeline.get("forecast_df")
+        if hasattr(forecast_df, "iterrows"):
+            try:
+                seen: set[str] = set()
+                for _, row in forecast_df.iterrows():
+                    joint_id = str(row.get("JoitID") or "").strip()
+                    if joint_id and joint_id not in seen:
+                        joint_ids.append(joint_id)
+                        seen.add(joint_id)
+            except Exception:
+                joint_ids = []
+
+    return {
+        "preview_joint_ids": joint_ids,
+        "preview_member_pairs": member_pairs,
+    }
 
 
 def _json_safe(value: Any) -> Any:
@@ -75,6 +131,58 @@ def _run_strategy_task(
     })
 
 
+def _prepare_strategy_task(
+    *,
+    facility_code: str,
+    param_overrides: dict[str, Any],
+    input_overrides: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    safe_metadata = dict(metadata or {})
+    safe_metadata["disable_server_gui"] = True
+    prepared = prepare_special_strategy_calculation(
+        facility_code,
+        param_overrides=param_overrides,
+        input_overrides=input_overrides,
+        metadata=safe_metadata,
+    )
+    token = _cache_prepared_strategy(prepared)
+    payload = {
+        "facility_code": facility_code,
+        "prepare_token": token,
+        "manual_fill_required": bool(prepared.get("manual_fill_required")),
+        "manual_fill_rows": prepared.get("manual_fill_rows") or [],
+    }
+    payload.update(_prepared_preview_payload(prepared))
+    return _json_safe(payload)
+
+
+def _finalize_strategy_task(
+    *,
+    facility_code: str,
+    prepare_token: str,
+    rule_overrides: dict[str, Any],
+) -> dict[str, Any]:
+    prepared = _pop_prepared_strategy(prepare_token)
+    if not isinstance(prepared, dict):
+        raise RuntimeError("prepare 结果已失效，请重新点击更新风险等级。")
+    if _normalize_facility_code(str(prepared.get("facility_code") or "")) != _normalize_facility_code(facility_code):
+        raise RuntimeError("prepare 结果与当前平台不一致，请重新点击更新风险等级。")
+
+    result = finalize_special_strategy_calculation(
+        prepared,
+        rule_overrides=rule_overrides or {},
+    )
+    state = result.get("state") or {}
+    return _json_safe({
+        "facility_code": facility_code,
+        "run_id": state.get("db_run_id"),
+        "snapshot_id": state.get("db_snapshot_id"),
+        "updated_at": state.get("updated_at"),
+        "state": state,
+    })
+
+
 @router.post("/manual-fill/check")
 def check_strategy_manual_fill(req: StrategyRunRequest):
     """
@@ -111,6 +219,43 @@ def run_strategy(req: StrategyRunRequest):
             "param_overrides": _json_safe(req.param_overrides),
             "input_overrides": _json_safe(req.input_overrides),
             "metadata": _json_safe({**(req.metadata or {}), "disable_server_gui": True}),
+        },
+    )
+    return {"task_id": task_id}
+
+
+@router.post("/prepare")
+def prepare_strategy(req: StrategyRunRequest):
+    task_id = submit_task(
+        name="special_strategy_prepare",
+        payload=_json_safe(req.model_dump()),
+        func=_prepare_strategy_task,
+        kwargs={
+            "facility_code": req.facility_code,
+            "param_overrides": _json_safe(req.param_overrides),
+            "input_overrides": _json_safe(req.input_overrides),
+            "metadata": _json_safe({**(req.metadata or {}), "disable_server_gui": True}),
+        },
+    )
+    return {"task_id": task_id}
+
+
+@router.post("/finalize")
+def finalize_strategy(req: StrategyFinalizeRequest):
+    token = str(req.prepare_token or "").strip()
+    if not token:
+        token = str((req.prepared_calculation or {}).get("prepare_token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="缺少 prepare_token，请重新点击更新风险等级。")
+
+    task_id = submit_task(
+        name="special_strategy_finalize",
+        payload=_json_safe(req.model_dump()),
+        func=_finalize_strategy_task,
+        kwargs={
+            "facility_code": req.facility_code,
+            "prepare_token": token,
+            "rule_overrides": _json_safe(req.rule_overrides),
         },
     )
     return {"task_id": task_id}

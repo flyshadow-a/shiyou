@@ -1245,6 +1245,19 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             return ""
         return str(value)
 
+    @staticmethod
+    def _display_probability_cell(value: object) -> str:
+        if value in ("", None):
+            return ""
+        text = str(value).strip()
+        if not text:
+            return ""
+        try:
+            number = float(text)
+        except (TypeError, ValueError):
+            return text
+        return f"{number:.4g}"
+
     def _is_new_strategy_result_entry(self) -> bool:
         """run_id 不为空：从“新增特检策略”页面查看本次更新结果，必须实时绘图。"""
         return self.run_id is not None
@@ -2278,12 +2291,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                     self._row_get(row, "b", "B_const", "B"),
                     self._row_get(row, "rm", "Rm", "倒塌分析载荷系数Rm"),
                     self._row_get(row, "vr", "VR"),
-                    self._row_get(row, "pf", "Pf"),
+                    self._row_get(row, "pf", "Pf", "pr", "Pr", "PR"),
                     self._row_get(row, "collapse_prob_level", "失效概率等级"),
                     self._row_get(row, "risk_level", "node_risk_level", "节点风险等级", "风险等级", "inspect_level", "检验等级"),
                 ]
             for c, value in enumerate(vals):
-                item = QTableWidgetItem(self._display_cell(value))
+                text = self._display_probability_cell(value) if c == 8 else self._display_cell(value)
+                item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignCenter)
                 table.setItem(r, c, item)
 

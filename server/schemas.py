@@ -13,6 +13,13 @@ class StrategyRunRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class StrategyFinalizeRequest(BaseModel):
+    facility_code: str
+    prepare_token: str = ""
+    prepared_calculation: dict[str, Any] = Field(default_factory=dict)
+    rule_overrides: dict[str, Any] = Field(default_factory=dict)
+
+
 class ImageExportRequest(BaseModel):
     facility_code: str
     run_id: int | None = None

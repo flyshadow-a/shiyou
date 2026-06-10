@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core.auth import AuthService, UserSession
+from core.dialog_utils import exec_dialog_safely
 from core.message_boxes import ask_yes_no
 from pages.nav_config import NAV_CONFIG
 
@@ -163,7 +164,7 @@ class MainWindow(QMainWindow):
         if self.logged_in and self.session is not None:
             return True
         dlg = LoginDialog(auth_service=self.auth_service)
-        if dlg.exec_() == dlg.Accepted and dlg.session is not None:
+        if exec_dialog_safely(dlg, title="登录窗口错误", context="登录窗口", parent=self) == dlg.Accepted and dlg.session is not None:
             self._apply_login_session(dlg.session)
             return True
         return False
@@ -557,7 +558,7 @@ class MainWindow(QMainWindow):
     def open_page_for_item(self, item: QTreeWidgetItem):
         if not self.logged_in or self.session is None:
             dlg = LoginDialog(self, auth_service=self.auth_service)
-            if dlg.exec_() == dlg.Accepted and dlg.session is not None:
+            if exec_dialog_safely(dlg, title="登录窗口错误", context="登录窗口", parent=self) == dlg.Accepted and dlg.session is not None:
                 self._apply_login_session(dlg.session)
             else:
                 return
@@ -743,7 +744,7 @@ class MainWindow(QMainWindow):
     def on_login_logout(self):
         if not self.logged_in:
             dlg = LoginDialog(self, auth_service=self.auth_service)
-            if dlg.exec_() == dlg.Accepted and dlg.session is not None:
+            if exec_dialog_safely(dlg, title="登录窗口错误", context="登录窗口", parent=self) == dlg.Accepted and dlg.session is not None:
                 self._apply_login_session(dlg.session)
                 self.open_personal_center_page()
             return
@@ -760,7 +761,7 @@ class MainWindow(QMainWindow):
         self.hide()
 
         dlg = LoginDialog(auth_service=self.auth_service)
-        if dlg.exec_() == dlg.Accepted and dlg.session is not None:
+        if exec_dialog_safely(dlg, title="登录窗口错误", context="登录窗口", parent=self) == dlg.Accepted and dlg.session is not None:
             self._apply_login_session(dlg.session)
             self.showMaximized()
             self.open_personal_center_page()
@@ -892,7 +893,7 @@ def main():
     login_dialog = LoginDialog(auth_service=auth_service)
     if not app_icon.isNull():
         login_dialog.setWindowIcon(app_icon)
-    if login_dialog.exec_() != login_dialog.Accepted or login_dialog.session is None:
+    if exec_dialog_safely(login_dialog, title="登录窗口错误", context="登录窗口") != login_dialog.Accepted or login_dialog.session is None:
         sys.exit(0)
 
     window = MainWindow(auth_service, login_dialog.session)

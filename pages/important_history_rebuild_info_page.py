@@ -29,6 +29,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core.base_page import BasePage
+from core.dialog_utils import exec_dialog_safely
 from core.message_boxes import ask_yes_no
 from services.inspection_business_db_adapter import list_inspection_projects
 from services.file_db_adapter import (
@@ -930,12 +931,8 @@ class ImportantHistoryDetailWidget(QWidget):
 
     @staticmethod
     def _exec_dialog(dialog: QDialog) -> int:
-        if not isinstance(dialog, QDialog):
-            raise TypeError(f"dialog is not a QDialog instance: {type(dialog)!r}")
-        exec_method = getattr(dialog, "exec", None)
-        if callable(exec_method):
-            return int(exec_method())
-        return int(dialog.exec_())
+        result = exec_dialog_safely(dialog, title="编辑失败", context="编辑改造窗口")
+        return QDialog.Rejected if result is None else int(result)
 
     def _delete_project(self):
         project = self._get_selected_project()

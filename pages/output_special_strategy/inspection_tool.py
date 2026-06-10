@@ -1414,10 +1414,16 @@ def normalize_manual_selector_overrides(
     if isinstance(raw, (list, tuple)):
         for item in raw:
             if isinstance(item, dict):
+                raw_item = item.get("raw") if isinstance(item.get("raw"), dict) else {}
                 _add(
-                    item.get("FileIndex") or item.get("file_index") or item.get("fileIndex"),
-                    item.get("Joint") or item.get("joint"),
-                    item.get("ManualBrace") or item.get("manual_brace") or item.get("Brace") or item.get("brace"),
+                    item.get("FileIndex") or item.get("file_index") or item.get("fileIndex") or raw_item.get("FileIndex"),
+                    item.get("Joint") or item.get("joint") or raw_item.get("Joint"),
+                    item.get("ManualBrace")
+                    or item.get("manual_brace")
+                    or item.get("Brace")
+                    or item.get("brace")
+                    or raw_item.get("ManualBrace")
+                    or raw_item.get("manual_brace"),
                 )
             elif isinstance(item, (list, tuple)) and len(item) >= 3:
                 _add(item[0], item[1], item[2])
@@ -2949,57 +2955,12 @@ def _build_user_exclusion_audit(
     return pd.DataFrame(rows, columns=RULE_OVERRIDE_AUDIT_COLUMNS)
 
 
-def _is_vba_k_three_digits(value: Any) -> bool:
-    return re.fullmatch(r"K\d{3}", _safe_str(value).upper()) is not None
-
-
-def _is_vba_zero_star_l(value: Any) -> bool:
-    text = _safe_str(value).upper()
-    return text.startswith("0") and text.endswith("L")
-
-
-def _should_delete_member_by_vba_rule(joint_a: Any, joint_b: Any) -> bool:
-    a = _safe_str(joint_a).upper()
-    b = _safe_str(joint_b).upper()
-    if a == "":
-        return False
-    if a.startswith("C") or b.startswith("C"):
-        return True
-    if a.startswith("B") and b.startswith("B"):
-        return True
-    if a.startswith("J") or b.startswith("J"):
-        return True
-    if a.startswith("O") or b.startswith("O"):
-        return True
-    if _is_vba_k_three_digits(a) and _is_vba_k_three_digits(b):
-        return True
-    if a.startswith("R") or b.startswith("R"):
-        return True
-    if _is_vba_zero_star_l(a) and _is_vba_zero_star_l(b):
-        return True
-    return False
-
-
-def _should_delete_joint_by_vba_rule(joint_id: Any) -> bool:
-    joint = _safe_str(joint_id).upper()
-    if joint == "":
-        return False
-    if joint.startswith(("C", "B", "J", "O", "R")):
-        return True
-    if _is_vba_k_three_digits(joint):
-        return True
-    return False
-
-
 def _apply_member_delete_rule(df: pd.DataFrame, user_rules: Any = None) -> pd.DataFrame:
     if df.empty or "JointA" not in df.columns or "JointB" not in df.columns:
         return df
     rules = _normalize_rule_overrides(user_rules)["member_exclusions"]
     keep_mask = [
-        not (
-            _should_delete_member_by_vba_rule(row.get("JointA"), row.get("JointB"))
-            or _matches_member_rules(row.get("JointA"), row.get("JointB"), rules)
-        )
+        not _matches_member_rules(row.get("JointA"), row.get("JointB"), rules)
         for _, row in df.iterrows()
     ]
     return df.loc[keep_mask].reset_index(drop=True)
@@ -3010,10 +2971,7 @@ def _apply_joint_delete_rule(df: pd.DataFrame, joint_col: str = "JoitID", user_r
         return df
     rules = _normalize_rule_overrides(user_rules)["joint_exclusions"]
     keep_mask = [
-        not (
-            _should_delete_joint_by_vba_rule(row.get(joint_col))
-            or any(_matches_rule_pattern(row.get(joint_col), rule) for rule in rules)
-        )
+        not any(_matches_rule_pattern(row.get(joint_col), rule) for rule in rules)
         for _, row in df.iterrows()
     ]
     return df.loc[keep_mask].reset_index(drop=True)

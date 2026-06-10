@@ -21,6 +21,8 @@ from PyQt5.QtWidgets import (
     QDialog,
 )
 
+from core.dialog_utils import exec_dialog_safely
+
 
 class PyVistaSacsCompareView(QFrame):
     COLOR_SCHEME = {
@@ -132,7 +134,7 @@ class PyVistaSacsCompareView(QFrame):
         panel.load_files(self._old_file, self._new_file, target_z=self._target_z)
 
         dlg.showMaximized()
-        dlg.exec_()
+        exec_dialog_safely(dlg, title="模型对比窗口错误", context="模型对比全屏窗口", parent=self)
 
     def safe_close(self):
         if self._closed:
@@ -708,7 +710,7 @@ class SacsComparePanel(QFrame):
         panel.load_files(self._old_file, self._new_file, target_z=self._target_z)
 
         dlg.showMaximized()
-        dlg.exec_()
+        exec_dialog_safely(dlg, title="模型对比窗口错误", context="模型对比全屏窗口", parent=self)
 
     def safe_close(self):
         try:

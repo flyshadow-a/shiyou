@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
 from pages.history_events_inspection_page import HistoryEventsInspectionPage  # noqa: E402
 from pages.history_inspection_summary_page import HistoryInspectionSummaryPage  # noqa: E402
 from pages.doc_man import DocManWidget  # noqa: E402
-from pages.model_files_page import ModelFilesPage  # noqa: E402
+from pages.model_files_page import ModelFilesDocsWidget, ModelFilesPage  # noqa: E402
 from pages.new_special_inspection_page import NewSpecialInspectionPage  # noqa: E402
 
 
@@ -285,6 +285,25 @@ class ModelFilesPageSmokeTests(GuiSmokeBase):
             self.addCleanup(page.deleteLater)
             records = page.docs_widget._build_model_file_doc_records("当前模型/疲劳")
             self.assertEqual(records[0]["work_condition"], "4-1WJT")
+
+    def test_new_upload_category_dialog_exec_error_shows_message(self) -> None:
+        widget = ModelFilesDocsWidget()
+        self.addCleanup(widget.deleteLater)
+        widget.current_leaf_key = "当前模型/静力"
+        widget.doc_man_configs = {widget.current_leaf_key: ["结构模型文件"]}
+        messages = []
+
+        with patch(
+            "pages.model_files_page.QDialog.exec_",
+            side_effect=TypeError("exec_(self): first argument of unbound method must have type 'QDialog'"),
+        ), patch(
+            "pages.model_files_page.QMessageBox.critical",
+            side_effect=lambda _parent, title, text: messages.append((title, text)),
+        ):
+            widget._handle_model_doc_new_upload([])
+
+        self.assertTrue(messages)
+        self.assertIn("选择文件类别窗口打开失败", messages[0][1])
 
 
 class DocManWidgetSmokeTests(GuiSmokeBase):

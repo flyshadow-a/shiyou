@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PyQt5.QtWidgets import QMessageBox, QWidget
 
+from core.dialog_utils import exec_dialog_safely
+
 
 def ask_yes_no(
     parent: QWidget | None,
@@ -27,4 +29,4 @@ def ask_yes_no(
     if default_button is not None:
         box.setDefaultButton(default_button)
 
-    return box.exec_() == QMessageBox.Yes
+    return exec_dialog_safely(box, title=title, context="确认窗口", parent=parent) == QMessageBox.Yes
