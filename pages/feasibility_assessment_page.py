@@ -93,7 +93,7 @@ class FeasibilityRunWorker(QObject):
             )
             task = api.wait_feasibility_task(task_id, interval=1.0)
             if str(task.get("status") or "").lower() != "success":
-                message = str(task.get("error") or task.get("message") or "服务端计算失败")
+                message = str(task.get("error") or task.get("message") or "计算失败")
                 message = message.replace("\\n", "\n")
                 if "当前已有 SACS 计算任务正在运行" in message:
                     message = message.split("Traceback", 1)[0].strip()
@@ -152,7 +152,7 @@ class FeasibilityCreateModelWorker(QObject):
             task = api.wait_feasibility_model_task(task_id, interval=1.0)
 
             if str(task.get("status") or "").lower() != "success":
-                raise RuntimeError(str(task.get("error") or task.get("message") or "服务端创建新模型失败"))
+                raise RuntimeError(str(task.get("error") or task.get("message") or "创建新模型失败"))
 
             result = task.get("result") or {}
             if not isinstance(result, dict):
@@ -1636,7 +1636,7 @@ class FeasibilityAssessmentPage(BasePage):
                 return
 
             self.btn_create.setEnabled(False)
-            self.btn_create.setText("服务端创建中...")
+            self.btn_create.setText("正在创建...")
 
             self._remote_create_model_thread = QThread(self)
             self._remote_create_model_worker = FeasibilityCreateModelWorker(facility_code)
@@ -1704,9 +1704,9 @@ class FeasibilityAssessmentPage(BasePage):
         except Exception as exc:
             print("[FeasibilityAssessmentPage] refresh runtime paths after create failed:", exc)
 
-        msg_lines = ["服务端创建新模型完成。"]
+        msg_lines = ["新模型创建完成。"]
         msg_lines.append("")
-        msg_lines.append("【服务端运行目录】")
+        msg_lines.append("【运行目录】")
         msg_lines.append(self.current_model_dir or "未找到运行目录")
 
         if new_model_file:
@@ -1740,7 +1740,7 @@ class FeasibilityAssessmentPage(BasePage):
         except Exception:
             pass
 
-        QMessageBox.critical(self, "创建失败", f"服务端创建新模型失败：\n{error}")
+        QMessageBox.critical(self, "创建失败", f"创建新模型失败：\n{error}")
 
     def _dump_table_block(self, title: str, table: QTableWidget, header_rows: int,
                           with_combo_cols: bool, combo_start_col: int) -> str:
@@ -2366,7 +2366,7 @@ class FeasibilityAssessmentPage(BasePage):
             self._last_analysis_mode = analysis_mode
 
         self.btn_run.setEnabled(False)
-        self.btn_run.setText("服务端计算中...")
+        self.btn_run.setText("正在计算...")
 
         thread = QThread(self)
         worker = FeasibilityRunWorker(self.facility_code, analysis_mode)
@@ -2446,7 +2446,7 @@ class FeasibilityAssessmentPage(BasePage):
         mode_text = "原模型" if self._last_analysis_mode == "original" else "本次创建的新模型/改造后模型"
 
         msg = (
-            "服务端计算完成。\n"
+            "计算完成。\n"
             f"计算对象：{mode_text}\n"
             f"计算目录：{self.current_model_dir}\n"
             f"结果文件：{self.current_result_file}"
@@ -2465,7 +2465,7 @@ class FeasibilityAssessmentPage(BasePage):
     def _on_remote_analysis_failed(self, message: str):
         self.btn_run.setEnabled(True)
         self.btn_run.setText("计算分析")
-        QMessageBox.critical(self, "运行失败", f"服务端计算失败：\n{message}")
+        QMessageBox.critical(self, "运行失败", f"计算失败：\n{message}")
 
     # def _on_view_result(self):
     #     path, _ = QFileDialog.getOpenFileName(self, "选择分析结果文件（psilst）", "", "All Files (*)")
