@@ -15,6 +15,7 @@
     "connect_timeout": 10
   },
   "storage_root": "\\\\10.177.19.121\\shiyou_file_storage",
+  "sacs_local_runtime_root": "",
   "storage_share": {
     "auto_connect": true,
     "username": "10.177.19.121\\shiyou_client",

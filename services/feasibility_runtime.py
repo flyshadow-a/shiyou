@@ -7,13 +7,14 @@ import csv
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from shiyou_db.config import get_sacs_analysis_engine_exe
+from shiyou_db.config import get_sacs_analysis_engine_exe, get_sacs_local_runtime_root
 from shiyou_db.runtime_db import get_mysql_url
 
 from pages.sacs_runtime_service import (
@@ -46,15 +47,60 @@ def _norm(path: object) -> str:
 
 def _make_analysis_work_dir(base_work_dir: str, facility_code: str) -> str:
     """
-    当前需求：不再为每次 SACS 计算创建 analysis_runs/run_xxx 独立目录，
-    直接复用 feasibility_assessment_runtime/<平台> 作为计算目录。
+    确保共享持久化目录存在。
 
-    并发判断仍然依赖 _assert_sacs_not_running_before_analysis()：
-    只要服务端检测到 AnalysisEngine.exe / SACW*.exe 正在运行，就拒绝新任务。
+    SACS 实际计算会在服务端本地高速目录执行，计算完成后再把结果回写到这里。
     """
     work_dir = Path(_norm(base_work_dir))
     work_dir.mkdir(parents=True, exist_ok=True)
     return os.path.normpath(str(work_dir))
+
+
+def _default_local_runtime_root() -> str:
+    for env_name in ("LOCALAPPDATA", "APPDATA", "TEMP", "TMP"):
+        value = str(os.environ.get(env_name) or "").strip()
+        if value:
+            return os.path.join(value, "shiyou", "sacs_runtime")
+    return os.path.join(tempfile.gettempdir(), "shiyou_sacs_runtime")
+
+
+def get_feasibility_local_runtime_root() -> str:
+    configured = _norm(get_sacs_local_runtime_root())
+    return configured or os.path.normpath(_default_local_runtime_root())
+
+
+def get_feasibility_local_work_dir(facility_code: str) -> str:
+    code = str(facility_code or "").strip()
+    if not code:
+        raise ValueError("facility_code 不能为空")
+    return os.path.normpath(
+        os.path.join(
+            get_feasibility_local_runtime_root(),
+            "feasibility_assessment_runtime",
+            code,
+            "current",
+        )
+    )
+
+
+def _ensure_writable_dir(path: str) -> str:
+    target = Path(_norm(path))
+    target.mkdir(parents=True, exist_ok=True)
+    probe = target / ".write_test.tmp"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"服务端本地 SACS 计算目录不可写：{target}\n"
+            "请在 db_config.json 中配置 sacs_local_runtime_root 为本机可写目录。\n"
+            f"{exc}"
+        ) from exc
+    return os.path.normpath(str(target))
+
+
+def _make_local_analysis_work_dir(facility_code: str) -> str:
+    return _ensure_writable_dir(get_feasibility_local_work_dir(facility_code))
 
 def _copy_input_to_analysis_dir(src_path: str, work_dir: str, target_name: str, *, required: bool = True) -> str:
     """复制输入文件到本次独立计算目录，并按目标文件名统一命名。"""
@@ -67,6 +113,33 @@ def _copy_input_to_analysis_dir(src_path: str, work_dir: str, target_name: str, 
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     if os.path.normcase(src) != os.path.normcase(dst):
         shutil.copy2(src, dst)
+    return dst
+
+
+def _copy_file_replace(src_path: str, dst_path: str, *, required: bool = True) -> str:
+    src = _norm(src_path)
+    dst = _norm(dst_path)
+    if not src or not os.path.isfile(src):
+        if required:
+            raise FileNotFoundError(f"待同步文件不存在：{src}")
+        return ""
+    if not dst:
+        if required:
+            raise ValueError("目标路径为空，无法同步文件")
+        return ""
+
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.normcase(src) == os.path.normcase(dst):
+        return dst
+
+    tmp = os.path.join(os.path.dirname(dst), f".{os.path.basename(dst)}.tmp")
+    try:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    except Exception:
+        pass
+    shutil.copy2(src, tmp)
+    os.replace(tmp, dst)
     return dst
 
 
@@ -259,14 +332,24 @@ def _latest_state_result_file(code: str) -> tuple[str, str, dict[str, Any]]:
     state = _load_latest_analysis_state(code)
     work_dir = _norm(state.get("work_dir") or get_job_runtime_dir(code))
     result_file = _norm(state.get("result_file"))
+    shared_result_file = _norm(state.get("shared_result_file"))
 
     if result_file and os.path.isfile(result_file):
         return result_file, work_dir, state
+
+    if shared_result_file and os.path.isfile(shared_result_file):
+        return shared_result_file, _norm(state.get("shared_work_dir") or get_job_runtime_dir(code)), state
 
     if work_dir:
         found = find_result_file(work_dir)
         if found and os.path.isfile(found):
             return _norm(found), work_dir, state
+
+    shared_work_dir = _norm(state.get("shared_work_dir") or state.get("base_work_dir"))
+    if shared_work_dir:
+        found = find_result_file(shared_work_dir)
+        if found and os.path.isfile(found):
+            return _norm(found), shared_work_dir, state
 
     base_dir = _norm(get_job_runtime_dir(code))
     runs_root = os.path.join(base_dir, "analysis_runs")
@@ -753,6 +836,52 @@ def _ensure_result_file_suffix_m1(work_dir: str, result_file: str) -> str:
         return src
 
 
+def _sync_analysis_outputs_to_shared(
+    *,
+    local_work_dir: str,
+    shared_work_dir: str,
+    result_file: str,
+) -> tuple[str, list[str]]:
+    local_work_dir = _norm(local_work_dir)
+    shared_work_dir = _norm(shared_work_dir)
+    result_file = _norm(result_file)
+
+    if not shared_work_dir:
+        raise ValueError("共享运行目录为空，无法回写计算结果")
+    os.makedirs(shared_work_dir, exist_ok=True)
+
+    shared_result_file = _copy_file_replace(
+        result_file,
+        os.path.join(shared_work_dir, "psilst.M1"),
+        required=True,
+    )
+
+    warnings: list[str] = []
+    optional_names = [
+        "analysis_summary.log",
+        "analysis_exitcode.txt",
+        "analysis_stdout.log",
+        "analysis_stderr.log",
+        "sacinp.M1",
+        "seainp.M1",
+        "psiinp.M1",
+        "Jcninp.M1",
+        "psiM1.runx",
+        "Autorun.bat",
+    ]
+    for name in optional_names:
+        src = os.path.join(local_work_dir, name)
+        if not os.path.isfile(src):
+            continue
+        dst = os.path.join(shared_work_dir, name)
+        try:
+            _copy_file_replace(src, dst, required=False)
+        except Exception as exc:
+            warnings.append(f"{name}: {exc}")
+
+    return shared_result_file, warnings
+
+
 def _rewrite_runx_for_analysis(
     runx_path: str,
     *,
@@ -868,11 +997,11 @@ def run_feasibility_analysis(
     # 先把服务端固定 RUNX、PSI、JCN 复制/规范化到平台运行根目录。
     support_files = stage_support_files_for_job(code, require_all=True)
 
-    # 当前需求：直接在平台运行目录内计算，不再创建 analysis_runs/run_xxx。
-    # 并发控制依赖 SACS 进程检测；计算前会清理上一轮输出。
-    work_dir = _make_analysis_work_dir(base_work_dir, code)
+    # 共享目录只作为持久化目录；SACS 高频读写统一放到服务端本地目录执行。
+    shared_work_dir = _make_analysis_work_dir(base_work_dir, code)
+    work_dir = _make_local_analysis_work_dir(code)
 
-    # 确认计算目录后再查一次，可识别执行当前 RUNX/BAT 的 cmd/powershell 进程。
+    # 确认本地计算目录后再查一次，可识别执行当前 RUNX/BAT 的 cmd/powershell 进程。
     _assert_sacs_not_running_before_analysis(work_dir=work_dir)
     assert_analysis_outputs_ready_before_analysis(work_dir)
 
@@ -917,7 +1046,7 @@ def run_feasibility_analysis(
         jcninp_path=jcninp_path,
     )
 
-    # 复用同一个计算目录，启动前必须清理上一轮 SACS 输出。
+    # 复用同一个本地计算目录，启动前必须清理上一轮 SACS 输出。
     _cleanup_previous_analysis_outputs(work_dir)
     start_time = time.time()
 
@@ -960,12 +1089,26 @@ def run_feasibility_analysis(
             f"结果文件：{result_file}"
         )
 
-    # 新流程取消“原模型结果自动保存到模型文件页面”。
-    # 计算结果只保留在运行目录，用户通过“导出文件”手动导出。
-    archived_path = ""
-
     # 等待输出文件释放后再把后台任务标记为完成，避免用户立即开始第二次计算时旧文件仍被占用。
     _wait_for_analysis_outputs_released(work_dir)
+
+    try:
+        shared_result_file, sync_warnings = _sync_analysis_outputs_to_shared(
+            local_work_dir=work_dir,
+            shared_work_dir=shared_work_dir,
+            result_file=result_file,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "SACS 本地计算已完成，但结果回写共享盘失败。\n"
+            f"本地结果文件：{result_file}\n"
+            f"共享目录：{shared_work_dir}\n"
+            f"{exc}"
+        ) from exc
+
+    # 新流程取消“原模型结果自动保存到模型文件页面”。
+    # 计算结果保留在本地高速目录，并同步一份到共享运行目录。
+    archived_path = ""
 
     run_id = int(time.time())
 
@@ -974,7 +1117,9 @@ def run_feasibility_analysis(
         "run_id": run_id,
         "analysis_mode": actual_mode,
         "work_dir": work_dir,
+        "local_work_dir": work_dir,
         "base_work_dir": base_work_dir,
+        "shared_work_dir": shared_work_dir,
         "bat_path": bat_path,
         "runx_path": runx_path,
         "model_file": os.path.join(work_dir, "sacinp.M1"),
@@ -982,16 +1127,22 @@ def run_feasibility_analysis(
         "psiinp_file": os.path.join(work_dir, "psiinp.M1"),
         "jcninp_file": os.path.join(work_dir, "Jcninp.M1"),
         "result_file": result_file,
+        "shared_result_file": shared_result_file,
+        "shared_model_file": os.path.join(shared_work_dir, "sacinp.M1"),
+        "shared_sea_file": os.path.join(shared_work_dir, "seainp.M1"),
+        "shared_psiinp_file": os.path.join(shared_work_dir, "psiinp.M1"),
+        "shared_jcninp_file": os.path.join(shared_work_dir, "Jcninp.M1"),
+        "shared_runx_path": os.path.join(shared_work_dir, "psiM1.runx"),
+        "sync_warnings": sync_warnings,
         "archived_path": archived_path,
         "runtime_bundle": runtime_bundle,
         "metadata": metadata,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
 
-    # 同时写入：
-    # 当前 work_dir 就是平台运行根目录；这里保留双路径写入兼容旧逻辑。
-    # 两个路径相同时会覆盖写入同一个 state 文件。
-    for state_path in (Path(work_dir) / "feasibility_analysis_state.json", _analysis_state_path(code)):
+    # 同时写入本地高速目录和共享持久目录；结果页优先使用本地 state，
+    # 客户端/导出链路仍可通过共享目录拿到最后一次计算状态。
+    for state_path in (Path(work_dir) / "feasibility_analysis_state.json", Path(shared_work_dir) / "feasibility_analysis_state.json"):
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
             state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1117,6 +1268,7 @@ def _collect_export_files(
     code = str(facility_code or "").strip()
     state = _load_latest_analysis_state(code)
     work_dir = _norm(state.get("work_dir") or get_job_runtime_dir(code))
+    shared_work_dir = _norm(state.get("shared_work_dir") or state.get("base_work_dir") or get_job_runtime_dir(code))
 
     candidates: list[str] = []
 
@@ -1126,21 +1278,33 @@ def _collect_export_files(
             _norm(state.get("sea_file")),
             _norm(state.get("psiinp_file")),
             _norm(state.get("jcninp_file")),
+            _norm(state.get("shared_model_file")),
+            _norm(state.get("shared_sea_file")),
+            _norm(state.get("shared_psiinp_file")),
+            _norm(state.get("shared_jcninp_file")),
             _norm(get_job_new_model_file(code)),
             _norm(get_job_new_sea_file(code)),
             os.path.join(work_dir, "sacinp.M1"),
             os.path.join(work_dir, "seainp.M1"),
             os.path.join(work_dir, "psiinp.M1"),
             os.path.join(work_dir, "Jcninp.M1"),
+            os.path.join(shared_work_dir, "sacinp.M1"),
+            os.path.join(shared_work_dir, "seainp.M1"),
+            os.path.join(shared_work_dir, "psiinp.M1"),
+            os.path.join(shared_work_dir, "Jcninp.M1"),
         ])
 
     if include_result_file:
         candidates.append(os.path.join(work_dir, "psilst.M1"))
+        candidates.append(os.path.join(shared_work_dir, "psilst.M1"))
         result_file = _norm(state.get("result_file")) if state else ""
+        shared_result_file = _norm(state.get("shared_result_file")) if state else ""
         if not result_file or not os.path.isfile(result_file):
             result_file = find_result_file(work_dir)
         if result_file:
             candidates.append(result_file)
+        if shared_result_file:
+            candidates.append(shared_result_file)
 
     existing: list[str] = []
     seen: set[str] = set()
