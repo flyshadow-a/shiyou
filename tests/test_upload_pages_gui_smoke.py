@@ -18,6 +18,30 @@ from pages.model_files_page import ModelFilesDocsWidget, ModelFilesPage  # noqa:
 from pages.new_special_inspection_page import NewSpecialInspectionPage  # noqa: E402
 
 
+class _FakeTableIndex:
+    def __init__(self, row: int):
+        self._row = row
+
+    def row(self) -> int:
+        return self._row
+
+
+class _FakeSelectionModel:
+    def __init__(self, rows: list[int]):
+        self._rows = rows
+
+    def selectedRows(self) -> list[_FakeTableIndex]:
+        return [_FakeTableIndex(row) for row in self._rows]
+
+
+class _FakeFilesTable:
+    def __init__(self, rows: list[int]):
+        self._selection_model = _FakeSelectionModel(rows)
+
+    def selectionModel(self) -> _FakeSelectionModel:
+        return self._selection_model
+
+
 def _ensure_app() -> QApplication:
     app = QApplication.instance()
     if app is None:
@@ -219,6 +243,206 @@ class NewSpecialInspectionPageSmokeTests(GuiSmokeBase):
                 overrides = page._collect_runtime_input_overrides()
                 self.assertEqual(overrides["ftglst"], [str(ftglst_path)])
                 self.assertEqual(overrides["ftginp"], [str(ftginp_path)])
+
+    def test_collect_runtime_input_overrides_accepts_local_upload_temp_names(self) -> None:
+        page = NewSpecialInspectionPage.__new__(NewSpecialInspectionPage)
+        page._file_meta_by_path = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            model_path = base / "20260611_101010_sacinp.demo"
+            collapse_path = base / "20260611_101011_clplog"
+            ftglst_path = base / "20260611_101012_ftglst"
+            ftginp_path = base / "20260611_101013_ftginp.demo"
+            for path in (model_path, collapse_path, ftglst_path, ftginp_path):
+                path.write_text("demo", encoding="utf-8")
+
+            page._remember_file_meta(str(model_path), original_name="sacinp.demo")
+            page._remember_file_meta(str(collapse_path), original_name="clplog")
+            page._remember_file_meta(str(ftglst_path), original_name="ftglst")
+            page._remember_file_meta(str(ftginp_path), original_name="ftginp.demo")
+            page.model_files = [str(model_path)]
+            page.collapse_files = [str(collapse_path)]
+            page.fatigue_result_files = [str(ftglst_path)]
+            page.fatigue_input_files = [str(ftginp_path)]
+
+            overrides = page._collect_runtime_input_overrides()
+
+        self.assertEqual(overrides["model"], str(model_path))
+        self.assertEqual(overrides["clplog"], [str(collapse_path)])
+        self.assertEqual(overrides["ftglst"], [str(ftglst_path)])
+        self.assertEqual(overrides["ftginp"], [str(ftginp_path)])
+
+    def test_delete_model_row_only_removes_current_selection_not_db_record(self) -> None:
+        page = NewSpecialInspectionPage.__new__(NewSpecialInspectionPage)
+        page.files_table = _FakeFilesTable([0])
+        page._model_row_map = {0: 0}
+        page.model_files = [r"D:\server\sacinp.demo"]
+        page.model_file_rows = [{"storage_path": r"D:\server\sacinp.demo"}]
+        page._db_delete_file = lambda *_args, **_kwargs: self.fail("should not delete database file record")
+        page._refresh_files_table = lambda: None
+        page._refresh_model_preview = lambda: None
+        page._invalidate_rule_preview_cache = lambda: None
+        messages = []
+
+        with patch.object(
+            QMessageBox,
+            "information",
+            side_effect=lambda _parent, title, text: messages.append((title, text)) or QMessageBox.Ok,
+        ):
+            page._on_del_model()
+
+        self.assertEqual(page.model_files, [])
+        self.assertEqual(page.model_file_rows, [])
+        self.assertEqual(messages, [("移除成功", "已从当前计算文件列表移除。")])
+
+    def test_delete_collapse_row_only_removes_current_selection_not_db_record(self) -> None:
+        page = NewSpecialInspectionPage.__new__(NewSpecialInspectionPage)
+        page.files_table = _FakeFilesTable([0])
+        page._collapse_row_map = {0: 0}
+        page.collapse_files = [r"D:\server\clplog"]
+        page.collapse_file_rows = [{"storage_path": r"D:\server\clplog"}]
+        page._db_delete_file = lambda *_args, **_kwargs: self.fail("should not delete database file record")
+        page._refresh_files_table = lambda: None
+        messages = []
+
+        with patch.object(
+            QMessageBox,
+            "information",
+            side_effect=lambda _parent, title, text: messages.append((title, text)) or QMessageBox.Ok,
+        ):
+            page._on_del_collapse()
+
+        self.assertEqual(page.collapse_files, [])
+        self.assertEqual(page.collapse_file_rows, [])
+        self.assertEqual(messages, [("移除成功", "已从当前计算文件列表移除。")])
+
+    def test_delete_fatigue_row_only_removes_current_selection_not_db_record(self) -> None:
+        page = NewSpecialInspectionPage.__new__(NewSpecialInspectionPage)
+        page.files_table = _FakeFilesTable([0])
+        page._fatigue_result_row_map = {0: 0}
+        page._fatigue_input_row_map = {}
+        page.fatigue_result_files = [r"D:\server\ftglst"]
+        page.fatigue_input_files = []
+        page.fatigue_result_file_rows = [{"storage_path": r"D:\server\ftglst"}]
+        page.fatigue_input_file_rows = []
+        page._db_delete_file = lambda *_args, **_kwargs: self.fail("should not delete database file record")
+        page._refresh_files_table = lambda: None
+        messages = []
+
+        with patch.object(
+            QMessageBox,
+            "information",
+            side_effect=lambda _parent, title, text: messages.append((title, text)) or QMessageBox.Ok,
+        ):
+            page._on_del_fatigue("result")
+
+        self.assertEqual(page.fatigue_result_files, [])
+        self.assertEqual(page.fatigue_result_file_rows, [])
+        self.assertEqual(messages, [("移除成功", "已从当前计算文件列表移除。")])
+
+    def test_runtime_file_selection_requires_current_model_file(self) -> None:
+        page = NewSpecialInspectionPage.__new__(NewSpecialInspectionPage)
+        page._file_meta_by_path = {}
+        page.model_files = []
+        page.collapse_files = [r"D:\server\clplog"]
+        page.fatigue_result_files = [r"D:\server\ftglst"]
+        page.fatigue_input_files = [r"D:\server\ftginp.demo"]
+        for path, original_name in (
+            (page.collapse_files[0], "clplog"),
+            (page.fatigue_result_files[0], "ftglst"),
+            (page.fatigue_input_files[0], "ftginp.demo"),
+        ):
+            page._remember_file_meta(path, original_name=original_name)
+
+        with patch.object(QMessageBox, "warning", return_value=QMessageBox.Ok) as warning:
+            self.assertFalse(page._validate_runtime_file_selection())
+
+        warning.assert_called_once()
+        self.assertIn("结构模型文件", warning.call_args.args[2])
+
+    def test_add_model_local_accepts_multiple_files(self) -> None:
+        page = NewSpecialInspectionPage.__new__(NewSpecialInspectionPage)
+        page._file_meta_by_path = {}
+        page.model_files = []
+        page.model_file_rows = []
+        page.facility_code = "WC19-1D"
+        page._scan_model_signature = lambda _path: True
+        page._db_store_local_file = lambda path, _category, _branch=None: path
+        page._invalidate_rule_preview_cache = lambda: None
+        page._start_rule_preview_preload = lambda: None
+        page._refresh_model_files_table = lambda: None
+        page._refresh_model_preview = lambda: None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "sacinp.first"
+            second = Path(tmp) / "sacinp.second"
+            first.write_text("JOINT\nMEMBER\n", encoding="utf-8")
+            second.write_text("JOINT\nMEMBER\n", encoding="utf-8")
+
+            with patch(
+                "pages.new_special_inspection_page.QFileDialog.getOpenFileNames",
+                return_value=([str(first), str(second)], ""),
+            ), patch(
+                "pages.new_special_inspection_page.QFileDialog.getOpenFileName",
+                side_effect=AssertionError("must use multi-select file dialog"),
+            ), patch.object(QMessageBox, "information", return_value=QMessageBox.Ok):
+                page._on_add_model_local()
+
+        self.assertEqual(page.model_files, [str(first), str(second)])
+
+    def test_add_collapse_local_accepts_multiple_files(self) -> None:
+        page = NewSpecialInspectionPage.__new__(NewSpecialInspectionPage)
+        page._file_meta_by_path = {}
+        page.collapse_files = []
+        page.collapse_file_rows = []
+        page.facility_code = "WC19-1D"
+        page._db_store_local_file = lambda path, _category, _branch=None: path
+        page._refresh_files_table = lambda: None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "clplog.first"
+            second = Path(tmp) / "clplog.second"
+            first.write_text("demo", encoding="utf-8")
+            second.write_text("demo", encoding="utf-8")
+
+            with patch(
+                "pages.new_special_inspection_page.QFileDialog.getOpenFileNames",
+                return_value=([str(first), str(second)], ""),
+            ), patch(
+                "pages.new_special_inspection_page.QFileDialog.getOpenFileName",
+                side_effect=AssertionError("must use multi-select file dialog"),
+            ), patch.object(QMessageBox, "information", return_value=QMessageBox.Ok):
+                page._on_add_collapse_local()
+
+        self.assertEqual(page.collapse_files, [str(first), str(second)])
+
+    def test_add_fatigue_local_accepts_multiple_files(self) -> None:
+        page = NewSpecialInspectionPage.__new__(NewSpecialInspectionPage)
+        page._file_meta_by_path = {}
+        page.fatigue_result_files = []
+        page.fatigue_input_files = []
+        page.fatigue_result_file_rows = []
+        page.fatigue_input_file_rows = []
+        page.facility_code = "WC19-1D"
+        page._db_store_local_file = lambda path, _category, _branch=None: path
+        page._refresh_files_table = lambda: None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "ftglst.first"
+            second = Path(tmp) / "ftglst.second"
+            first.write_text("demo", encoding="utf-8")
+            second.write_text("demo", encoding="utf-8")
+
+            with patch(
+                "pages.new_special_inspection_page.QFileDialog.getOpenFileNames",
+                return_value=([str(first), str(second)], ""),
+            ), patch(
+                "pages.new_special_inspection_page.QFileDialog.getOpenFileName",
+                side_effect=AssertionError("must use multi-select file dialog"),
+            ), patch.object(QMessageBox, "information", return_value=QMessageBox.Ok):
+                page._on_add_fatigue_local("result")
+
+        self.assertEqual(page.fatigue_result_files, [str(first), str(second)])
 
     def test_validate_fatigue_groups_blocks_incomplete_group(self) -> None:
         with patch.object(NewSpecialInspectionPage, "_db_fetch_file_records", lambda *args, **kwargs: []), patch.object(

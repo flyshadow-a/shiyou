@@ -23,7 +23,6 @@ from core.base_page import BasePage
 from services.file_db_adapter import (
     DEFAULT_DB_CONFIG,
     FileBackendError,
-    hard_delete_storage_path,
     is_file_db_configured,
     list_files,
     list_files_by_prefix,
@@ -2286,6 +2285,8 @@ class NewSpecialInspectionPage(BasePage):
         QMessageBox.warning(self, "ManualBrace 检查失败", str(message or "检查疲劳输入人工补全项失败。"))
 
     def _on_update_risk_level(self):
+        if not self._validate_runtime_file_selection():
+            return
         if not self._validate_fatigue_groups():
             return
         if self._risk_thread is not None and self._risk_thread.isRunning():
@@ -2306,6 +2307,51 @@ class NewSpecialInspectionPage(BasePage):
             return
 
         self._start_manual_fill_check_worker(param_overrides, input_overrides)
+
+    def _validate_runtime_file_selection(self) -> bool:
+        model_files = self._sorted_existing_paths(
+            self.model_files,
+            category=self.CATEGORY_MODEL,
+        )
+        if not model_files:
+            QMessageBox.warning(
+                self,
+                "计算文件不完整",
+                "当前计算文件列表中缺少结构模型文件，请先从系统文件库选择或本地上传后再计算。",
+            )
+            return False
+
+        collapse_files = self._sorted_existing_paths(
+            self.collapse_files,
+            category=self.CATEGORY_COLLAPSE,
+        )
+        if not collapse_files:
+            QMessageBox.warning(
+                self,
+                "计算文件不完整",
+                "当前计算文件列表中缺少倒塌分析日志文件，请先从系统文件库选择或本地上传后再计算。",
+            )
+            return False
+
+        fatigue_result_files = self._sorted_existing_paths(
+            self.fatigue_result_files,
+            category=self.CATEGORY_FATIGUE,
+            branch="result",
+        )
+        fatigue_input_files = self._sorted_existing_paths(
+            self.fatigue_input_files,
+            category=self.CATEGORY_FATIGUE,
+            branch="input",
+        )
+        if not fatigue_result_files or not fatigue_input_files:
+            QMessageBox.warning(
+                self,
+                "计算文件不完整",
+                "当前计算文件列表中需要同时包含疲劳分析结果文件和疲劳分析输入文件，请补齐后再计算。",
+            )
+            return False
+
+        return True
 
     def _validate_fatigue_groups(self) -> bool:
         result_files = self._sorted_existing_paths(
@@ -2732,28 +2778,6 @@ class NewSpecialInspectionPage(BasePage):
         """
         return self._store_local_file_to_upload(local_path, category, branch)
 
-    def _db_delete_file(self, storage_path: str, category: str) -> bool:
-        if not is_file_db_configured():
-            return False
-        try:
-            deleted = hard_delete_storage_path(
-                storage_path,
-                file_type_code=category,
-                module_code="model_files",
-                facility_code=(self.facility_code or "").strip() or None,
-            )
-            if deleted:
-                return True
-            return hard_delete_storage_path(
-                storage_path,
-                file_type_code=category,
-                module_code="special_strategy",
-                logical_path=self._legacy_special_strategy_logical_path(category),
-                facility_code=(self.facility_code or "").strip() or None,
-            )
-        except FileBackendError:
-            return False
-
     def _db_logical_path(self, category: str, branch: str | None = None) -> str:
         segment_map = {
             self.CATEGORY_MODEL: "当前模型/结构模型/用户上传",
@@ -2969,7 +2993,7 @@ class NewSpecialInspectionPage(BasePage):
         os.makedirs(target_dir, exist_ok=True)
 
         base = os.path.basename(local_path)
-        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         dest = os.path.join(target_dir, f"{stamp}_{base}")
         shutil.copy2(local_path, dest)
         return os.path.normpath(dest)
@@ -3216,8 +3240,13 @@ class NewSpecialInspectionPage(BasePage):
     def _name_stem(text: str) -> str:
         return os.path.splitext(os.path.basename(str(text or "").strip()).lower())[0]
 
+    @staticmethod
+    def _runtime_name_stem(text: str) -> str:
+        stem = NewSpecialInspectionPage._name_stem(text)
+        return re.sub(r"^\d{8}_\d{6}(?:_\d{6})?_", "", stem)
+
     def _runtime_fatigue_branch_for_name(self, name: str, logical_path: str = "") -> str:
-        stem = self._name_stem(name)
+        stem = self._runtime_name_stem(name)
         normalized_logical = str(logical_path or "").replace("\\", "/").lower()
         if stem.startswith("ftginp"):
             return "input"
@@ -3231,7 +3260,7 @@ class NewSpecialInspectionPage(BasePage):
 
     def _is_runtime_supported_name(self, name: str, category: str, branch: str | None = None,
                                    logical_path: str = "") -> bool:
-        stem = self._name_stem(name)
+        stem = self._runtime_name_stem(name)
         if category == self.CATEGORY_MODEL:
             return stem.startswith("sacinp")
         if category == self.CATEGORY_COLLAPSE:
@@ -3244,7 +3273,17 @@ class NewSpecialInspectionPage(BasePage):
         return False
 
     def _is_runtime_supported_path(self, path: str, category: str, branch: str | None = None) -> bool:
-        return self._is_runtime_supported_name(path, category, branch)
+        if self._is_runtime_supported_name(path, category, branch):
+            return True
+        meta = self._file_meta(path)
+        original_name = str(meta.get("original_name") or "").strip()
+        logical_path = str(meta.get("logical_path") or "").strip()
+        return bool(original_name) and self._is_runtime_supported_name(
+            original_name,
+            category,
+            branch,
+            logical_path,
+        )
 
     def _is_runtime_supported_row(self, row: dict[str, Any], category: str, branch: str | None = None) -> bool:
         logical_path = str(row.get("logical_path") or "")
@@ -4110,40 +4149,112 @@ class NewSpecialInspectionPage(BasePage):
         self._fit_table_height(self.files_table)
         QTimer.singleShot(0, self._adjust_files_table_widths)
 
-    def _on_add_model_local(self):
-        fp, _ = QFileDialog.getOpenFileName(self, "选择模型文件", "", "所有文件 (*.*)")
-        if not fp:
-            return
-        if self._sacinp_name_score(fp) <= 0 or not self._scan_model_signature(fp):
-            QMessageBox.warning(self, "导入失败",
-                                "当前选择的文件不是可参与计算的结构模型文件，请重新选择 sacinp 模型文件。")
-            return
+    def _local_file_import_error(self, file_path: str, category: str, branch: str | None = None) -> str:
+        if category == self.CATEGORY_MODEL:
+            if self._sacinp_name_score(file_path) <= 0 or not self._scan_model_signature(file_path):
+                return "不是可参与计算的 sacinp 模型文件"
+            return ""
+        if category == self.CATEGORY_COLLAPSE:
+            if not self._is_runtime_supported_path(file_path, self.CATEGORY_COLLAPSE):
+                return "不是可参与计算的 clplog 文件"
+            return ""
+        if category == self.CATEGORY_FATIGUE:
+            actual_branch = self._runtime_fatigue_branch_for_name(file_path)
+            if actual_branch != branch:
+                target_label = "ftginp" if branch == "input" else "ftglst"
+                return f"不是可参与计算的 {target_label} 文件"
+            return ""
+        return "不是可参与计算的文件"
+
+    def _remember_imported_local_file(self, system_path: str, source_path: str, category: str, branch: str | None = None) -> None:
         try:
-            system_path = self._db_store_local_file(fp, self.CATEGORY_MODEL)
-        except Exception as e:
-            QMessageBox.warning(self, "导入失败", f"本地文件入库失败：\n{e}")
-            return
+            modified_at = datetime.datetime.fromtimestamp(os.path.getmtime(source_path))
+        except Exception:
+            modified_at = None
 
         self._remember_file_meta(
             system_path,
-            original_name=os.path.basename(fp),
-            logical_path=self._db_logical_path(self.CATEGORY_MODEL),
+            original_name=os.path.basename(source_path),
+            logical_path=self._db_logical_path(category, branch),
             display_path=self._display_storage_path(system_path),
-            category_name=self._default_category_label(self.CATEGORY_MODEL),
-            modified_at=datetime.datetime.fromtimestamp(os.path.getmtime(fp)),
+            category_name=self._default_category_label(category, branch),
+            modified_at=modified_at,
             remark="本地导入",
         )
-        self._remember_file_meta(
-            system_path,
-            format_label=self._path_format_label(fp),
-            source_label="本地导入",
-        )
-        self._upsert_file_path_and_row(self.model_files, self.model_file_rows, system_path)
-        self._invalidate_rule_preview_cache()
-        self._start_rule_preview_preload()
-        self._refresh_model_files_table()
-        self._refresh_model_preview()
-        QMessageBox.information(self, "本地导入", f"文件已入系统库并显示：\n{system_path}")
+
+        extra_meta: dict[str, Any] = {
+            "format_label": self._path_format_label(source_path),
+            "source_label": "本地导入",
+        }
+        if category == self.CATEGORY_FATIGUE:
+            extra_meta["branch_label"] = f"疲劳{self._fatigue_branch_label(str(branch or 'result'))}"
+        self._remember_file_meta(system_path, **extra_meta)
+
+    def _upsert_imported_local_file(self, system_path: str, category: str, branch: str | None = None) -> None:
+        if category == self.CATEGORY_MODEL:
+            self._upsert_file_path_and_row(self.model_files, self.model_file_rows, system_path)
+            return
+        if category == self.CATEGORY_COLLAPSE:
+            self._upsert_file_path_and_row(self.collapse_files, self.collapse_file_rows, system_path)
+            return
+        target_rows = self.fatigue_input_file_rows if branch == "input" else self.fatigue_result_file_rows
+        self._upsert_file_path_and_row(self._fatigue_target_list(str(branch or "result")), target_rows, system_path)
+
+    def _import_local_files_to_current_selection(
+            self,
+            file_paths: List[str],
+            category: str,
+            branch: str | None = None,
+    ) -> tuple[list[str], list[str], list[str]]:
+        selected_paths = [str(path or "").strip() for path in file_paths if str(path or "").strip()]
+        imported: list[str] = []
+        skipped: list[str] = []
+        failed: list[str] = []
+
+        for file_path in reversed(selected_paths):
+            error = self._local_file_import_error(file_path, category, branch)
+            if error:
+                skipped.insert(0, f"{os.path.basename(file_path)}：{error}")
+                continue
+            try:
+                system_path = self._db_store_local_file(file_path, category, branch)
+            except Exception as exc:
+                failed.insert(0, f"{os.path.basename(file_path)}：{exc}")
+                continue
+
+            self._remember_imported_local_file(system_path, file_path, category, branch)
+            self._upsert_imported_local_file(system_path, category, branch)
+            imported.insert(0, system_path)
+
+        return imported, skipped, failed
+
+    def _show_local_import_result(self, imported: list[str], skipped: list[str], failed: list[str]) -> None:
+        if not imported and not skipped and not failed:
+            return
+        lines: list[str] = []
+        if imported:
+            lines.append(f"已导入 {len(imported)} 个文件。")
+        if skipped:
+            lines.append("已跳过不符合类型的文件：\n" + "\n".join(skipped[:8]))
+        if failed:
+            lines.append("导入失败的文件：\n" + "\n".join(failed[:8]))
+        text = "\n\n".join(lines)
+        if skipped or failed:
+            QMessageBox.warning(self, "本地导入", text)
+        else:
+            QMessageBox.information(self, "本地导入", text)
+
+    def _on_add_model_local(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "选择模型文件", "", "所有文件 (*.*)")
+        if not file_paths:
+            return
+        imported, skipped, failed = self._import_local_files_to_current_selection(file_paths, self.CATEGORY_MODEL)
+        if imported:
+            self._invalidate_rule_preview_cache()
+            self._start_rule_preview_preload()
+            self._refresh_model_files_table()
+            self._refresh_model_preview()
+        self._show_local_import_result(imported, skipped, failed)
 
     def _on_add_model_sys(self):
         return
@@ -4161,15 +4272,9 @@ class NewSpecialInspectionPage(BasePage):
             QMessageBox.warning(self, "提示", "请先在“设置模型文件”区域选中要删除的行。")
             return
 
-        failed = False
         deleted_count = 0
         for idx in indexes:
             if 0 <= idx < len(self.model_files):
-                path = self.model_files[idx]
-                deleted = self._db_delete_file(path, self.CATEGORY_MODEL)
-                if is_file_db_configured() and not deleted:
-                    failed = True
-                    continue
                 del self.model_files[idx]
                 if idx < len(self.model_file_rows):
                     del self.model_file_rows[idx]
@@ -4178,40 +4283,17 @@ class NewSpecialInspectionPage(BasePage):
         self._invalidate_rule_preview_cache()
         self._refresh_files_table()
         self._refresh_model_preview()
-        if failed:
-            QMessageBox.warning(self, "警告", "部分文件未能同步更新数据库删除状态，已保留在列表中。")
-        elif deleted_count:
-            QMessageBox.information(self, "删除成功", "删除成功")
+        if deleted_count:
+            QMessageBox.information(self, "移除成功", "已从当前计算文件列表移除。")
 
     def _on_add_collapse_local(self):
-        fp, _ = QFileDialog.getOpenFileName(self, "选择倒塌分析结果文件", "", "所有文件 (*.*)")
-        if not fp:
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "选择倒塌分析结果文件", "", "所有文件 (*.*)")
+        if not file_paths:
             return
-        if not self._is_runtime_supported_path(fp, self.CATEGORY_COLLAPSE):
-            QMessageBox.warning(self, "导入失败", "当前选择的文件不是可参与计算的 clplog 文件，请重新选择。")
-            return
-        try:
-            system_path = self._db_store_local_file(fp, self.CATEGORY_COLLAPSE)
-        except Exception as e:
-            QMessageBox.warning(self, "导入失败", f"本地文件入库失败：\n{e}")
-            return
-
-        self._remember_file_meta(
-            system_path,
-            original_name=os.path.basename(fp),
-            logical_path=self._db_logical_path(self.CATEGORY_COLLAPSE),
-            display_path=self._display_storage_path(system_path),
-            category_name=self._default_category_label(self.CATEGORY_COLLAPSE),
-            modified_at=datetime.datetime.fromtimestamp(os.path.getmtime(fp)),
-            remark="本地导入",
-        )
-        self._remember_file_meta(
-            system_path,
-            format_label=self._path_format_label(fp),
-            source_label="本地导入",
-        )
-        self._upsert_file_path_and_row(self.collapse_files, self.collapse_file_rows, system_path)
-        self._refresh_files_table()
+        imported, skipped, failed = self._import_local_files_to_current_selection(file_paths, self.CATEGORY_COLLAPSE)
+        if imported:
+            self._refresh_files_table()
+        self._show_local_import_result(imported, skipped, failed)
 
     def _on_del_collapse(self):
         selected = self.files_table.selectionModel().selectedRows()
@@ -4223,25 +4305,17 @@ class NewSpecialInspectionPage(BasePage):
             QMessageBox.warning(self, "提示", "请先在表格中点击选中要删除的倒塌文件行。")
             return
 
-        failed = False
         deleted_count = 0
         for idx in indexes:
             if 0 <= idx < len(self.collapse_files):
-                path = self.collapse_files[idx]
-                deleted = self._db_delete_file(path, self.CATEGORY_COLLAPSE)
-                if is_file_db_configured() and not deleted:
-                    failed = True
-                    continue
                 del self.collapse_files[idx]
                 if idx < len(self.collapse_file_rows):
                     del self.collapse_file_rows[idx]
                 deleted_count += 1
 
         self._refresh_files_table()
-        if failed:
-            QMessageBox.warning(self, "警告", "部分文件未能同步更新数据库删除状态，已保留在列表中。")
-        elif deleted_count:
-            QMessageBox.information(self, "删除成功", "删除成功")
+        if deleted_count:
+            QMessageBox.information(self, "移除成功", "已从当前计算文件列表移除。")
 
     def _fatigue_target_list(self, branch: str) -> List[str]:
         return self.fatigue_input_files if branch == "input" else self.fatigue_result_files
@@ -4251,40 +4325,17 @@ class NewSpecialInspectionPage(BasePage):
 
     def _on_add_fatigue_local(self, branch: str):
         branch_label = self._fatigue_branch_label(branch)
-        fp, _ = QFileDialog.getOpenFileName(self, f"选择疲劳分析{branch_label}", "", "所有文件 (*.*)")
-        if not fp:
+        file_paths, _ = QFileDialog.getOpenFileNames(self, f"选择疲劳分析{branch_label}", "", "所有文件 (*.*)")
+        if not file_paths:
             return
-        actual_branch = self._runtime_fatigue_branch_for_name(fp)
-        if actual_branch != branch:
-            target_label = "ftginp" if branch == "input" else "ftglst"
-            QMessageBox.warning(self, "导入失败",
-                                f"当前选择的文件不是可参与计算的 {target_label} 文件，请检查后重新导入。")
-            return
-        try:
-            system_path = self._db_store_local_file(fp, self.CATEGORY_FATIGUE, branch)
-        except Exception as e:
-            QMessageBox.warning(self, "导入失败", f"本地文件入库失败：\n{e}")
-            return
-
-        self._remember_file_meta(
-            system_path,
-            original_name=os.path.basename(fp),
-            logical_path=self._db_logical_path(self.CATEGORY_FATIGUE, branch),
-            display_path=self._display_storage_path(system_path),
-            category_name=self._default_category_label(self.CATEGORY_FATIGUE, branch),
-            modified_at=datetime.datetime.fromtimestamp(os.path.getmtime(fp)),
-            remark="本地导入",
+        imported, skipped, failed = self._import_local_files_to_current_selection(
+            file_paths,
+            self.CATEGORY_FATIGUE,
+            branch,
         )
-        self._remember_file_meta(
-            system_path,
-            branch_label=f"疲劳{branch_label}",
-            format_label=self._path_format_label(fp),
-            source_label="本地导入",
-        )
-        target_rows = self.fatigue_input_file_rows if branch == "input" else self.fatigue_result_file_rows
-        self._upsert_file_path_and_row(self._fatigue_target_list(branch), target_rows, system_path)
-        self._refresh_files_table()
-        QMessageBox.information(self, "本地导入", f"文件已入系统库并显示：\n{system_path}")
+        if imported:
+            self._refresh_files_table()
+        self._show_local_import_result(imported, skipped, failed)
 
     def _on_add_fatigue_sys(self, branch: str):
         branch_label = self._fatigue_branch_label(branch)
@@ -4303,16 +4354,10 @@ class NewSpecialInspectionPage(BasePage):
             QMessageBox.warning(self, "提示", f"请先在疲劳分析{self._fatigue_branch_label(branch)}区域选中要删除的行。")
             return
 
-        failed = False
         deleted_count = 0
         target_list = self._fatigue_target_list(branch)
         for idx in indexes:
             if 0 <= idx < len(target_list):
-                path = target_list[idx]
-                deleted = self._db_delete_file(path, self.CATEGORY_FATIGUE)
-                if is_file_db_configured() and not deleted:
-                    failed = True
-                    continue
                 del target_list[idx]
                 target_rows = self.fatigue_input_file_rows if branch == "input" else self.fatigue_result_file_rows
                 if idx < len(target_rows):
@@ -4320,10 +4365,8 @@ class NewSpecialInspectionPage(BasePage):
                 deleted_count += 1
 
         self._refresh_files_table()
-        if failed:
-            QMessageBox.warning(self, "警告", "部分疲劳文件未能同步更新数据库删除状态，已保留在列表中。")
-        elif deleted_count:
-            QMessageBox.information(self, "删除成功", "删除成功")
+        if deleted_count:
+            QMessageBox.information(self, "移除成功", "已从当前计算文件列表移除。")
 
     def _on_add_fatigue_result_local(self):
         self._on_add_fatigue_local("result")

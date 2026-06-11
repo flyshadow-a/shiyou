@@ -679,6 +679,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         self._result_progress_tick = 0
         self._result_loading_active = False
         self._result_waiting_for_elevation = False
+        self._result_waiting_for_node_table = False
         self._result_progress_timer = QTimer(self)
         self._result_progress_timer.setInterval(320)
         self._result_progress_timer.timeout.connect(self._update_result_progress_text)
@@ -2006,6 +2007,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
     def _set_result_loading(self, loading: bool) -> None:
         self._result_loading_active = bool(loading)
         self._result_waiting_for_elevation = False
+        self._result_waiting_for_node_table = False
         if hasattr(self, "btn_report") and self.btn_report is not None:
             self.btn_report.setEnabled(not loading)
         if loading:
@@ -2020,7 +2022,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             return
         if getattr(self, "_result_waiting_for_elevation", False):
             return
+        if getattr(self, "_result_waiting_for_node_table", False):
+            return
         self._set_result_loading(False)
+
+    def _mark_result_node_table_ready(self) -> None:
+        self._result_waiting_for_node_table = False
+        QTimer.singleShot(0, self._finish_result_loading_if_ready)
 
     def _start_result_data_load(self) -> None:
         self._result_load_token += 1
@@ -2232,10 +2240,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         )
 
         self._set_detail_rows(self.table_comp, member_rows, is_node=False)
+        if getattr(self, "_result_loading_active", False):
+            self._result_waiting_for_node_table = True
         self._set_detail_rows(self.table_node, node_rows, is_node=True)
         self._fill_component_summary(context)
         self._fill_node_summary(context)
-        self._apply_row_limit()
+        if getattr(self, "_result_loading_active", False):
+            QTimer.singleShot(0, self._mark_result_node_table_ready)
 
         if hasattr(self, "elevation_view"):
             self.elevation_view._draw_message("正在加载立面图...")
@@ -2254,52 +2265,88 @@ class UpgradeSpecialInspectionResultPage(BasePage):
                 return str(value)
         return ""
 
+    def _detail_row_values(self, row: dict[str, Any], *, is_node: bool) -> list[str]:
+        if not is_node:
+            return [
+                self._row_get(row, "joint_a", "JointA", "A"),
+                self._row_get(row, "joint_b", "JointB", "B"),
+                self._row_get(row, "member_type", "MemberType"),
+                self._row_get(row, "consequence_level", "失效后果等级"),
+                self._row_get(row, "a", "A_const", "A"),
+                self._row_get(row, "b", "B_const", "B"),
+                self._row_get(row, "rm", "Rm", "倒塌分析载荷系数Rm"),
+                self._row_get(row, "vr", "VR"),
+                self._row_get(row, "pf", "Pf"),
+                self._row_get(row, "collapse_prob_level", "失效概率等级"),
+                self._row_get(row, "risk_level", "member_risk_level", "构件风险等级", "风险等级", "inspect_level", "检验等级"),
+            ]
+        return [
+            self._row_get(row, "joint_a", "JointA", "A"),
+            self._row_get(row, "joint_b", "JointB", "B"),
+            self._row_get(row, "weld_type", "WeldType"),
+            self._row_get(row, "consequence_level", "失效后果等级"),
+            self._row_get(row, "a", "A_const", "A"),
+            self._row_get(row, "b", "B_const", "B"),
+            self._row_get(row, "rm", "Rm", "倒塌分析载荷系数Rm"),
+            self._row_get(row, "vr", "VR"),
+            self._row_get(row, "pf", "Pf", "pr", "Pr", "PR"),
+            self._row_get(row, "collapse_prob_level", "失效概率等级"),
+            self._row_get(row, "risk_level", "node_risk_level", "节点风险等级", "风险等级", "inspect_level", "检验等级"),
+        ]
+
+    def _current_detail_row_limit(self) -> int | None:
+        combo = getattr(self, "cb_rows", None)
+        choice = str(combo.currentText()).strip() if combo is not None else "10"
+        if choice == "全部":
+            return None
+        try:
+            return max(int(choice), 0)
+        except (TypeError, ValueError):
+            return 10
+
+    def _detail_visible_row_count(self, total_rows: int) -> int:
+        total_rows = max(int(total_rows), 1)
+        limit = self._current_detail_row_limit()
+        return total_rows if limit is None else min(limit, total_rows)
+
     def _set_detail_rows(self, table: QTableWidget, rows: list[dict[str, str]], *, is_node: bool):
+        normalized_rows = list(rows or [{}])
+        total_rows = max(len(normalized_rows), 1)
+        table.setProperty("detail_rows_data", normalized_rows)
+        table.setProperty("detail_is_node", bool(is_node))
+        table.setProperty("detail_row_count", total_rows)
+        self._render_detail_table_rows(table)
+
+    def _render_detail_table_rows(self, table: QTableWidget) -> None:
         start = self.HEADER_ROWS
-        data_rows = max(len(rows), 1)
-        table.setRowCount(start + data_rows)
-        table.setProperty("detail_row_count", data_rows)
-        for r in range(start, table.rowCount()):
-            table.setRowHeight(r, 24)
+        rows = list(table.property("detail_rows_data") or [{}])
+        is_node = bool(table.property("detail_is_node"))
+        total_rows = int(table.property("detail_row_count") or max(len(rows), 1))
+        visible_rows = self._detail_visible_row_count(total_rows)
+        render_rows = rows[:visible_rows] or [{}]
 
-        if not rows:
-            rows = [{}]
+        table.setUpdatesEnabled(False)
+        was_blocked = table.blockSignals(True)
+        try:
+            table.setRowCount(start + len(render_rows))
+            for r in range(start, table.rowCount()):
+                table.setRowHidden(r, False)
+                table.setRowHeight(r, 24)
 
-        for idx, row in enumerate(rows):
-            r = start + idx
-            if not is_node:
-                vals = [
-                    self._row_get(row, "joint_a", "JointA", "A"),
-                    self._row_get(row, "joint_b", "JointB", "B"),
-                    self._row_get(row, "member_type", "MemberType"),
-                    self._row_get(row, "consequence_level", "失效后果等级"),
-                    self._row_get(row, "a", "A_const", "A"),
-                    self._row_get(row, "b", "B_const", "B"),
-                    self._row_get(row, "rm", "Rm", "倒塌分析载荷系数Rm"),
-                    self._row_get(row, "vr", "VR"),
-                    self._row_get(row, "pf", "Pf"),
-                    self._row_get(row, "collapse_prob_level", "失效概率等级"),
-                    self._row_get(row, "risk_level", "member_risk_level", "构件风险等级", "风险等级", "inspect_level", "检验等级"),
-                ]
-            else:
-                vals = [
-                    self._row_get(row, "joint_a", "JointA", "A"),
-                    self._row_get(row, "joint_b", "JointB", "B"),
-                    self._row_get(row, "weld_type", "WeldType"),
-                    self._row_get(row, "consequence_level", "失效后果等级"),
-                    self._row_get(row, "a", "A_const", "A"),
-                    self._row_get(row, "b", "B_const", "B"),
-                    self._row_get(row, "rm", "Rm", "倒塌分析载荷系数Rm"),
-                    self._row_get(row, "vr", "VR"),
-                    self._row_get(row, "pf", "Pf", "pr", "Pr", "PR"),
-                    self._row_get(row, "collapse_prob_level", "失效概率等级"),
-                    self._row_get(row, "risk_level", "node_risk_level", "节点风险等级", "风险等级", "inspect_level", "检验等级"),
-                ]
-            for c, value in enumerate(vals):
-                text = self._display_probability_cell(value) if c == 8 else self._display_cell(value)
-                item = QTableWidgetItem(text)
-                item.setTextAlignment(Qt.AlignCenter)
-                table.setItem(r, c, item)
+            for idx, row in enumerate(render_rows):
+                r = start + idx
+                vals = self._detail_row_values(row, is_node=is_node)
+                for c, value in enumerate(vals):
+                    text = self._display_probability_cell(value) if c == 8 else self._display_cell(value)
+                    item = QTableWidgetItem(text)
+                    item.setTextAlignment(Qt.AlignCenter)
+                    table.setItem(r, c, item)
+        finally:
+            table.blockSignals(was_blocked)
+            table.setUpdatesEnabled(True)
+
+        table.setProperty("detail_rendered_row_count", len(render_rows))
+        self._set_detail_table_height(table, visible_rows)
 
     def _clear_summary_table(self, table: QTableWidget):
         labels = list(table.property("summary_labels") or [])
@@ -2350,19 +2397,8 @@ class UpgradeSpecialInspectionResultPage(BasePage):
             )
 
     def _apply_row_limit(self):
-        choice = self.cb_rows.currentText()
-        limit = None if choice == "全部" else int(choice)
-
-        def apply(table: QTableWidget):
-            start = self.HEADER_ROWS
-            total_rows = int(table.property("detail_row_count") or max(table.rowCount() - start, 1))
-            for r in range(start, table.rowCount()):
-                table.setRowHidden(r, (limit is not None and (r - start) >= limit))
-            visible_rows = total_rows if limit is None else min(limit, total_rows)
-            self._set_detail_table_height(table, visible_rows)
-
-        apply(self.table_comp)
-        apply(self.table_node)
+        self._render_detail_table_rows(self.table_comp)
+        self._render_detail_table_rows(self.table_node)
 
     def _sync_current_tab_height(self, _index: int | None = None) -> None:
         return

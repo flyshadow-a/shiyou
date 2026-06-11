@@ -254,13 +254,14 @@ class SpecialStrategyRuleDialog(QDialog):
         self.preview_label.setWordWrap(True)
         content_layout.addWidget(self.preview_label)
 
-        note = self._new_plain_label(
-            "输入说明：支持字母、数字和 *；规则优先级为 剔除规则 > 人工分类修正 > VBA 自动分类 > Other。",
-            self,
-            "RuleDialogNote",
-        )
-        note.setWordWrap(True)
-        content_layout.addWidget(note)
+        preview_button_row = QHBoxLayout()
+        preview_button_row.addStretch(1)
+        self.refresh_preview_button = QPushButton("刷新预览", self)
+        self.refresh_preview_button.setObjectName("RulePreviewRefreshButton")
+        self.refresh_preview_button.clicked.connect(self._refresh_preview)
+        preview_button_row.addWidget(self.refresh_preview_button)
+        content_layout.addLayout(preview_button_row)
+
         content_layout.addStretch(1)
 
         self._scroll_area.setWidget(self._scroll_content)
@@ -278,7 +279,7 @@ class SpecialStrategyRuleDialog(QDialog):
         button_row.addWidget(self.confirm_button)
         root.addLayout(button_row)
 
-        self._refresh_preview()
+        self._set_empty_preview()
 
     @property
     def result_rules(self) -> dict[str, Any]:
@@ -320,16 +321,13 @@ class SpecialStrategyRuleDialog(QDialog):
                 padding: 0;
                 font-size: 11pt;
             }
-            QLabel#RuleDialogNote {
-                color: #64748b;
-                font-size: 10pt;
-            }
             QFrame#RuleSectionFrame {
                 background-color: #ffffff;
                 border: 1px solid #dbe4f0;
                 border-radius: 10px;
             }
-            QPushButton#RuleAddButton {
+            QPushButton#RuleAddButton,
+            QPushButton#RulePreviewRefreshButton {
                 min-width: 78px;
                 min-height: 28px;
                 padding: 0 10px;
@@ -339,7 +337,8 @@ class SpecialStrategyRuleDialog(QDialog):
                 border-radius: 6px;
                 font-size: 11pt;
             }
-            QPushButton#RuleAddButton:hover {
+            QPushButton#RuleAddButton:hover,
+            QPushButton#RulePreviewRefreshButton:hover {
                 background-color: #edf6ff;
             }
             QPushButton#RulePrimaryButton,
@@ -456,7 +455,6 @@ class SpecialStrategyRuleDialog(QDialog):
         combo.setObjectName("RuleRelationCombo")
         combo.addItems(_MEMBER_RELATIONS)
         combo.setCurrentText(normalize_member_relation(relation))
-        combo.currentTextChanged.connect(lambda _text: self._refresh_preview())
         return combo
 
     def _set_member_relation(self, table: QTableWidget, row: int, relation: str) -> None:
@@ -488,6 +486,19 @@ class SpecialStrategyRuleDialog(QDialog):
     def _set_preview_color(self, color: str) -> None:
         self.preview_label.setStyleSheet(f"color: {color}; background: transparent; border: none;")
 
+    def _empty_preview_text(self) -> str:
+        if self.mode == RULE_MODE_JOINT_CLASSIFICATION:
+            return "命中数量预览：主腿节点 0，X 撑节点 0，冲突 0。"
+        if self.mode == RULE_MODE_MEMBER_CLASSIFICATION:
+            return "命中数量预览：主腿构件 0，X 撑构件 0，冲突 0。"
+        if self.mode == RULE_MODE_MEMBER_EXCLUSION:
+            return "命中数量预览：剔除构件 0。"
+        return "命中数量预览：剔除节点 0。"
+
+    def _set_empty_preview(self) -> None:
+        self.preview_label.setText(self._empty_preview_text())
+        self._set_preview_color("#0f172a")
+
     def _set_pattern_row(self, table: QTableWidget, row: int, start_col: int, pattern: str) -> None:
         normalized = normalize_code_pattern(pattern)
         for offset, ch in enumerate(normalized):
@@ -495,20 +506,26 @@ class SpecialStrategyRuleDialog(QDialog):
 
     def _append_empty_member_row(self, table: QTableWidget) -> None:
         row = table.rowCount()
-        table.insertRow(row)
-        for col in [0, 1, 2, 3, 5, 6, 7, 8]:
-            table.setItem(row, col, self._editable_item("*"))
-        self._set_member_relation(table, row, "And")
+        previous_block_state = table.blockSignals(True)
+        try:
+            table.insertRow(row)
+            for col in [0, 1, 2, 3, 5, 6, 7, 8]:
+                table.setItem(row, col, self._editable_item("*"))
+            self._set_member_relation(table, row, "And")
+        finally:
+            table.blockSignals(previous_block_state)
         self._fit_table_height(table)
-        self._refresh_preview()
 
     def _append_empty_node_row(self, table: QTableWidget, *, dual: bool) -> None:
         row = table.rowCount()
-        table.insertRow(row)
-        for col in range(8 if dual else 4):
-            table.setItem(row, col, self._editable_item("*"))
+        previous_block_state = table.blockSignals(True)
+        try:
+            table.insertRow(row)
+            for col in range(8 if dual else 4):
+                table.setItem(row, col, self._editable_item("*"))
+        finally:
+            table.blockSignals(previous_block_state)
         self._fit_table_height(table)
-        self._refresh_preview()
 
     def _add_row_button(self, text: str, callback) -> QPushButton:
         button = QPushButton(text, self)
@@ -633,7 +650,6 @@ class SpecialStrategyRuleDialog(QDialog):
             item.setTextAlignment(Qt.AlignCenter)
         finally:
             self._updating = False
-        self._refresh_preview()
 
     def _row_pattern(self, table: QTableWidget, row: int, start_col: int) -> str:
         chars: list[str] = []

@@ -27,6 +27,7 @@ def _bare_page() -> NewSpecialInspectionPage:
     page.btn_update_risk = None
     page.btn_view_result = None
     page._rule_overrides = normalize_rule_overrides({})
+    page._validate_runtime_file_selection = lambda: True
     return page
 
 
