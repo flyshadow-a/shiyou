@@ -57,43 +57,107 @@ def read_sacs_elevation_lines(file_path: str) -> List[str]:
         return f.readlines()
 
 
+
+
+def _sacs_float(text: str, default: float = 0.0) -> float:
+    """SACS 固定列数值解析：空白字段按 0 处理。"""
+    value = str(text or "").strip()
+    if not value:
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _parse_sacs_group_od(line: str):
+    text = str(line or "")
+    if not text.startswith("GRUP"):
+        return None
+    gid = text[5:8].strip()
+    if not gid:
+        return None
+    try:
+        od_text = text[14:24].strip()
+        od = float(od_text) if od_text else 0.0
+    except Exception:
+        od = 0.0
+    return gid, od
+
+
+def _parse_sacs_joint_line(line: str):
+    """
+    解析 SACS JOINT 固定列。
+    SACS 中空白坐标表示 0；后续 33/40/47 列附近可能有 cm 偏移字段，
+    需要按 VBA ReadSACS 逻辑加回坐标。
+    """
+    text = str(line or "")
+    if not text.startswith("JOINT"):
+        return None
+
+    nid = text[6:10].strip()
+    if not nid:
+        return None
+
+    x = _sacs_float(text[11:18], 0.0)
+    y = _sacs_float(text[18:25], 0.0)
+    z = _sacs_float(text[25:32], 0.0)
+
+    # 兼容 JOINT 后续 cm 偏移字段：VBA 中是 /100 加回。
+    x += _sacs_float(text[32:39], 0.0) / 100.0
+    y += _sacs_float(text[39:46], 0.0) / 100.0
+    z += _sacs_float(text[46:53], 0.0) / 100.0
+
+    return nid, x, y, z
+
+
+def _parse_sacs_member_line(line: str):
+    """
+    解析 MEMBER / MEMBER1 固定列。
+    - MEMBER OFFSETS / MEMB2 OFFSETS 是上一根构件的偏移信息，不是新构件；
+    - MEMBER1 后面没有空格，也要按同样的 joint_a/joint_b/group_id 固定列读取；
+    - group_id 应读 16:19，不能读 15:18，否则 WB1 会被读成 WB。
+    """
+    text = str(line or "")
+    upper = text.upper()
+
+    if upper.startswith("MEMBER OFFSETS"):
+        return None
+    if upper.startswith("MEMB2"):
+        return None
+    if not upper.startswith("MEMBER"):
+        return None
+
+    joint_a = text[7:11].strip()
+    joint_b = text[11:15].strip()
+    group_id = text[16:19].strip()
+
+    if joint_a and joint_b:
+        return joint_a, joint_b, group_id
+    return None
+
+
 def parse_sacs_elevation_model(filepath: str):
     nodes = {}
     members = []
     groups_od = {}
 
     for line in read_sacs_elevation_lines(filepath):
-        if line.startswith("GRUP"):
-            gid = line[5:8].strip()
-            try:
-                od_str = line[14:24].strip()
-                od = float(od_str) if od_str else 0.0
-                groups_od[gid] = od
-            except Exception:
-                groups_od[gid] = 0.0
+        group = _parse_sacs_group_od(line)
+        if group is not None:
+            gid, od = group
+            groups_od[gid] = od
+            continue
 
-        elif line.startswith("JOINT"):
-            try:
-                nid = line[6:10].strip()
-                x = float(line[11:18].strip())
-                y = float(line[18:25].strip())
-                z = float(line[25:32].strip())
-                nodes[nid] = (x, y, z)
-            except Exception:
-                continue
+        joint = _parse_sacs_joint_line(line)
+        if joint is not None:
+            nid, x, y, z = joint
+            nodes[nid] = (x, y, z)
+            continue
 
-        elif line.startswith("MEMBER"):
-            try:
-                body = line[6:].strip()
-                if body.startswith("OFFSETS"):
-                    continue
-                na = line[7:11].strip()
-                nb = line[11:15].strip()
-                gid = line[15:18].strip()
-                if na and nb:
-                    members.append((na, nb, gid))
-            except Exception:
-                continue
+        member = _parse_sacs_member_line(line)
+        if member is not None:
+            members.append(member)
 
     return nodes, members, groups_od
 
@@ -1695,37 +1759,21 @@ class SacsElevationRiskView(QGraphicsView):
 
         lines = self._read_lines_with_fallback(filepath)
         for line in lines:
-            if line.startswith("GRUP"):
-                gid = line[5:8].strip()
-                try:
-                    od_str = line[14:24].strip()
-                    od = float(od_str) if od_str else 0.0
-                    groups_od[gid] = od
-                except Exception:
-                    groups_od[gid] = 0.0
+            group = _parse_sacs_group_od(line)
+            if group is not None:
+                gid, od = group
+                groups_od[gid] = od
+                continue
 
-            elif line.startswith("JOINT"):
-                try:
-                    nid = line[6:10].strip()
-                    x = float(line[11:18].strip())
-                    y = float(line[18:25].strip())
-                    z = float(line[25:32].strip())
-                    nodes[nid] = (x, y, z)
-                except Exception:
-                    continue
+            joint = _parse_sacs_joint_line(line)
+            if joint is not None:
+                nid, x, y, z = joint
+                nodes[nid] = (x, y, z)
+                continue
 
-            elif line.startswith("MEMBER"):
-                try:
-                    body = line[6:].strip()
-                    if body.startswith("OFFSETS"):
-                        continue
-                    na = line[7:11].strip()
-                    nb = line[11:15].strip()
-                    gid = line[15:18].strip()
-                    if na and nb:
-                        members.append((na, nb, gid))
-                except Exception:
-                    continue
+            member = _parse_sacs_member_line(line)
+            if member is not None:
+                members.append(member)
 
         return nodes, members, groups_od
 
