@@ -851,13 +851,13 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         if not is_node:
             # 4 + 6 + 1 = 11 列
             sub_headers = [
-                "A", "B", "MemberType", "失效后果等级",
+                "JointA", "JointB", "MemberType", "失效后果等级",
                 "A", "B", "倒塌分析载荷系数Rm", "VR", "Pf", "失效概率等级",
                 "构件风险等级",
             ]
         else:
             sub_headers = [
-                "JointA", "JointB", "WeldType", "失效后果等级",
+                "JointID", "Brace", "JointType", "失效后果等级",
                 "A", "B", "倒塌分析载荷系数Rm", "VR", "Pf", "失效概率等级",
                 "节点风险等级",
             ]
@@ -874,6 +874,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         t.setSelectionMode(QTableWidget.SingleSelection)
         t.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         t.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        t.setEditTriggers(QTableWidget.NoEditTriggers)
 
         # ---- row 0: group headers ----
         hdr_bg = QColor("#f3f6fb")
@@ -902,15 +903,11 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         t.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         header = t.horizontalHeader()
-        for c in range(cols):
-            header.setSectionResizeMode(c, QHeaderView.ResizeToContents)
-
-        t.resizeColumnsToContents()
-        for c in range(cols):
-            w = t.columnWidth(c)
-            t.setColumnWidth(c, max(80, w + 10))
-
-        header.setStretchLastSection(True)
+        compact_widths = [88, 88, 108, 122, 52, 52, 190, 58, 82, 122, 136]
+        for c, width in enumerate(compact_widths):
+            header.setSectionResizeMode(c, QHeaderView.Fixed)
+            t.setColumnWidth(c, width)
+        header.setStretchLastSection(False)
         # ============================================
 
         # row heights
@@ -960,6 +957,7 @@ class UpgradeSpecialInspectionResultPage(BasePage):
         t.setShowGrid(True)
         t.setGridStyle(Qt.SolidLine)
         t.setSelectionMode(QTableWidget.NoSelection)
+        t.setEditTriggers(QTableWidget.NoEditTriggers)
         t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         t.setStyleSheet("QTableWidget{background:#ffffff;}")
 

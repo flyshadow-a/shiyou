@@ -2660,7 +2660,7 @@ def build_joint_forecast_vba_wide(
 
 def _normalize_rule_pattern(value: Any) -> str:
     text = _safe_str(value).upper()
-    chars = [ch for ch in text if ch == "*" or ch.isdigit() or ("A" <= ch <= "Z")]
+    chars = [ch for ch in text if ch in {"*", "#", "%"} or ch.isdigit() or ("A" <= ch <= "Z")]
     chars = chars[:4]
     while len(chars) < 4:
         chars.append("*")
@@ -2738,7 +2738,17 @@ def _matches_rule_pattern(value: Any, pattern: Any) -> bool:
     pat = _normalize_rule_pattern(pattern)
     if len(text) != 4 or not _is_active_rule_pattern(pat):
         return False
-    return all(p == "*" or p == c for c, p in zip(text, pat))
+    return all(_rule_pattern_char_matches(c, p) for c, p in zip(text, pat))
+
+
+def _rule_pattern_char_matches(code_char: str, pattern_char: str) -> bool:
+    if pattern_char == "*":
+        return True
+    if pattern_char == "#":
+        return "A" <= code_char <= "Z"
+    if pattern_char == "%":
+        return code_char.isdigit()
+    return pattern_char == code_char
 
 
 def _matches_member_rule(a: Any, b: Any, rule: Dict[str, Any]) -> bool:

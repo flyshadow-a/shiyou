@@ -29,7 +29,7 @@ RULE_MODE_MEMBER_EXCLUSION = "member_exclusion"
 RULE_MODE_JOINT_EXCLUSION = "joint_exclusion"
 
 _PATTERN_LENGTH = 4
-_ALLOWED_PATTERN_CHARS = set("*0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+_ALLOWED_PATTERN_CHARS = set("*#%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 _MEMBER_RELATIONS = ("And", "Or", "Not")
 
 
@@ -51,7 +51,17 @@ def code_matches_pattern(code: Any, pattern: Any) -> bool:
     pattern_text = normalize_code_pattern(pattern)
     if len(code_text) != _PATTERN_LENGTH or not is_active_code_pattern(pattern_text):
         return False
-    return all(p == "*" or p == c for c, p in zip(code_text, pattern_text))
+    return all(_pattern_char_matches(c, p) for c, p in zip(code_text, pattern_text))
+
+
+def _pattern_char_matches(code_char: str, pattern_char: str) -> bool:
+    if pattern_char == "*":
+        return True
+    if pattern_char == "#":
+        return "A" <= code_char <= "Z"
+    if pattern_char == "%":
+        return code_char.isdigit()
+    return pattern_char == code_char
 
 
 def normalize_member_relation(value: Any) -> str:
@@ -163,20 +173,22 @@ def normalize_rule_overrides(raw: Any) -> dict[str, Any]:
 class SpecialStrategyRuleDialog(QDialog):
     _MODE_META = {
         RULE_MODE_JOINT_CLASSIFICATION: {
-            "title": "新增节点分类修正",
-            "hint": "主腿节点与 X 撑节点分别录入。每 4 个字符组成一条编号规则，全 * 行仅作占位，不参与匹配。",
+            "title": "节点分类识别",
+            "hint": "主腿节点与 X 撑节点分别录入。*为任意字符，#表示字母，%表示数字；全*行仅作占位，不参与匹配。",
+            "note": "若不输入，则根据软件模糊识别",
         },
         RULE_MODE_MEMBER_CLASSIFICATION: {
-            "title": "新增构件分类修正",
-            "hint": "主腿构件与 X 撑构件分别录入。构件按无向匹配，A-B 与 B-A 视为同一构件。",
+            "title": "构件分类识别",
+            "hint": "主腿构件与 X 撑构件分别录入。构件按无向匹配，A-B 与 B-A 视为同一构件。*为任意字符，#表示字母，%表示数字；全*行仅作占位，不参与匹配。",
+            "note": "若不输入，则根据软件模糊识别",
         },
         RULE_MODE_MEMBER_EXCLUSION: {
             "title": "剔除不考虑构件修正",
-            "hint": "按节点 A / 节点 B 成对录入要剔除的构件规则。全 * 行仅作占位，不参与匹配。",
+            "hint": "按节点A／节点B成对录入要剔除的构件规则。*为任意字符，#表示字母，%表示数字；全*行仅作占位，不参与匹配。",
         },
         RULE_MODE_JOINT_EXCLUSION: {
             "title": "剔除不考虑节点修正",
-            "hint": "录入要从后续节点预测与节点策略结果中剔除的节点编号规则。",
+            "hint": "录入要从后续节点预测与节点策略结果中剔除的节点编号规则。*为任意字符，#表示字母，%表示数字；全*行仅作占位，不参与匹配。",
         },
     }
 
@@ -240,6 +252,12 @@ class SpecialStrategyRuleDialog(QDialog):
         hint = self._new_plain_label(str(meta["hint"]), self, "RuleDialogHint")
         hint.setWordWrap(True)
         content_layout.addWidget(hint)
+
+        note_text = str(meta.get("note") or "")
+        if note_text:
+            note = self._new_plain_label(note_text, self, "RuleDialogHint")
+            note.setWordWrap(True)
+            content_layout.addWidget(note)
 
         if mode == RULE_MODE_JOINT_CLASSIFICATION:
             self._build_joint_classification_ui(content_layout)

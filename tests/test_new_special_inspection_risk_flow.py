@@ -2,9 +2,12 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication, QDialog
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QKeyEvent
+from PyQt5.QtWidgets import QApplication, QAbstractItemView, QDialog
 
-from pages.new_special_inspection_page import NewSpecialInspectionPage
+from core.table_clipboard import TableClipboardController
+from pages.new_special_inspection_page import ManualBraceClientDialog, NewSpecialInspectionPage
 from pages.special_strategy_rule_dialogs import normalize_rule_overrides
 
 _QT_APP: QApplication | None = None
@@ -29,6 +32,54 @@ def _bare_page() -> NewSpecialInspectionPage:
     page._rule_overrides = normalize_rule_overrides({})
     page._validate_runtime_file_selection = lambda: True
     return page
+
+
+def test_work_point_coordinate_table_supports_excel_clipboard_for_xy_cells():
+    _ensure_app()
+    page = NewSpecialInspectionPage("TEST-FACILITY")
+    try:
+        table = page.coord_table
+
+        assert isinstance(table._table_clipboard, TableClipboardController)
+        assert table.selectionMode() == QAbstractItemView.ExtendedSelection
+        assert table.selectionBehavior() == QAbstractItemView.SelectItems
+        assert not page._can_paste_coord_table_cell(0, 0)
+        assert page._can_paste_coord_table_cell(0, 1)
+        assert page._can_paste_coord_table_cell(0, 2)
+
+        QApplication.clipboard().setText("11\t22")
+        table.setCurrentCell(0, 1)
+        QApplication.sendEvent(table, QKeyEvent(QKeyEvent.KeyPress, Qt.Key_V, Qt.ControlModifier))
+
+        assert table.item(0, 0).text() == "1"
+        assert table.item(0, 1).text() == "11"
+        assert table.item(0, 2).text() == "22"
+    finally:
+        page.deleteLater()
+
+
+def test_manual_fill_dialog_shows_missing_file_name_in_file_info_column():
+    _ensure_app()
+    dialog = ManualBraceClientDialog(
+        [
+            {
+                "joint_i": "301L",
+                "joint_j": "401L",
+                "case": "Case-1",
+                "raw": {
+                    "FilePath": r"D:\runtime\fatigue\ftginp.M1",
+                    "Remark": "manual_fill_needed",
+                },
+            }
+        ]
+    )
+    try:
+        assert dialog.width() == 770
+        assert dialog.table.horizontalHeaderItem(5).text() == "文件信息"
+        assert dialog.table.item(0, 5).text() == "ftginp.M1"
+        assert "FilePath=" not in dialog.table.item(0, 5).text()
+    finally:
+        dialog.deleteLater()
 
 
 def test_update_risk_starts_async_manual_fill_check_before_prepare():

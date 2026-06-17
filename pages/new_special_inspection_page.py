@@ -20,6 +20,7 @@ from PyQt5.QtCore import QObject, QPoint, Qt, pyqtSignal, QThread, QTimer
 
 from core.app_paths import external_path, external_root, first_existing_path
 from core.base_page import BasePage
+from core.table_clipboard import TableClipboardController
 from services.file_db_adapter import (
     DEFAULT_DB_CONFIG,
     FileBackendError,
@@ -673,10 +674,13 @@ class _SystemLibraryPickerDialog(QDialog):
 class ManualBraceClientDialog(QDialog):
     """客户端 ManualBrace 人工补全弹窗。"""
 
+    BASE_DIALOG_WIDTH = 720
+    FILE_INFO_COLUMN_EXTRA_WIDTH = 50
+
     def __init__(self, rows: list[dict[str, Any]], parent=None):
         super().__init__(parent)
         self.setWindowTitle("疲劳输入检查")
-        self.resize(720, 420)
+        self.resize(self.BASE_DIALOG_WIDTH + self.FILE_INFO_COLUMN_EXTRA_WIDTH, 420)
         self._rows = list(rows or [])
         self._result_entries: list[dict[str, Any]] = []
 
@@ -692,7 +696,7 @@ class ManualBraceClientDialog(QDialog):
         layout.addWidget(tip)
 
         self.table = QTableWidget(len(self._rows), 6, self)
-        self.table.setHorizontalHeaderLabels(["序号", "JointI", "JointJ", "Case", "ManualBrace", "原始信息"])
+        self.table.setHorizontalHeaderLabels(["序号", "JointI", "JointJ", "Case", "ManualBrace", "文件信息"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -710,9 +714,9 @@ class ManualBraceClientDialog(QDialog):
             joint_j = str(row.get("joint_j") or raw.get("JointJ") or raw.get("JSLCB") or raw.get("B") or raw.get("Joint") or "").strip()
             case_text = str(row.get("case") or raw.get("Case") or raw.get("Source") or raw.get("File") or "疲劳分析模型文件").strip()
             default_value = str(row.get("manual_brace") or raw.get("ManualBrace") or "").strip()
-            raw_text = "; ".join(f"{k}={v}" for k, v in raw.items() if not str(k).startswith("_"))
+            file_info = self._missing_data_file_name(row, raw)
 
-            values = [str(row_idx + 1), joint_i, joint_j, case_text, default_value, raw_text]
+            values = [str(row_idx + 1), joint_i, joint_j, case_text, default_value, file_info]
             for col, text in enumerate(values):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignCenter if col in {0, 1, 2, 4} else Qt.AlignLeft | Qt.AlignVCenter)
@@ -729,6 +733,38 @@ class ManualBraceClientDialog(QDialog):
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    @classmethod
+    def _missing_data_file_name(cls, row: dict[str, Any], raw: dict[str, Any]) -> str:
+        for key in ("file_name", "FileName", "filename", "Filename", "文件名"):
+            value = row.get(key) or raw.get(key)
+            if str(value or "").strip():
+                return str(value).strip()
+
+        for key in (
+            "file_path",
+            "FilePath",
+            "path",
+            "Path",
+            "source_path",
+            "SourcePath",
+            "file",
+            "File",
+            "ftginp",
+            "FTGINP",
+            "source",
+            "Source",
+            "文件",
+        ):
+            value = row.get(key) or raw.get(key)
+            if str(value or "").strip():
+                return cls._path_leaf(str(value).strip())
+        return ""
+
+    @staticmethod
+    def _path_leaf(value: str) -> str:
+        normalized = str(value or "").strip().replace("\\", "/").rstrip("/")
+        return os.path.basename(normalized) or normalized
 
     def _accept(self):
         entries: list[dict[str, Any]] = []
@@ -1621,12 +1657,22 @@ class NewSpecialInspectionPage(BasePage):
             | QAbstractItemView.SelectedClicked
             | QAbstractItemView.EditKeyPressed
         )
-        coord_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        coord_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        coord_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        coord_table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self._install_coord_table_clipboard(coord_table)
 
         block_lay.addWidget(coord_table)
         self.model_info_block = block
         return block
+
+    def _install_coord_table_clipboard(self, table: QTableWidget) -> None:
+        table._table_clipboard = TableClipboardController(
+            table,
+            can_paste_cell=lambda row, col: self._can_paste_coord_table_cell(row, col),
+        )
+
+    def _can_paste_coord_table_cell(self, row: int, col: int) -> bool:
+        return 0 <= row < self.coord_table.rowCount() and col in (1, 2)
 
     def _renumber_coord_rows(self) -> None:
         for row in range(self.coord_table.rowCount()):

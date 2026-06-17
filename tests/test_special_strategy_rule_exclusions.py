@@ -58,3 +58,25 @@ def test_popup_rules_still_remove_matching_members_and_joints():
         {"JointA": "A002", "JointB": "A003"}
     ]
     assert joint_result["JoitID"].tolist() == ["A001"]
+
+
+def test_popup_rules_support_letter_and_digit_placeholders_in_runtime_matching():
+    member_rows = pd.DataFrame(
+        [
+            {"JointA": "AB12", "JointB": "CD34"},
+            {"JointA": "A112", "JointB": "CD34"},
+        ]
+    )
+    joint_rows = pd.DataFrame([{"JoitID": "AB12"}, {"JoitID": "A112"}])
+    rules = {
+        "member_exclusions": [{"a": "##%%", "relation": "And", "b": "##%%"}],
+        "joint_exclusions": ["##%%"],
+    }
+
+    member_result = _apply_member_delete_rule(member_rows, user_rules=rules)
+    joint_result = _apply_joint_delete_rule(joint_rows, user_rules=rules)
+
+    assert member_result[["JointA", "JointB"]].to_dict("records") == [
+        {"JointA": "A112", "JointB": "CD34"}
+    ]
+    assert joint_result["JoitID"].tolist() == ["A112"]

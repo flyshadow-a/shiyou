@@ -368,6 +368,52 @@ def save_strategy_result_snapshot(
         return int(result.lastrowid or 0)
 
 
+_RESULT_JSON_CHUNK_CHARS = 256 * 1024
+
+
+def _load_result_json_for_snapshot(conn, snapshot_id: int) -> dict[str, Any] | None:
+    length_sql = text(
+        """
+        SELECT CHAR_LENGTH(result_json)
+        FROM special_strategy_result_snapshots
+        WHERE id = :snapshot_id
+        """
+    )
+    raw_length = conn.execute(length_sql, {"snapshot_id": int(snapshot_id)}).scalar()
+    try:
+        total_length = int(raw_length or 0)
+    except (TypeError, ValueError):
+        total_length = 0
+    if total_length <= 0:
+        return None
+
+    chunk_sql = text(
+        """
+        SELECT SUBSTRING(result_json, :start_pos, :chunk_size)
+        FROM special_strategy_result_snapshots
+        WHERE id = :snapshot_id
+        """
+    )
+    chunks: list[str] = []
+    for start_pos in range(1, total_length + 1, _RESULT_JSON_CHUNK_CHARS):
+        chunk = conn.execute(
+            chunk_sql,
+            {
+                "snapshot_id": int(snapshot_id),
+                "start_pos": start_pos,
+                "chunk_size": _RESULT_JSON_CHUNK_CHARS,
+            },
+        ).scalar()
+        if chunk is None:
+            break
+        chunks.append(str(chunk))
+
+    try:
+        return json.loads("".join(chunks)) if chunks else None
+    except Exception:
+        return None
+
+
 def load_latest_strategy_result_snapshot(
     facility_code: str,
     config_path: str | None = None,
@@ -378,7 +424,7 @@ def load_latest_strategy_result_snapshot(
     engine = _get_engine(config_path)
     sql = text(
         """
-        SELECT *
+        SELECT id, run_id, facility_code, created_at, updated_at
         FROM special_strategy_result_snapshots
         WHERE facility_code = :facility_code
         ORDER BY id DESC
@@ -387,14 +433,10 @@ def load_latest_strategy_result_snapshot(
     )
     with engine.connect() as conn:
         row = conn.execute(sql, {"facility_code": facility_code}).mappings().first()
-    if row is None:
-        return None
-    payload = dict(row)
-    raw = payload.get("result_json")
-    try:
-        payload["result_json"] = json.loads(raw) if raw else None
-    except Exception:
-        payload["result_json"] = None
+        if row is None:
+            return None
+        payload = dict(row)
+        payload["result_json"] = _load_result_json_for_snapshot(conn, int(payload["id"]))
     return payload
 
 
@@ -408,7 +450,7 @@ def load_strategy_result_snapshot_by_run(
     engine = _get_engine(config_path)
     sql = text(
         """
-        SELECT *
+        SELECT id, run_id, facility_code, created_at, updated_at
         FROM special_strategy_result_snapshots
         WHERE run_id = :run_id
         ORDER BY id DESC
@@ -417,14 +459,10 @@ def load_strategy_result_snapshot_by_run(
     )
     with engine.connect() as conn:
         row = conn.execute(sql, {"run_id": int(run_id)}).mappings().first()
-    if row is None:
-        return None
-    payload = dict(row)
-    raw = payload.get("result_json")
-    try:
-        payload["result_json"] = json.loads(raw) if raw else None
-    except Exception:
-        payload["result_json"] = None
+        if row is None:
+            return None
+        payload = dict(row)
+        payload["result_json"] = _load_result_json_for_snapshot(conn, int(payload["id"]))
     return payload
 
 
