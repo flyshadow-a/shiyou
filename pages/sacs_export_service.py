@@ -537,6 +537,12 @@ def build_dead_load_lines(
 ) -> List[str]:
     lines: List[str] = []
 
+    # SACS SEA 文件的 LOAD 固定列非常敏感。
+    # 这里必须让 Force Z 从正确列开始，否则 Data Generator 会把 Joint Load
+    # 误识别为 Distributed Load。
+    # 标准写法：LOAD + 4位节点号 + 19个空格 + 7位 Fz + GLOB JOIN + Load ID。
+    JOINT_LOAD_FZ_PREFIX_SPACES = " " * 19
+
     # 井槽顶端载荷：
     # 当前标准文件中 SLOT1 = -1000.0 已经与用户输入一致，
     # 因此井槽顶端载荷不在这里额外乘 9.8，避免重复换算。
@@ -549,7 +555,7 @@ def build_dead_load_lines(
         line = (
             "LOAD   "
             + fill_parameters_vba(str(w.joint_id or "").strip(), 4)
-            + "                  "
+            + JOINT_LOAD_FZ_PREFIX_SPACES
             + fill_parameters_vba(load_value, 7, "Number")
             + "                       GLOB JOIN   SLOT"
             + str(w.slot_no)
@@ -570,7 +576,7 @@ def build_dead_load_lines(
         line = (
             "LOAD   "
             + fill_parameters_vba(str(r.joint_id or "").strip(), 4)
-            + "                  "
+            + JOINT_LOAD_FZ_PREFIX_SPACES
             + fill_parameters_vba(load_value_kn, 7, "Number")
             + "                       GLOB JOIN   STWN"
             + str(seq)
