@@ -1,6 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 # pages/platform_summary_page.py
 
+import calendar
 import datetime
 import os
 import re
@@ -23,6 +24,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -151,11 +153,187 @@ PLATFORM_FIELD_ALIASES: dict[str, List[str]] = {
 }
 
 
+class WheelSpinBox(QSpinBox):
+    """只读但支持鼠标滚轮直接切换数值的 SpinBox。"""
+
+    WHEEL_STEP_DELTA = 120
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._wheel_remainder = 0
+        self.setFocusPolicy(Qt.WheelFocus)
+
+    def wheelEvent(self, event) -> None:
+        delta = event.angleDelta().y()
+        if delta == 0:
+            delta = event.pixelDelta().y()
+        if delta == 0:
+            event.accept()
+            return
+
+        self._wheel_remainder += delta
+        steps = int(self._wheel_remainder / self.WHEEL_STEP_DELTA)
+        if steps:
+            self._wheel_remainder -= steps * self.WHEEL_STEP_DELTA
+            self._step_with_wrapping(steps)
+        event.accept()
+
+    def _step_with_wrapping(self, steps: int) -> None:
+        minimum = self.minimum()
+        maximum = self.maximum()
+        if minimum >= maximum:
+            return
+        if self.wrapping():
+            span = maximum - minimum + 1
+            next_value = minimum + ((self.value() - minimum + steps) % span)
+            self.setValue(next_value)
+            return
+        self.setValue(max(minimum, min(maximum, self.value() + steps)))
+
+
+class DateWheelDialog(QDialog):
+    """年月日滚动选择弹窗。"""
+
+    YEAR_MIN = 1950
+    YEAR_MAX = 2050
+
+    def __init__(self, value: str = "", parent=None):
+        super().__init__(parent)
+        self._cleared = False
+        year, month, day = self.parse_date_parts(value)
+        self._build_ui(year, month, day)
+
+    def _build_ui(self, year: int, month: int, day: int) -> None:
+        self.setWindowTitle("选择日期")
+        self.setModal(True)
+        self.setFixedWidth(360)
+        self.setStyleSheet(
+            """
+            QDialog {
+                background: #f4f7fb;
+            }
+            QLabel {
+                color: #172b3a;
+                font-size: 13px;
+            }
+            QSpinBox {
+                min-height: 36px;
+                font-size: 15px;
+                padding: 2px 8px;
+                background: #ffffff;
+                border: 1px solid #b9c8d8;
+                border-radius: 4px;
+            }
+            QPushButton {
+                min-height: 30px;
+                min-width: 78px;
+                border-radius: 4px;
+                border: 1px solid #b9c8d8;
+                background: #ffffff;
+            }
+            QPushButton:hover {
+                background: #edf5ff;
+            }
+            """
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(12)
+
+        tip = QLabel("上下滚动选择年、月、日")
+        tip.setAlignment(Qt.AlignCenter)
+        root.addWidget(tip)
+
+        picker_layout = QHBoxLayout()
+        picker_layout.setContentsMargins(0, 0, 0, 0)
+        picker_layout.setSpacing(10)
+
+        self.year_spin = self._make_spin_box(self.YEAR_MIN, self.YEAR_MAX, year)
+        self.month_spin = self._make_spin_box(1, 12, month)
+        self.day_spin = self._make_spin_box(1, self.days_in_month(year, month), day)
+
+        picker_layout.addLayout(self._labeled_spin_layout("年", self.year_spin))
+        picker_layout.addLayout(self._labeled_spin_layout("月", self.month_spin))
+        picker_layout.addLayout(self._labeled_spin_layout("日", self.day_spin))
+        root.addLayout(picker_layout)
+
+        self.year_spin.valueChanged.connect(self._update_day_range)
+        self.month_spin.valueChanged.connect(self._update_day_range)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.button(QDialogButtonBox.Ok).setText("确定")
+        button_box.button(QDialogButtonBox.Cancel).setText("取消")
+        clear_button = button_box.addButton("清空", QDialogButtonBox.ResetRole)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        clear_button.clicked.connect(self._clear_and_accept)
+        root.addWidget(button_box)
+
+    def _make_spin_box(self, minimum: int, maximum: int, value: int) -> WheelSpinBox:
+        spin = WheelSpinBox(self)
+        spin.setRange(minimum, maximum)
+        spin.setWrapping(True)
+        spin.setAccelerated(True)
+        spin.setAlignment(Qt.AlignCenter)
+        spin.setButtonSymbols(QSpinBox.UpDownArrows)
+        spin.lineEdit().setReadOnly(True)
+        spin.setValue(max(minimum, min(maximum, value)))
+        return spin
+
+    def _labeled_spin_layout(self, label_text: str, spin: QSpinBox) -> QVBoxLayout:
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        label = QLabel(label_text)
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(spin)
+        layout.addWidget(label)
+        return layout
+
+    def _update_day_range(self) -> None:
+        current_day = self.day_spin.value()
+        max_day = self.days_in_month(self.year_spin.value(), self.month_spin.value())
+        self.day_spin.setRange(1, max_day)
+        self.day_spin.setValue(min(current_day, max_day))
+
+    def _clear_and_accept(self) -> None:
+        self._cleared = True
+        self.accept()
+
+    def selected_date_text(self) -> str:
+        if self._cleared:
+            return ""
+        return f"{self.year_spin.value():04d}-{self.month_spin.value():02d}-{self.day_spin.value():02d}"
+
+    @classmethod
+    def parse_date_parts(cls, value: str) -> tuple[int, int, int]:
+        text = str(value or "").strip()
+        match = re.search(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", text)
+        if match:
+            year = max(cls.YEAR_MIN, min(cls.YEAR_MAX, int(match.group(1))))
+            month = max(1, min(12, int(match.group(2))))
+            max_day = cls.days_in_month(year, month)
+            day = max(1, min(max_day, int(match.group(3))))
+            return year, month, day
+
+        today = datetime.date.today()
+        year = max(cls.YEAR_MIN, min(cls.YEAR_MAX, today.year))
+        month = today.month
+        day = min(today.day, cls.days_in_month(year, month))
+        return year, month, day
+
+    @staticmethod
+    def days_in_month(year: int, month: int) -> int:
+        return calendar.monthrange(year, month)[1]
+
+
 class PlatformDetailDialog(QDialog):
     """单个平台详情弹窗。"""
 
     DROPDOWN_PLACEHOLDER = "▼"
     YES_NO_OPTIONS = ("是", "否")
+    DATE_FIELDS = {"投产时间", "服役到期时间"}
 
     def __init__(self, values: dict[str, str] | None = None, parent=None, *, is_new: bool = False):
         super().__init__(parent)
@@ -268,6 +446,12 @@ class PlatformDetailDialog(QDialog):
                     value_item.setToolTip("点击选择")
                     value_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                     self.table.setItem(row, value_col, value_item)
+                elif field in self.DATE_FIELDS:
+                    value_item = QTableWidgetItem(self._normalize_date_text(value))
+                    value_item.setTextAlignment(Qt.AlignCenter)
+                    value_item.setToolTip("点击选择日期")
+                    value_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                    self.table.setItem(row, value_col, value_item)
                 else:
                     value_item = QTableWidgetItem(value)
                     value_item.setTextAlignment(Qt.AlignCenter)
@@ -337,9 +521,32 @@ class PlatformDetailDialog(QDialog):
         row_fields = PLATFORM_DETAIL_FIELD_ROWS[row]
         if not (0 <= field_idx < len(row_fields)):
             return
-        if not row_fields[field_idx].startswith("是否"):
+        field = row_fields[field_idx]
+        if field in self.DATE_FIELDS:
+            self._open_date_dialog(row, column)
+            return
+        if not field.startswith("是否"):
             return
         self._open_yes_no_menu(row, column)
+
+    def _open_date_dialog(self, row: int, column: int) -> None:
+        if self.table is None:
+            return
+        item = self.table.item(row, column)
+        if item is None:
+            return
+        dialog = DateWheelDialog(item.text(), self)
+        if exec_dialog_safely(dialog, title="日期选择窗口错误", context="平台日期选择窗口", parent=self) != QDialog.Accepted:
+            return
+        item.setText(dialog.selected_date_text())
+
+    @staticmethod
+    def _normalize_date_text(value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        year, month, day = DateWheelDialog.parse_date_parts(text)
+        return f"{year:04d}-{month:02d}-{day:02d}"
 
     def _open_yes_no_menu(self, row: int, column: int) -> None:
         if self.table is None:
@@ -506,6 +713,7 @@ class PlatformSummaryPage(BasePage):
             | QAbstractItemView.EditKeyPressed
         )
         self.table.itemChanged.connect(self._on_table_item_changed)
+        self.table.cellClicked.connect(self._on_summary_table_cell_clicked)
         self.table.cellDoubleClicked.connect(self.open_detail_dialog_for_row)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
@@ -738,6 +946,16 @@ class PlatformSummaryPage(BasePage):
         item = self.table.item(row, index)
         return item.text().strip() if item is not None else ""
 
+    def _make_summary_table_item(self, field: str, value: str) -> QTableWidgetItem:
+        text = str(value or "")
+        if field in PlatformDetailDialog.DATE_FIELDS:
+            text = PlatformDetailDialog._normalize_date_text(text)
+        item = QTableWidgetItem(text)
+        if field in PlatformDetailDialog.DATE_FIELDS:
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            item.setToolTip("点击选择日期")
+        return item
+
     def _set_table_columns(self, columns: List[str]):
         self.columns = list(columns)
         if self.table is None:
@@ -762,7 +980,7 @@ class PlatformSummaryPage(BasePage):
                 source = {str(col or ""): row_data.get(col, "") for col in df.columns}
                 for col, col_name in enumerate(self.columns):
                     value = self._value_from_mapping(source, col_name)
-                    self.table.setItem(row, col, QTableWidgetItem(value))
+                    self.table.setItem(row, col, self._make_summary_table_item(col_name, value))
 
             self._update_table_columns()
         finally:
@@ -806,7 +1024,11 @@ class PlatformSummaryPage(BasePage):
                     "设计年限": profile.get("design_life") or "",
                 }
                 for col, col_name in enumerate(self.columns):
-                    self.table.setItem(row, col, QTableWidgetItem(str(source.get(col_name, ""))))
+                    self.table.setItem(
+                        row,
+                        col,
+                        self._make_summary_table_item(col_name, str(source.get(col_name, ""))),
+                    )
             self._update_table_columns()
         finally:
             self.table.blockSignals(signals_blocked)
@@ -836,7 +1058,7 @@ class PlatformSummaryPage(BasePage):
                 }
                 for col, col_name in enumerate(self.columns):
                     value = self._value_from_mapping(source, col_name)
-                    self.table.setItem(row, col, QTableWidgetItem(value))
+                    self.table.setItem(row, col, self._make_summary_table_item(col_name, value))
             self._update_table_columns()
         finally:
             self.table.blockSignals(signals_blocked)
@@ -946,6 +1168,22 @@ class PlatformSummaryPage(BasePage):
         self._store_session_profiles_cache()
         self._schedule_summary_pages_refresh()
 
+    def _on_summary_table_cell_clicked(self, row: int, column: int) -> None:
+        if self.table is None or row < 0 or column < 0 or column >= len(self.columns):
+            return
+        if self.columns[column] not in PlatformDetailDialog.DATE_FIELDS:
+            return
+        item = self.table.item(row, column)
+        if item is None:
+            item = self._make_summary_table_item(self.columns[column], "")
+            self.table.setItem(row, column, item)
+        dialog = DateWheelDialog(item.text(), self)
+        if exec_dialog_safely(dialog, title="日期选择窗口错误", context="平台日期选择窗口", parent=self) != QDialog.Accepted:
+            return
+        item.setText(dialog.selected_date_text())
+        self._store_session_profiles_cache()
+        self._schedule_summary_pages_refresh()
+
     def _schedule_summary_pages_refresh(self):
         if self._summary_refresh_timer is None:
             self._notify_summary_pages_refresh()
@@ -1019,8 +1257,10 @@ class PlatformSummaryPage(BasePage):
                 text = str(values.get(col_name, "") or "")
                 item = self.table.item(row, col)
                 if item is None:
-                    item = QTableWidgetItem("")
+                    item = self._make_summary_table_item(col_name, "")
                     self.table.setItem(row, col, item)
+                if col_name in PlatformDetailDialog.DATE_FIELDS:
+                    text = PlatformDetailDialog._normalize_date_text(text)
                 item.setText(text)
         finally:
             self.table.blockSignals(signals_blocked)
@@ -1034,7 +1274,8 @@ class PlatformSummaryPage(BasePage):
         self.table.insertRow(row)
         # 默认每个单元格给一个 QTableWidgetItem，方便直接编辑
         for col in range(self.table.columnCount()):
-            item = QTableWidgetItem("")
+            col_name = self.columns[col] if col < len(self.columns) else ""
+            item = self._make_summary_table_item(col_name, "")
             self.table.setItem(row, col, item)
 
 

@@ -45,6 +45,7 @@ from pages.history_inspection_summary_page import (
     HistoryInspectionSummaryPage,
     InspectionProjectEditDialog,
     InspectionFindingDialog,
+    YearSelectLineEdit,
 )
 from pages.doc_man import DocManWidget, apply_docman_table_style
 from services.file_db_adapter import (
@@ -154,8 +155,7 @@ class AddInspectionProjectDialog(QDialog):
         self.name_edit.setPlaceholderText("例如：第一次检测 / 台风检测")
         self.description_edit = QLineEdit(self)
         self.description_edit.setPlaceholderText("请输入检测描述")
-        self.year_edit = QLineEdit(self)
-        self.year_edit.setPlaceholderText("例如：2025")
+        self.year_edit = YearSelectLineEdit(parent=self)
 
         form.addRow("检测类型", self.type_combo)
         form.addRow("项目名称", self.name_edit)

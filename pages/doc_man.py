@@ -1413,6 +1413,7 @@ class DocManWidget(QFrame):
         item = QTableWidgetItem(self._category_display_text(rec))
         item.setTextAlignment(int(Qt.AlignCenter))
         item.setToolTip(item.text())
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         self.table.setItem(row, self.COL_CATEGORY, item)
 
     def _set_work_condition_item(self, row: int, text: str):

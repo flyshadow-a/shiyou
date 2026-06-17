@@ -14,6 +14,7 @@
         - 历史抽检记录：表格 + 蓝底白字说明
 """
 
+import datetime
 import os
 import shutil
 from typing import Dict, List
@@ -42,6 +43,7 @@ from PyQt5.QtWidgets import (
     QTextEdit,
     QSizePolicy,
     QSpacerItem,
+    QSpinBox,
 )
 
 from core.base_page import BasePage
@@ -72,6 +74,157 @@ from services.file_db_adapter import (
 from pages.construction_docs_widget import ConstructionDocsWidget
 
 
+class WheelYearSpinBox(QSpinBox):
+    """只读年份选择框，支持鼠标滚轮循环切换。"""
+
+    WHEEL_STEP_DELTA = 120
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._wheel_remainder = 0
+        self.setFocusPolicy(Qt.WheelFocus)
+
+    def wheelEvent(self, event) -> None:
+        delta = event.angleDelta().y()
+        if delta == 0:
+            delta = event.pixelDelta().y()
+        if delta == 0:
+            event.accept()
+            return
+
+        self._wheel_remainder += delta
+        steps = int(self._wheel_remainder / self.WHEEL_STEP_DELTA)
+        if steps:
+            self._wheel_remainder -= steps * self.WHEEL_STEP_DELTA
+            self._step_with_wrapping(steps)
+        event.accept()
+
+    def _step_with_wrapping(self, steps: int) -> None:
+        minimum = self.minimum()
+        maximum = self.maximum()
+        if minimum >= maximum:
+            return
+        if self.wrapping():
+            span = maximum - minimum + 1
+            self.setValue(minimum + ((self.value() - minimum + steps) % span))
+            return
+        self.setValue(max(minimum, min(maximum, self.value() + steps)))
+
+
+class YearWheelDialog(QDialog):
+    """单年份滚轮选择弹窗。"""
+
+    YEAR_MIN = 1950
+    YEAR_MAX = 2150
+
+    def __init__(self, value: str = "", parent=None):
+        super().__init__(parent)
+        self._build_ui(self.parse_year(value))
+
+    def _build_ui(self, year: int) -> None:
+        self.setWindowTitle("选择年份")
+        self.setModal(True)
+        self.setFixedWidth(280)
+        self.setStyleSheet(
+            """
+            QDialog {
+                background: #f4f7fb;
+            }
+            QLabel {
+                color: #172b3a;
+                font-size: 13px;
+            }
+            QSpinBox {
+                min-height: 38px;
+                font-size: 16px;
+                padding: 2px 8px;
+                background: #ffffff;
+                border: 1px solid #b9c8d8;
+                border-radius: 4px;
+            }
+            QPushButton {
+                min-height: 30px;
+                min-width: 78px;
+                border-radius: 4px;
+                border: 1px solid #b9c8d8;
+                background: #ffffff;
+            }
+            QPushButton:hover {
+                background: #edf5ff;
+            }
+            """
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(12)
+
+        tip = QLabel("上下键或鼠标滚轮选择年份")
+        tip.setAlignment(Qt.AlignCenter)
+        layout.addWidget(tip)
+
+        self.year_spin = WheelYearSpinBox(self)
+        self.year_spin.setRange(self.YEAR_MIN, self.YEAR_MAX)
+        self.year_spin.setWrapping(True)
+        self.year_spin.setAccelerated(True)
+        self.year_spin.setAlignment(Qt.AlignCenter)
+        self.year_spin.setButtonSymbols(QSpinBox.UpDownArrows)
+        self.year_spin.lineEdit().setReadOnly(True)
+        self.year_spin.setValue(year)
+        layout.addWidget(self.year_spin)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.button(QDialogButtonBox.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_year_text(self) -> str:
+        return str(self.year_spin.value())
+
+    @classmethod
+    def parse_year(cls, value: str) -> int:
+        text = str(value or "").strip()
+        digits = ""
+        for char in text:
+            if char.isdigit():
+                digits += char
+                if len(digits) == 4:
+                    break
+            elif digits:
+                digits = ""
+        if len(digits) == 4:
+            year = int(digits)
+        else:
+            year = datetime.date.today().year
+        return max(cls.YEAR_MIN, min(cls.YEAR_MAX, year))
+
+
+class YearSelectLineEdit(QLineEdit):
+    """保持输入框外观，但年份只能通过弹窗选择。"""
+
+    def __init__(self, value: str = "", parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setPlaceholderText("点击选择年份")
+        self.setText(str(YearWheelDialog.parse_year(value)))
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.open_year_dialog()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def open_year_dialog(self) -> None:
+        dialog = YearWheelDialog(self.text(), self)
+        if exec_dialog_safely(dialog, title="年份选择窗口错误", context="检测项目年份选择窗口", parent=self) != QDialog.Accepted:
+            return
+        self.setText(dialog.selected_year_text())
+
+
 class AddPeriodicInspectionDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -91,8 +244,7 @@ class AddPeriodicInspectionDialog(QDialog):
         self.name_edit = QLineEdit(self)
         self.description_edit = QLineEdit(self)
         self.description_edit.setPlaceholderText("请输入项目描述")
-        self.year_edit = QLineEdit(self)
-        self.year_edit.setPlaceholderText("例如：2025")
+        self.year_edit = YearSelectLineEdit(parent=self)
 
         form.addRow("检测名称", self.name_edit)
         form.addRow("描述", self.description_edit)
@@ -144,8 +296,7 @@ class AddSpecialEventInspectionDialog(QDialog):
         self.name_edit = QLineEdit(self)
         self.description_edit = QLineEdit(self)
         self.description_edit.setPlaceholderText("请输入事件描述")
-        self.year_edit = QLineEdit(self)
-        self.year_edit.setPlaceholderText("例如：2025")
+        self.year_edit = YearSelectLineEdit(parent=self)
 
         form.addRow("事件名称", self.name_edit)
         form.addRow("描述", self.description_edit)
@@ -205,8 +356,7 @@ class InspectionProjectEditDialog(QDialog):
         self.summary_edit = QLineEdit(self)
         self.summary_edit.setText(summary_text or "")
         self.summary_edit.setPlaceholderText("请输入项目描述")
-        self.year_edit = QLineEdit(self)
-        self.year_edit.setText(project_year)
+        self.year_edit = YearSelectLineEdit(project_year, self)
         form.addRow("项目名称", self.name_edit)
         form.addRow("描述", self.summary_edit)
         form.addRow("年份", self.year_edit)
