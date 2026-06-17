@@ -92,6 +92,17 @@ REPORT_MODULE_ROOT = Path(__file__).resolve().parent / "output_feasibility_analy
 if str(REPORT_MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(REPORT_MODULE_ROOT))
 
+from pages.special_strategy_rule_dialogs import (
+    RULE_MODE_JOINT_EXCLUSION,
+    RULE_MODE_MEMBER_EXCLUSION,
+    SpecialStrategyRuleDialog,
+    code_matches_pattern,
+    member_matches_patterns,
+    normalize_rule_overrides,
+)
+from src.parsers.joint_can_summary_builder import build_joint_can_summary
+from src.parsers.member_summary_builder import build_member_summary
+from src.parsers.summary_builder import build_analysis_summary
 from src.path_config_loader import get_coordinate_system_config, get_overall_model_config
 
 
@@ -759,7 +770,10 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self._analysis_thread = None
         self._analysis_worker = None
         self._analysis_results = {}
+        self._analysis_filter_rules = normalize_rule_overrides({})
+        self._filtered_analysis_results = {}
         self._detail_table_rows = {}
+        self._detail_filter_button = None
         self.lbl_result_file_path = None
         self._pile_capacity_input_warning_shown = False
         self._model_load_thread = None
@@ -1122,8 +1136,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
         self.lbl_result_file_path.setToolTip("当前页面实际解析的 psilst 结果文件路径")
         lay.addWidget(self.lbl_result_file_path, 0)
 
-        # 1 行标题 + 1 行表头 + 5 行数据
-        rows = 1 + 1 + 7
+        # 1 行标题 + 1 行表头 + 8 行数据
+        rows = 1 + 1 + 8
         cols = 5
         self.tbl_summary = QTableWidget(rows, cols)
         self._init_table_common(self.tbl_summary)
@@ -1139,7 +1153,8 @@ class FeasibilityAssessmentResultsPage(BasePage):
         # 数据行（与原型图可见内容一致）
         items = [
             "构件",
-            "节点冲剪",
+            "节点冲剪（Load）",
+            "节点冲剪（Strength）",
             "桩应力",
             "操作工况桩基抗压",
             "操作工况桩基抗拔",
@@ -1296,6 +1311,24 @@ class FeasibilityAssessmentResultsPage(BasePage):
         # 【关键点4】在最右侧增加弹簧。它会吸收所有剩余的空白空间，将左侧的所有按钮紧紧地向左挤压
         tab_lay.addStretch(1)
 
+        self._detail_filter_button = QPushButton("筛选")
+        self._detail_filter_button.setFixedHeight(32)
+        self._detail_filter_button.setMinimumWidth(72)
+        self._detail_filter_button.setStyleSheet("""
+                    QPushButton {
+                        background: #2aa9df;
+                        border: 1px solid #1b2a3a;
+                        border-radius: 4px;
+                        color: white;
+                        padding: 0 12px;
+                        font-size: 12pt;
+                    }
+                    QPushButton:hover { background: #2398ca; }
+                    QPushButton:pressed { background: #1f88b5; }
+                """)
+        self._detail_filter_button.clicked.connect(self._on_detail_filter_clicked)
+        tab_lay.addWidget(self._detail_filter_button, 0)
+
         # ====== 新增：右侧“显示行数”控件 ======
         lbl_rows = QLabel("显示行数：")
         lbl_rows.setStyleSheet("font-size: 12pt; color: #333; font-weight: normal;")
@@ -1326,6 +1359,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         # 初始化完毕后，触发一次表格行数渲染
         self._update_current_table_rows()
+        self._update_filter_button_visibility()
 
         return box
 
@@ -1512,6 +1546,105 @@ class FeasibilityAssessmentResultsPage(BasePage):
             return float(row.get(key))
         except (TypeError, ValueError):
             return float("-inf")
+
+    @staticmethod
+    def _member_endpoints(member_name: Any) -> tuple[str, str] | None:
+        text = str(member_name or "").strip().upper()
+        if "-" not in text:
+            return None
+        left, right = text.split("-", 1)
+        left = left.strip()
+        right = right.strip()
+        if not left or not right:
+            return None
+        return left, right
+
+    @staticmethod
+    def _raw_block_without_filtered_names(raw_block: Any, removed_names: set[str]) -> str:
+        if not removed_names:
+            return str(raw_block or "")
+        upper_removed = {str(name or "").strip().upper() for name in removed_names if str(name or "").strip()}
+        kept_lines = []
+        for line in str(raw_block or "").splitlines():
+            upper_line = line.upper()
+            if any(name in upper_line for name in upper_removed):
+                continue
+            kept_lines.append(line)
+        return "\n".join(kept_lines)
+
+    def _filter_member_summary_rows(self, rows: list, rules: dict) -> tuple[list, set[str]]:
+        member_rules = normalize_rule_overrides(rules).get("member_exclusions", [])
+        if not member_rules:
+            return list(rows or []), set()
+        kept = []
+        removed: set[str] = set()
+        for row in rows or []:
+            endpoints = self._member_endpoints(row.get("member") if isinstance(row, dict) else "")
+            if endpoints and member_matches_patterns(endpoints[0], endpoints[1], member_rules):
+                removed.add(str(row.get("member", "")).strip())
+                continue
+            kept.append(row)
+        return kept, removed
+
+    def _filter_joint_summary_rows(self, rows: list, rules: dict) -> tuple[list, set[str]]:
+        joint_rules = normalize_rule_overrides(rules).get("joint_exclusions", [])
+        if not joint_rules:
+            return list(rows or []), set()
+        kept = []
+        removed: set[str] = set()
+        for row in rows or []:
+            joint = str(row.get("joint", "") if isinstance(row, dict) else "").strip()
+            if any(code_matches_pattern(joint, pattern) for pattern in joint_rules):
+                removed.add(joint)
+                continue
+            kept.append(row)
+        return kept, removed
+
+    def _filtered_analysis_results_for_rules(self, results: dict, rules: dict) -> dict:
+        from copy import deepcopy
+
+        filtered = deepcopy(results or {})
+        normalized_rules = normalize_rule_overrides(rules)
+
+        member_group_summary = filtered.get("member_group_summary", {})
+        if isinstance(member_group_summary, dict):
+            member_rows, removed_members = self._filter_member_summary_rows(
+                list(member_group_summary.get("rows", [])),
+                normalized_rules,
+            )
+            member_group_summary["rows"] = member_rows
+            member_group_summary["raw_block"] = self._raw_block_without_filtered_names(
+                member_group_summary.get("raw_block", ""),
+                removed_members,
+            )
+            filtered["member_summary"] = build_member_summary(member_group_summary)
+
+        joint_can_summary = filtered.get("joint_can_summary", {})
+        if isinstance(joint_can_summary, dict):
+            joint_rows, removed_joints = self._filter_joint_summary_rows(
+                list(joint_can_summary.get("rows", [])),
+                normalized_rules,
+            )
+            joint_can_summary["rows"] = joint_rows
+            joint_can_summary["raw_block"] = self._raw_block_without_filtered_names(
+                joint_can_summary.get("raw_block", ""),
+                removed_joints,
+            )
+            filtered["joint_summary"] = build_joint_can_summary(joint_can_summary)
+
+        filtered["analysis_summary"] = build_analysis_summary(
+            member_summary=filtered.get("member_summary", {}),
+            joint_can_summary=filtered.get("joint_summary", {}),
+            pile_stress_summary=filtered.get("pile_summary", {}),
+            pile_axial_capacity_summary=filtered.get("pile_axial_capacity_summary", {}),
+        )
+        return filtered
+
+    def _current_analysis_results_for_display(self) -> dict:
+        rules = self.__dict__.get("_analysis_filter_rules", normalize_rule_overrides({}))
+        if rules != normalize_rule_overrides({}):
+            return self._filtered_analysis_results_for_rules(self._analysis_results, rules)
+        return dict(self._analysis_results or {})
 
     def _fill_summary_table_from_analysis(self, analysis_summary: dict) -> None:
         old_updates_enabled = self.tbl_summary.updatesEnabled()
@@ -1783,6 +1916,15 @@ class FeasibilityAssessmentResultsPage(BasePage):
 
         self._schedule_detail_render_jobs(jobs)
 
+    def _refresh_analysis_tables_with_filters(self) -> None:
+        if self._is_page_closing():
+            return
+        display_results = self._current_analysis_results_for_display()
+        self._filtered_analysis_results = display_results
+        self._fill_summary_table_from_analysis(display_results.get("analysis_summary", {}))
+        self._fill_detail_tables_from_analysis(display_results)
+        self._update_filter_button_visibility()
+
     def _build_remote_path_payload(self, *, seq: int | None = None) -> dict[str, Any]:
         def safe_attr(name: str, default: object = "") -> object:
             try:
@@ -1853,8 +1995,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             str(results.get("_factor_path") or ""),
             flush=True,
         )
-        self._fill_summary_table_from_analysis(results.get("analysis_summary", {}))
-        self._fill_detail_tables_from_analysis(results)
+        self._refresh_analysis_tables_with_filters()
 
     def _on_analysis_results_failed(self, message: str) -> None:
         if self._is_page_closing():
@@ -1882,6 +2023,50 @@ class FeasibilityAssessmentResultsPage(BasePage):
             return
         self._update_current_table_rows()
 
+    def _update_filter_button_visibility(self) -> None:
+        button = self.__dict__.get("_detail_filter_button")
+        if button is None:
+            return
+        current_tab = str(getattr(self, "current_tab", "") or "").strip()
+        button.setVisible(current_tab in {"构件", "节点冲剪"})
+
+    def _filter_preview_inputs(self) -> tuple[list[str], list[tuple[str, str]]]:
+        results = self._analysis_results or {}
+        joint_ids = [
+            str(row.get("joint", "")).strip()
+            for row in results.get("joint_can_summary", {}).get("rows", [])
+            if isinstance(row, dict) and str(row.get("joint", "")).strip()
+        ]
+        member_pairs: list[tuple[str, str]] = []
+        for row in results.get("member_group_summary", {}).get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            endpoints = self._member_endpoints(row.get("member", ""))
+            if endpoints:
+                member_pairs.append(endpoints)
+        return joint_ids, member_pairs
+
+    def _on_detail_filter_clicked(self) -> None:
+        if self._is_page_closing():
+            return
+        current_tab = str(getattr(self, "current_tab", "") or "").strip()
+        if current_tab not in {"构件", "节点冲剪"}:
+            return
+        joint_ids, member_pairs = self._filter_preview_inputs()
+        mode = RULE_MODE_MEMBER_EXCLUSION if current_tab == "构件" else RULE_MODE_JOINT_EXCLUSION
+        dialog = SpecialStrategyRuleDialog(
+            mode,
+            self._analysis_filter_rules,
+            joint_ids=joint_ids,
+            member_pairs=member_pairs,
+            preview_available=bool(joint_ids or member_pairs),
+            parent=self,
+        )
+        if dialog.exec_() != dialog.Accepted:
+            return
+        self._analysis_filter_rules = normalize_rule_overrides(dialog.result_rules)
+        self._refresh_analysis_tables_with_filters()
+
     def _on_tab_clicked(self, btn: QPushButton):
         """点击标签页切换时触发"""
         if self._is_page_closing():
@@ -1891,6 +2076,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
         if idx != -1:
             self.table_stack.setCurrentIndex(idx)
             self._update_current_table_rows()
+            self._update_filter_button_visibility()
 
     def _build_report_button(self) -> QWidget:
         wrap = QWidget()
@@ -2087,6 +2273,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
             "output_filename": f"{self.facility_code}_可行性评估报告.pdf",
             "chapter_1_3": chapter_1_3,
             "pile_capacity_input_rows": self._load_pile_capacity_input_rows(),
+            "analysis_results_override": (
+                self._current_analysis_results_for_display()
+                if self._analysis_filter_rules != normalize_rule_overrides({})
+                else None
+            ),
+            "uses_analysis_filter_rules": self._analysis_filter_rules != normalize_rule_overrides({}),
         }
 
     def _select_report_output_path(self, output_filename: str) -> str:
@@ -2855,6 +3047,7 @@ class FeasibilityAssessmentResultsPage(BasePage):
             template_path=payload.get("template_path"),
             output_path=output_path,
             pile_capacity_input_rows=payload.get("pile_capacity_input_rows", []),
+            analysis_results_override=payload.get("analysis_results_override"),
         )
         return {"message": "report generated (local)", "output_path": result}
 
@@ -3454,6 +3647,12 @@ class FeasibilityAssessmentResultsPage(BasePage):
                 return
 
             payload = self._build_report_payload()
+            if payload.get("uses_analysis_filter_rules"):
+                QMessageBox.information(
+                    self,
+                    "生成报告",
+                    "将按照当前剔除规则后的构件和节点数据生成报告。",
+                )
             output_filename = str(payload.get("output_filename", "")).strip()
             output_path = self._select_report_output_path(output_filename)
             if not output_path:

@@ -9,11 +9,13 @@ from PyQt5.QtGui import QFont, QFontMetrics
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout,
     QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
-    QStackedWidget, QWidget, QLabel, QHeaderView, QAbstractItemView, QSizePolicy, QMessageBox
+    QStackedWidget, QWidget, QLabel, QHeaderView, QAbstractItemView, QSizePolicy, QMessageBox,
+    QToolTip,
 )
 from PyQt5.QtCore import QObject, Qt, QThread, pyqtSignal
 from core.base_page import BasePage
 from core.dropdown_bar import DropdownBar
+from core.table_clipboard import TableClipboardController
 from pages.read_table_xls import ReadTableXls
 from feasibility_analysis_services.oilfield_env_service import (
     get_env_profile_id,
@@ -255,6 +257,7 @@ class OilfieldWaterLevelPage(BasePage):
         self.wind_table = None
         self.wave_table = None
         self.current_table = None
+        self._table_clipboard_controllers: list[TableClipboardController] = []
         self._syncing_top_dropdowns = False
         self._default_water_items: list[dict[str, Any]] = []
         self._default_wind_items: list[dict[str, Any]] = []
@@ -927,7 +930,8 @@ class OilfieldWaterLevelPage(BasePage):
             | QAbstractItemView.EditKeyPressed
             | QAbstractItemView.AnyKeyPressed
         )
-        table.setSelectionMode(QAbstractItemView.NoSelection)
+        table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         table.setShowGrid(True)
 
         table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -943,9 +947,59 @@ class OilfieldWaterLevelPage(BasePage):
                 border: 1px solid #ffffff;
                 padding: 8px 12px;
             }
+            QTableWidget::item:selected {
+                background-color: #dbe9ff;
+                color: #000000;
+            }
+            QTableWidget::item:focus {
+                outline: none;
+            }
         """)
         table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    def _install_env_table_clipboard(
+        self,
+        table: QTableWidget,
+        *,
+        data_start_row: int,
+        editable_cols: set[int],
+    ) -> None:
+        controller = TableClipboardController(
+            table,
+            can_paste_cell=lambda row, col, target=table, start=data_start_row, cols=editable_cols:
+                self._can_paste_env_table_cell(target, row, col, start, cols),
+            on_paste_rows_ignored=lambda count, target=table:
+                self._show_env_table_tip(target, f"粘贴内容超出现有数据区，已忽略 {count} 行。"),
+            on_paste_cells_skipped=lambda count, target=table:
+                self._show_env_table_tip(target, f"部分单元格不可粘贴，已跳过 {count} 个单元格。"),
+        )
+        table._table_clipboard = controller
+        self._table_clipboard_controllers.append(controller)
+
+    def _can_paste_env_table_cell(
+        self,
+        table: QTableWidget,
+        row: int,
+        col: int,
+        data_start_row: int,
+        editable_cols: set[int],
+    ) -> bool:
+        if not (data_start_row <= row < table.rowCount()):
+            return False
+        if col not in editable_cols:
+            return False
+        if table.cellWidget(row, col) is not None:
+            return False
+        item = table.item(row, col)
+        if item is None:
+            return True
+        return bool(item.flags() & Qt.ItemIsEditable)
+
+    def _show_env_table_tip(self, table: QTableWidget, message: str) -> None:
+        rect = table.viewport().rect()
+        pos = table.viewport().mapToGlobal(rect.center())
+        QToolTip.showText(pos, message, table, rect, 2500)
 
     def _fit_table_height(self, table: QTableWidget):
         # 鍥哄畾楂樺害锛氬垰濂藉绾虫墍鏈夎锛岄伩鍏嶆粴鍔ㄦ潯
@@ -1057,6 +1111,7 @@ class OilfieldWaterLevelPage(BasePage):
 
         self._fit_table_height(table)
         self._expand_table_width(table)
+        self._install_env_table_clipboard(table, data_start_row=2, editable_cols={2})
         layout.addWidget(table, 0, Qt.AlignTop)
         return page
     def build_wind_param_page(self) -> QWidget:
@@ -1125,6 +1180,7 @@ class OilfieldWaterLevelPage(BasePage):
 
         self._apply_table_width_scheme_a(table, group_col_w=190, elem_col_w=260, num_min_w=76)
         self._fit_table_height(table)
+        self._install_env_table_clipboard(table, data_start_row=3, editable_cols=set(range(2, 7)))
         layout.setAlignment(Qt.AlignTop)
         frame_layout.setAlignment(Qt.AlignTop)
         frame_layout.addWidget(table)
@@ -1203,6 +1259,7 @@ class OilfieldWaterLevelPage(BasePage):
         for c in range(2, 7):
             header.setSectionResizeMode(c, QHeaderView.Stretch)
         self._fit_table_height(table)
+        self._install_env_table_clipboard(table, data_start_row=3, editable_cols=set(range(2, 7)))
         layout.setAlignment(Qt.AlignTop)
         frame_layout.setAlignment(Qt.AlignTop)
         frame_layout.addWidget(table)
@@ -1273,6 +1330,7 @@ class OilfieldWaterLevelPage(BasePage):
 
         self._apply_table_width_scheme_a(table, group_col_w=210, elem_col_w=320, num_min_w=76)
         self._fit_table_height(table)
+        self._install_env_table_clipboard(table, data_start_row=3, editable_cols=set(range(2, 7)))
         layout.setAlignment(Qt.AlignTop)
         frame_layout.setAlignment(Qt.AlignTop)
         frame_layout.addWidget(table)

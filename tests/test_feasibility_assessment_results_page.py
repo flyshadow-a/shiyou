@@ -326,6 +326,12 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
     def test_build_report_payload_reuses_loaded_analysis_factor_path(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
         page._analysis_results = {"_factor_path": r"C:\client_cache\psilst.M1"}
+        page._analysis_filter_rules = {
+            "joint_classification": {"leg_joint": [], "x_joint": []},
+            "member_classification": {"leg": [], "x_brace": []},
+            "member_exclusions": [],
+            "joint_exclusions": [],
+        }
         page.facility_code = "WC19-1D"
         page.mysql_url = "mysql://example"
         page.env_branch = ""
@@ -383,6 +389,84 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
 
         self.assertEqual(r"C:\client_cache\psilst.M1", payload["factor_path"])
 
+    def test_build_report_payload_includes_filtered_analysis_override_when_rules_exist(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        page._analysis_results = {
+            "_factor_path": r"C:\client_cache\psilst.M1",
+            "member_group_summary": {
+                "rows": [
+                    {"member": "601L-611L", "unity_check": 1.2, "cond": "OP1", "group_id": "G1"},
+                    {"member": "701L-711L", "unity_check": 0.8, "cond": "OP2", "group_id": "G2"},
+                ],
+            },
+            "joint_can_summary": {
+                "rows": [{"joint": "636W", "orig_load_uc": 0.34, "orig_strn_uc": 2.6, "load_case": "EL1A"}],
+            },
+            "pile_group_summary": {"rows": []},
+            "pile_summary": {},
+            "pile_axial_capacity_summary": {},
+        }
+        page._analysis_filter_rules = {
+            "joint_classification": {"leg_joint": [], "x_joint": []},
+            "member_classification": {"leg": [], "x_brace": []},
+            "member_exclusions": [{"a": "601L", "relation": "And", "b": "611L"}],
+            "joint_exclusions": [],
+        }
+        page.facility_code = "WC19-1D"
+        page.mysql_url = "mysql://example"
+        page.env_branch = ""
+        page.env_op_company = ""
+        page.env_oilfield = ""
+        page.inspection_record_summary_text = ""
+
+        with patch("pages.feasibility_assessment_results_page.os.path.isfile", return_value=True), patch(
+            "pages.feasibility_assessment_results_page.load_facility_profile",
+            return_value={"description_text": "platform"},
+        ), patch(
+            "pages.feasibility_assessment_results_page.build_history_rebuild_summary",
+            return_value="",
+        ), patch(
+            "pages.feasibility_assessment_results_page.get_history_rebuild_projects",
+            return_value=[],
+        ), patch.object(
+            page,
+            "_build_latest_inspection_record_summary",
+            return_value="",
+        ), patch.object(
+            page,
+            "_build_cover_platform_name",
+            return_value="WC19-1D",
+        ), patch.object(
+            page,
+            "_build_platform_evaluation_conclusion_section",
+            return_value={},
+        ), patch.object(
+            page,
+            "_build_basis_data_section",
+            return_value={},
+        ), patch.object(
+            page,
+            "_build_load_information_section",
+            return_value={},
+        ), patch.object(
+            page,
+            "_build_environment_conditions_section",
+            return_value={},
+        ), patch.object(
+            page,
+            "_build_analysis_model_section",
+            return_value={},
+        ), patch.object(
+            page,
+            "_load_pile_capacity_input_rows",
+            return_value=[],
+        ):
+            payload = page._build_report_payload()
+
+        self.assertTrue(payload["uses_analysis_filter_rules"])
+        filtered_rows = payload["analysis_results_override"]["member_group_summary"]["rows"]
+        self.assertEqual(["701L-711L"], [row["member"] for row in filtered_rows])
+
     def test_fill_summary_table_from_analysis_uses_report_summary_items(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
         page.tbl_summary = QTableWidget(3, 5)
@@ -408,6 +492,26 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         self.assertEqual("0.92", page.tbl_summary.item(2, 2).text())
         self.assertEqual("OL12", page.tbl_summary.item(2, 3).text())
         self.assertEqual("满足", page.tbl_summary.item(2, 4).text())
+
+    def test_summary_table_initial_rows_split_joint_load_and_strength(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        box = page._build_summary_table()
+
+        self.assertEqual(10, page.tbl_summary.rowCount())
+        self.assertEqual(
+            [
+                "构件",
+                "节点冲剪（Load）",
+                "节点冲剪（Strength）",
+                "桩应力",
+                "操作工况桩基抗压",
+                "操作工况桩基抗拔",
+                "极端工况桩基抗压",
+                "极端工况桩基抗拔",
+            ],
+            [page.tbl_summary.item(row, 0).text() for row in range(2, page.tbl_summary.rowCount())],
+        )
+        box.deleteLater()
 
     def test_result_tables_display_dash_for_empty_cells(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
@@ -476,6 +580,48 @@ class FeasibilityAssessmentResultsPageTests(unittest.TestCase):
         self.assertEqual("P108", table.item(3, 0).text())
         self.assertEqual("OL12", table.item(3, 4).text())
         self.assertEqual("2.42", table.item(3, 8).text())
+
+    def test_apply_member_and_joint_exclusion_rules_filters_analysis_results(self) -> None:
+        page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)
+        source = {
+            "member_group_summary": {
+                "code_name": "API",
+                "rows": [
+                    {"member": "601L-611L", "unity_check": 1.2, "cond": "OP1", "group_id": "G1"},
+                    {"member": "701L-711L", "unity_check": 0.8, "cond": "OP2", "group_id": "G2"},
+                ],
+                "raw_block": "HEADER\n601L-611L row\n701L-711L row\n",
+            },
+            "joint_can_summary": {
+                "code_name": "API",
+                "rows": [
+                    {"joint": "636W", "orig_load_uc": 0.34, "orig_strn_uc": 2.6, "load_case": "EL1A"},
+                    {"joint": "175L", "orig_load_uc": 1.43, "orig_strn_uc": 0.84, "load_case": "EL14"},
+                ],
+                "raw_block": "HEADER\n636W row\n175L row\n",
+            },
+            "pile_group_summary": {"rows": []},
+            "pile_summary": {"summary_table_row": {"check_item": "桩应力"}},
+            "pile_axial_capacity_summary": {},
+        }
+        rules = {
+            "member_exclusions": [{"a": "601L", "relation": "And", "b": "611L"}],
+            "joint_exclusions": ["636W"],
+        }
+
+        filtered = page._filtered_analysis_results_for_rules(source, rules)
+
+        self.assertEqual(["701L-711L"], [row["member"] for row in filtered["member_group_summary"]["rows"]])
+        self.assertEqual(["175L"], [row["joint"] for row in filtered["joint_can_summary"]["rows"]])
+        self.assertNotIn("601L-611L row", filtered["member_group_summary"]["raw_block"])
+        self.assertNotIn("636W row", filtered["joint_can_summary"]["raw_block"])
+        self.assertEqual(
+            ["构件", "节点冲剪（Load）", "节点冲剪（Strength）", "桩应力"],
+            [item["check_item"] for item in filtered["analysis_summary"]["items"][:4]],
+        )
+        self.assertEqual("701L-711L", filtered["analysis_summary"]["items"][0]["position"])
+        self.assertEqual("175L", filtered["analysis_summary"]["items"][1]["position"])
+        self.assertEqual("175L", filtered["analysis_summary"]["items"][2]["position"])
 
     def test_fill_detail_tables_from_analysis_defers_non_current_tabs(self) -> None:
         page = FeasibilityAssessmentResultsPage.__new__(FeasibilityAssessmentResultsPage)

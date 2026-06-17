@@ -148,6 +148,42 @@ class FeasibilityFactorParserChainTests(unittest.TestCase):
         self.assertEqual("EL1A", built["max_case"])
         self.assertEqual(2.6, built["max_uc"])
 
+    def test_joint_summary_builder_exposes_load_and_strength_summary_rows(self) -> None:
+        lines = [
+            "* * J O I N T   C A N   S U M M A R Y * *",
+            "(UNITY CHECK ORDER)",
+            "      **************** ORIGINAL ******************   ************ LOAD DESIGN ***********   *** STRENGTH ANALYSIS ****",
+            "                                      LOAD    STRN                                  LOAD    STRN    BRACE   LOAD",
+            "JOINT DIAMETER THICKNESS  YLD STRS    UC      UC     DIAMETER THICKNESS  YLD STRS    UC      UC     JOINT   CASE",
+            " 636W  61.000    1.600    355.000   0.329   2.600     61.000    1.600    355.000   0.329     0.100   W643   EL1A",
+            " 175L 320.001    8.500    355.000   1.431   0.844    320.001    8.500    355.000   1.431     5.000   205L   EL14",
+            "P I L E  G R O U P  S U M M A R Y",
+        ]
+
+        parsed = parse_joint_can_summary(lines)
+        built = build_joint_can_summary(parsed)
+
+        self.assertEqual(
+            {
+                "check_item": "节点冲剪（Load）",
+                "position": "175L",
+                "value": "1.431",
+                "case": "EL14",
+                "is_pass": "不满足",
+            },
+            built["load_summary_table_row"],
+        )
+        self.assertEqual(
+            {
+                "check_item": "节点冲剪（Strength）",
+                "position": "636W",
+                "value": "2.600",
+                "case": "EL1A",
+                "is_pass": "不满足",
+            },
+            built["strength_summary_table_row"],
+        )
+
     def test_read_ui_analysis_lines_extracts_relevant_blocks_from_file(self) -> None:
         import tempfile
 

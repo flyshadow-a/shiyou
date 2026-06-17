@@ -1652,27 +1652,11 @@ class NewSpecialInspectionPage(BasePage):
                 coord_table.setItem(r, c, it)
 
         self._lock_table_full_display(coord_table, row_height=34, show_header=True)
-        coord_table.setEditTriggers(
-            QAbstractItemView.DoubleClicked
-            | QAbstractItemView.SelectedClicked
-            | QAbstractItemView.EditKeyPressed
-        )
-        coord_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        coord_table.setSelectionBehavior(QAbstractItemView.SelectItems)
-        self._install_coord_table_clipboard(coord_table)
+        self._install_coord_table_clipboard()
 
         block_lay.addWidget(coord_table)
         self.model_info_block = block
         return block
-
-    def _install_coord_table_clipboard(self, table: QTableWidget) -> None:
-        table._table_clipboard = TableClipboardController(
-            table,
-            can_paste_cell=lambda row, col: self._can_paste_coord_table_cell(row, col),
-        )
-
-    def _can_paste_coord_table_cell(self, row: int, col: int) -> bool:
-        return 0 <= row < self.coord_table.rowCount() and col in (1, 2)
 
     def _renumber_coord_rows(self) -> None:
         for row in range(self.coord_table.rowCount()):
@@ -1683,6 +1667,35 @@ class NewSpecialInspectionPage(BasePage):
             item.setText(str(row + 1))
             item.setTextAlignment(Qt.AlignCenter)
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+
+    def _configure_coord_table_editing(self) -> None:
+        self.coord_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
+        )
+        self.coord_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.coord_table.setSelectionBehavior(QAbstractItemView.SelectItems)
+
+    def _install_coord_table_clipboard(self) -> None:
+        self._configure_coord_table_editing()
+        if not isinstance(getattr(self.coord_table, "_table_clipboard", None), TableClipboardController):
+            self.coord_table._table_clipboard = TableClipboardController(
+                self.coord_table,
+                can_paste_cell=self._can_paste_coord_table_cell,
+            )
+
+    def _can_paste_coord_table_cell(self, row: int, col: int) -> bool:
+        if not hasattr(self, "coord_table"):
+            return False
+        if not (0 <= row < self.coord_table.rowCount()):
+            return False
+        if col not in (1, 2):
+            return False
+        if self.coord_table.cellWidget(row, col) is not None:
+            return False
+        item = self.coord_table.item(row, col)
+        return item is None or bool(item.flags() & Qt.ItemIsEditable)
 
     def _on_model_param_item_changed(self, item: QTableWidgetItem) -> None:
         if item.row() == 3 and item.column() == 1:
@@ -1726,13 +1739,7 @@ class NewSpecialInspectionPage(BasePage):
 
         self._renumber_coord_rows()
         self._lock_table_full_display(self.coord_table, row_height=34, show_header=True)
-        self.coord_table.setEditTriggers(
-            QAbstractItemView.DoubleClicked
-            | QAbstractItemView.SelectedClicked
-            | QAbstractItemView.EditKeyPressed
-        )
-        self.coord_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.coord_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._configure_coord_table_editing()
         self._refresh_model_info_layout()
 
     def _reset_coord_table_rows(self, rows: list[tuple[int, str, str]]) -> None:
@@ -1749,13 +1756,7 @@ class NewSpecialInspectionPage(BasePage):
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         self._renumber_coord_rows()
         self._lock_table_full_display(self.coord_table, row_height=34, show_header=True)
-        self.coord_table.setEditTriggers(
-            QAbstractItemView.DoubleClicked
-            | QAbstractItemView.SelectedClicked
-            | QAbstractItemView.EditKeyPressed
-        )
-        self.coord_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.coord_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._configure_coord_table_editing()
         self._refresh_model_info_layout()
 
     def _refresh_model_info_layout(self) -> None:

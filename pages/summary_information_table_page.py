@@ -13,12 +13,13 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QMessageBox,
-    QFileDialog, QFrame,
+    QFileDialog, QFrame, QToolTip,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont
 
 from core.app_paths import external_path, first_existing_path
+from core.table_clipboard import TableClipboardController
 from pages.hover_tip_table import HoverTipTable
 from core.base_page import BasePage
 from services.inspection_business_db_adapter import (
@@ -43,6 +44,8 @@ class SummaryInformationTablePage(BasePage):
 
     EXCEL_NAME = "platform_total.xls"
     MAX_EXPAND_ROWS = 50
+    HEADER_ROWS = 2
+    EDITABLE_DATA_START_COL = 6
     COLUMN_WIDTHS = [
         60,   # 序号
         130,  # 分公司
@@ -166,10 +169,23 @@ class SummaryInformationTablePage(BasePage):
         self.main_layout.addWidget(self.note_label, 0)
 
     # ---------- merged header helpers ----------
-    def _mk_item(self, text: str, *, bold: bool = False, bg: QColor | None = None, fg: QColor | None = None) -> QTableWidgetItem:
+    def _mk_item(
+        self,
+        text: str,
+        *,
+        bold: bool = False,
+        bg: QColor | None = None,
+        fg: QColor | None = None,
+        editable: bool = False,
+    ) -> QTableWidgetItem:
         it = QTableWidgetItem(text)
         it.setTextAlignment(Qt.AlignCenter)
-        it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+        flags = it.flags()
+        if editable:
+            flags |= Qt.ItemIsEditable | Qt.ItemIsSelectable
+        else:
+            flags &= ~Qt.ItemIsEditable
+        it.setFlags(flags)
         it.setFont(self._songti_small_four_font(bold=bold))
         if bg is not None:
             it.setBackground(bg)
@@ -207,12 +223,20 @@ class SummaryInformationTablePage(BasePage):
 
     def _build_table_skeleton(self) -> QTableWidget:
         cols = self._columns()
-        header_rows = 2
+        header_rows = self.HEADER_ROWS
 
         table = HoverTipTable(header_rows, len(cols))
         table.setFont(self._songti_small_four_font())
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setVisible(False)  # 用表内两行表头模拟合并表头
+        table.setEditTriggers(
+            QAbstractItemView.DoubleClicked
+            | QAbstractItemView.SelectedClicked
+            | QAbstractItemView.EditKeyPressed
+            | QAbstractItemView.AnyKeyPressed
+        )
+        table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         # 行高：两行表头（接近截图）
         table.setRowHeight(0, 52)  # 分组表头：支持两行长标题完整显示
@@ -246,6 +270,7 @@ class SummaryInformationTablePage(BasePage):
         # ✅ 补齐表头两行背景（样式完全一致）
         self._fill_bg_for_row(table, 0, bg_group)
         self._fill_bg_for_row(table, 1, bg_header)
+        self._install_table_clipboard(table)
 
         return table
 
@@ -258,6 +283,38 @@ class SummaryInformationTablePage(BasePage):
 
         self.table.setMinimumWidth(0)
         self.table.setMaximumWidth(16777215)
+
+    def _install_table_clipboard(self, table: QTableWidget) -> None:
+        controller = TableClipboardController(
+            table,
+            can_paste_cell=lambda row, col, target=table: self._can_paste_table_cell(target, row, col),
+            on_paste_rows_ignored=lambda count, target=table: self._show_table_tip(
+                target,
+                f"粘贴内容超出现有数据区，已忽略 {count} 行。",
+            ),
+            on_paste_cells_skipped=lambda count, target=table: self._show_table_tip(
+                target,
+                f"部分单元格不可粘贴，已跳过 {count} 个单元格。",
+            ),
+        )
+        table._table_clipboard = controller
+
+    def _can_paste_table_cell(self, table: QTableWidget, row: int, col: int) -> bool:
+        if row < self.HEADER_ROWS:
+            return False
+        if col < self.EDITABLE_DATA_START_COL:
+            return False
+        if table.cellWidget(row, col) is not None:
+            return False
+        item = table.item(row, col)
+        if item is None:
+            return True
+        return bool(item.flags() & Qt.ItemIsEditable)
+
+    def _show_table_tip(self, table: QTableWidget, message: str) -> None:
+        rect = table.viewport().rect()
+        pos = table.viewport().mapToGlobal(rect.center())
+        QToolTip.showText(pos, message, table, rect, 2500)
 
     def _header_label_for_col(self, c: int) -> str:
         # 对应截图中换行表头
@@ -353,7 +410,7 @@ class SummaryInformationTablePage(BasePage):
             self._fmt_number(delta_weight),
             change_rate,
             str((latest or {}).get("weight_limit_mt") or ""),
-            str((latest or {}).get("center_xyz") or ""),
+            self._normalize_center_xyz_text((latest or {}).get("center_xyz") or ""),
             str((latest or {}).get("center_radius_m") or ""),
             str((latest or {}).get("safety_op") or ""),
             str((latest or {}).get("safety_extreme") or ""),
@@ -378,6 +435,12 @@ class SummaryInformationTablePage(BasePage):
         if value is None:
             return ""
         return f"{value:.3f}".rstrip("0").rstrip(".")
+
+    def _normalize_center_xyz_text(self, value: Any) -> str:
+        text = "" if value is None else str(value).strip()
+        if not text:
+            return ""
+        return text.replace("，", ",")
 
     def load_from_excel(self, excel_path: str):
         """
@@ -456,7 +519,7 @@ class SummaryInformationTablePage(BasePage):
         self._apply_data(rows)
 
     def _apply_data(self, rows: List[List[str]]):
-        header_rows = 2
+        header_rows = self.HEADER_ROWS
         total_rows = header_rows + len(rows)
 
         self.table.setRowCount(total_rows)
@@ -469,7 +532,7 @@ class SummaryInformationTablePage(BasePage):
         for i, row in enumerate(rows):
             rr = i + header_rows
             for c, val in enumerate(row):
-                it = self._mk_item(val)
+                it = self._mk_item(val, editable=c >= self.EDITABLE_DATA_START_COL)
                 self.table.setItem(rr, c, it)
 
         # # 行数多时：不强制无限增高，避免卡顿；行数少时：自动扩展更像“表格自然增长”

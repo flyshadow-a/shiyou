@@ -224,7 +224,7 @@
     <environment_splash_zone>
       <item>飞溅区上限(m)</item>
       <item>飞溅区下限(m)</item>
-      <item>腐蚀余量(mm/y)</item>
+      <item>腐蚀余量(mm)</item>
     </environment_splash_zone>
   </table_headers>
   <paragraph_anchors>

@@ -45,22 +45,33 @@ def _protect_negative_number(value: str) -> str:
     return value
 
 
-def find_table_by_header_row(document_tables: Iterable[Table], expected_headers: list[str]) -> Table:
-    normalized_expected = [_normalize_cell_text(item) for item in expected_headers]
+def find_table_by_header_row(
+    document_tables: Iterable[Table],
+    expected_headers: list[str],
+    *,
+    alternate_headers: Sequence[Sequence[str]] | None = None,
+) -> Table:
+    normalized_candidates = [
+        [_normalize_cell_text(item) for item in expected_headers],
+        *[
+            [_normalize_cell_text(item) for item in headers]
+            for headers in (alternate_headers or [])
+        ],
+    ]
 
     for table in document_tables:
         if not table.rows:
             continue
 
         header_cells = table.rows[0].cells
-        if len(header_cells) < len(normalized_expected):
-            continue
-
-        actual_headers = [
-            _normalize_cell_text(cell.text) for cell in header_cells[: len(normalized_expected)]
-        ]
-        if actual_headers == normalized_expected:
-            return table
+        for normalized_expected in normalized_candidates:
+            if len(header_cells) < len(normalized_expected):
+                continue
+            actual_headers = [
+                _normalize_cell_text(cell.text) for cell in header_cells[: len(normalized_expected)]
+            ]
+            if actual_headers == normalized_expected:
+                return table
 
     raise ValueError(f"未找到表头为 {expected_headers} 的表格")
 
@@ -85,10 +96,8 @@ def write_cell(cell, value: str) -> None:
 
 
 def write_analysis_summary_table(table: Table, items: Sequence[Mapping[str, Any]]) -> None:
+    ensure_table_row_count(table, len(items) + 1)
     for row_index, item in enumerate(items, start=1):
-        if row_index >= len(table.rows):
-            raise ValueError("分析汇总信息表格行数不足")
-
         row = table.rows[row_index]
         write_cell(row.cells[0], str(item.get("check_item", "")))
         write_cell(row.cells[1], str(item.get("position", "")))
@@ -374,6 +383,11 @@ def write_environment_marine_growth_table(table: Table, items: Sequence[Mapping[
 
 
 def write_environment_splash_zone_table(table: Table, items: Sequence[Mapping[str, Any]]) -> None:
+    headers = ["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm)"]
+    for column_index, header in enumerate(headers):
+        if column_index < len(table.rows[0].cells):
+            write_cell(table.rows[0].cells[column_index], header)
+
     start_row_index = 1
     required_rows = start_row_index + len(items)
     ensure_table_row_count(table, required_rows)

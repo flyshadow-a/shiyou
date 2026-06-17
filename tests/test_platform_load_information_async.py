@@ -367,6 +367,24 @@ class PlatformLoadInformationAsyncLoadTests(unittest.TestCase):
         self.assertEqual([55.5], series["op_cgy"])
         self.assertEqual([66.6], series["op_cgz"])
 
+    def test_import_result_accepts_psilst_prefix_file_names(self) -> None:
+        with patch.object(PlatformLoadInformationPage, "_start_async_current_platform_load", lambda self: None):
+            page = PlatformLoadInformationPage()
+            self.addCleanup(page.deleteLater)
+
+        page._apply_data([page._blank_table_row()])
+        row = page.DATA_START_ROW
+        path = os.path.join(os.getcwd(), "psilst.M1")
+
+        with patch.object(platform_load_page.QFileDialog, "getOpenFileName", return_value=(path, "")), \
+                patch.object(page, "_get_cached_result_factor_values", return_value=None), \
+                patch.object(page, "_start_result_factor_read_thread") as start_read, \
+                patch.object(QMessageBox, "warning", return_value=QMessageBox.Ok) as warning:
+            page._on_import_result(row)
+
+        warning.assert_not_called()
+        start_read.assert_called_once_with(row, path)
+
     def test_save_button_click_shows_success_message(self) -> None:
         with patch.object(PlatformLoadInformationPage, "_start_async_current_platform_load", lambda self: None):
             page = PlatformLoadInformationPage()
@@ -404,6 +422,40 @@ class PlatformLoadInformationAsyncLoadTests(unittest.TestCase):
             for col in range(page.table.columnCount()):
                 self.assertIsNone(page.table.cellWidget(row, col))
             self.assertEqual(page.table.columnCount(), page.table.columnSpan(row, 0))
+
+    def test_collect_table_rows_for_db_normalizes_center_commas(self) -> None:
+        with patch.object(PlatformLoadInformationPage, "_start_async_current_platform_load", lambda self: None):
+            page = PlatformLoadInformationPage()
+            self.addCleanup(page.deleteLater)
+
+        row = page._blank_table_row()
+        row[8] = "1，2，3"
+        row[9] = "4，5，6"
+        page._apply_data([row])
+
+        db_rows = page._collect_table_rows_for_db()
+
+        self.assertEqual("1,2,3", db_rows[0]["dry_center_xyz"])
+        self.assertEqual("4,5,6", db_rows[0]["center_xyz"])
+
+    def test_curve_series_reads_center_values_from_chinese_commas(self) -> None:
+        with patch.object(PlatformLoadInformationPage, "_start_async_current_platform_load", lambda self: None):
+            page = PlatformLoadInformationPage()
+            self.addCleanup(page.deleteLater)
+
+        row = page._blank_table_row()
+        row[8] = "11.1，22.2，33.3"
+        row[9] = "44.4，55.5，66.6"
+        page._apply_data([row])
+
+        series = page._collect_series_for_curve()
+
+        self.assertEqual([11.1], series["dry_cgx"])
+        self.assertEqual([22.2], series["dry_cgy"])
+        self.assertEqual([33.3], series["dry_cgz"])
+        self.assertEqual([44.4], series["op_cgx"])
+        self.assertEqual([55.5], series["op_cgy"])
+        self.assertEqual([66.6], series["op_cgz"])
 
 
 if __name__ == "__main__":

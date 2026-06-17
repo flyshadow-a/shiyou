@@ -98,6 +98,12 @@ def _normalise_overall_assessment_value(value: object) -> str:
 def _upper_block_context_menu_columns() -> set[int]:
     return {8, 9}
 
+
+def _is_psilst_result_file(path: object) -> bool:
+    file_name = os.path.basename(str(path or "").strip()).lower()
+    return bool(file_name and file_name.startswith("psilst"))
+
+
 _FACTOR_SEARCH_CHUNK_SIZE = 1024 * 1024
 _FACTOR_FORCE_HEADER_LOOKAHEAD_BYTES = 16 * 1024
 _FACTOR_FORCE_SECTION_MAX_BYTES = 256 * 1024
@@ -2273,8 +2279,8 @@ class PlatformLoadInformationPage(BasePage):
                 str(row.get("total_weight_mt") or ""),
                 str(row.get("weight_limit_mt") or ""),
                 str(row.get("weight_delta_mt") or ""),
-                str(row.get("dry_center_xyz") or ""),
-                str(row.get("center_xyz") or ""),
+                self._normalize_center_xyz_text(row.get("dry_center_xyz") or ""),
+                self._normalize_center_xyz_text(row.get("center_xyz") or ""),
                 str(row.get("center_radius_m") or ""),
                 str(row.get("op_fx_kn") or ""),
                 str(row.get("op_fy_kn") or ""),
@@ -2329,8 +2335,8 @@ class PlatformLoadInformationPage(BasePage):
                     "total_weight_mt": self._cell_text(row, 5).strip(),
                     "weight_limit_mt": self._cell_text(row, 6).strip(),
                     "weight_delta_mt": self._cell_text(row, 7).strip(),
-                    "dry_center_xyz": self._cell_text(row, 8).strip(),
-                    "center_xyz": self._cell_text(row, 9).strip(),
+                    "dry_center_xyz": self._normalize_center_xyz_text(self._cell_text(row, 8)),
+                    "center_xyz": self._normalize_center_xyz_text(self._cell_text(row, 9)),
                     "center_radius_m": self._cell_text(row, 10).strip(),
                     "op_fx_kn": self._cell_text(row, 11).strip(),
                     "op_fy_kn": self._cell_text(row, 12).strip(),
@@ -2441,6 +2447,13 @@ class PlatformLoadInformationPage(BasePage):
             if formatted != item.text():
                 self.table.blockSignals(True)
                 item.setText(formatted)
+                self.table.blockSignals(False)
+
+        if (base_rows <= row < data_end) and col in (8, 9):
+            normalized = self._normalize_center_xyz_text(item.text())
+            if normalized != item.text():
+                self.table.blockSignals(True)
+                item.setText(normalized)
                 self.table.blockSignals(False)
 
         if base_rows <= row < data_end:
@@ -2616,7 +2629,7 @@ class PlatformLoadInformationPage(BasePage):
         if col in self._result_import_columns():
             menu = QMenu(self.table)
             menu.setStyleSheet(self._menu_qss())
-            action = menu.addAction("读取该行关联的结果文件 (psilst.factor)")
+            action = menu.addAction("读取该行关联的结果文件 (psilst*)")
             action.triggered.connect(lambda: self._on_import_result(target_row=row))
             menu.exec_(self.table.viewport().mapToGlobal(pos))
 
@@ -2652,7 +2665,7 @@ class PlatformLoadInformationPage(BasePage):
         menu.exec_(self.table.viewport().mapToGlobal(pos))
 
     def _on_import_result(self, target_row: int = None):
-        """读取结果文件（psilst.factor）：由用户选择本地文件并回填该行红色字段。"""
+        """读取 psilst 结果文件：由用户选择本地文件并回填该行红色字段。"""
         base_rows = self.DATA_START_ROW
         data_end = self._find_data_end_row()
         row = target_row if target_row is not None else self.table.currentRow()
@@ -2663,16 +2676,15 @@ class PlatformLoadInformationPage(BasePage):
         start_dir = self.data_dir if os.path.exists(self.data_dir) else self.output_data_dir
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "选择结果文件（psilst.factor）",
+            "选择结果文件（psilst*）",
             start_dir,
-            "Factor Files (psilst.factor *.psilst.factor);;All Files (*)",
+            "Result Files (psilst*);;All Files (*)",
         )
         if not path:
             return
 
-        file_name = os.path.basename(path).lower()
-        if file_name != "psilst.factor" and not file_name.endswith(".psilst.factor"):
-            QMessageBox.warning(self, "读取失败", "请选择名为 psilst.factor 的结果文件。")
+        if not _is_psilst_result_file(path):
+            QMessageBox.warning(self, "读取失败", "请选择文件名前缀为 psilst 的结果文件。")
             return
 
         values = self._get_cached_result_factor_values(path)
@@ -2687,7 +2699,7 @@ class PlatformLoadInformationPage(BasePage):
             QMessageBox.information(self, "提示", "正在读取结果文件，请稍候。")
             return
 
-        progress = QProgressDialog("正在读取 psilst.factor，请稍候...", None, 0, 0, self)
+        progress = QProgressDialog("正在读取 psilst 结果文件，请稍候...", None, 0, 0, self)
         progress.setWindowTitle("读取结果文件")
         progress.setWindowModality(Qt.WindowModal)
         progress.setCancelButton(None)
@@ -2738,7 +2750,7 @@ class PlatformLoadInformationPage(BasePage):
             '操作工况', '极端工况',
         ]
         if not any(str(values.get(k, '')).strip() for k in keys):
-            QMessageBox.warning(self, "读取失败", "在 psilst.factor 文件中未解析到有效字段。")
+            QMessageBox.warning(self, "读取失败", "在 psilst 结果文件中未解析到有效字段。")
             return
         self._apply_excel_values_to_row(row, values, bg_color=QColor("#e1f5fe"))
         QMessageBox.information(self, "读取结果文件", f"结果文件读取并回填成功。\n文件：{path}")
@@ -2823,8 +2835,14 @@ class PlatformLoadInformationPage(BasePage):
         try: return float(text)
         except: return None
 
+    def _normalize_center_xyz_text(self, value: object) -> str:
+        text = "" if value is None else str(value).strip()
+        if not text:
+            return ""
+        return text.replace("，", ",")
+
     def _parse_xyz_values(self, value: object) -> Tuple[float, float, float]:
-        nums = re.findall(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", str(value or ""))
+        nums = re.findall(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", self._normalize_center_xyz_text(value))
         vals = [self._to_float(num) or 0.0 for num in nums[:3]]
         while len(vals) < 3:
             vals.append(0.0)

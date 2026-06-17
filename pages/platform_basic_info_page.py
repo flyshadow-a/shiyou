@@ -205,7 +205,7 @@ class PlatformBasicInfoPage(BasePage):
 
         self.tbl_splash = QTableWidget(1, 3, splash_box)
         self.tbl_splash.setHorizontalHeaderLabels(
-            ["飞溅区上限 (m)", "飞溅区下限 (m)", "腐蚀余量 (mm/y)"]
+            ["飞溅区上限 (m)", "飞溅区下限 (m)", "腐蚀余量 (mm)"]
         )
         self._init_table_common(self.tbl_splash, show_vertical_header=False)
 

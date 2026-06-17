@@ -91,7 +91,7 @@ DEFAULT_DOC_RENDERER_CONFIG: dict[str, Any] = {
             ["海生物", "厚度（cm)", "10", "10", "10", "4.5", "4.5", "4.5", "4", "4", "4"],
             ["海生物密度(t/m3)", "海生物密度(t/m3)", "1.4", "1.4", "1.4", "1.4", "1.4", "1.4", "1.4", "1.4", "1.4"],
         ],
-        "environment_splash_zone": ["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm/y)"],
+        "environment_splash_zone": ["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm)"],
     },
     "paragraph_anchors": {
         "member_summary_title": "构件名义应力校核",

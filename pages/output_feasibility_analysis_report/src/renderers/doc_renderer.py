@@ -132,6 +132,37 @@ def _normalize_raw_block_line_for_paragraph(paragraph: Paragraph, text: str) -> 
     return text.rstrip()
 
 
+def _reset_raw_block_paragraph_format(paragraph: Paragraph, *, font_size_pt: int | None = None) -> None:
+    paragraph.alignment = None
+    paragraph.paragraph_format.left_indent = Pt(0)
+    paragraph.paragraph_format.right_indent = Pt(0)
+    paragraph.paragraph_format.first_line_indent = Pt(0)
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0)
+    if font_size_pt is not None:
+        paragraph.paragraph_format.line_spacing = Pt(font_size_pt + 1)
+    p_pr = paragraph._p.get_or_add_pPr()
+    ind = p_pr.find(qn("w:ind"))
+    if ind is None:
+        ind = OxmlElement("w:ind")
+        p_pr.append(ind)
+    for attr_name in ("firstLineChars", "leftChars", "rightChars", "hangingChars"):
+        ind.set(qn(f"w:{attr_name}"), "0")
+
+
+def _set_raw_block_run_font(paragraph: Paragraph, *, font_size_pt: int | None = None) -> None:
+    for run in paragraph.runs:
+        run.font.name = "Courier New"
+        if font_size_pt is not None:
+            run.font.size = Pt(font_size_pt)
+        r_pr = run._element.get_or_add_rPr()
+        r_fonts = r_pr.get_or_add_rFonts()
+        r_fonts.set(qn("w:eastAsia"), "Courier New")
+        r_fonts.set(qn("w:ascii"), "Courier New")
+        r_fonts.set(qn("w:hAnsi"), "Courier New")
+        r_fonts.set(qn("w:cs"), "Courier New")
+
+
 def _find_paragraph_index_by_exact_text(paragraphs: list[Paragraph], text: str) -> int:
     normalized_target = _normalize_text(text)
     for index, paragraph in enumerate(paragraphs):
@@ -233,11 +264,13 @@ def _replace_paragraph_region(
 
     normalized_lines = [line.rstrip() for line in lines]
     for index, line in enumerate(normalized_lines[: len(region)]):
+        _reset_raw_block_paragraph_format(region[index], font_size_pt=font_size_pt)
         _replace_paragraph_text(
             region[index],
             _normalize_raw_block_line_for_paragraph(region[index], line),
             font_size_pt=font_size_pt,
         )
+        _set_raw_block_run_font(region[index], font_size_pt=font_size_pt)
 
     template_paragraph = region[-1]
     last_paragraph = region[min(len(region), len(normalized_lines)) - 1] if normalized_lines else region[0]
@@ -248,6 +281,8 @@ def _replace_paragraph_region(
         )
         if font_size_pt is not None:
             _replace_paragraph_text(last_paragraph, normalized_line, font_size_pt=font_size_pt)
+        _reset_raw_block_paragraph_format(last_paragraph, font_size_pt=font_size_pt)
+        _set_raw_block_run_font(last_paragraph, font_size_pt=font_size_pt)
 
     for paragraph in reversed(region[len(normalized_lines) :]):
         _delete_paragraph(paragraph)
@@ -915,7 +950,13 @@ def render_environment_conditions_tables(
         write_environment_marine_growth_table(marine_growth_table_matches[0], marine_growth_rows)
 
     if isinstance(splash_zone_rows, Sequence) and not isinstance(splash_zone_rows, (str, bytes)) and splash_zone_rows:
-        splash_zone_table = find_table_by_header_row(document.tables, ENVIRONMENT_SPLASH_ZONE_HEADERS)
+        splash_zone_table = find_table_by_header_row(
+            document.tables,
+            ENVIRONMENT_SPLASH_ZONE_HEADERS,
+            alternate_headers=[
+                ["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm/y)"],
+            ],
+        )
         write_environment_splash_zone_table(splash_zone_table, splash_zone_rows)
 
 

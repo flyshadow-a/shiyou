@@ -18,6 +18,8 @@ class JointCanSummaryBuilt(TypedDict):
     is_pass_text: str
     summary_text: str
     summary_table_row: dict
+    load_summary_table_row: dict
+    strength_summary_table_row: dict
 
 
 def build_joint_can_summary(joint_can_summary: Mapping[str, Any]) -> JointCanSummaryBuilt:
@@ -33,6 +35,20 @@ def build_joint_can_summary(joint_can_summary: Mapping[str, Any]) -> JointCanSum
     code_name = joint_can_summary.get("code_name", "").strip()
 
     if not rows:
+        load_summary_table_row = {
+            "check_item": "节点冲剪（Load）",
+            "position": "",
+            "value": "",
+            "case": "",
+            "is_pass": "无数据",
+        }
+        strength_summary_table_row = {
+            "check_item": "节点冲剪（Strength）",
+            "position": "",
+            "value": "",
+            "case": "",
+            "is_pass": "无数据",
+        }
         return {
             "code_name": code_name,
             "max_uc": 0.0,
@@ -49,6 +65,8 @@ def build_joint_can_summary(joint_can_summary: Mapping[str, Any]) -> JointCanSum
                 "case": "",
                 "is_pass": "无数据",
             },
+            "load_summary_table_row": load_summary_table_row,
+            "strength_summary_table_row": strength_summary_table_row,
         }
 
     def _control_uc(row: Mapping[str, Any]) -> float:
@@ -56,6 +74,34 @@ def build_joint_can_summary(joint_can_summary: Mapping[str, Any]) -> JointCanSum
         if value not in (None, ""):
             return float(value)
         return float(row.get("orig_load_uc", 0.0) or 0.0)
+
+    def _uc_or_negative_infinity(row: Mapping[str, Any], key: str) -> float:
+        value = row.get(key)
+        if value in (None, ""):
+            return float("-inf")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("-inf")
+
+    def _summary_row(label: str, row: Mapping[str, Any], key: str) -> dict:
+        value = _uc_or_negative_infinity(row, key)
+        if value == float("-inf"):
+            return {
+                "check_item": label,
+                "position": "",
+                "value": "",
+                "case": "",
+                "is_pass": "无数据",
+            }
+        is_pass_text_for_value = "满足" if value < 1.0 else "不满足"
+        return {
+            "check_item": label,
+            "position": str(row.get("joint", "")),
+            "value": f"{value:.3f}",
+            "case": str(row.get("load_case", "")),
+            "is_pass": is_pass_text_for_value,
+        }
 
     # 口径：ReadPSIlist 的 FindMaxJointUC 按 ORIGINAL Strength UC 列降序。
     max_row = max(rows, key=_control_uc)
@@ -81,6 +127,15 @@ def build_joint_can_summary(joint_can_summary: Mapping[str, Any]) -> JointCanSum
             f"对应工况为{max_case}，{is_pass_text}UC小于1.0的要求。"
         )
 
+    max_load_row = max(rows, key=lambda row: _uc_or_negative_infinity(row, "orig_load_uc"))
+    max_strength_row = max(rows, key=lambda row: _uc_or_negative_infinity(row, "orig_strn_uc"))
+    load_summary_table_row = _summary_row("节点冲剪（Load）", max_load_row, "orig_load_uc")
+    strength_summary_table_row = _summary_row(
+        "节点冲剪（Strength）",
+        max_strength_row,
+        "orig_strn_uc",
+    )
+
     return {
         "code_name": code_name,
         "max_uc": max_uc,
@@ -97,4 +152,6 @@ def build_joint_can_summary(joint_can_summary: Mapping[str, Any]) -> JointCanSum
             "case": max_case,
             "is_pass": is_pass_text,
         },
+        "load_summary_table_row": load_summary_table_row,
+        "strength_summary_table_row": strength_summary_table_row,
     }

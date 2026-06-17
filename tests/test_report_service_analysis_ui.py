@@ -32,7 +32,11 @@ class ReportServiceAnalysisUiTests(unittest.TestCase):
                 return_value={"rows": ["joint-row"]},
             ), patch(
                 "src.report_service.build_joint_can_summary",
-                return_value={"summary_table_row": {"check_item": "节点冲剪"}},
+                return_value={
+                    "summary_table_row": {"check_item": "节点冲剪"},
+                    "load_summary_table_row": {"check_item": "节点冲剪（Load）"},
+                    "strength_summary_table_row": {"check_item": "节点冲剪（Strength）"},
+                },
             ), patch(
                 "src.report_service.parse_pile_group_summary",
                 return_value={"rows": ["pile-row"]},
@@ -65,6 +69,19 @@ class ReportServiceAnalysisUiTests(unittest.TestCase):
         self.assertIn("analysis_summary", result)
         self.assertEqual(["member-row"], result["member_group_summary"]["rows"])
         self.assertEqual([{"pile_head_id": "P108"}], result["pile_axial_capacity_summary"]["operation_table_rows"])
+        self.assertEqual(
+            [
+                "构件",
+                "节点冲剪（Load）",
+                "节点冲剪（Strength）",
+                "桩应力",
+                "操作工况桩基抗压",
+                "操作工况桩基抗拔",
+                "极端工况桩基抗压",
+                "极端工况桩基抗拔",
+            ],
+            [item["check_item"] for item in result["analysis_summary"]["items"]],
+        )
 
 
 if __name__ == "__main__":

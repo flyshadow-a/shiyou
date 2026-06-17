@@ -48,6 +48,20 @@ def _is_existing_file(path: object) -> bool:
     return bool(text) and os.path.exists(text) and os.path.isfile(text)
 
 
+def _load_context_for_export_mode(
+    *,
+    facility_code: str,
+    run_id: int | None,
+    mode: str,
+    load_bundle,
+) -> dict:
+    if str(mode or "").strip().lower() == "outline":
+        return {}
+    bundle = load_bundle(facility_code, run_id) or {}
+    context = bundle.get("context") or {}
+    return context if isinstance(context, dict) else {}
+
+
 def _project_root() -> Path:
     here = Path(__file__).resolve()
     return here.parents[1] if here.parent.name == "services" else here.parent
@@ -318,8 +332,12 @@ def export_report_images(
 
     app = QApplication.instance() or QApplication(sys.argv)
     result_service = SpecialStrategyResultService()
-    bundle = result_service.load_result_bundle(facility_code, run_id) or {}
-    context = bundle.get("context") or {}
+    context = _load_context_for_export_mode(
+        facility_code=facility_code,
+        run_id=run_id,
+        mode=mode,
+        load_bundle=result_service.load_result_bundle,
+    )
 
     # 轮廓图不需要风险计算结果，允许 context 为空；风险等级图必须有结果上下文。
     if mode in {"risk", "all"} and not context:

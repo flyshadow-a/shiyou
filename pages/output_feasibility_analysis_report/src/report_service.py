@@ -213,6 +213,7 @@ def generate_report(
     output_path: str,
     chapter_1_3_sources: Mapping[str, Mapping[str, Any] | str] | None = None,
     pile_capacity_input_rows: list[Mapping[str, Any]] | None = None,
+    analysis_results_override: Mapping[str, Any] | None = None,
 ) -> str:
     # 报告联调阶段优先给出更明确的 factor_path 诊断信息，
     # 便于区分“前端传参错误”和“后端进程看不到该文件”两类问题。
@@ -232,10 +233,13 @@ def generate_report(
     combo_case_desc_rows = parse_combo_case_desc(lines)
     combo_case_load_rows = parse_combo_case_loads(lines)
 
-    analysis_results = build_analysis_results_for_ui(
-        factor_path,
-        pile_capacity_input_rows=pile_capacity_input_rows,
-    )
+    if analysis_results_override is not None:
+        analysis_results = deepcopy(dict(analysis_results_override))
+    else:
+        analysis_results = build_analysis_results_for_ui(
+            factor_path,
+            pile_capacity_input_rows=pile_capacity_input_rows,
+        )
     analysis_summary = analysis_results["analysis_summary"]
     member_group_summary = analysis_results["member_group_summary"]
     member_summary = analysis_results["member_summary"]
@@ -299,6 +303,7 @@ def generate_report_with_project_defaults(
     template_path: str | None = None,
     output_path: str | None = None,
     pile_capacity_input_rows: list[Mapping[str, Any]] | None = None,
+    analysis_results_override: Mapping[str, Any] | None = None,
 ) -> str:
     defaults = get_report_defaults()
     if not factor_path:
@@ -311,4 +316,5 @@ def generate_report_with_project_defaults(
         output_path=str(output_path),
         chapter_1_3_sources=chapter_1_3_sources,
         pile_capacity_input_rows=pile_capacity_input_rows,
+        analysis_results_override=analysis_results_override,
     )

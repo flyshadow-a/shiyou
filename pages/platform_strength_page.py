@@ -2267,7 +2267,7 @@ class PlatformStrengthPage(BasePage):
         self._open_simple_table_edit_dialog(
             title="编辑飞溅区腐蚀余量",
             source_table=self.tbl_splash,
-            headers=["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm/y)"],
+            headers=["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm)"],
             save_callback=save,
             apply_callback=self._apply_splash_items,
             success_message="飞溅区腐蚀余量已更新到数据库。",
@@ -4437,7 +4437,7 @@ class PlatformStrengthPage(BasePage):
 
         tbl_splash = QTableWidget(1, 3, splash_box)
         self.tbl_splash = tbl_splash
-        tbl_splash.setHorizontalHeaderLabels(["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm/y)"])
+        tbl_splash.setHorizontalHeaderLabels(["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm)"])
         self._init_table_common(tbl_splash, show_vertical_header=False)
         tbl_splash.setEditTriggers(QAbstractItemView.NoEditTriggers)
         for c in range(3):

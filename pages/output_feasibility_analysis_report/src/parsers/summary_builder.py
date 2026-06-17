@@ -39,9 +39,11 @@ def build_analysis_summary(
     pile_stress_summary: Mapping[str, Any],
     pile_axial_capacity_summary: Mapping[str, Any],
 ) -> AnalysisSummary:
+    legacy_joint_row = joint_can_summary.get("summary_table_row", {})
     ordered_items = [
         ("member_uc", member_summary.get("summary_table_row", {})),
-        ("joint_uc", joint_can_summary.get("summary_table_row", {})),
+        ("joint_load_uc", joint_can_summary.get("load_summary_table_row", legacy_joint_row)),
+        ("joint_strength_uc", joint_can_summary.get("strength_summary_table_row", legacy_joint_row)),
         ("pile_stress_uc", pile_stress_summary.get("summary_table_row", {})),
         (
             "pile_comp_op",

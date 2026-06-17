@@ -14,6 +14,8 @@ if str(REPORT_MODULE_ROOT) not in sys.path:
 
 from src.renderers.table_writer import (  # noqa: E402
     NON_BREAKING_HYPHEN,
+    find_table_by_header_row,
+    write_analysis_summary_table,
     write_basic_case_loads_table,
     write_environment_marine_growth_table,
     write_pile_capacity_table,
@@ -21,6 +23,36 @@ from src.renderers.table_writer import (  # noqa: E402
 
 
 class ReportTableWriterTests(unittest.TestCase):
+    def test_find_table_by_header_row_accepts_legacy_splash_zone_unit(self) -> None:
+        document = Document()
+        table = document.add_table(rows=1, cols=3)
+        headers = ["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm/y)"]
+        for index, header in enumerate(headers):
+            table.rows[0].cells[index].text = header
+
+        found = find_table_by_header_row(
+            document.tables,
+            ["飞溅区上限(m)", "飞溅区下限(m)", "腐蚀余量(mm)"],
+            alternate_headers=[headers],
+        )
+
+        self.assertEqual("腐蚀余量(mm/y)", found.rows[0].cells[2].text)
+
+    def test_analysis_summary_table_expands_when_template_has_too_few_rows(self) -> None:
+        document = Document()
+        table = document.add_table(rows=3, cols=5)
+        items = [
+            {"check_item": "构件", "position": "M1", "value": "0.80", "case": "OP1", "is_pass": "满足"},
+            {"check_item": "节点冲剪（Load）", "position": "J1", "value": "0.90", "case": "EL1", "is_pass": "满足"},
+            {"check_item": "节点冲剪（Strength）", "position": "J2", "value": "1.20", "case": "EL2", "is_pass": "不满足"},
+        ]
+
+        write_analysis_summary_table(table, items)
+
+        self.assertEqual(4, len(table.rows))
+        self.assertEqual("节点冲剪（Strength）", table.rows[3].cells[0].text)
+        self.assertEqual("1.20", table.rows[3].cells[2].text)
+
     def test_chapter4_load_table_formats_large_and_small_numbers(self) -> None:
         document = Document()
         table = document.add_table(rows=2, cols=9)
