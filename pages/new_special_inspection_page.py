@@ -2465,11 +2465,6 @@ class NewSpecialInspectionPage(BasePage):
         return cached if self._is_existing_file(cached) else ""
 
     def _current_model_path_for_rule_preview(self) -> str:
-        # 远程模式下优先使用服务端下载到客户端的当前模型，避免客户端直接读服务端 D 盘路径。
-        remote_model = self._download_latest_model_for_preview()
-        if remote_model:
-            return remote_model
-
         input_overrides = self._collect_runtime_input_overrides()
         override_model = str(input_overrides.get("model") or "").strip()
         if self._is_existing_file(override_model):
@@ -2478,12 +2473,7 @@ class NewSpecialInspectionPage(BasePage):
         model_candidates = self._sorted_existing_paths(self.model_files, category=self.CATEGORY_MODEL)
         if model_candidates:
             return model_candidates[0]
-
-        try:
-            cfg = load_base_config(self.facility_code)
-        except Exception:
-            return ""
-        return str(cfg.get("model") or "").strip()
+        return ""
 
     def _invalidate_rule_preview_cache(self) -> None:
         self._rule_preview_cache = None
@@ -4281,6 +4271,8 @@ class NewSpecialInspectionPage(BasePage):
                 deleted_count += 1
 
         self._invalidate_rule_preview_cache()
+        self._remote_preview_model_path = ""
+        self._model_preview_loaded_path = ""
         self._refresh_files_table()
         self._refresh_model_preview()
         if deleted_count:
@@ -4444,16 +4436,20 @@ class NewSpecialInspectionPage(BasePage):
         if int(token) != self._model_preview_parse_token:
             return
 
-        # 允许远程预览缓存路径或当前 model_files[0] 路径加载成功。
+        valid_paths: set[str] = set()
         current_model_path = ""
         if self.model_files:
             current_model_path = os.path.normpath(str(self.model_files[0] or "").strip())
+            if current_model_path:
+                valid_paths.add(current_model_path)
 
         remote_preview_path = os.path.normpath(
             str(getattr(self, "_remote_preview_model_path", "") or "").strip()
         )
+        if self.model_files and remote_preview_path:
+            valid_paths.add(remote_preview_path)
 
-        if normalized_path not in {current_model_path, remote_preview_path}:
+        if normalized_path not in valid_paths:
             return
 
         if not self._ensure_model_preview_panel():
@@ -4480,33 +4476,31 @@ class NewSpecialInspectionPage(BasePage):
         else:
             self._set_model_preview_placeholder("模型预览加载失败")
 
+    def _clear_model_preview_state(self, message: str) -> None:
+        self._remote_preview_model_path = ""
+        self._model_preview_loaded_path = ""
+        self._model_preview_parse_token = int(getattr(self, "_model_preview_parse_token", 0) or 0) + 1
+        if getattr(self, "model_preview_panel", None) is not None:
+            self.model_preview_panel.clear_model(message)
+        else:
+            self._set_model_preview_placeholder(message)
+
     def _refresh_model_preview(self, *, force_remote: bool = False):
         if not hasattr(self, "_model_preview_layout") and not hasattr(self, "model_preview_panel"):
             return
 
         model_path = ""
 
-        # C/S 远程模式：右侧预览必须使用客户端下载缓存，
-        # 不能直接读取数据库记录里的服务端 D 盘路径。
-        if _use_fastapi_backend():
-            try:
-                model_path = self._download_latest_model_for_preview(force=force_remote)
-                self._remote_preview_model_path = model_path or ""
-            except Exception as exc:
-                print("[NewSpecialInspectionPage] download remote preview model failed:", exc)
-                model_path = ""
+        if not self.model_files:
+            self._clear_model_preview_state("未找到可预览的模型文件")
+            return
 
-        # 本地兼容或远程下载失败时，使用本地文件列表兜底。
-        if not model_path and self.model_files:
-            candidate = os.path.normpath(str(self.model_files[0] or "").strip())
-            if self._is_existing_file(candidate):
-                model_path = candidate
+        candidate = os.path.normpath(str(self.model_files[0] or "").strip())
+        if self._is_existing_file(candidate):
+            model_path = candidate
 
         if not model_path:
-            if getattr(self, "model_preview_panel", None) is not None:
-                self.model_preview_panel.clear_model("未找到可预览的模型文件")
-            else:
-                self._set_model_preview_placeholder("未找到可预览的模型文件")
+            self._clear_model_preview_state("未找到可预览的模型文件")
             return
 
         # 如果同一个文件已经加载过，不重复解析。
