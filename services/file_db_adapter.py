@@ -263,6 +263,8 @@ def list_files(
     facility_code: str | None = None,
     document_code_query: str | None = None,
     document_title_query: str | None = None,
+    category_query: str | None = None,
+    discipline_query: str | None = None,
     limit: int | None = None,
     offset: int | None = None,
     config_path: str | None = None,
@@ -275,6 +277,8 @@ def list_files(
     )
     code_query = str(document_code_query or "").strip()
     title_query = str(document_title_query or "").strip()
+    category = str(category_query or "").strip()
+    discipline = str(discipline_query or "").strip()
     key = (
         _cache_config_key(config_path),
         file_type_code or "",
@@ -285,6 +289,8 @@ def list_files(
         facility_code or "",
         code_query,
         title_query,
+        category,
+        discipline,
         "" if limit is None else int(limit),
         "" if offset is None else int(offset),
     )
@@ -301,6 +307,8 @@ def list_files(
         facility_code=facility_code,
         document_code_query=code_query or None,
         document_title_query=title_query or None,
+        category_query=category or None,
+        discipline_query=discipline or None,
         limit=limit,
         offset=offset,
     )
@@ -339,6 +347,8 @@ def list_files_by_prefix(
     facility_code: str | None = None,
     document_code_query: str | None = None,
     document_title_query: str | None = None,
+    category_query: str | None = None,
+    discipline_query: str | None = None,
     limit: int | None = None,
     offset: int | None = None,
     config_path: str | None = None,
@@ -351,6 +361,8 @@ def list_files_by_prefix(
         facility_code=facility_code,
         document_code_query=document_code_query,
         document_title_query=document_title_query,
+        category_query=category_query,
+        discipline_query=discipline_query,
         limit=limit,
         offset=offset,
         config_path=config_path,
@@ -367,6 +379,8 @@ def count_files(
     facility_code: str | None = None,
     document_code_query: str | None = None,
     document_title_query: str | None = None,
+    category_query: str | None = None,
+    discipline_query: str | None = None,
     config_path: str | None = None,
 ) -> int:
     prefix = str(logical_path_prefix or "").replace("\\", "/").strip().strip("/")
@@ -385,6 +399,8 @@ def count_files(
             facility_code=facility_code,
             document_code_query=(document_code_query or None),
             document_title_query=(document_title_query or None),
+            category_query=(category_query or None),
+            discipline_query=(discipline_query or None),
         )
         or 0
     )
@@ -398,6 +414,8 @@ def count_files_by_prefix(
     facility_code: str | None = None,
     document_code_query: str | None = None,
     document_title_query: str | None = None,
+    category_query: str | None = None,
+    discipline_query: str | None = None,
     config_path: str | None = None,
 ) -> int:
     prefix = str(logical_path_prefix or "").replace("\\", "/").strip().strip("/")
@@ -408,8 +426,78 @@ def count_files_by_prefix(
         facility_code=facility_code,
         document_code_query=document_code_query,
         document_title_query=document_title_query,
+        category_query=category_query,
+        discipline_query=discipline_query,
         config_path=config_path,
     )
+
+
+def list_file_categories(
+    *,
+    file_type_code: str | None = None,
+    module_code: str | None = None,
+    logical_path: str | None = None,
+    logical_path_prefix: str | None = None,
+    logical_path_prefixes: list[str] | None = None,
+    facility_code: str | None = None,
+    document_code_query: str | None = None,
+    document_title_query: str | None = None,
+    category_query: str | None = None,
+    discipline_query: str | None = None,
+    config_path: str | None = None,
+) -> list[str]:
+    prefix = str(logical_path_prefix or "").replace("\\", "/").strip().strip("/")
+    prefixes = [
+        str(item or "").replace("\\", "/").strip().strip("/")
+        for item in (logical_path_prefixes or [])
+        if str(item or "").replace("\\", "/").strip().strip("/")
+    ]
+    values = _get_service(config_path).list_file_categories(
+        file_type_code=file_type_code,
+        module_code=module_code,
+        logical_path=logical_path,
+        logical_path_prefix=prefix or None,
+        logical_path_prefixes=prefixes or None,
+        facility_code=facility_code,
+        document_code_query=(document_code_query or None),
+        document_title_query=(document_title_query or None),
+        category_query=(category_query or None),
+        discipline_query=(discipline_query or None),
+    )
+    return list(dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip()))
+
+
+def list_file_disciplines(
+    *,
+    file_type_code: str | None = None,
+    module_code: str | None = None,
+    logical_path: str | None = None,
+    logical_path_prefix: str | None = None,
+    logical_path_prefixes: list[str] | None = None,
+    facility_code: str | None = None,
+    document_code_query: str | None = None,
+    document_title_query: str | None = None,
+    category_query: str | None = None,
+    config_path: str | None = None,
+) -> list[str]:
+    prefix = str(logical_path_prefix or "").replace("\\", "/").strip().strip("/")
+    prefixes = [
+        str(item or "").replace("\\", "/").strip().strip("/")
+        for item in (logical_path_prefixes or [])
+        if str(item or "").replace("\\", "/").strip().strip("/")
+    ]
+    values = _get_service(config_path).list_file_disciplines(
+        file_type_code=file_type_code,
+        module_code=module_code,
+        logical_path=logical_path,
+        logical_path_prefix=prefix or None,
+        logical_path_prefixes=prefixes or None,
+        facility_code=facility_code,
+        document_code_query=(document_code_query or None),
+        document_title_query=(document_title_query or None),
+        category_query=(category_query or None),
+    )
+    return list(dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip()))
 
 
 def list_storage_paths_by_prefix(
@@ -776,6 +864,8 @@ def load_docman_record_list(
     facility_code: str | None = None,
     document_code_query: str | None = None,
     document_title_query: str | None = None,
+    category_query: str | None = None,
+    discipline_query: str | None = None,
     config_path: str | None = None,
 ) -> list[dict[str, Any]]:
     prefix = build_docman_logical_prefix(path_segments)
@@ -785,6 +875,8 @@ def load_docman_record_list(
         facility_code=facility_code,
         document_code_query=document_code_query,
         document_title_query=document_title_query,
+        category_query=category_query,
+        discipline_query=discipline_query,
         config_path=config_path,
     )
     ordered = sorted(
@@ -808,6 +900,8 @@ def load_docman_record_page(
     facility_code: str | None = None,
     document_code_query: str | None = None,
     document_title_query: str | None = None,
+    category_query: str | None = None,
+    discipline_query: str | None = None,
     logical_path_prefixes: list[str] | None = None,
     config_path: str | None = None,
 ) -> dict[str, Any]:
@@ -826,6 +920,8 @@ def load_docman_record_page(
             facility_code=facility_code,
             document_code_query=document_code_query,
             document_title_query=document_title_query,
+            category_query=category_query,
+            discipline_query=discipline_query,
             config_path=config_path,
         )
     else:
@@ -835,8 +931,31 @@ def load_docman_record_page(
             facility_code=facility_code,
             document_code_query=document_code_query,
             document_title_query=document_title_query,
+            category_query=category_query,
+            discipline_query=discipline_query,
             config_path=config_path,
         )
+    category_options = list_file_categories(
+        module_code=DOC_MAN_MODULE_CODE,
+        logical_path_prefix=prefix,
+        logical_path_prefixes=prefixes,
+        facility_code=facility_code,
+        document_code_query=document_code_query,
+        document_title_query=document_title_query,
+        category_query=None,
+        discipline_query=discipline_query,
+        config_path=config_path,
+    )
+    discipline_options = list_file_disciplines(
+        module_code=DOC_MAN_MODULE_CODE,
+        logical_path_prefix=prefix,
+        logical_path_prefixes=prefixes,
+        facility_code=facility_code,
+        document_code_query=document_code_query,
+        document_title_query=document_title_query,
+        category_query=category_query,
+        config_path=config_path,
+    )
     if requested_page_size <= 0:
         safe_page_size = max(1, total)
         safe_page = 0
@@ -852,6 +971,8 @@ def load_docman_record_page(
             facility_code=facility_code,
             document_code_query=document_code_query,
             document_title_query=document_title_query,
+            category_query=category_query,
+            discipline_query=discipline_query,
             limit=safe_page_size,
             offset=offset,
             config_path=config_path,
@@ -863,6 +984,8 @@ def load_docman_record_page(
             facility_code=facility_code,
             document_code_query=document_code_query,
             document_title_query=document_title_query,
+            category_query=category_query,
+            discipline_query=discipline_query,
             limit=safe_page_size,
             offset=offset,
             config_path=config_path,
@@ -876,6 +999,8 @@ def load_docman_record_page(
         "total": total,
         "page": safe_page,
         "page_size": safe_page_size,
+        "category_options": category_options,
+        "discipline_options": discipline_options,
     }
 
 

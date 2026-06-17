@@ -1081,10 +1081,15 @@ class ModelFilesDocsWidget(QWidget):
             )
         else:
             self.doc_man_widget.set_action_handlers(upload_handler=None, delete_handler=None, download_handler=None)
+        filter_categories = list(categories)
+        for record in records:
+            category = str(record.get("category") or "").strip()
+            if category and category not in filter_categories:
+                filter_categories.append(category)
         self.doc_man_widget.set_context(
             path_segments,
             records,
-            categories,
+            filter_categories,
             facility_code=self.facility_code,
             overlay_from_db=False,
             hide_empty_templates=hide_empty_templates,
@@ -1094,6 +1099,7 @@ class ModelFilesDocsWidget(QWidget):
             path_root_label="模型文件",
             display_path_segments=path_segments,
             path_hint=path_hint,
+            enable_category_filter=True,
         )
 
     def _start_model_records_load(self, path_key: str) -> None:
@@ -1526,6 +1532,56 @@ class ModelFilesDocsWidget(QWidget):
         }
         return category in multi_categories
 
+    @staticmethod
+    def _category_requires_overwrite_confirmation(category: str) -> bool:
+        single_file_categories = {
+            "结构模型文件",
+            "海况文件",
+            "桩基文件",
+            "冲剪节点文件",
+        }
+        return category in single_file_categories
+
+    def _existing_single_model_record_id(
+        self,
+        category: str,
+        records: List[Dict[str, Any]],
+        current_record_id: object = None,
+    ) -> int | None:
+        if not self._category_requires_overwrite_confirmation(category):
+            return None
+
+        if current_record_id is not None:
+            try:
+                return int(current_record_id)
+            except (TypeError, ValueError):
+                return None
+
+        for record in records:
+            if str(record.get("category") or "").strip() != category:
+                continue
+            record_id = record.get("record_id")
+            if record_id is None:
+                continue
+            try:
+                return int(record_id)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _confirm_overwrite_single_model_file(self, category: str) -> bool:
+        fmt = self._doc_category_to_fmt(category).upper()
+        label = f"{category}（{fmt}）" if fmt else category
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("确认覆盖")
+        box.setText(f"当前已存在“{label}”，是否覆盖？")
+        confirm_button = box.addButton("确定", QMessageBox.AcceptRole)
+        cancel_button = box.addButton("取消", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel_button)
+        box.exec_()
+        return box.clickedButton() is confirm_button
+
     def _doc_category_to_file_type_code(self, category: str) -> str:
         if "疲劳" in category:
             return "fatigue"
@@ -1746,11 +1802,11 @@ class ModelFilesDocsWidget(QWidget):
 
         logical_path = rec.get("logical_path") or self._upload_logical_path_for_category(path_key, current_category)
         record_id = rec.get("record_id")
-        delete_record_id = (
-            int(record_id)
-            if record_id is not None and not self._category_allows_multiple_files(current_category)
-            else None
-        )
+        delete_record_id = self._existing_single_model_record_id(current_category, _records, record_id)
+        if delete_record_id is not None and not self._confirm_overwrite_single_model_file(current_category):
+            return
+        if delete_record_id is None and record_id is not None and not self._category_allows_multiple_files(current_category):
+            delete_record_id = int(record_id)
         rec["checked"] = False
         self._start_model_upload_worker(
             {
@@ -1815,6 +1871,9 @@ class ModelFilesDocsWidget(QWidget):
             return
 
         logical_path = self._upload_logical_path_for_category(path_key, category)
+        delete_record_id = self._existing_single_model_record_id(category, records)
+        if delete_record_id is not None and not self._confirm_overwrite_single_model_file(category):
+            return
         self._start_model_upload_worker(
             {
                 "path_key": path_key,
@@ -1825,7 +1884,7 @@ class ModelFilesDocsWidget(QWidget):
                 "category": category,
                 "work_condition": "",
                 "remark": "",
-                "delete_record_id": None,
+                "delete_record_id": delete_record_id,
             }
         )
 

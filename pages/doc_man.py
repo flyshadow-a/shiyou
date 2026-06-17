@@ -4,7 +4,7 @@ import os
 import shutil
 from typing import Callable, List, Optional
 
-from PyQt5.QtCore import QObject, QDateTime, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import QObject, QPoint, QDateTime, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QMessageBox,
     QComboBox,
+    QMenu,
     QPushButton,
     QProgressDialog,
     QHeaderView,
@@ -131,6 +132,8 @@ class _DocManRecordPageWorker(QObject):
         facility_code: str | None,
         document_code_query: str,
         document_title_query: str,
+        category_query: str,
+        discipline_query: str,
         logical_path_prefixes: Optional[List[str]],
     ):
         super().__init__()
@@ -141,6 +144,8 @@ class _DocManRecordPageWorker(QObject):
         self._facility_code = facility_code
         self._document_code_query = document_code_query
         self._document_title_query = document_title_query
+        self._category_query = category_query
+        self._discipline_query = discipline_query
         self._logical_path_prefixes = list(logical_path_prefixes or [])
 
     def run(self) -> None:
@@ -152,6 +157,8 @@ class _DocManRecordPageWorker(QObject):
                 facility_code=self._facility_code,
                 document_code_query=self._document_code_query,
                 document_title_query=self._document_title_query,
+                category_query=self._category_query,
+                discipline_query=self._discipline_query,
                 logical_path_prefixes=self._logical_path_prefixes,
             )
         except Exception as exc:
@@ -635,6 +642,7 @@ class UploadStagingDialog(QDialog):
 class DocManWidget(QFrame):
     DEFAULT_PAGE_SIZE = 30
     PAGE_SIZE_ALL_TEXT = "全部"
+    CATEGORY_FILTER_ALL_TEXT = "全部"
     PAGE_SIZE_OPTIONS = ("30", "50", "100", PAGE_SIZE_ALL_TEXT)
 
     COL_CHECK = 0
@@ -675,9 +683,16 @@ class DocManWidget(QFrame):
         self._default_work_condition = ""
         self._document_code_query = ""
         self._document_title_query = ""
+        self._category_query = ""
+        self._discipline_query = ""
         self._logical_path_prefixes: List[str] = []
         self._context_project_name = ""
         self._rebuild_project_labels: dict[str, str] = {}
+        self._editable_category = False
+        self._category_filter_enabled = False
+        self._category_filter_options: list[str] = []
+        self._discipline_filter_enabled = False
+        self._discipline_filter_options: list[str] = []
         self._context_load_token = 0
         self._db_loading = False
         self._db_load_jobs: list[tuple[QThread, _DocManRecordPageWorker, int]] = []
@@ -768,6 +783,7 @@ class DocManWidget(QFrame):
         self._check_header = CheckBoxHeader(Qt.Horizontal, self.table, self.COL_CHECK)
         self._check_header.toggled.connect(self._set_visible_rows_checked)
         self.table.setHorizontalHeader(self._check_header)
+        self._check_header.sectionClicked.connect(self._on_header_section_clicked)
         self._apply_profile_headers()
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(False)
@@ -804,6 +820,7 @@ class DocManWidget(QFrame):
         action_row = QHBoxLayout()
         action_row.setContentsMargins(0, 0, 0, 0)
         action_row.setSpacing(8)
+
         action_row.addStretch()
 
         self.btn_add = QPushButton("上传", self)
@@ -887,6 +904,9 @@ class DocManWidget(QFrame):
         document_code_query: str = "",
         document_title_query: str = "",
         logical_path_prefixes: Optional[List[str]] = None,
+        editable_category: bool = False,
+        enable_category_filter: bool = False,
+        enable_discipline_filter: bool = False,
     ):
         self._path_segments = list(path_segments)
         self._upload_path_resolver = upload_path_resolver
@@ -900,6 +920,8 @@ class DocManWidget(QFrame):
         self._default_work_condition = (default_work_condition or "").strip()
         self._document_code_query = (document_code_query or "").strip()
         self._document_title_query = (document_title_query or "").strip()
+        self._category_query = ""
+        self._discipline_query = ""
         self._logical_path_prefixes = [
             str(item or "").replace("\\", "/").strip().strip("/")
             for item in (logical_path_prefixes or [])
@@ -907,12 +929,21 @@ class DocManWidget(QFrame):
         ]
         self._context_project_name = (context_project_name or "").strip()
         self._rebuild_project_labels = self._normalize_project_label_map(rebuild_project_labels)
+        self._editable_category = bool(editable_category)
+        self._category_filter_enabled = bool(enable_category_filter)
+        self._category_filter_options = list(dict.fromkeys(str(item or "").strip() for item in category_options if str(item or "").strip()))
+        self._discipline_filter_enabled = bool(enable_discipline_filter)
+        self._discipline_filter_options = []
         self._db_list_mode = bool(db_list_mode)
         self._db_total_rows = 0
         self._db_total_pages = 1
         self._records = [dict(rec) for rec in records] if not self._db_list_mode else [
             dict(rec) for rec in records if self._record_has_content(rec)
         ]
+        if self._discipline_filter_enabled:
+            self._discipline_filter_options = list(
+                dict.fromkeys(self._discipline_text(rec) for rec in self._records if self._discipline_text(rec))
+            )
         self._category_options = list(category_options)
         self._facility_code = (facility_code or "").strip() or None
         self._hide_empty_templates = bool(hide_empty_templates)
@@ -1000,7 +1031,10 @@ class DocManWidget(QFrame):
             "model": [" ", "", "阶段", "分析类别", "工况", "名称", "", "模型类别", "备注", "操作"],
             "inspection": [" ", "序号", "", "检测项目名称", "文件名称", "文件格式", "修改时间", "类别", "备注", "操作"],
         }
-        self.table.setHorizontalHeaderLabels(header_map.get(self._display_profile, header_map["generic"]))
+        labels = list(header_map.get(self._display_profile, header_map["generic"]))
+        labels[self.COL_CATEGORY] = self._category_header_text(labels[self.COL_CATEGORY])
+        labels[self.COL_MTIME] = self._discipline_header_text(labels[self.COL_MTIME])
+        self.table.setHorizontalHeaderLabels(labels)
         self._apply_profile_column_widths()
 
     def _apply_profile_column_widths(self) -> None:
@@ -1034,6 +1068,93 @@ class DocManWidget(QFrame):
             self.table.setColumnWidth(self.COL_FMT, 110)
             self.table.setColumnWidth(self.COL_MTIME, 150)
 
+    def _category_header_text(self, default_text: str) -> str:
+        if not self._category_filter_enabled:
+            return default_text
+        label = default_text or "类别"
+        if self._category_query:
+            return f"{label}：{self._category_query} ▼"
+        return f"{label} ▼"
+
+    def _discipline_header_text(self, default_text: str) -> str:
+        if not self._discipline_filter_enabled:
+            return default_text
+        if self._discipline_query:
+            return f"专业：{self._discipline_query} ▼"
+        return "专业 ▼"
+
+    def _set_category_filter(self, text: str) -> None:
+        self._set_header_filter("category", text)
+
+    def _set_discipline_filter(self, text: str) -> None:
+        self._set_header_filter("discipline", text)
+
+    def _set_header_filter(self, kind: str, text: str) -> None:
+        value = str(text or "").strip()
+        category = "" if value == self.CATEGORY_FILTER_ALL_TEXT else value
+        if kind == "discipline":
+            if category == self._discipline_query:
+                return
+            self._discipline_query = category
+        elif kind == "category":
+            if category == self._category_query:
+                return
+            self._category_query = category
+        else:
+            return
+        self._current_page = 0
+        if self._db_list_mode:
+            self._start_record_page_load()
+            return
+        self.refresh()
+
+    def _on_header_section_clicked(self, logical_index: int) -> None:
+        if logical_index == self.COL_CATEGORY and self._category_filter_enabled:
+            self._show_header_filter_menu("category", self.COL_CATEGORY)
+            return
+        if logical_index == self.COL_MTIME and self._discipline_filter_enabled:
+            self._show_header_filter_menu("discipline", self.COL_MTIME)
+
+    def _show_header_filter_menu(self, kind: str, column: int) -> None:
+        if kind == "discipline":
+            current_query = self._discipline_query
+            filter_options = self._discipline_filter_options
+        else:
+            current_query = self._category_query
+            filter_options = self._category_filter_options
+        options = [
+            str(item or "").strip()
+            for item in filter_options
+            if str(item or "").strip()
+        ]
+        options = list(dict.fromkeys(options))
+        if current_query and current_query not in options:
+            options.append(current_query)
+
+        menu = QMenu(self)
+        all_action = menu.addAction(self.CATEGORY_FILTER_ALL_TEXT)
+        all_action.setCheckable(True)
+        all_action.setChecked(not current_query)
+        actions = [(all_action, self.CATEGORY_FILTER_ALL_TEXT)]
+        if options:
+            menu.addSeparator()
+        for option in options:
+            action = menu.addAction(option)
+            action.setCheckable(True)
+            action.setChecked(option == current_query)
+            actions.append((action, option))
+
+        header = self.table.horizontalHeader()
+        x_pos = header.sectionViewportPosition(column)
+        y_pos = header.height()
+        chosen = menu.exec_(header.viewport().mapToGlobal(QPoint(x_pos, y_pos)))
+        if chosen is None:
+            return
+        for action, value in actions:
+            if action is chosen:
+                self._set_header_filter(kind, value)
+                return
+
     def _overlay_records_from_db(self):
         if not is_file_db_configured():
             return
@@ -1057,9 +1178,13 @@ class DocManWidget(QFrame):
                 facility_code=self._facility_code,
                 document_code_query=self._document_code_query,
                 document_title_query=self._document_title_query,
+                category_query=self._category_query,
+                discipline_query=self._discipline_query,
                 logical_path_prefixes=self._logical_path_prefixes,
             )
             self._records = list(page_data.get("records") or [])
+            self._category_filter_options = list(page_data.get("category_options") or [])
+            self._discipline_filter_options = list(page_data.get("discipline_options") or [])
             self._db_total_rows = int(page_data.get("total") or 0)
             self._current_page = int(page_data.get("page") or 0)
             page_size = self._page_size_for_total(self._db_total_rows)
@@ -1081,6 +1206,8 @@ class DocManWidget(QFrame):
             facility_code=self._facility_code,
             document_code_query=self._document_code_query,
             document_title_query=self._document_title_query,
+            category_query=self._category_query,
+            discipline_query=self._discipline_query,
             logical_path_prefixes=self._logical_path_prefixes,
         )
         worker.moveToThread(thread)
@@ -1104,6 +1231,8 @@ class DocManWidget(QFrame):
             return
         if isinstance(page_data, dict):
             self._records = list(page_data.get("records") or [])
+            self._category_filter_options = list(page_data.get("category_options") or [])
+            self._discipline_filter_options = list(page_data.get("discipline_options") or [])
             self._db_total_rows = int(page_data.get("total") or 0)
             self._current_page = int(page_data.get("page") or 0)
             page_size = self._page_size_for_total(self._db_total_rows)
@@ -1181,6 +1310,10 @@ class DocManWidget(QFrame):
     def refresh(self):
         all_visible_row_indices = []
         for idx, rec in enumerate(self._records):
+            if self._category_query and str(rec.get("category") or "").strip() != self._category_query:
+                continue
+            if self._discipline_query and self._discipline_text(rec) != self._discipline_query:
+                continue
             if not self._hide_empty_templates or self._record_has_content(rec) or rec.get("_force_visible"):
                 all_visible_row_indices.append(idx)
 
@@ -1413,7 +1546,8 @@ class DocManWidget(QFrame):
         item = QTableWidgetItem(self._category_display_text(rec))
         item.setTextAlignment(int(Qt.AlignCenter))
         item.setToolTip(item.text())
-        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        if not self._editable_category:
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         self.table.setItem(row, self.COL_CATEGORY, item)
 
     def _set_work_condition_item(self, row: int, text: str):
@@ -2291,6 +2425,7 @@ class DocManWidget(QFrame):
         if item.column() == self.COL_CATEGORY:
             category = item.text().strip()
             record["category"] = category
+            item.setToolTip(category)
             if record_id is not None and is_file_db_configured():
                 try:
                     updated = update_file_record(
@@ -2301,6 +2436,13 @@ class DocManWidget(QFrame):
                     record["_lock_updated_at"] = updated.get("lock_updated_at")
                 except FileBackendError as exc:
                     QMessageBox.warning(self, "保存失败", str(exc))
+            if self._category_filter_enabled:
+                if category and category not in self._category_filter_options:
+                    self._category_filter_options.append(category)
+                if self._db_list_mode:
+                    self._start_record_page_load()
+                else:
+                    self.refresh()
             return
 
         if item.column() == self.COL_WORK_CONDITION:
@@ -2322,6 +2464,7 @@ class DocManWidget(QFrame):
 
         remark = item.text().strip()
         record["remark"] = remark
+        item.setToolTip(remark)
         if record_id is not None and is_file_db_configured():
             try:
                 updated = update_file_record(

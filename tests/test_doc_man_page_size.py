@@ -120,6 +120,8 @@ def test_load_docman_record_page_treats_zero_page_size_as_all(monkeypatch):
         ]
 
     monkeypatch.setattr(file_db_adapter, "count_files_by_prefix", lambda **_kwargs: 3)
+    monkeypatch.setattr(file_db_adapter, "list_file_categories", lambda **_kwargs: ["检测报告", "现场记录"])
+    monkeypatch.setattr(file_db_adapter, "list_file_disciplines", lambda **_kwargs: ["结构", "总体"])
     monkeypatch.setattr(file_db_adapter, "list_files_by_prefix", fake_list_files_by_prefix)
     monkeypatch.setattr(file_db_adapter, "resolve_storage_path", lambda row, config_path=None: "")
 
@@ -130,6 +132,66 @@ def test_load_docman_record_page_treats_zero_page_size_as_all(monkeypatch):
     assert page["page_size"] == 3
     assert captured["kwargs"]["limit"] == 3
     assert captured["kwargs"]["offset"] == 0
+    assert page["category_options"] == ["检测报告", "现场记录"]
+    assert page["discipline_options"] == ["结构", "总体"]
+
+
+def test_load_docman_record_page_passes_category_query(monkeypatch):
+    captured = {}
+
+    def fake_count_files_by_prefix(**kwargs):
+        captured["count_kwargs"] = kwargs
+        return 1
+
+    def fake_list_files_by_prefix(**kwargs):
+        captured["list_kwargs"] = kwargs
+        return [{"id": 1, "original_name": "report.pdf", "category_name": "检测报告"}]
+
+    monkeypatch.setattr(file_db_adapter, "count_files_by_prefix", fake_count_files_by_prefix)
+    monkeypatch.setattr(file_db_adapter, "list_file_categories", lambda **_kwargs: ["检测报告", "现场记录"])
+    monkeypatch.setattr(file_db_adapter, "list_file_disciplines", lambda **_kwargs: ["结构", "总体"])
+    monkeypatch.setattr(file_db_adapter, "list_files_by_prefix", fake_list_files_by_prefix)
+    monkeypatch.setattr(file_db_adapter, "resolve_storage_path", lambda row, config_path=None: "")
+
+    page = file_db_adapter.load_docman_record_page(["demo"], page=0, page_size=30, category_query="检测报告")
+
+    assert page["total"] == 1
+    assert captured["count_kwargs"]["category_query"] == "检测报告"
+    assert captured["list_kwargs"]["category_query"] == "检测报告"
+
+
+def test_load_docman_record_page_passes_combined_category_and_discipline_queries(monkeypatch):
+    captured = {}
+
+    def fake_count_files_by_prefix(**kwargs):
+        captured["count_kwargs"] = kwargs
+        return 1
+
+    def fake_list_files_by_prefix(**kwargs):
+        captured["list_kwargs"] = kwargs
+        return [{"id": 1, "original_name": "design.pdf", "category_name": "图纸", "discipline_name": "结构"}]
+
+    monkeypatch.setattr(file_db_adapter, "count_files_by_prefix", fake_count_files_by_prefix)
+    monkeypatch.setattr(file_db_adapter, "list_file_categories", lambda **_kwargs: ["图纸", "报告"])
+    monkeypatch.setattr(file_db_adapter, "list_file_disciplines", lambda **_kwargs: ["结构", "总体"])
+    monkeypatch.setattr(file_db_adapter, "list_files_by_prefix", fake_list_files_by_prefix)
+    monkeypatch.setattr(file_db_adapter, "resolve_storage_path", lambda row, config_path=None: "")
+
+    page = file_db_adapter.load_docman_record_page(
+        ["demo"],
+        page=0,
+        page_size=30,
+        category_query="图纸",
+        discipline_query="结构",
+    )
+
+    assert page["total"] == 1
+    assert page["category_options"] == ["图纸", "报告"]
+    assert page["discipline_options"] == ["结构", "总体"]
+    assert captured["count_kwargs"]["category_query"] == "图纸"
+    assert captured["count_kwargs"]["discipline_query"] == "结构"
+    assert captured["list_kwargs"]["category_query"] == "图纸"
+    assert captured["list_kwargs"]["discipline_query"] == "结构"
 
 
 def test_open_upload_staging_handles_invalid_dialog_factory(monkeypatch):

@@ -36,6 +36,13 @@ def test_parse_document_title_after_code():
     assert result["document_title"] == "平台总图"
 
 
+def test_parse_document_title_keeps_leading_parenthesis_after_code():
+    result = parse_document_code_from_name("DD-DWG-DPPA-GE-1001 (平台总图).pdf")
+
+    assert result["document_code"] == "DD-DWG-DPPA-GE-1001"
+    assert result["document_title"] == "(平台总图)"
+
+
 def test_parse_rebuild_structure_drawing_code_with_sub_sequence():
     result = parse_document_code_from_name("MD(DD)-DWG-DPPA(LQ)-ST-1001（01）.dwg")
 

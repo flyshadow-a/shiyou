@@ -738,6 +738,8 @@ class HistoryInspectionSummaryPage(BasePage):
             path_hint="按文件编码/文件名搜索检测记录文件。",
             document_code_query=code,
             document_title_query=name,
+            editable_category=True,
+            enable_category_filter=True,
         )
         self.stack.setCurrentWidget(self.pages["search"])
 
@@ -814,6 +816,8 @@ class HistoryInspectionSummaryPage(BasePage):
                 path_root_label="检测记录文件",
                 display_path_segments=[title],
                 path_hint="检测记录文件按检测类别归档。",
+                editable_category=True,
+                enable_category_filter=True,
             )
             layout.addWidget(doc_widget)
             return page

@@ -550,6 +550,8 @@ class FileMetadataService:
         facility_code: str | None = None,
         document_code_query: str | None = None,
         document_title_query: str | None = None,
+        category_query: str | None = None,
+        discipline_query: str | None = None,
         include_deleted: bool = False,
         limit: int | None = None,
         offset: int | None = None,
@@ -598,6 +600,12 @@ class FileMetadataService:
                         FileRecord.logical_path.like(title_pattern, escape="\\"),
                     )
                 )
+            category = str(category_query or "").strip()
+            if category:
+                stmt = stmt.where(FileRecord.category_name == category)
+            discipline = str(discipline_query or "").strip()
+            if discipline:
+                stmt = stmt.where(FileRecord.discipline_name == discipline)
             if not include_deleted:
                 stmt = stmt.where(FileRecord.is_deleted.is_(False))
             stmt = stmt.order_by(FileRecord.uploaded_at.desc(), FileRecord.updated_at.desc(), FileRecord.id.desc())
@@ -619,6 +627,8 @@ class FileMetadataService:
         facility_code: str | None = None,
         document_code_query: str | None = None,
         document_title_query: str | None = None,
+        category_query: str | None = None,
+        discipline_query: str | None = None,
         include_deleted: bool = False,
     ) -> int:
         with self.session_factory() as session:
@@ -665,9 +675,151 @@ class FileMetadataService:
                         FileRecord.logical_path.like(title_pattern, escape="\\"),
                     )
                 )
+            category = str(category_query or "").strip()
+            if category:
+                stmt = stmt.where(FileRecord.category_name == category)
+            discipline = str(discipline_query or "").strip()
+            if discipline:
+                stmt = stmt.where(FileRecord.discipline_name == discipline)
             if not include_deleted:
                 stmt = stmt.where(FileRecord.is_deleted.is_(False))
             return int(session.execute(stmt).scalar() or 0)
+
+    def list_file_categories(
+        self,
+        *,
+        file_type_code: str | None = None,
+        module_code: str | None = None,
+        logical_path: str | None = None,
+        logical_path_prefix: str | None = None,
+        logical_path_prefixes: list[str] | None = None,
+        facility_code: str | None = None,
+        document_code_query: str | None = None,
+        document_title_query: str | None = None,
+        category_query: str | None = None,
+        discipline_query: str | None = None,
+        include_deleted: bool = False,
+    ) -> list[str]:
+        with self.session_factory() as session:
+            stmt = select(FileRecord.category_name).distinct()
+            if file_type_code:
+                stmt = stmt.join(FileRecord.file_type).where(FileType.code == file_type_code)
+            if module_code:
+                stmt = stmt.where(FileRecord.module_code == module_code)
+            if logical_path:
+                stmt = stmt.where(FileRecord.logical_path == self._normalize_logical_path(logical_path))
+            elif logical_path_prefixes:
+                prefix_conditions = [
+                    condition
+                    for condition in (
+                        self._logical_path_prefix_condition(prefix)
+                        for prefix in logical_path_prefixes
+                    )
+                    if condition is not None
+                ]
+                if prefix_conditions:
+                    stmt = stmt.where(or_(*prefix_conditions))
+            elif logical_path_prefix:
+                prefix = self._normalize_logical_path(logical_path_prefix)
+                prefix_condition = self._logical_path_prefix_condition(prefix)
+                if prefix_condition is not None:
+                    stmt = stmt.where(prefix_condition)
+            if facility_code:
+                stmt = stmt.where(FileRecord.facility_code == facility_code)
+            code_pattern = self._contains_like_pattern(document_code_query)
+            if code_pattern:
+                stmt = stmt.where(
+                    or_(
+                        FileRecord.document_code.like(code_pattern, escape="\\"),
+                        FileRecord.logical_path.like(code_pattern, escape="\\"),
+                        FileRecord.original_name.like(code_pattern, escape="\\"),
+                    )
+                )
+            title_pattern = self._contains_like_pattern(document_title_query)
+            if title_pattern:
+                stmt = stmt.where(
+                    or_(
+                        FileRecord.document_title.like(title_pattern, escape="\\"),
+                        FileRecord.original_name.like(title_pattern, escape="\\"),
+                        FileRecord.logical_path.like(title_pattern, escape="\\"),
+                    )
+                )
+            category = str(category_query or "").strip()
+            if category:
+                stmt = stmt.where(FileRecord.category_name == category)
+            discipline = str(discipline_query or "").strip()
+            if discipline:
+                stmt = stmt.where(FileRecord.discipline_name == discipline)
+            if not include_deleted:
+                stmt = stmt.where(FileRecord.is_deleted.is_(False))
+            stmt = stmt.where(FileRecord.category_name.is_not(None)).order_by(FileRecord.category_name.asc())
+            return [str(value or "").strip() for value in session.execute(stmt).scalars().all() if str(value or "").strip()]
+
+    def list_file_disciplines(
+        self,
+        *,
+        file_type_code: str | None = None,
+        module_code: str | None = None,
+        logical_path: str | None = None,
+        logical_path_prefix: str | None = None,
+        logical_path_prefixes: list[str] | None = None,
+        facility_code: str | None = None,
+        document_code_query: str | None = None,
+        document_title_query: str | None = None,
+        category_query: str | None = None,
+        include_deleted: bool = False,
+    ) -> list[str]:
+        with self.session_factory() as session:
+            stmt = select(FileRecord.discipline_name).distinct()
+            if file_type_code:
+                stmt = stmt.join(FileRecord.file_type).where(FileType.code == file_type_code)
+            if module_code:
+                stmt = stmt.where(FileRecord.module_code == module_code)
+            if logical_path:
+                stmt = stmt.where(FileRecord.logical_path == self._normalize_logical_path(logical_path))
+            elif logical_path_prefixes:
+                prefix_conditions = [
+                    condition
+                    for condition in (
+                        self._logical_path_prefix_condition(prefix)
+                        for prefix in logical_path_prefixes
+                    )
+                    if condition is not None
+                ]
+                if prefix_conditions:
+                    stmt = stmt.where(or_(*prefix_conditions))
+            elif logical_path_prefix:
+                prefix = self._normalize_logical_path(logical_path_prefix)
+                prefix_condition = self._logical_path_prefix_condition(prefix)
+                if prefix_condition is not None:
+                    stmt = stmt.where(prefix_condition)
+            if facility_code:
+                stmt = stmt.where(FileRecord.facility_code == facility_code)
+            code_pattern = self._contains_like_pattern(document_code_query)
+            if code_pattern:
+                stmt = stmt.where(
+                    or_(
+                        FileRecord.document_code.like(code_pattern, escape="\\"),
+                        FileRecord.logical_path.like(code_pattern, escape="\\"),
+                        FileRecord.original_name.like(code_pattern, escape="\\"),
+                    )
+                )
+            title_pattern = self._contains_like_pattern(document_title_query)
+            if title_pattern:
+                stmt = stmt.where(
+                    or_(
+                        FileRecord.document_title.like(title_pattern, escape="\\"),
+                        FileRecord.original_name.like(title_pattern, escape="\\"),
+                        FileRecord.logical_path.like(title_pattern, escape="\\"),
+                    )
+                )
+            category = str(category_query or "").strip()
+            if category:
+                stmt = stmt.where(FileRecord.category_name == category)
+            if not include_deleted:
+                stmt = stmt.where(FileRecord.is_deleted.is_(False))
+            stmt = stmt.where(FileRecord.discipline_name.is_not(None)).order_by(FileRecord.discipline_name.asc())
+            return [str(value or "").strip() for value in session.execute(stmt).scalars().all() if str(value or "").strip()]
 
     def download_file(self, record_id: int, target_dir: str, *, download_name: str | None = None) -> str:
         with self.session_factory() as session:

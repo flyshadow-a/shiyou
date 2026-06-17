@@ -626,6 +626,8 @@ class HistoryEventsInspectionPage(BasePage):
             display_path_segments=display_segments,
             path_hint="检测项目文件按当前检测类型和项目归档，可上传、下载、删除并查看详情。",
             default_work_condition=project_name or self._group_label(project_type),
+            editable_category=True,
+            enable_category_filter=True,
         )
         self.doc_man_widget.facility_code = self.dropdown_bar.get_value("facility_code")
         self._load_findings(project_type, project)

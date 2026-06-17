@@ -9,10 +9,11 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
 
 from pages.history_events_inspection_page import HistoryEventsInspectionPage  # noqa: E402
 from pages.history_inspection_summary_page import HistoryInspectionSummaryPage  # noqa: E402
+from pages.important_history_rebuild_info_page import ImportantHistoryDetailWidget  # noqa: E402
 from pages.doc_man import DocManWidget  # noqa: E402
 from pages.model_files_page import ModelFilesDocsWidget, ModelFilesPage  # noqa: E402
 from pages.new_special_inspection_page import NewSpecialInspectionPage  # noqa: E402
@@ -528,6 +529,130 @@ class ModelFilesPageSmokeTests(GuiSmokeBase):
 
         self.assertTrue(messages)
         self.assertIn("选择文件类别窗口打开失败", messages[0][1])
+
+    def test_model_doc_context_enables_category_header_filter(self) -> None:
+        widget = ModelFilesDocsWidget()
+        self.addCleanup(widget.deleteLater)
+
+        widget._apply_model_doc_context(
+            path_segments=["当前模型", "静力"],
+            records=[
+                {"category": "结构模型文件", "filename": "sacinp"},
+                {"category": "静力分析结果文件", "filename": "psilst"},
+            ],
+            categories=["结构模型文件"],
+            path_hint="",
+            use_handlers=True,
+        )
+
+        doc_widget = widget.doc_man_widget
+        self.assertEqual("模型类别 ▼", doc_widget.table.horizontalHeaderItem(DocManWidget.COL_CATEGORY).text())
+        self.assertIn("静力分析结果文件", doc_widget._category_filter_options)
+
+    def test_single_model_row_upload_confirms_overwrite(self) -> None:
+        widget = ModelFilesDocsWidget()
+        self.addCleanup(widget.deleteLater)
+        widget.current_leaf_key = "当前模型/静力"
+        tasks = []
+
+        with patch("pages.model_files_page.QFileDialog.getOpenFileName", return_value=(r"D:\demo\sacinp", "")), patch.object(
+            widget,
+            "_confirm_overwrite_single_model_file",
+            return_value=True,
+        ) as confirm, patch.object(widget, "_start_model_upload_worker", side_effect=tasks.append):
+            widget._handle_model_doc_upload(
+                0,
+                {"category": "结构模型文件", "record_id": 12, "logical_path": "WC19-1D/当前模型/结构模型"},
+                [{"category": "结构模型文件", "record_id": 12}],
+            )
+
+        confirm.assert_called_once_with("结构模型文件")
+        self.assertEqual(1, len(tasks))
+        self.assertEqual(12, tasks[0]["delete_record_id"])
+
+    def test_single_model_row_upload_cancel_skips_upload(self) -> None:
+        widget = ModelFilesDocsWidget()
+        self.addCleanup(widget.deleteLater)
+        widget.current_leaf_key = "当前模型/静力"
+        tasks = []
+
+        with patch("pages.model_files_page.QFileDialog.getOpenFileName", return_value=(r"D:\demo\sacinp", "")), patch.object(
+            widget,
+            "_confirm_overwrite_single_model_file",
+            return_value=False,
+        ), patch.object(widget, "_start_model_upload_worker", side_effect=tasks.append):
+            widget._handle_model_doc_upload(
+                0,
+                {"category": "结构模型文件", "record_id": 12, "logical_path": "WC19-1D/当前模型/结构模型"},
+                [{"category": "结构模型文件", "record_id": 12}],
+            )
+
+        self.assertEqual([], tasks)
+
+    def test_single_model_new_upload_confirms_existing_category(self) -> None:
+        widget = ModelFilesDocsWidget()
+        self.addCleanup(widget.deleteLater)
+        widget.current_leaf_key = "当前模型/静力"
+        widget.facility_code = "WC19-1D"
+        widget.doc_man_configs = {widget.current_leaf_key: ["结构模型文件"]}
+        tasks = []
+
+        with patch("pages.model_files_page.QDialog.exec_", return_value=QDialog.Accepted), patch(
+            "pages.model_files_page.QFileDialog.getOpenFileName",
+            return_value=(r"D:\demo\sacinp", ""),
+        ), patch.object(
+            widget,
+            "_confirm_overwrite_single_model_file",
+            return_value=True,
+        ) as confirm, patch.object(widget, "_start_model_upload_worker", side_effect=tasks.append):
+            widget._handle_model_doc_new_upload([{"category": "结构模型文件", "record_id": 12}])
+
+        confirm.assert_called_once_with("结构模型文件")
+        self.assertEqual(1, len(tasks))
+        self.assertEqual(12, tasks[0]["delete_record_id"])
+
+    def test_multi_model_category_upload_does_not_confirm_overwrite(self) -> None:
+        widget = ModelFilesDocsWidget()
+        self.addCleanup(widget.deleteLater)
+        widget.current_leaf_key = "当前模型/疲劳"
+        tasks = []
+
+        with patch("pages.model_files_page.QFileDialog.getOpenFileName", return_value=(r"D:\demo\ftglst", "")), patch.object(
+            widget,
+            "_confirm_overwrite_single_model_file",
+        ) as confirm, patch.object(widget, "_start_model_upload_worker", side_effect=tasks.append):
+            widget._handle_model_doc_upload(
+                0,
+                {"category": "疲劳分析结果文件", "record_id": 12, "logical_path": "WC19-1D/当前模型/疲劳分析/结果"},
+                [{"category": "疲劳分析结果文件", "record_id": 12}],
+            )
+
+        confirm.assert_not_called()
+        self.assertEqual(1, len(tasks))
+        self.assertIsNone(tasks[0]["delete_record_id"])
+
+
+class ImportantHistoryDetailWidgetSmokeTests(GuiSmokeBase):
+    def test_rebuild_doc_context_enables_category_and_discipline_filters(self) -> None:
+        with patch("pages.important_history_rebuild_info_page.list_rebuild_directories", return_value=[]), patch(
+            "pages.important_history_rebuild_info_page.list_inspection_projects",
+            return_value=[],
+        ):
+            widget = ImportantHistoryDetailWidget()
+        self.addCleanup(widget.deleteLater)
+
+        widget._refresh_doc_man(
+            {
+                "id": 1,
+                "name": "改造项目",
+                "year": "2024",
+                "conclusion": "",
+            }
+        )
+
+        doc_widget = widget.doc_man_widget
+        self.assertEqual("专业 ▼", doc_widget.table.horizontalHeaderItem(DocManWidget.COL_MTIME).text())
+        self.assertEqual("类别 ▼", doc_widget.table.horizontalHeaderItem(DocManWidget.COL_CATEGORY).text())
 
 
 class DocManWidgetSmokeTests(GuiSmokeBase):

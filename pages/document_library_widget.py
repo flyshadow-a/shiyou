@@ -302,6 +302,8 @@ class DocumentLibraryWidget(QFrame):
             display_path_segments=display_path_segments,
             path_hint=hint,
             upload_path_resolver=self._upload_path_resolver,
+            enable_category_filter=display_profile == "design",
+            enable_discipline_filter=display_profile == "design",
         )
         self._current_context_signature = signature
         self.navigationStateChanged.emit(True)

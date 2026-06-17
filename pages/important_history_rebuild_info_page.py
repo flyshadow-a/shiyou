@@ -1068,6 +1068,8 @@ class ImportantHistoryDetailWidget(QWidget):
             upload_path_resolver=self._resolve_rebuild_upload_target,
             context_project_name=self._project_display_name(project),
             rebuild_project_labels=self._rebuild_project_label_map(),
+            enable_category_filter=True,
+            enable_discipline_filter=True,
         )
 
     def _project_for_upload(self, item: dict, current_path: list[str]) -> dict | None:
@@ -1155,6 +1157,8 @@ class ImportantHistoryDetailWidget(QWidget):
             rebuild_project_labels=self._rebuild_project_label_map(),
             document_code_query=code,
             document_title_query=name,
+            enable_category_filter=True,
+            enable_discipline_filter=True,
         )
 
     @staticmethod

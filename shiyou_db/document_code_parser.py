@@ -170,6 +170,8 @@ DOCUMENT_CODE_RE = re.compile(
     re.IGNORECASE,
 )
 
+DOCUMENT_TITLE_SEPARATOR_RE = re.compile(r"^[\s\-_]+|[\s\-_]+$")
+
 
 def _resolve_unit_name(unit_code: str) -> str:
     if unit_code in UNIT_MAP:
@@ -219,7 +221,7 @@ def parse_document_code_from_name(filename: str) -> dict[str, Any]:
     sub = match.group("sub") or ""
     code_raw = stem[match.start() : match.end()]
     code = re.sub(r"_", "-", code_raw)
-    title = stem.replace(code_raw, "").strip(" -_（）()")
+    title = DOCUMENT_TITLE_SEPARATOR_RE.sub("", stem.replace(code_raw, ""))
 
     status = "recognized"
     notes: list[str] = []
