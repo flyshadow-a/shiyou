@@ -106,42 +106,170 @@ def read_lines_with_fallback(file_path: str) -> List[str]:
         return f.readlines()
 
 
+
+
+def _format_preview_model_display_path(path_text: object) -> str:
+    """结构模型预览右上角路径显示用。
+
+    实际解析和绘图仍然使用完整路径；界面上把“结构模型文件”
+    之前的全部路径替换成 ...，例如：
+        ...\结构模型文件\sacinp.JK260318
+
+    鼠标悬停仍显示完整真实路径。
+    """
+    text = str(path_text or "").strip()
+    if not text:
+        return ""
+
+    norm_text = os.path.normpath(text)
+    parts = [part for part in norm_text.replace("/", "\\").split("\\") if part]
+    if not parts:
+        return ""
+
+    for idx, part in enumerate(parts):
+        if part == "结构模型文件":
+            return "...\\" + "\\".join(parts[idx:])
+
+    for idx, part in enumerate(parts):
+        if part.lower() in {"structure_model_file", "structure_model_files"}:
+            return "...\\" + "\\".join(parts[idx:])
+
+    file_name = os.path.basename(norm_text).strip()
+    if file_name:
+        return f"...\\{file_name}"
+    return "..."
+
+
+def _format_level_display_text(value: object) -> str:
+    """水平层高程显示：从模型读取实际值后保留 1 位小数，不补 0。"""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:
+        number = round(float(text), 1)
+    except Exception:
+        return text
+    return f"{number:.1f}".rstrip("0").rstrip(".")
+
+
+def _normalize_level_value(value: object) -> float:
+    """水平层高程统一保留 1 位小数用于显示、传递和保存。"""
+    return round(float(value), 1)
+
+
+def _sacs_float_for_strength(text: str, default: float = 0.0) -> float:
+    value = str(text or "").strip()
+    if not value:
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _parse_strength_sacs_group_od(line: str):
+    text = str(line or "")
+    if not text.startswith("GRUP"):
+        return None
+
+    gid = text[5:8].strip()
+    if not gid:
+        return None
+
+    od = _sacs_float_for_strength(text[14:24], 0.0)
+    return gid, od
+
+
+def _parse_strength_sacs_joint_line(line: str):
+    """
+    解析 SACS JOINT 固定列。
+
+    坐标读取与 SACS 导入逻辑保持一致：
+        X = Mid(line, 12, 7) + Mid(line, 33, 7) / 100
+        Y = Mid(line, 19, 7) + Mid(line, 40, 7) / 100
+        Z = Mid(line, 26, 7) + Mid(line, 47, 7) / 100
+
+    这样水平层高程会从模型文件的实际节点坐标读取，保留小数部分，
+    不再只读取主坐标字段导致整数化。
+    """
+    text = str(line or "")
+    if not text.startswith("JOINT"):
+        return None
+
+    upper = text.upper()
+    if upper.startswith("JOINT OFFSETS"):
+        return None
+
+    nid = text[6:10].strip()
+    if not nid:
+        return None
+
+    x = _sacs_float_for_strength(text[11:18], 0.0)
+    y = _sacs_float_for_strength(text[18:25], 0.0)
+    z = _sacs_float_for_strength(text[25:32], 0.0)
+
+    # SACS 后续字段为 cm 偏移，需要 /100 加回主坐标。
+    x += _sacs_float_for_strength(text[32:39], 0.0) / 100.0
+    y += _sacs_float_for_strength(text[39:46], 0.0) / 100.0
+    z += _sacs_float_for_strength(text[46:53], 0.0) / 100.0
+
+    return nid, x, y, z
+
+
+def _parse_strength_sacs_member_line(line: str):
+    """解析 SACS MEMBER 固定列，跳过 MEMBER OFFSETS 和 MEMB2 行。"""
+    text = str(line or "")
+    upper = text.upper()
+
+    if upper.startswith("MEMBER OFFSETS"):
+        return None
+    if upper.startswith("MEMB2"):
+        return None
+    if not upper.startswith("MEMBER"):
+        return None
+
+    joint_a = text[7:11].strip()
+    joint_b = text[11:15].strip()
+    group_id = text[16:19].strip()
+
+    if joint_a and joint_b:
+        return joint_a, joint_b, group_id
+
+    return None
+
+
 def parse_sacs_full_robust_file(filepath: str) -> tuple[dict[str, list[float]], list[tuple[str, str, str]], dict[str, float]]:
+    """
+    解析结构强度页面右侧预览使用的 SACS 模型文件。
+
+    注意：这里不能只读取 JOINT 主坐标字段，还必须读取后续 cm 偏移字段，
+    否则水平层高程会丢失小数部分，导致页面和快速评估表头仍显示整数。
+    """
     nodes: dict[str, list[float]] = {}
     members: list[tuple[str, str, str]] = []
     groups_od: dict[str, float] = {}
 
     for line in read_lines_with_fallback(filepath):
-        if line.startswith("GRUP"):
-            gid = line[5:8].strip()
-            try:
-                od_str = line[14:24].strip()
-                od = float(od_str) if od_str else 0.0
-                groups_od[gid] = od
-            except Exception:
-                groups_od[gid] = 0.0
+        group = _parse_strength_sacs_group_od(line)
+        if group is not None:
+            gid, od = group
+            groups_od[gid] = od
+            continue
 
-        elif line.startswith("JOINT"):
-            try:
-                nid = line[6:10].strip()
-                x = float(line[11:18].strip())
-                y = float(line[18:25].strip())
-                z = float(line[25:32].strip())
-                nodes[nid] = [x, y, z]
-            except Exception:
-                continue
+        joint = _parse_strength_sacs_joint_line(line)
+        if joint is not None:
+            nid, x, y, z = joint
+            nodes[nid] = [x, y, z]
+            continue
 
-        elif line.startswith("MEMBER"):
-            try:
-                na = line[7:11].strip()
-                nb = line[11:15].strip()
-                gid = line[15:18].strip()
-                members.append((na, nb, gid))
-            except Exception:
-                continue
+        member = _parse_strength_sacs_member_line(line)
+        if member is not None:
+            members.append(member)
+            continue
 
     return nodes, members, groups_od
-
 
 def classify_sacs_model_joints(
     nodes: dict[str, list[float]],
@@ -280,16 +408,8 @@ def _query_model_file_rows_for_preview(facility_code: str, prefixes: list[str]) 
         except Exception:
             current_rows = []
 
-        if not current_rows:
-            try:
-                current_rows = list_files_by_prefix(
-                    module_code="model_files",
-                    logical_path_prefix=prefix,
-                    facility_code=None,
-                )
-            except Exception:
-                current_rows = []
-
+        # 与“模型文件”页面保持一致：只读取当前平台 model_files 记录；
+        # 不再空平台兜底，不再扫描本地目录，不再下载 .client_cache。
         for row in current_rows:
             row_id = row.get("id")
             sig = row_id if row_id is not None else (
@@ -306,6 +426,7 @@ def _query_model_file_rows_for_preview(facility_code: str, prefixes: list[str]) 
 
 
 def _find_current_model_file_from_db_for_preview(facility_code: str) -> str:
+    """只从【模型文件 -> 当前模型 -> 静力/结构模型】读取当前平台 sacinp。"""
     code = (facility_code or "").strip()
     if not code:
         return ""
@@ -313,48 +434,44 @@ def _find_current_model_file_from_db_for_preview(facility_code: str) -> str:
     prefixes = [
         f"{code}/当前模型/结构模型",
         f"{code}/当前模型/结构模型/用户上传",
+        f"{code}/当前模型/静力",
+        f"{code}/当前模型/静力/结果",
+        f"{code}/当前模型/静力/结果/自动计算",
     ]
 
-    candidates: list[tuple[int, float, str]] = []
+    candidates: list[tuple[float, str]] = []
     for row in _query_model_file_rows_for_preview(code, prefixes):
         path = _model_row_storage_path(row)
         if not path:
             continue
 
-        name = os.path.basename(path)
-        name_score = _sacinp_name_score_for_preview(name)
-        if name_score <= 0:
+        display_name = str(
+            row.get("original_name")
+            or row.get("file_name")
+            or row.get("filename")
+            or row.get("name")
+            or row.get("stored_name")
+            or os.path.basename(path)
+            or ""
+        ).strip().lower()
+        path_name = os.path.basename(path).lower()
+        logical = _model_row_logical_path(row)
+        logical_low = logical.lower()
+
+        if display_name.startswith("seainp") or path_name.startswith("seainp") or "海况" in logical:
             continue
-        if name.lower().startswith("seainp"):
+        if not (display_name.startswith("sacinp") or path_name.startswith("sacinp") or display_name.endswith(".sacinp") or path_name.endswith(".sacinp")):
             continue
         if not _file_has_model_signature_for_preview(path):
             continue
 
-        logical = _model_row_logical_path(row)
-        path_low = path.lower()
-        score = name_score
-        if "当前模型" in logical:
-            score += 300
-        if "结构模型" in logical:
-            score += 220
-        if "用户上传" in logical:
-            score += 50
-        if "海况" in logical:
-            score -= 500
-        if code.lower() in path_low:
-            score += 80
-        if path_low.endswith("sacinp.jknew"):
-            score += 800
-        if path_low.endswith("sacinp.m1"):
-            score -= 600
-
-        candidates.append((score, _model_db_row_time(row), path))
+        candidates.append((_model_db_row_time(row), path))
 
     if not candidates:
         return ""
 
-    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return candidates[0][2]
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
 
 
 def _find_best_inp_file_for_preview(facility_code: str, model_files_root: str, upload_dir: str) -> str:
@@ -465,36 +582,11 @@ def _download_latest_model_from_server_for_preview(
 
 
 def resolve_model_preview_file(payload: dict[str, Any]) -> str:
+    """结构模型预览只读取“模型文件”数据库中当前平台当前模型的 sacinp。"""
     facility_code = str(payload.get("facility_code") or "").strip()
     if not facility_code:
         return ""
-
-    if bool(payload.get("allow_remote", True)):
-        remote_model = _download_latest_model_from_server_for_preview(
-            facility_code,
-            force=bool(payload.get("force_remote")),
-            cached_path=str(payload.get("cached_remote_model_path") or ""),
-        )
-        if remote_model:
-            return remote_model
-
-    db_model = _find_current_model_file_from_db_for_preview(facility_code)
-    if db_model:
-        return db_model
-
-    runtime_dir = os.path.normpath(get_job_runtime_dir(facility_code))
-    for candidate in (
-        os.path.join(runtime_dir, "sacinp.JKnew"),
-        os.path.join(runtime_dir, "sacinp.M1"),
-    ):
-        if os.path.exists(candidate):
-            return candidate
-
-    return _find_best_inp_file_for_preview(
-        facility_code,
-        str(payload.get("model_files_root") or "").strip(),
-        str(payload.get("upload_dir") or "").strip(),
-    )
+    return _find_current_model_file_from_db_for_preview(facility_code)
 
 
 def load_model_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1338,6 +1430,9 @@ class PlatformStrengthPage(BasePage):
             return text
         return f"{number:.3f}".rstrip("0").rstrip(".")
 
+    def _format_level_number(self, value: object) -> str:
+        return _format_level_display_text(value)
+
     def _set_table_text(self, table: QTableWidget, row: int, col: int, text: str):
         item = table.item(row, col)
         if item is None:
@@ -1614,9 +1709,9 @@ class PlatformStrengthPage(BasePage):
             "target_z": float(target_z or 9.1),
             "model_files_root": self.model_files_root,
             "upload_dir": self.upload_dir,
-            "force_remote": bool(force_remote),
-            "allow_remote": True,
-            "cached_remote_model_path": self._remote_model_file_cache.get(code, ""),
+            "force_remote": False,
+            "allow_remote": False,
+            "cached_remote_model_path": "",
         }
         thread = QThread(self)
         worker = ModelPreviewLoadWorker(payload)
@@ -1687,7 +1782,16 @@ class PlatformStrengthPage(BasePage):
             if code and path:
                 self._remote_model_file_cache[code] = path
             self._reset_model_preview_pan_controls()
-            self.inp_path_label.setText(f"当前模型文件：{payload.get('path') or ''}")
+            display_path = _format_preview_model_display_path(path)
+            self.inp_path_label.setText(f"当前模型文件：{display_path}")
+            self.inp_path_label.setToolTip(path)
+
+            # 当前右侧模型已经成功解析后，水平层高程直接从模型节点重新计算，
+            # 显示和后续快速评估都使用模型文件中的实际高程值。
+            model_levels = self._compute_horizontal_levels_by_threshold(self._get_level_threshold())
+            if model_levels:
+                self._horizontal_levels = model_levels
+                self._refresh_layers_table()
 
             mud_level = payload.get("mud_level")
             if mud_level and hasattr(self, "edt_mud_level"):
@@ -2675,7 +2779,7 @@ class PlatformStrengthPage(BasePage):
             edit_table.setHorizontalHeaderLabels(["编号"] + [str(i) for i in range(1, col_count)])
             self._set_center_item(edit_table, 0, 0, "Z(m)", editable=False)
             for i, (z, _occ, _selected) in enumerate(levels, start=1):
-                z_text = f"{float(z):.3f}".rstrip("0").rstrip(".")
+                z_text = self._format_level_number(z)
                 self._set_center_item(edit_table, 0, i, z_text, editable=True)
             edit_table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
             edit_table.setColumnWidth(0, 96)
@@ -2688,14 +2792,14 @@ class PlatformStrengthPage(BasePage):
         else:
             fill_table([])
 
-        auto_node_counts: dict[float, int] = {round(float(z), 3): int(occ or 0) for z, occ, _ in current_levels}
+        auto_node_counts: dict[float, int] = {_normalize_level_value(z): int(occ or 0) for z, occ, _ in current_levels}
 
         def auto_update():
             nonlocal auto_node_counts
             threshold = self._safe_int(edit_threshold.text(), 40)
             edit_threshold.setText(str(threshold))
             levels = self._compute_horizontal_levels_by_threshold(threshold)
-            auto_node_counts = {round(float(z), 3): int(occ or 0) for z, occ, _ in levels}
+            auto_node_counts = {_normalize_level_value(z): int(occ or 0) for z, occ, _ in levels}
             fill_table(levels)
 
         def add_column():
@@ -2745,7 +2849,8 @@ class PlatformStrengthPage(BasePage):
                 except Exception:
                     QMessageBox.warning(dialog, "格式错误", f"第 {c} 列 Z(m) 不是有效数字：{raw}")
                     return
-                key = round(z, 3)
+                key = _normalize_level_value(z)
+                z = key
                 if key in seen:
                     continue
                 seen.add(key)
@@ -3010,39 +3115,15 @@ class PlatformStrengthPage(BasePage):
         return ""
 
     def _get_shared_current_model_file(self, facility_code: str, force_remote: bool = False) -> str:
+        """当前模型只从【模型文件】数据库记录中读取，不做远程下载或运行目录兜底。"""
         code = (facility_code or "").strip()
         if not code:
             return ""
-
-        # 1) C/S 新流程：优先从 FastAPI 服务端下载。
-        #    服务端通过 MySQL 文件记录和 storage_root 定位真实 sacinp，
-        #    客户端只使用下载后的 .client_cache 本地路径。
-        remote_model = self._download_latest_model_from_server(code, force=force_remote)
-        if remote_model:
-            return remote_model
-
-        # 2) 兼容本机单机/旧流程：如果客户端刚好能访问数据库中的 storage_path，继续可用。
-        db_model = self._find_current_model_file_from_db(code)
-        if db_model:
-            return db_model
-
-        # 3) 兜底：只查新流程运行目录，不再查旧 sacs_jobs/<平台>/source。
-        runtime_dir = os.path.normpath(get_job_runtime_dir(code))
-        candidates = [
-            os.path.join(runtime_dir, "sacinp.JKnew"),
-            os.path.join(runtime_dir, "sacinp.M1"),
-        ]
-
-        for p in candidates:
-            if os.path.exists(p):
-                return p
-        return ""
+        return self._find_current_model_file_from_db(code)
 
     def _resolve_current_preview_model_file(self, facility_code: str, force_remote: bool = False) -> str:
-        shared = self._get_shared_current_model_file(facility_code, force_remote=force_remote)
-        if shared:
-            return shared
-        return self._find_best_inp_file(facility_code)
+        """右侧预览和快速评估统一使用模型文件目录中的当前 sacinp。"""
+        return self._get_shared_current_model_file(facility_code, force_remote=False)
 
     def _find_matching_sea_file(self, model_path: str, facility_code: str = "") -> Optional[str]:
         code = (facility_code or "").strip()
@@ -3103,8 +3184,24 @@ class PlatformStrengthPage(BasePage):
         return job_name
 
     def _compute_horizontal_levels_by_threshold(self, threshold: int) -> List[Tuple[float, int, bool]]:
-        """根据模型节点和阈值自动计算水平层高程。"""
+        """根据当前模型文件节点和阈值自动计算水平层高程。
+
+        高程来自当前 sacinp 模型文件的 JOINT Z 坐标，统一保留 1 位小数，
+        不再按整数显示或传递。
+        """
         nodes = getattr(self.inp_view, "_nodes", {}) if hasattr(self, "inp_view") else {}
+
+        # 如果右侧预览节点尚未加载，直接从“模型文件”目录中的当前 sacinp 重新解析。
+        if not nodes:
+            try:
+                facility_code = self._get_top_value("facility_code")
+                model_path = self._resolve_current_preview_model_file(facility_code)
+                if model_path:
+                    nodes, _members, _groups_od = parse_sacs_full_robust_file(model_path)
+            except Exception as exc:
+                print("[PlatformStrengthPage] recompute horizontal levels from model failed:", exc)
+                nodes = {}
+
         if not nodes:
             return []
 
@@ -3116,7 +3213,10 @@ class PlatformStrengthPage(BasePage):
             z = coord[2]
             if z is None:
                 continue
-            z_key = round(float(z), 3)
+            try:
+                z_key = _normalize_level_value(z)
+            except Exception:
+                continue
             counter[z_key] += 1
 
         levels = [(z, occ, True) for z, occ in counter.items() if occ > threshold]
@@ -3164,7 +3264,7 @@ class PlatformStrengthPage(BasePage):
             self._set_center_item(self.tbl_layers, 0, c, "")
 
         for i, (z, _occ, _selected) in enumerate(levels, start=1):
-            z_text = f"{float(z):.3f}".rstrip("0").rstrip(".")
+            z_text = self._format_level_number(z)
             self._set_center_item(self.tbl_layers, 0, i, z_text, editable=False)
 
         self.tbl_layers.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
@@ -3246,15 +3346,27 @@ class PlatformStrengthPage(BasePage):
         facility_code = self._get_top_value("facility_code") or "XXXX"
         title = f"{facility_code}平台强度/改造可行性评估"
 
+        # 当前模型文件
+        model_path = self._resolve_current_preview_model_file(facility_code)
+        if model_path:
+            try:
+                # 快速评估打开前，重新从模型文件节点读取水平层高程，
+                # 防止使用数据库中旧的整数化高程。
+                model_levels = self._compute_horizontal_levels_by_threshold(self._get_level_threshold())
+                if model_levels:
+                    self._horizontal_levels = model_levels
+                    self._refresh_layers_table()
+            except Exception as exc:
+                print("[PlatformStrengthPage] refresh levels before quick assessment failed:", exc)
+
         # 当前页面动态水平层高程
         levels = self._compute_horizontal_levels()
-        elevations = [z for z, occ, selected in levels]
+        elevations = [_normalize_level_value(z) for z, occ, selected in levels]
 
         if not elevations:
             elevations = [27, 23, 18, 7, -12, -34, -58]
 
         # 当前模型文件
-        model_path = self._resolve_current_preview_model_file(facility_code)
         if not model_path:
             QMessageBox.warning(self, "提示", "未找到当前设施对应的 sacinp 模型文件，无法打开评估页。")
             return

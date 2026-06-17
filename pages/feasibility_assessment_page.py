@@ -266,6 +266,8 @@ class FeasibilityAssessmentPage(BasePage):
         self._model_user_export_dir = ""
         # 记录最近一次计算对象：original / rebuild。用于控制导出内容，避免原模型计算后误导出旧 M1。
         self._last_analysis_mode = ""
+        # 本页面本次会话是否已经完成“计算分析”。未计算完成前不允许导出结果文件。
+        self._analysis_completed_in_session = False
 
         self._build_ui()
         self._refresh_runtime_paths_from_disk()
@@ -1557,6 +1559,7 @@ class FeasibilityAssessmentPage(BasePage):
             self._save_topside_weights_to_db()
 
             self._input_data_saved = True
+            self._analysis_completed_in_session = False
             self._lock_input_tables_after_save()
 
             if has_input_data:
@@ -1698,6 +1701,7 @@ class FeasibilityAssessmentPage(BasePage):
         new_sea_file = str(export_info.get("new_sea_file") or result.get("new_sea_file") or "").strip()
 
         self._model_created_in_session = True
+        self._analysis_completed_in_session = False
         self._last_analysis_mode = "rebuild"
 
         try:
@@ -1980,10 +1984,19 @@ class FeasibilityAssessmentPage(BasePage):
     def _on_export_generated_files(self):
         """服务端模式：服务端打包 M1/SEA/结果文件，客户端下载解压到用户选择目录。"""
         try:
+            if not getattr(self, "_analysis_completed_in_session", False):
+                QMessageBox.warning(
+                    self,
+                    "请先计算",
+                    "当前还没有完成计算分析，不能导出结果文件。\n"
+                    "请先点击“计算分析”，等待计算完成后再导出。",
+                )
+                return
+
             default_dir = getattr(self, "_model_user_export_dir", "") or os.path.expanduser("~")
             user_export_dir = QFileDialog.getExistingDirectory(
                 self,
-                "选择 M1 文件和结果文件导出目录",
+                "选择结构强度评估文件导出目录",
                 default_dir,
                 QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
             )
@@ -2043,6 +2056,10 @@ class FeasibilityAssessmentPage(BasePage):
             "",
             "【导出目录】",
             os.path.normpath(getattr(self, "_model_user_export_dir", "") or ""),
+            "",
+            "【导出名称】",
+            f"{self.facility_code}_结构强度评估文件.zip",
+            f"{self.facility_code}_结构强度评估文件",
             "",
             "【已导出文件】",
         ]
@@ -2362,9 +2379,11 @@ class FeasibilityAssessmentPage(BasePage):
 
             analysis_mode = "rebuild"
             self._last_analysis_mode = analysis_mode
+            self._analysis_completed_in_session = False
         except Exception:
             analysis_mode = "rebuild"
             self._last_analysis_mode = analysis_mode
+            self._analysis_completed_in_session = False
 
         self.btn_run.setEnabled(False)
         self.btn_run.setText("正在计算...")
@@ -2443,6 +2462,7 @@ class FeasibilityAssessmentPage(BasePage):
         self.current_bat_file = str(result.get("bat_path") or "").strip()
         self.current_runx_file = str(result.get("runx_path") or "").strip()
         self._last_analysis_mode = str(result.get("analysis_mode") or self._last_analysis_mode or "").strip()
+        self._analysis_completed_in_session = True
 
         mode_text = "原模型" if self._last_analysis_mode == "original" else "本次创建的新模型/改造后模型"
 
@@ -2466,6 +2486,7 @@ class FeasibilityAssessmentPage(BasePage):
     def _on_remote_analysis_failed(self, message: str):
         self.btn_run.setEnabled(True)
         self.btn_run.setText("计算分析")
+        self._analysis_completed_in_session = False
         QMessageBox.critical(self, "运行失败", f"计算失败：\n{message}")
 
     # def _on_view_result(self):
@@ -2578,10 +2599,19 @@ class FeasibilityAssessmentPage(BasePage):
 
 
     def _format_elevation_text(self, value) -> str:
+        """新增井槽/新增立管表头高程显示。
+
+        高程来自结构强度页传入的模型水平层，保留 1 位小数，
+        但不补 0：36.0 显示为 36，35.6 显示为 35.6。
+        """
+        text = str(value or "").strip()
+        if not text:
+            return ""
         try:
-            return f"{float(value):g}"
+            number = round(float(text), 1)
         except Exception:
-            return str(value or "")
+            return text
+        return f"{number:.1f}".rstrip("0").rstrip(".")
 
     def _cell_text(self, table: QTableWidget, row: int, col: int) -> str:
         it = table.item(row, col)

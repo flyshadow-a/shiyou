@@ -1115,6 +1115,8 @@ def run_feasibility_analysis(
     state = {
         "facility_code": code,
         "run_id": run_id,
+        "status": "success",
+        "analysis_completed": True,
         "analysis_mode": actual_mode,
         "work_dir": work_dir,
         "local_work_dir": work_dir,
@@ -1258,6 +1260,51 @@ def generate_feasibility_report(
     }
 
 
+def _safe_export_name_component(value: object, fallback: str = "UNKNOWN") -> str:
+    text = str(value or "").strip() or fallback
+    bad_chars = '<>:"/\\|?*\r\n\t'
+    for ch in bad_chars:
+        text = text.replace(ch, "_")
+    text = text.strip().strip(".")
+    return text or fallback
+
+
+def _feasibility_export_base_name(facility_code: str) -> str:
+    code = _safe_export_name_component(facility_code, "UNKNOWN")
+    return f"{code}_结构强度评估文件"
+
+
+def _analysis_state_is_success(state: dict[str, Any]) -> bool:
+    """只认最近一次成功计算写出的状态，不再按目录残留文件推断。"""
+    if not isinstance(state, dict) or not state:
+        return False
+    status = str(state.get("status") or "").strip().lower()
+    if status in {"success", "succeeded", "completed", "done"}:
+        return True
+    if state.get("analysis_completed") is True:
+        return True
+    return False
+
+
+def _first_existing_file(*paths: object) -> str:
+    for path in paths:
+        text = _norm(path)
+        if text and os.path.isfile(text):
+            return text
+    return ""
+
+
+def _add_export_file_once(files: list[str], seen_names: set[str], path: object) -> None:
+    text = _norm(path)
+    if not text or not os.path.isfile(text):
+        return
+    name_key = os.path.basename(text).lower()
+    if not name_key or name_key in seen_names:
+        return
+    seen_names.add(name_key)
+    files.append(text)
+
+
 def _collect_export_files(
     *,
     facility_code: str,
@@ -1265,59 +1312,53 @@ def _collect_export_files(
     include_model_files: bool,
     include_result_file: bool,
 ) -> list[str]:
-    code = str(facility_code or "").strip()
-    state = _load_latest_analysis_state(code)
-    work_dir = _norm(state.get("work_dir") or get_job_runtime_dir(code))
-    shared_work_dir = _norm(state.get("shared_work_dir") or state.get("base_work_dir") or get_job_runtime_dir(code))
+    """
+    导出文件必须来自最近一次成功“计算分析”的状态文件。
 
-    candidates: list[str] = []
+    之前这里会扫描 feasibility_assessment_runtime/<平台> 目录，只要旧的
+    psilst.M1 / sacinp.M1 残留存在，即使用户本次没有计算，也能导出旧结果。
+    现在只读取成功计算后写入的 feasibility_analysis_state.json，且只导出 state
+    中明确记录的文件路径。
+    """
+    code = str(facility_code or "").strip()
+    if not code:
+        raise ValueError("facility_code 不能为空，无法导出文件。")
+
+    state = _load_latest_analysis_state(code)
+    if not _analysis_state_is_success(state):
+        raise RuntimeError(
+            "当前还没有完成计算分析，不能导出结果文件。\n"
+            "请先点击“计算分析”，等待计算完成后再导出。"
+        )
+
+    files: list[str] = []
+    seen_names: set[str] = set()
 
     if include_model_files:
-        candidates.extend([
-            _norm(state.get("model_file")),
-            _norm(state.get("sea_file")),
-            _norm(state.get("psiinp_file")),
-            _norm(state.get("jcninp_file")),
-            _norm(state.get("shared_model_file")),
-            _norm(state.get("shared_sea_file")),
-            _norm(state.get("shared_psiinp_file")),
-            _norm(state.get("shared_jcninp_file")),
-            _norm(get_job_new_model_file(code)),
-            _norm(get_job_new_sea_file(code)),
-            os.path.join(work_dir, "sacinp.M1"),
-            os.path.join(work_dir, "seainp.M1"),
-            os.path.join(work_dir, "psiinp.M1"),
-            os.path.join(work_dir, "Jcninp.M1"),
-            os.path.join(shared_work_dir, "sacinp.M1"),
-            os.path.join(shared_work_dir, "seainp.M1"),
-            os.path.join(shared_work_dir, "psiinp.M1"),
-            os.path.join(shared_work_dir, "Jcninp.M1"),
-        ])
+        model_file = _first_existing_file(state.get("model_file"), state.get("shared_model_file"))
+        sea_file = _first_existing_file(state.get("sea_file"), state.get("shared_sea_file"))
+        psiinp_file = _first_existing_file(state.get("psiinp_file"), state.get("shared_psiinp_file"))
+        jcninp_file = _first_existing_file(state.get("jcninp_file"), state.get("shared_jcninp_file"))
+
+        for path in (model_file, sea_file, psiinp_file, jcninp_file):
+            _add_export_file_once(files, seen_names, path)
 
     if include_result_file:
-        candidates.append(os.path.join(work_dir, "psilst.M1"))
-        candidates.append(os.path.join(shared_work_dir, "psilst.M1"))
-        result_file = _norm(state.get("result_file")) if state else ""
-        shared_result_file = _norm(state.get("shared_result_file")) if state else ""
-        if not result_file or not os.path.isfile(result_file):
-            result_file = find_result_file(work_dir)
-        if result_file:
-            candidates.append(result_file)
-        if shared_result_file:
-            candidates.append(shared_result_file)
+        result_file = _first_existing_file(state.get("result_file"), state.get("shared_result_file"))
+        if not result_file:
+            raise RuntimeError(
+                "最近一次计算状态中没有找到有效结果文件 psilst.M1，不能导出。\n"
+                "请重新点击“计算分析”，等待计算完成后再导出。"
+            )
+        _add_export_file_once(files, seen_names, result_file)
 
-    existing: list[str] = []
-    seen: set[str] = set()
+    if not files:
+        raise FileNotFoundError(
+            "最近一次计算状态中没有找到可导出的文件。\n"
+            "请先完成计算分析后再导出。"
+        )
 
-    for path in candidates:
-        path = _norm(path)
-        if not path or path in seen:
-            continue
-        seen.add(path)
-        if os.path.isfile(path):
-            existing.append(path)
-
-    return existing
+    return files
 
 
 def export_feasibility_generated_files(
@@ -1335,12 +1376,15 @@ def export_feasibility_generated_files(
         include_result_file=include_result_file,
     )
 
-    if not files:
-        raise FileNotFoundError("当前没有找到可导出的 M1 文件或计算结果文件。")
-
     FEASIBILITY_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    zip_path = FEASIBILITY_EXPORT_DIR / f"{code}_{timestamp}_feasibility_outputs.zip"
+    export_base_name = _feasibility_export_base_name(code)
+    zip_path = FEASIBILITY_EXPORT_DIR / f"{export_base_name}.zip"
+
+    if zip_path.exists():
+        try:
+            zip_path.unlink()
+        except Exception:
+            pass
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for file_path in files:
@@ -1349,6 +1393,7 @@ def export_feasibility_generated_files(
     return {
         "facility_code": code,
         "analysis_mode": analysis_mode,
+        "export_base_name": export_base_name,
         "zip_path": str(zip_path),
         "zip_exists": zip_path.exists(),
         "files": files,

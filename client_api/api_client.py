@@ -15,6 +15,18 @@ from urllib.parse import unquote
 import requests
 
 
+def _safe_local_name_component(value: object, fallback: str = "UNKNOWN") -> str:
+    text = str(value or "").strip() or fallback
+    for ch in '<>:"/\\|?*\r\n\t':
+        text = text.replace(ch, "_")
+    text = text.strip().strip(".")
+    return text or fallback
+
+
+def _feasibility_export_base_name(facility_code: str) -> str:
+    return f"{_safe_local_name_component(facility_code, 'UNKNOWN')}_结构强度评估文件"
+
+
 def _project_root_dir() -> Path:
     # 当前文件位于 client_api/api_client.py 时，parents[1] 就是项目根目录。
     try:
@@ -711,7 +723,7 @@ class ApiClient:
         return self._download_file(
             f"/api/feasibility/files/tasks/{task_id}/download",
             local_output_path=local_output_path,
-            default_filename=f"feasibility_files_{task_id}.zip",
+            default_filename=Path(local_output_path).name if local_output_path else "结构强度评估文件.zip",
             timeout=max(self.timeout, 300),
         )
 
@@ -735,6 +747,10 @@ class ApiClient:
         output_dir = Path(local_output_dir).expanduser()
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        export_base_name = _feasibility_export_base_name(facility_code)
+        zip_output_path = output_dir / f"{export_base_name}.zip"
+        extract_dir = output_dir / export_base_name
+
         task_id = self.export_feasibility_files(
             facility_code=facility_code,
             analysis_mode=analysis_mode,
@@ -745,10 +761,13 @@ class ApiClient:
         if str(task.get("status") or "").lower() != "success":
             raise RuntimeError(str(task.get("error") or task.get("message") or "服务端导出文件失败"))
 
-        zip_path = self.download_feasibility_export_file(
-            task_id,
-            output_dir / f"feasibility_files_{task_id}.zip",
-        )
+        if zip_output_path.exists():
+            try:
+                zip_output_path.unlink()
+            except Exception:
+                pass
+
+        zip_path = self.download_feasibility_export_file(task_id, zip_output_path)
         zip_path_obj = Path(zip_path)
         if not zip_path_obj.exists():
             raise FileNotFoundError(f"服务端导出文件下载失败：{zip_path}")
@@ -756,8 +775,7 @@ class ApiClient:
         if not zipfile.is_zipfile(zip_path_obj):
             return [str(zip_path_obj)]
 
-        # 清理旧解压目录，避免 stale 文件干扰本次结果。
-        extract_dir = output_dir / f"extract_{task_id}"
+        # 固定业务目录名，避免 extract_<task_id> 这种随机目录。
         if extract_dir.exists():
             shutil.rmtree(extract_dir, ignore_errors=True)
         extract_dir.mkdir(parents=True, exist_ok=True)
@@ -765,12 +783,14 @@ class ApiClient:
         with zipfile.ZipFile(zip_path_obj, "r") as zf:
             zf.extractall(extract_dir)
 
+        exported: list[str] = [str(zip_path_obj)]
         extracted: list[str] = []
         for path in extract_dir.rglob("*"):
             if path.is_file():
                 extracted.append(str(path))
         extracted.sort()
-        return extracted
+        exported.extend(extracted)
+        return exported
 
     # =========================
     # 可行性评估：报告生成/下载
