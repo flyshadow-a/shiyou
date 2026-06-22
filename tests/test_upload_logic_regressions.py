@@ -71,6 +71,17 @@ class UploadLogicRegressionTests(unittest.TestCase):
             with self.subTest(snippet=snippet):
                 self.assertIn(snippet, text)
 
+    def test_model_files_upload_uses_classifier_and_multiselect(self) -> None:
+        text = (REPO_ROOT / "pages/model_files_page.py").read_text(encoding="utf-8")
+        for snippet in (
+            "classify_model_file_name",
+            "is_single_current_model_code",
+            "QFileDialog.getOpenFileNames",
+            "_start_model_upload_worker(tasks)",
+        ):
+            with self.subTest(snippet=snippet):
+                self.assertIn(snippet, text)
+
     def test_runtime_only_overrides_complete_fatigue_groups(self) -> None:
         text = (REPO_ROOT / "services" / "special_strategy_runtime.py").read_text(encoding="utf-8")
         for snippet in (

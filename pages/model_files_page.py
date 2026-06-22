@@ -12,8 +12,8 @@ from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QSizePolicy, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QScrollArea, QStackedWidget, QMessageBox, QFileDialog, QWidget,
-    QPushButton, QTreeWidget, QTreeWidgetItem, QComboBox, QDialog,
-    QDialogButtonBox, QFormLayout, QProgressDialog,
+    QPushButton, QTreeWidget, QTreeWidgetItem, QProgressDialog,
+    QDialog, QDialogButtonBox,
 )
 
 from core.base_page import BasePage
@@ -21,6 +21,10 @@ from core.file_name_utils import (
     normalize_download_save_path,
     sanitize_download_filename,
     unique_download_target_path,
+)
+from core.model_file_classifier import (
+    classify_model_file_name,
+    is_single_current_model_code,
 )
 from .file_management_platforms import (
     apply_platform_defaults_to_fields,
@@ -128,40 +132,63 @@ class _ModelFileUploadWorker(QObject):
     finished = pyqtSignal(int, object)
     failed = pyqtSignal(int, str)
 
-    def __init__(self, *, token: int, task: dict):
+    def __init__(self, *, token: int, tasks: list[dict]):
         super().__init__()
         self._token = int(token)
-        self._task = dict(task)
+        self._tasks = [dict(task) for task in tasks]
         self._cancelled = False
 
     def cancel(self) -> None:
         self._cancelled = True
 
     def run(self) -> None:
+        results: list[dict] = []
+        ok_count = 0
+        first_error = ""
+        canceled = False
+        total = len(self._tasks)
         try:
-            if self._cancelled:
-                self.finished.emit(self._token, {"canceled": True})
-                return
-            file_path = str(self._task.get("file_path") or "").strip()
-            self.progress.emit(0, f"正在上传：{os.path.basename(file_path)}")
-            delete_record_id = self._task.get("delete_record_id")
-            if delete_record_id is not None:
-                hard_delete_record(int(delete_record_id))
-            result = upload_file(
-                file_path,
-                file_type_code=str(self._task.get("file_type_code") or "model"),
-                module_code="model_files",
-                logical_path=str(self._task.get("logical_path") or ""),
-                facility_code=str(self._task.get("facility_code") or "").strip() or None,
-                category_name=str(self._task.get("category") or "").strip(),
-                work_condition=str(self._task.get("work_condition") or ""),
-                remark=str(self._task.get("remark") or ""),
-            )
-            self.progress.emit(1, "上传完成")
+            for index, task in enumerate(self._tasks, start=1):
+                if self._cancelled:
+                    canceled = True
+                    break
+                file_path = str(task.get("file_path") or "").strip()
+                self.progress.emit(index - 1, f"正在上传 {index}/{total}：{os.path.basename(file_path)}")
+                try:
+                    delete_record_ids = list(task.get("delete_record_ids") or [])
+                    if task.get("delete_record_id") is not None:
+                        delete_record_ids.append(task.get("delete_record_id"))
+                    for record_id in delete_record_ids:
+                        hard_delete_record(int(record_id))
+                    result = upload_file(
+                        file_path,
+                        file_type_code=str(task.get("file_type_code") or "model"),
+                        module_code="model_files",
+                        logical_path=str(task.get("logical_path") or ""),
+                        facility_code=str(task.get("facility_code") or "").strip() or None,
+                        category_name=str(task.get("category") or "").strip(),
+                        work_condition=str(task.get("work_condition") or ""),
+                        remark=str(task.get("remark") or ""),
+                    )
+                    results.append({"task": task, "result": result})
+                    ok_count += 1
+                except Exception as exc:
+                    if not first_error:
+                        first_error = str(exc)
+                self.progress.emit(index, f"已完成 {index}/{total}")
         except Exception as exc:
             self.failed.emit(self._token, str(exc))
             return
-        self.finished.emit(self._token, {"task": self._task, "result": result, "canceled": False})
+        self.finished.emit(
+            self._token,
+            {
+                "results": results,
+                "ok_count": ok_count,
+                "first_error": first_error,
+                "canceled": canceled,
+                "total": total,
+            },
+        )
 
 
 class _ModelFileDeleteWorker(QObject):
@@ -253,6 +280,127 @@ class _ModelFileDownloadWorker(QObject):
             self.failed.emit(self._token, str(exc))
             return
         self.finished.emit(self._token, {"downloaded": downloaded, "failures": failures, "canceled": self._cancelled})
+
+
+class ModelFileUploadStagingDialog(QDialog):
+    COL_INDEX = 0
+    COL_FILENAME = 1
+    COL_MODEL_TYPE = 2
+    COL_CATEGORY = 3
+    COL_METHOD = 4
+    COL_STATUS = 5
+
+    def __init__(self, *, default_category: str = "", current_model: bool = False, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("待上传模型文件")
+        self.resize(980, 480)
+        self._default_category = str(default_category or "").strip()
+        self._current_model = bool(current_model)
+        self._items: list[dict] = []
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        hint = QLabel("选择模型文件后，系统会按文件名前缀或后缀自动识别模型类型和上传分类。", self)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        action_row = QHBoxLayout()
+        action_row.addStretch()
+        self.btn_pick_files = QPushButton("选择文件", self)
+        self.btn_pick_files.clicked.connect(self._pick_files)
+        action_row.addWidget(self.btn_pick_files)
+        layout.addLayout(action_row)
+
+        self.table = QTableWidget(0, 6, self)
+        self.table.setHorizontalHeaderLabels(["序号", "文件名", "模型类型", "模型类别", "识别方法", "状态"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.verticalHeader().setDefaultSectionSize(34)
+        apply_docman_table_style(self.table)
+        layout.addWidget(self.table, 1)
+
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        self.buttons.button(QDialogButtonBox.Ok).setText("确认上传")
+        self.buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(False)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+
+    def _pick_files(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(self, "选择上传文件", "", "所有文件 (*.*)")
+        if paths:
+            self.add_file_paths(paths)
+
+    def add_file_paths(self, paths: List[str]) -> None:
+        seen = {str(item.get("path") or "") for item in self._items}
+        for path in paths:
+            file_path = str(path or "").strip()
+            if not file_path or file_path in seen:
+                continue
+            item = self._build_item(file_path)
+            self._items.append(item)
+            seen.add(file_path)
+        self._refresh_table()
+
+    def _build_item(self, file_path: str) -> dict:
+        filename = os.path.basename(file_path)
+        classification = classify_model_file_name(filename)
+        if classification is None:
+            category = self._default_category or "其他"
+            status = "未识别，按当前类别上传" if self._default_category else "未识别，按其他上传"
+            return {
+                "path": file_path,
+                "filename": filename,
+                "model_type": "",
+                "category": category,
+                "method": "未识别",
+                "status": status,
+            }
+
+        method_prefix = "前缀" if classification.match_kind == "prefix" else "后缀"
+        status = "已识别"
+        if self._current_model and is_single_current_model_code(classification.code):
+            status = "当前模型唯一类型，已有文件会提示覆盖"
+        return {
+            "path": file_path,
+            "filename": filename,
+            "model_type": classification.model_type,
+            "category": classification.category,
+            "method": f"{method_prefix} {classification.code.upper()}",
+            "status": status,
+        }
+
+    def _refresh_table(self) -> None:
+        self.table.setRowCount(len(self._items))
+        for row, item in enumerate(self._items):
+            values = [
+                str(row + 1),
+                str(item.get("filename") or ""),
+                str(item.get("model_type") or ""),
+                str(item.get("category") or ""),
+                str(item.get("method") or ""),
+                str(item.get("status") or ""),
+            ]
+            for col, value in enumerate(values):
+                table_item = QTableWidgetItem(value)
+                align = Qt.AlignLeft | Qt.AlignVCenter if col in {self.COL_FILENAME, self.COL_MODEL_TYPE} else Qt.AlignCenter
+                table_item.setTextAlignment(int(align))
+                table_item.setToolTip(value)
+                self.table.setItem(row, col, table_item)
+        self.table.resizeColumnsToContents()
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(bool(self._items))
+
+    def selected_items(self) -> list[dict]:
+        return [dict(item) for item in self._items]
 
 
 # ============================================================
@@ -1001,41 +1149,9 @@ class ModelFilesDocsWidget(QWidget):
         return mapping.get(category, "")
 
     def _format_from_original_name(self, original_name: str) -> str:
-        name = (original_name or "").lower()
-        if name.startswith("sacinp"):
-            return "SACINP"
-        if name.startswith("seainp"):
-            return "SEAINP"
-        if name.startswith("psiinp"):
-            return "PSIINP"
-        if name.startswith("jcninp"):
-            return "JCNINP"
-        if name.startswith("psilst"):
-            return "PSILST"
-        if name.startswith("dyninp"):
-            return "DYNINP"
-        if name.startswith("dyrinp"):
-            return "DYRINP"
-        if name.startswith("ftginp"):
-            return "FTGINP"
-        if name.startswith("ftglst"):
-            return "FTGLST"
-        if name.startswith("clpinp"):
-            return "CLPINP"
-        if name == "clplog":
-            return "CLPLOG"
-        if name == "clplst":
-            return "CLPLST"
-        if name == "clprst":
-            return "CLPRST"
-        if name.startswith("pilinp"):
-            return "PILINP"
-        if name == "lst":
-            return "LST"
-        if name.startswith("othinp"):
-            return "OTHINP"
-        if name.startswith("othlst"):
-            return "OTHLST"
+        classification = classify_model_file_name(original_name or "")
+        if classification is not None:
+            return classification.code.upper()
         return os.path.splitext(original_name or "")[1].lstrip(".").upper()
 
     def _handle_model_doc_delete(self, selected: List[Dict[str, Any]], _records: List[Dict[str, Any]]):
@@ -1478,6 +1594,16 @@ class ModelFilesDocsWidget(QWidget):
                 return option
         return fallback
 
+    @staticmethod
+    def _pick_category_by_name(categories: List[str], category: str) -> str:
+        category = str(category or "").strip()
+        if not category:
+            return "其他"
+        for option in categories:
+            if str(option or "").strip() == category:
+                return category
+        return category
+
     def _category_from_db_row(self, row: Dict[str, Any], categories: List[str]) -> str:
         name = str(row.get("original_name") or "").lower()
         logical_path = str(row.get("logical_path") or "").replace("\\", "/")
@@ -1486,40 +1612,9 @@ class ModelFilesDocsWidget(QWidget):
             uploaded_category = logical_path.split(upload_marker, 1)[1].strip("/")
             if uploaded_category:
                 return uploaded_category.split("/", 1)[0]
-        if name.startswith("sacinp"):
-            return self._pick_category_option(categories, "结构模型", fallback="结构模型文件")
-        if name.startswith("seainp"):
-            return self._pick_category_option(categories, "海况", fallback="海况文件")
-        if name.startswith("psiinp"):
-            return self._pick_category_option(categories, "桩基", fallback="桩基文件")
-        if name.startswith("jcninp"):
-            return self._pick_category_option(categories, "冲剪", fallback="冲剪节点文件")
-        if name.startswith("psilst"):
-            return self._pick_category_option(categories, "静力", "结果", fallback="静力分析结果文件")
-        if name.startswith("dyninp"):
-            return self._pick_category_option(categories, "动力", fallback="动力分析文件")
-        if name.startswith("dyrinp"):
-            return self._pick_category_option(categories, "动力", "地震", fallback="动力分析文件(地震)")
-        if name.startswith("ftginp") or "/疲劳分析/" in logical_path and "/输入/" in logical_path:
-            return self._pick_category_option(categories, "疲劳", "模型", fallback="疲劳分析模型文件")
-        if name.startswith("ftglst") or "/疲劳分析/" in logical_path and "/结果/" in logical_path:
-            return self._pick_category_option(categories, "疲劳", "结果", fallback="疲劳分析结果文件")
-        if name.startswith("wvrinp"):
-            return self._pick_category_option(categories, "疲劳", "结果", fallback="疲劳分析结果文件")
-        if name.startswith("clpinp"):
-            return self._pick_category_option(categories, "倒塌", "模型", fallback="倒塌分析模型文件")
-        if name == "clplog":
-            return self._pick_category_option(categories, "倒塌", "日志", fallback="倒塌分析日志文件")
-        if name in {"clplst", "clprst"} or "/倒塌分析/" in logical_path:
-            return self._pick_category_option(categories, "倒塌", "结果", fallback="倒塌分析结果文件")
-        if name.startswith("pilinp"):
-            return self._pick_category_option(categories, "地震", "模型", fallback="地震分析模型文件")
-        if name == "lst":
-            return self._pick_category_option(categories, "地震", "结果", fallback="地震分析结果文件")
-        if name.startswith("othinp"):
-            return self._pick_category_option(categories, "其他", "模型", fallback="其他分析模型文件")
-        if name.startswith("othlst"):
-            return self._pick_category_option(categories, "其他", "结果", fallback="其他分析结果文件")
+        classification = classify_model_file_name(name)
+        if classification is not None:
+            return self._pick_category_by_name(categories, classification.category)
         return self._pick_category_option(categories, "其他", fallback="其他")
 
     @staticmethod
@@ -1542,32 +1637,59 @@ class ModelFilesDocsWidget(QWidget):
         }
         return category in single_file_categories
 
-    def _existing_single_model_record_id(
+    @staticmethod
+    def _is_current_model_path(path_key: str) -> bool:
+        parts = [part for part in str(path_key or "").split("/") if part]
+        return bool(parts and parts[0] == "当前模型")
+
+    def _existing_single_model_record_ids(
         self,
         category: str,
         records: List[Dict[str, Any]],
         current_record_id: object = None,
-    ) -> int | None:
-        if not self._category_requires_overwrite_confirmation(category):
-            return None
+        code: str = "",
+    ) -> List[int]:
+        if not self._category_requires_overwrite_confirmation(category) and not is_single_current_model_code(code):
+            return []
 
         if current_record_id is not None:
             try:
-                return int(current_record_id)
+                return [int(current_record_id)]
             except (TypeError, ValueError):
-                return None
+                return []
 
+        record_ids: List[int] = []
+        normalized_code = str(code or "").strip().lower()
+        normalized_category = str(category or "").strip()
         for record in records:
-            if str(record.get("category") or "").strip() != category:
+            record_category = str(record.get("category") or "").strip()
+            record_name = str(record.get("filename") or record.get("original_name") or "")
+            record_classification = classify_model_file_name(record_name)
+            if normalized_code:
+                if record_classification is not None and record_classification.code != normalized_code:
+                    continue
+                if record_classification is None and record_category != normalized_category:
+                    continue
+            elif record_category != normalized_category:
                 continue
             record_id = record.get("record_id")
             if record_id is None:
                 continue
             try:
-                return int(record_id)
+                record_ids.append(int(record_id))
             except (TypeError, ValueError):
                 continue
-        return None
+        return record_ids
+
+    def _existing_single_model_record_id(
+        self,
+        category: str,
+        records: List[Dict[str, Any]],
+        current_record_id: object = None,
+        code: str = "",
+    ) -> int | None:
+        record_ids = self._existing_single_model_record_ids(category, records, current_record_id, code)
+        return record_ids[0] if record_ids else None
 
     def _confirm_overwrite_single_model_file(self, category: str) -> bool:
         fmt = self._doc_category_to_fmt(category).upper()
@@ -1595,8 +1717,8 @@ class ModelFilesDocsWidget(QWidget):
             return "model"
         return "other"
 
-    def _create_model_upload_progress(self) -> QProgressDialog:
-        progress = QProgressDialog("准备上传...", "取消", 0, 1, self)
+    def _create_model_upload_progress(self, total_steps: int) -> QProgressDialog:
+        progress = QProgressDialog("准备上传...", "取消", 0, max(1, int(total_steps or 1)), self)
         progress.setWindowTitle("上传进度")
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
@@ -1606,16 +1728,18 @@ class ModelFilesDocsWidget(QWidget):
         progress.show()
         return progress
 
-    def _start_model_upload_worker(self, task: Dict[str, Any]) -> None:
+    def _start_model_upload_worker(self, tasks: List[Dict[str, Any]]) -> None:
+        if not tasks:
+            return
         if self._upload_thread is not None:
             QMessageBox.information(self, "提示", "当前已有上传任务正在执行，请稍后再试。")
             return
         self._upload_token += 1
         token = self._upload_token
-        progress = self._create_model_upload_progress()
+        progress = self._create_model_upload_progress(len(tasks))
         self._upload_progress = progress
         thread = QThread(self)
-        worker = _ModelFileUploadWorker(token=token, task=task)
+        worker = _ModelFileUploadWorker(token=token, tasks=tasks)
         worker.moveToThread(thread)
         progress.canceled.connect(worker.cancel)
         thread.started.connect(worker.run)
@@ -1656,16 +1780,24 @@ class ModelFilesDocsWidget(QWidget):
             self._upload_progress.close()
             self._upload_progress = None
         data = payload if isinstance(payload, dict) else {}
+        path_keys = {
+            str(item.get("task", {}).get("path_key") or self.current_leaf_key)
+            for item in list(data.get("results") or [])
+        }
+        for path_key in path_keys:
+            self.row_paths_by_path.pop(path_key, None)
+            self.row_db_records_by_path.pop(path_key, None)
+        if self.current_leaf_key in path_keys:
+            self._start_model_records_load(self.current_leaf_key)
+        ok_count = int(data.get("ok_count") or 0)
+        first_error = str(data.get("first_error") or "")
         if data.get("canceled"):
-            QMessageBox.information(self, "上传已取消", "上传已取消")
+            QMessageBox.information(self, "上传已取消", f"已取消上传，成功上传 {ok_count} 个文件。")
             return
-        task = dict(data.get("task") or {})
-        path_key = str(task.get("path_key") or self.current_leaf_key)
-        self.row_paths_by_path.pop(path_key, None)
-        self.row_db_records_by_path.pop(path_key, None)
-        if path_key == self.current_leaf_key:
-            self._start_model_records_load(path_key)
-        QMessageBox.information(self, "上传成功", "上传成功")
+        if first_error:
+            QMessageBox.warning(self, "上传完成但存在失败", f"成功上传 {ok_count} 个文件。\n首个失败原因：{first_error}")
+            return
+        QMessageBox.information(self, "上传成功", "上传成功" if ok_count == 1 else f"成功上传 {ok_count} 个文件。")
 
     def _create_model_file_operation_progress(self, title: str, label: str, total_steps: int) -> QProgressDialog:
         progress = QProgressDialog(label, "取消", 0, max(1, int(total_steps or 1)), self)
@@ -1788,105 +1920,157 @@ class ModelFilesDocsWidget(QWidget):
         QMessageBox.information(self, "下载完成", message)
         self._file_operation_context = {}
 
-    def _handle_model_doc_upload(self, row: int, rec: Dict[str, Any], _records: List[Dict[str, Any]]):
+    @staticmethod
+    def _record_classifier_code(record: Dict[str, Any] | None) -> str:
+        if not record:
+            return ""
+        name = str(record.get("filename") or record.get("original_name") or "")
+        classification = classify_model_file_name(name)
+        return classification.code if classification is not None else ""
+
+    def _build_model_upload_task(
+        self,
+        *,
+        file_path: str,
+        path_key: str,
+        records: List[Dict[str, Any]],
+        fallback_category: str = "",
+        current_record: Dict[str, Any] | None = None,
+        total_selected: int = 1,
+    ) -> Dict[str, Any] | None:
+        classification = classify_model_file_name(os.path.basename(file_path))
+        category = classification.category if classification is not None else (fallback_category or "其他")
+        file_type_code = (
+            classification.file_type_code
+            if classification is not None
+            else self._doc_category_to_file_type_code(category)
+        )
+        code = classification.code if classification is not None else ""
+        current_record_id = None
+        if current_record:
+            record_code = self._record_classifier_code(current_record)
+            record_category = str(current_record.get("category") or "").strip()
+            if not code or record_code == code or record_category == category:
+                current_record_id = current_record.get("record_id")
+
+        delete_record_id = None
+        delete_record_ids: List[int] = []
+        if self._is_current_model_path(path_key) and is_single_current_model_code(code):
+            delete_record_ids = self._existing_single_model_record_ids(
+                category,
+                records,
+                current_record_id=current_record_id,
+                code=code,
+            )
+            if delete_record_ids and not self._confirm_overwrite_single_model_file(category):
+                return None
+        elif (
+            total_selected == 1
+            and current_record_id is not None
+            and not self._category_allows_multiple_files(category)
+        ):
+            delete_record_id = int(current_record_id)
+
+        return {
+            "path_key": path_key,
+            "file_path": file_path,
+            "file_type_code": file_type_code,
+            "logical_path": self._upload_logical_path_for_category(path_key, category),
+            "facility_code": self.facility_code,
+            "category": category,
+            "work_condition": (current_record or {}).get("work_condition") or "",
+            "remark": (current_record or {}).get("remark") or "",
+            "delete_record_id": delete_record_id,
+            "delete_record_ids": delete_record_ids,
+        }
+
+    def _prepare_model_upload_tasks(
+        self,
+        file_paths: List[str],
+        records: List[Dict[str, Any]],
+        *,
+        fallback_category: str = "",
+        current_record: Dict[str, Any] | None = None,
+    ) -> List[Dict[str, Any]]:
         path_key = self.current_leaf_key
+        selected_paths = [str(path or "").strip() for path in file_paths if str(path or "").strip()]
+        if not selected_paths:
+            return []
+
+        if self._is_current_model_path(path_key):
+            seen_single_codes: dict[str, str] = {}
+            duplicate_codes: list[str] = []
+            for file_path in selected_paths:
+                classification = classify_model_file_name(os.path.basename(file_path))
+                if classification is None or not is_single_current_model_code(classification.code):
+                    continue
+                if classification.code in seen_single_codes:
+                    duplicate_codes.append(classification.code.upper())
+                else:
+                    seen_single_codes[classification.code] = os.path.basename(file_path)
+            if duplicate_codes:
+                labels = "、".join(sorted(set(duplicate_codes)))
+                QMessageBox.warning(
+                    self,
+                    "上传文件重复",
+                    f"当前模型下 {labels} 文件只能保存一个，本次选择中包含重复类型，请重新选择。",
+                )
+                return []
+
+        tasks: List[Dict[str, Any]] = []
+        for file_path in selected_paths:
+            task = self._build_model_upload_task(
+                file_path=file_path,
+                path_key=path_key,
+                records=records,
+                fallback_category=fallback_category,
+                current_record=current_record,
+                total_selected=len(selected_paths),
+            )
+            if task is not None:
+                tasks.append(task)
+        return tasks
+
+    def _open_model_upload_staging(self, *, default_category: str = "") -> list[dict]:
+        dialog = ModelFileUploadStagingDialog(
+            default_category=default_category,
+            current_model=self._is_current_model_path(self.current_leaf_key),
+            parent=self,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return []
+        return dialog.selected_items()
+
+    def _handle_model_doc_upload(self, row: int, rec: Dict[str, Any], _records: List[Dict[str, Any]]):
         current_category = str(rec.get("category") or "").strip()
         if not current_category:
             QMessageBox.warning(self, "提示", "请先选择文件类别，再上传文件。")
             return
 
-        title = f"选择上传文件 - {current_category}"
-        file_path, _ = QFileDialog.getOpenFileName(self, title, "", "所有文件 (*.*)")
-        if not file_path:
+        items = self._open_model_upload_staging(default_category=current_category)
+        if not items:
             return
 
-        logical_path = rec.get("logical_path") or self._upload_logical_path_for_category(path_key, current_category)
-        record_id = rec.get("record_id")
-        delete_record_id = self._existing_single_model_record_id(current_category, _records, record_id)
-        if delete_record_id is not None and not self._confirm_overwrite_single_model_file(current_category):
-            return
-        if delete_record_id is None and record_id is not None and not self._category_allows_multiple_files(current_category):
-            delete_record_id = int(record_id)
-        rec["checked"] = False
-        self._start_model_upload_worker(
-            {
-                "path_key": path_key,
-                "file_path": file_path,
-                "file_type_code": self._doc_category_to_file_type_code(current_category),
-                "logical_path": logical_path,
-                "facility_code": self.facility_code,
-                "category": current_category,
-                "work_condition": rec.get("work_condition") or "",
-                "remark": rec.get("remark") or "",
-                "delete_record_id": delete_record_id,
-            }
+        tasks = self._prepare_model_upload_tasks(
+            [str(item.get("path") or "") for item in items],
+            _records,
+            fallback_category=current_category,
+            current_record=rec,
         )
+        if not tasks:
+            return
+        rec["checked"] = False
+        self._start_model_upload_worker(tasks)
 
     def _handle_model_doc_new_upload(self, records: List[Dict[str, Any]]) -> None:
-        path_key = self.current_leaf_key
-        categories = list(self.doc_man_configs.get(path_key) or [])
-        categories = [str(item).strip() for item in categories if str(item).strip()]
-        if not categories:
-            QMessageBox.warning(self, "提示", "当前目录没有可用的文件类别。")
+        items = self._open_model_upload_staging()
+        if not items:
             return
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("选择文件类别")
-        dialog.setModal(True)
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-
-        form = QFormLayout()
-        category_combo = QComboBox(dialog)
-        category_combo.addItems(categories)
-        form.addRow("文件类别", category_combo)
-        layout.addLayout(form)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
-        buttons.button(QDialogButtonBox.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.Cancel).setText("取消")
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-
-        if not isinstance(dialog, QDialog):
-            QMessageBox.critical(self, "上传窗口错误", "选择文件类别窗口初始化失败，请重新打开页面后再试。")
+        tasks = self._prepare_model_upload_tasks([str(item.get("path") or "") for item in items], records)
+        if not tasks:
             return
-        try:
-            dialog_result = QDialog.exec_(dialog)
-        except TypeError as exc:
-            QMessageBox.critical(self, "上传窗口错误", f"选择文件类别窗口打开失败：\n{exc}")
-            return
-        if dialog_result != QDialog.Accepted:
-            return
-
-        category = category_combo.currentText().strip()
-        if not category:
-            return
-
-        title = f"选择上传文件 - {category}"
-        file_path, _ = QFileDialog.getOpenFileName(self, title, "", "所有文件 (*.*)")
-        if not file_path:
-            return
-
-        logical_path = self._upload_logical_path_for_category(path_key, category)
-        delete_record_id = self._existing_single_model_record_id(category, records)
-        if delete_record_id is not None and not self._confirm_overwrite_single_model_file(category):
-            return
-        self._start_model_upload_worker(
-            {
-                "path_key": path_key,
-                "file_path": file_path,
-                "file_type_code": self._doc_category_to_file_type_code(category),
-                "logical_path": logical_path,
-                "facility_code": self.facility_code,
-                "category": category,
-                "work_condition": "",
-                "remark": "",
-                "delete_record_id": delete_record_id,
-            }
-        )
+        self._start_model_upload_worker(tasks)
 
     def _handle_model_doc_download(self, selected: List[Dict[str, Any]], _records: List[Dict[str, Any]]):
         available: list[tuple[str, str]] = []

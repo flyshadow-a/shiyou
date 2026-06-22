@@ -15,7 +15,7 @@ from pages.history_events_inspection_page import HistoryEventsInspectionPage  # 
 from pages.history_inspection_summary_page import HistoryInspectionSummaryPage  # noqa: E402
 from pages.important_history_rebuild_info_page import ImportantHistoryDetailWidget  # noqa: E402
 from pages.doc_man import DocManWidget  # noqa: E402
-from pages.model_files_page import ModelFilesDocsWidget, ModelFilesPage  # noqa: E402
+from pages.model_files_page import ModelFileUploadStagingDialog, ModelFilesDocsWidget, ModelFilesPage  # noqa: E402
 from pages.new_special_inspection_page import NewSpecialInspectionPage  # noqa: E402
 
 
@@ -511,24 +511,43 @@ class ModelFilesPageSmokeTests(GuiSmokeBase):
             records = page.docs_widget._build_model_file_doc_records("当前模型/疲劳")
             self.assertEqual(records[0]["work_condition"], "4-1WJT")
 
-    def test_new_upload_category_dialog_exec_error_shows_message(self) -> None:
+    def test_new_upload_uses_multiselect_and_auto_category(self) -> None:
         widget = ModelFilesDocsWidget()
         self.addCleanup(widget.deleteLater)
         widget.current_leaf_key = "当前模型/静力"
+        widget.facility_code = "WC19-1D"
         widget.doc_man_configs = {widget.current_leaf_key: ["结构模型文件"]}
-        messages = []
+        started_tasks = []
 
-        with patch(
-            "pages.model_files_page.QDialog.exec_",
-            side_effect=TypeError("exec_(self): first argument of unbound method must have type 'QDialog'"),
-        ), patch(
-            "pages.model_files_page.QMessageBox.critical",
-            side_effect=lambda _parent, title, text: messages.append((title, text)),
+        with patch("pages.model_files_page.ModelFileUploadStagingDialog") as dialog_cls, patch.object(
+            widget,
+            "_start_model_upload_worker",
+            side_effect=started_tasks.append,
         ):
+            dialog = dialog_cls.return_value
+            dialog.exec_.return_value = QDialog.Accepted
+            dialog.selected_items.return_value = [
+                {"path": r"D:\demo\sacinp.demo01"},
+                {"path": r"D:\demo\seainp.demo01"},
+            ]
             widget._handle_model_doc_new_upload([])
 
-        self.assertTrue(messages)
-        self.assertIn("选择文件类别窗口打开失败", messages[0][1])
+        dialog_cls.assert_called_once()
+        self.assertEqual(1, len(started_tasks))
+        self.assertEqual(["结构模型文件", "海况文件"], [task["category"] for task in started_tasks[0]])
+
+    def test_model_upload_staging_dialog_previews_auto_classification(self) -> None:
+        dialog = ModelFileUploadStagingDialog(default_category="结构模型文件")
+        self.addCleanup(dialog.deleteLater)
+
+        dialog.add_file_paths([r"D:\demo\SACINP.demo01", r"D:\demo\unknown.txt"])
+
+        self.assertEqual(2, dialog.table.rowCount())
+        self.assertEqual("SACS input data", dialog.table.item(0, dialog.COL_MODEL_TYPE).text())
+        self.assertEqual("结构模型文件", dialog.table.item(0, dialog.COL_CATEGORY).text())
+        self.assertEqual("前缀 SACINP", dialog.table.item(0, dialog.COL_METHOD).text())
+        self.assertEqual("结构模型文件", dialog.table.item(1, dialog.COL_CATEGORY).text())
+        self.assertEqual("未识别，按当前类别上传", dialog.table.item(1, dialog.COL_STATUS).text())
 
     def test_model_doc_context_enables_category_header_filter(self) -> None:
         widget = ModelFilesDocsWidget()
@@ -570,11 +589,14 @@ class ModelFilesPageSmokeTests(GuiSmokeBase):
         widget.current_leaf_key = "当前模型/静力"
         tasks = []
 
-        with patch("pages.model_files_page.QFileDialog.getOpenFileName", return_value=(r"D:\demo\sacinp", "")), patch.object(
+        with patch("pages.model_files_page.ModelFileUploadStagingDialog") as dialog_cls, patch.object(
             widget,
             "_confirm_overwrite_single_model_file",
             return_value=True,
         ) as confirm, patch.object(widget, "_start_model_upload_worker", side_effect=tasks.append):
+            dialog = dialog_cls.return_value
+            dialog.exec_.return_value = QDialog.Accepted
+            dialog.selected_items.return_value = [{"path": r"D:\demo\sacinp"}]
             widget._handle_model_doc_upload(
                 0,
                 {"category": "结构模型文件", "record_id": 12, "logical_path": "WC19-1D/当前模型/结构模型"},
@@ -583,7 +605,7 @@ class ModelFilesPageSmokeTests(GuiSmokeBase):
 
         confirm.assert_called_once_with("结构模型文件")
         self.assertEqual(1, len(tasks))
-        self.assertEqual(12, tasks[0]["delete_record_id"])
+        self.assertEqual(12, tasks[0][0]["delete_record_ids"][0])
 
     def test_single_model_row_upload_cancel_skips_upload(self) -> None:
         widget = ModelFilesDocsWidget()
@@ -591,11 +613,14 @@ class ModelFilesPageSmokeTests(GuiSmokeBase):
         widget.current_leaf_key = "当前模型/静力"
         tasks = []
 
-        with patch("pages.model_files_page.QFileDialog.getOpenFileName", return_value=(r"D:\demo\sacinp", "")), patch.object(
+        with patch("pages.model_files_page.ModelFileUploadStagingDialog") as dialog_cls, patch.object(
             widget,
             "_confirm_overwrite_single_model_file",
             return_value=False,
         ), patch.object(widget, "_start_model_upload_worker", side_effect=tasks.append):
+            dialog = dialog_cls.return_value
+            dialog.exec_.return_value = QDialog.Accepted
+            dialog.selected_items.return_value = [{"path": r"D:\demo\sacinp"}]
             widget._handle_model_doc_upload(
                 0,
                 {"category": "结构模型文件", "record_id": 12, "logical_path": "WC19-1D/当前模型/结构模型"},
@@ -612,19 +637,19 @@ class ModelFilesPageSmokeTests(GuiSmokeBase):
         widget.doc_man_configs = {widget.current_leaf_key: ["结构模型文件"]}
         tasks = []
 
-        with patch("pages.model_files_page.QDialog.exec_", return_value=QDialog.Accepted), patch(
-            "pages.model_files_page.QFileDialog.getOpenFileName",
-            return_value=(r"D:\demo\sacinp", ""),
-        ), patch.object(
+        with patch("pages.model_files_page.ModelFileUploadStagingDialog") as dialog_cls, patch.object(
             widget,
             "_confirm_overwrite_single_model_file",
             return_value=True,
         ) as confirm, patch.object(widget, "_start_model_upload_worker", side_effect=tasks.append):
+            dialog = dialog_cls.return_value
+            dialog.exec_.return_value = QDialog.Accepted
+            dialog.selected_items.return_value = [{"path": r"D:\demo\sacinp"}]
             widget._handle_model_doc_new_upload([{"category": "结构模型文件", "record_id": 12}])
 
         confirm.assert_called_once_with("结构模型文件")
         self.assertEqual(1, len(tasks))
-        self.assertEqual(12, tasks[0]["delete_record_id"])
+        self.assertEqual(12, tasks[0][0]["delete_record_ids"][0])
 
     def test_multi_model_category_upload_does_not_confirm_overwrite(self) -> None:
         widget = ModelFilesDocsWidget()
@@ -632,10 +657,13 @@ class ModelFilesPageSmokeTests(GuiSmokeBase):
         widget.current_leaf_key = "当前模型/疲劳"
         tasks = []
 
-        with patch("pages.model_files_page.QFileDialog.getOpenFileName", return_value=(r"D:\demo\ftglst", "")), patch.object(
+        with patch("pages.model_files_page.ModelFileUploadStagingDialog") as dialog_cls, patch.object(
             widget,
             "_confirm_overwrite_single_model_file",
         ) as confirm, patch.object(widget, "_start_model_upload_worker", side_effect=tasks.append):
+            dialog = dialog_cls.return_value
+            dialog.exec_.return_value = QDialog.Accepted
+            dialog.selected_items.return_value = [{"path": r"D:\demo\ftglst"}]
             widget._handle_model_doc_upload(
                 0,
                 {"category": "疲劳分析结果文件", "record_id": 12, "logical_path": "WC19-1D/当前模型/疲劳分析/结果"},
@@ -644,7 +672,7 @@ class ModelFilesPageSmokeTests(GuiSmokeBase):
 
         confirm.assert_not_called()
         self.assertEqual(1, len(tasks))
-        self.assertIsNone(tasks[0]["delete_record_id"])
+        self.assertIsNone(tasks[0][0]["delete_record_id"])
 
 
 class ImportantHistoryDetailWidgetSmokeTests(GuiSmokeBase):
