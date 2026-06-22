@@ -1081,7 +1081,7 @@ class ModelFilesDocsWidget(QWidget):
             )
         else:
             self.doc_man_widget.set_action_handlers(upload_handler=None, delete_handler=None, download_handler=None)
-        filter_categories = list(categories)
+        filter_categories: List[str] = []
         for record in records:
             category = str(record.get("category") or "").strip()
             if category and category not in filter_categories:

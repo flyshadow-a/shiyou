@@ -540,7 +540,7 @@ class ModelFilesPageSmokeTests(GuiSmokeBase):
                 {"category": "结构模型文件", "filename": "sacinp"},
                 {"category": "静力分析结果文件", "filename": "psilst"},
             ],
-            categories=["结构模型文件"],
+            categories=["结构模型文件", "海况文件"],
             path_hint="",
             use_handlers=True,
         )
@@ -548,6 +548,21 @@ class ModelFilesPageSmokeTests(GuiSmokeBase):
         doc_widget = widget.doc_man_widget
         self.assertEqual("模型类别 ▼", doc_widget.table.horizontalHeaderItem(DocManWidget.COL_CATEGORY).text())
         self.assertIn("静力分析结果文件", doc_widget._category_filter_options)
+        self.assertNotIn("海况文件", doc_widget._category_filter_options)
+
+    def test_empty_model_doc_context_does_not_show_preset_category_filters(self) -> None:
+        widget = ModelFilesDocsWidget()
+        self.addCleanup(widget.deleteLater)
+
+        widget._apply_model_doc_context(
+            path_segments=["当前模型", "静力"],
+            records=[],
+            categories=["结构模型文件", "海况文件", "静力分析结果文件"],
+            path_hint="",
+            use_handlers=True,
+        )
+
+        self.assertEqual([], widget.doc_man_widget._category_filter_options)
 
     def test_single_model_row_upload_confirms_overwrite(self) -> None:
         widget = ModelFilesDocsWidget()
