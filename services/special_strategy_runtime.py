@@ -1679,6 +1679,8 @@ def prepare_special_strategy_calculation(
             manual_selector_overrides=manual_fill_entries,
             interactive_manual_fill=interactive_manual_fill,
             enable_topology_inference=bool(cfg.get("enable_topology_inference", False)),
+            apply_sheet2_jointtype=False,
+            apply_sheet3_membertype=False,
         )
 
     config_path = _common_config_path()

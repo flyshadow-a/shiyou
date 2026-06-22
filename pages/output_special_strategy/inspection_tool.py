@@ -3427,18 +3427,18 @@ def classify_structure(
     vertical_tol_deg: float = 8.0,
     xbrace_min_od: Optional[float] = None,
     x_angle_deviation: Optional[float] = None,
-    apply_sheet2_jointtype: bool = True,
-    apply_sheet3_membertype: bool = True,
+    apply_sheet2_jointtype: bool = False,
+    apply_sheet3_membertype: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Module 1 continuation: emulate the full VBA structure classification chain.
+    Module 1 continuation: emulate the control-page structure classification chain.
     1) Sheet1.FindLegMember
     2) Sheet1.Find_X_Joint
-    3) Sheet3.Member
-    4) Sheet2.JointTYPE
 
     Notes:
-    - Sheet2/Sheet3 clear-and-rewrite type columns (VBA behavior).
+    - Sheet2.JointTYPE / Sheet3.Member are standalone worksheet macros, not
+      bound to the control-page 0-8 button flow. They remain available through
+      explicit flags for audit runs, but are disabled by default.
     """
     joints = joints.copy()
     members = members.copy()
@@ -4049,8 +4049,8 @@ def prepare_run_state(
     manual_selector_overrides: Any = None,
     interactive_manual_fill: bool = False,
     enable_topology_inference: bool = False,
-    apply_sheet2_jointtype: bool = True,
-    apply_sheet3_membertype: bool = True,
+    apply_sheet2_jointtype: bool = False,
+    apply_sheet3_membertype: bool = False,
 ) -> Dict[str, Any]:
     """
     Execute the formal pre-risk stage:
@@ -4550,8 +4550,8 @@ def run(
     manual_selector_overrides: Any = None,
     interactive_manual_fill: bool = False,
     enable_topology_inference: bool = False,
-    apply_sheet2_jointtype: bool = True,
-    apply_sheet3_membertype: bool = True,
+    apply_sheet2_jointtype: bool = False,
+    apply_sheet3_membertype: bool = False,
 ) -> None:
     """
     Execute the full workflow in the formal two-stage order and write the workbook.
