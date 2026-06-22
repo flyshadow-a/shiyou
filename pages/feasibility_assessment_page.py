@@ -218,6 +218,7 @@ class FeasibilityAssessmentPage(BasePage):
         self._hover_combo_boxes = []
         self._combo_hover_meta = {}
         self._dynamic_table_meta = {}
+        self._syncing_connection_defaults = False
 
         self.job_name = facility_code
         self.mysql_url = get_mysql_url()
@@ -449,8 +450,11 @@ class FeasibilityAssessmentPage(BasePage):
         if default and default in self.CONNECT_OPTIONS:
             combo.setCurrentText(default)
         else:
-            combo.setCurrentIndex(-1)  # 不默认选中任何项
+            combo.setCurrentIndex(-1)
+
         combo.setProperty("previousText", combo.currentText() or "")
+        combo.setProperty("autoDefaultNo", False)
+        combo.setProperty("manualTouched", False)
 
         combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         combo.setMinimumContentsLength(6)
@@ -490,60 +494,149 @@ class FeasibilityAssessmentPage(BasePage):
         cell_lay.addWidget(combo)
         cell_lay.addWidget(arrow_btn)
         arrow_btn.clicked.connect(combo.showPopup)
+
         combo.currentTextChanged.connect(
             lambda text, t=table, r=row, c=col: self._on_connection_combo_changed(t, r, c, text)
         )
         combo.destroyed.connect(lambda *_args, c=combo: self._cleanup_hover_combo(c))
+
         table.setCellWidget(row, col, cell_wrap)
-        if self._column_has_no_connection(table, col, exclude_row=row):
-            self._syncing_no_connection_column = True
-            try:
-                combo.setCurrentText("no")
-                combo.setProperty("previousText", "no")
-            finally:
-                self._syncing_no_connection_column = False
 
     def _on_connection_combo_changed(self, table: QTableWidget, row: int, col: int, text_value: str) -> None:
+        """
+        连接形式修改逻辑。
+
+        新规则：
+        - 用户选择 no，只影响当前单元格；
+        - 不再弹出“排除高程”确认框；
+        - 不再把整列其它行同步成 no；
+        - 自动填充的 no 与用户手动选择的 no 做区分。
+        """
+        if getattr(self, "_syncing_connection_defaults", False):
+            return
+
         if getattr(self, "_syncing_no_connection_column", False):
             return
+
         if not self._is_connection_column(table, col):
             return
+
         combo = self._combo_at(table, row, col)
         if combo is None:
             return
+
         previous_text = str(combo.property("previousText") or "")
-        if text_value == previous_text:
+        current_text = str(text_value or "").strip()
+
+        if current_text == previous_text:
             return
 
-        if text_value != "no":
-            if previous_text == "no":
-                self._clear_connection_column(table, col)
-            else:
-                combo.setProperty("previousText", text_value)
+        combo.setProperty("manualTouched", True)
+        combo.setProperty("autoDefaultNo", False)
+        combo.setProperty("previousText", current_text)
+
+    def _connection_start_col(self, table: QTableWidget) -> int:
+        if table is getattr(self, "tbl1", None):
+            return 8
+        if table is getattr(self, "tbl2", None):
+            return 9
+        return -1
+
+    def _front_input_col_range(self, table: QTableWidget) -> tuple[int, int]:
+        """
+        返回一行中“高程连接形式”前面的基础信息列范围。
+
+        tbl1:
+            1-7 = X, Y, 井槽OD, 井槽WT, 支撑OD, 支撑WT, Fz
+        tbl2:
+            1-8 = X, Y, 立管OD, 立管WT, 支撑OD, 支撑WT, X方向, Y方向
+        """
+        if table is getattr(self, "tbl1", None):
+            return 1, 7
+        if table is getattr(self, "tbl2", None):
+            return 1, 8
+        return -1, -1
+
+    def _row_front_info_complete(self, table: QTableWidget, row: int) -> bool:
+        start_col, end_col = self._front_input_col_range(table)
+        if start_col < 0 or end_col < start_col:
+            return False
+
+        if row < 2:
+            return False
+
+        for col in range(start_col, end_col + 1):
+            if not self._cell_text(table, row, col):
+                return False
+
+        return True
+
+    def _set_row_connection_default_no_if_ready(self, table: QTableWidget, row: int) -> None:
+        """
+        当前行前面信息填完整后，才把这一行后面的连接形式默认设为 no。
+
+        注意：
+        - 只处理当前行；
+        - 只填空白连接格；
+        - 不覆盖用户已经手动选择的“焊接 / 导向连接 / no”；
+        - 如果前面信息又被清空，只清除系统自动填的 no，不清除用户手动选的内容。
+        """
+        start_col = self._connection_start_col(table)
+        if start_col < 0 or row < 2:
             return
 
-        elevation_text = self._cell_text(table, 1, col)
-        if not ask_yes_no(
-            self,
-            "确认排除高程",
-            f"确定将高程 {elevation_text} 排除吗？\n确认后该高程列所有连接形式将统一设为 no。",
-        ):
-            self._syncing_no_connection_column = True
-            try:
-                combo.setCurrentText(previous_text)
-            finally:
-                self._syncing_no_connection_column = False
-            return
+        row_complete = self._row_front_info_complete(table, row)
 
-        self._syncing_no_connection_column = True
+        self._syncing_connection_defaults = True
         try:
-            for data_row in range(2, table.rowCount()):
-                row_combo = self._combo_at(table, data_row, col)
-                if row_combo is not None:
-                    row_combo.setCurrentText(text_value)
-                    row_combo.setProperty("previousText", text_value)
+            for col in range(start_col, table.columnCount()):
+                combo = self._combo_at(table, row, col)
+                if combo is None:
+                    continue
+
+                current_text = str(combo.currentText() or "").strip()
+                auto_default_no = bool(combo.property("autoDefaultNo"))
+
+                if row_complete:
+                    # 前面基础信息完整后，空白连接格才默认 no。
+                    if not current_text:
+                        combo.setCurrentText("no")
+                        combo.setProperty("previousText", "no")
+                        combo.setProperty("autoDefaultNo", True)
+                        combo.setProperty("manualTouched", False)
+                else:
+                    # 前面基础信息不完整时，只清除系统自动填的 no。
+                    # 用户手动选过的内容不清除。
+                    if auto_default_no and current_text == "no":
+                        combo.setCurrentIndex(-1)
+                        combo.setProperty("previousText", "")
+                        combo.setProperty("autoDefaultNo", False)
+                        combo.setProperty("manualTouched", False)
         finally:
-            self._syncing_no_connection_column = False
+            self._syncing_connection_defaults = False
+
+    def _on_input_table_item_changed(self, table: QTableWidget, item: QTableWidgetItem) -> None:
+        if item is None:
+            return
+
+        if getattr(self, "_input_data_locked", False):
+            return
+
+        row = item.row()
+        col = item.column()
+
+        if row < 2:
+            return
+
+        start_col, end_col = self._front_input_col_range(table)
+        if start_col < 0:
+            return
+
+        # 只监听前面基础信息列。
+        if not (start_col <= col <= end_col):
+            return
+
+        self._set_row_connection_default_no_if_ready(table, row)
 
     def _clear_connection_column(self, table: QTableWidget, col: int) -> None:
         self._syncing_no_connection_column = True
@@ -724,11 +817,8 @@ class FeasibilityAssessmentPage(BasePage):
             self.tbl1.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
 
         start = base_cols
-        for i, elevation in enumerate(self.table1_elevations):
-            default = None
-            if not self._use_dynamic_elevations:
-                default = "焊接" if elevation in (27, 23, 18) else "无连接"
-            self._set_combo_cell(self.tbl1, row, start + i, default=default)
+        for i, _elevation in enumerate(self.table1_elevations):
+            self._set_combo_cell(self.tbl1, row, start + i, default=None)
 
     def _populate_table2_row(self, row: int):
         base_cols = 1 + 2 + 2 + 2 + 2
@@ -737,11 +827,8 @@ class FeasibilityAssessmentPage(BasePage):
             self.tbl2.setItem(row, col, self._make_empty_item(bg=self.DATA_BG, editable=True))
 
         start = base_cols
-        for i, elevation in enumerate(self.table2_elevations):
-            default = None
-            if not self._use_dynamic_elevations:
-                default = "焊接" if elevation in (27, 23) else "无连接"
-            self._set_combo_cell(self.tbl2, row, start + i, default=default)
+        for i, _elevation in enumerate(self.table2_elevations):
+            self._set_combo_cell(self.tbl2, row, start + i, default=None)
 
     def _populate_table3_row(self, row: int):
         self._set_cell(self.tbl3, row, 0, "", bg=QColor("#e9eef5"), editable=False)
@@ -1155,14 +1242,11 @@ class FeasibilityAssessmentPage(BasePage):
             for c in range(1, base_cols):
                 self._set_cell(self.tbl1, rr, c, "", bg=self.DATA_BG, editable=True)
 
-            # 连接形式下拉
+            # 连接形式下拉。页面打开时保持为空；当前行前面基础信息填写完整后，才自动填 no。
             start = base_cols
-            for i, e in enumerate(self.table1_elevations):
+            for i, _e in enumerate(self.table1_elevations):
                 col = start + i
-                default = None
-                if not self._use_dynamic_elevations:
-                    default = "焊接" if e in (27, 23, 18) else "无连接"
-                self._set_combo_cell(self.tbl1, rr, col, default=default)
+                self._set_combo_cell(self.tbl1, rr, col, default=None)
 
         # 在 _build_table_1 中，调用 _auto_fit_columns 之前定义分组
         groups_tbl1 = [
@@ -1190,6 +1274,7 @@ class FeasibilityAssessmentPage(BasePage):
         # lay.addWidget(self.tbl1, 1)
         self._install_row_hover_actions(self.tbl1, "tbl1", header_rows)
         self._install_input_table_clipboard(self.tbl1, header_rows)
+        self.tbl1.itemChanged.connect(lambda item, t=self.tbl1: self._on_input_table_item_changed(t, item))
 
         tbl1_scroll = self._wrap_table_in_scroll(self.tbl1, max_height=210)
         lay.addWidget(tbl1_scroll, 0)
@@ -1285,12 +1370,9 @@ class FeasibilityAssessmentPage(BasePage):
             for c in range(1, base_cols):
                 self._set_cell(self.tbl2, rr, c, "", bg=self.DATA_BG, editable=True)
             start = base_cols
-            for i, e in enumerate(self.table2_elevations):
+            for i, _e in enumerate(self.table2_elevations):
                 col = start + i
-                default = None
-                if not self._use_dynamic_elevations:
-                    default = "焊接" if e in (27, 23) else "无连接"
-                self._set_combo_cell(self.tbl2, rr, col, default=default)
+                self._set_combo_cell(self.tbl2, rr, col, default=None)
 
 
         groups_tbl2 = [
@@ -1318,6 +1400,7 @@ class FeasibilityAssessmentPage(BasePage):
 
         self._install_row_hover_actions(self.tbl2, "tbl2", header_rows)
         self._install_input_table_clipboard(self.tbl2, header_rows)
+        self.tbl2.itemChanged.connect(lambda item, t=self.tbl2: self._on_input_table_item_changed(t, item))
 
         tbl2_scroll = self._wrap_table_in_scroll(self.tbl2, max_height=210)
         lay.addWidget(tbl2_scroll, 0)
