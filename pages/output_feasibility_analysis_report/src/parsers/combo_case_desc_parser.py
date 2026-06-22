@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import TypedDict
 
 from .block_utils import extract_block
@@ -23,37 +22,39 @@ END_MARKERS = [
     "J O I N T   C A N   S U M M A R Y",
 ]
 
-# 只识别新工况首行：case + label + 后续描述
-ROW_START_PATTERN = re.compile(
-    r"^\s*(?P<case>\d+)\s+(?P<label>[A-Z0-9]+)\s+(?P<desc>.+?)\s*$"
-)
+
+def _is_new_case_line(line: str) -> bool:
+    return line[:12].strip().isdigit()
 
 
-def _is_header_line(line: str) -> bool:
-    text = line.strip().upper()
-    if not text:
-        return True
-    header_tokens = [
-        "COMBINED",
-        "BASIC",
-        "PERCENT",
-        "DESCRIPTION",
-        "LOAD  LABEL",
-        "LOAD CASE",
-    ]
-    return any(token in text for token in header_tokens)
+def _parse_new_case_line(line: str) -> tuple[int, str]:
+    return int(line[:12].strip()), line[14:18].strip()
+
+
+def _parse_vba_detail_part(line: str) -> str:
+    load_label = line[:27].strip()
+    percent_text = line[32:38].strip()
+    if not load_label or line[:12].strip():
+        return ""
+    if line.strip()[-1:].isdigit():
+        return ""
+    if not percent_text:
+        return ""
+    try:
+        factor = float(percent_text) / 100
+    except ValueError:
+        return ""
+    return f"{load_label}*{factor:.3f}"
 
 
 def parse_combo_case_desc(lines: list[str]) -> list[ComboCaseDescRow]:
     """
-    解析:
-    ***** SEASTATE COMBINED LOAD CASES *****
+    解析 SACS 的 SEASTATE COMBINED LOAD CASES 块。
 
-    输出:
-    [
-        {"case": 155, "label": "OP01", "desc": "0.012 * DX00 + 0.0 * DY27"},
-        ...
-    ]
+    这里按 ReadPSIlist.xlsm 中 LCComb 的 VBA 规则读取：
+    - 前 12 列为数字时开始一个新组合工况；
+    - 后续缩进行按前 27 列基本工况名、33-38 列百分比拼接描述；
+    - 百分比除以 100 后保留三位小数，多个基本工况用 + 连接。
     """
     block = extract_block(
         lines=lines,
@@ -63,18 +64,27 @@ def parse_combo_case_desc(lines: list[str]) -> list[ComboCaseDescRow]:
     )
 
     rows: list[ComboCaseDescRow] = []
+    current_row: ComboCaseDescRow | None = None
     for line in block:
-        if _is_header_line(line):
+        if _is_new_case_line(line):
+            case, label = _parse_new_case_line(line)
+            current_row = {
+                "case": case,
+                "label": label,
+                "desc": "",
+            }
+            rows.append(current_row)
             continue
 
-        match = ROW_START_PATTERN.match(line)
-        if match:
-            rows.append(
-                {
-                    "case": int(match.group("case")),
-                    "label": match.group("label").strip(),
-                    "desc": " ".join(match.group("desc").split()),
-                }
-            )
+        if current_row is None:
+            continue
+
+        detail_part = _parse_vba_detail_part(line)
+        if not detail_part:
+            continue
+        if current_row["desc"]:
+            current_row["desc"] += "+" + detail_part
+        else:
+            current_row["desc"] = detail_part
 
     return rows

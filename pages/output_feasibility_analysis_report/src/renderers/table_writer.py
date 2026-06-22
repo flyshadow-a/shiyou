@@ -6,10 +6,57 @@ from typing import Any, Iterable, Mapping, Sequence
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt
+from docx.shared import Cm, Pt
 from docx.table import Table
 
 NON_BREAKING_HYPHEN = "\u2011"
+
+
+def _cm_to_twips(value: float) -> str:
+    return str(int(round(Cm(value).twips)))
+
+
+def _set_table_fixed_layout(table: Table, column_widths_cm: Sequence[float]) -> None:
+    table.autofit = False
+
+    tbl_pr = table._tbl.tblPr
+    tbl_layout = tbl_pr.first_child_found_in("w:tblLayout")
+    if tbl_layout is None:
+        tbl_layout = OxmlElement("w:tblLayout")
+        tbl_pr.append(tbl_layout)
+    tbl_layout.set(qn("w:type"), "fixed")
+
+    tbl_grid = table._tbl.tblGrid
+    grid_columns = tbl_grid.gridCol_lst
+    for index, width_cm in enumerate(column_widths_cm):
+        if index < len(grid_columns):
+            grid_col = grid_columns[index]
+        else:
+            grid_col = OxmlElement("w:gridCol")
+            tbl_grid.append(grid_col)
+        grid_col.set(qn("w:w"), _cm_to_twips(width_cm))
+
+    for row in table.rows:
+        for index, width_cm in enumerate(column_widths_cm):
+            if index >= len(row.cells):
+                break
+            cell = row.cells[index]
+            cell.width = Cm(width_cm)
+            tc_pr = cell._tc.get_or_add_tcPr()
+            tc_w = tc_pr.tcW
+            if tc_w is None:
+                tc_w = OxmlElement("w:tcW")
+                tc_pr.append(tc_w)
+            tc_w.set(qn("w:type"), "dxa")
+            tc_w.set(qn("w:w"), _cm_to_twips(width_cm))
+
+
+def _set_cell_no_wrap(cell) -> None:
+    tc_pr = cell._tc.get_or_add_tcPr()
+    no_wrap = tc_pr.first_child_found_in("w:noWrap")
+    if no_wrap is None:
+        no_wrap = OxmlElement("w:noWrap")
+        tc_pr.append(no_wrap)
 
 
 def _format_chapter4_table_number(value: Any) -> str:
@@ -267,6 +314,7 @@ def write_combo_case_desc_table(table: Table, items: Sequence[Mapping[str, Any]]
     start_row_index = 1
     required_rows = start_row_index + len(items)
     ensure_table_row_count(table, required_rows)
+    _set_table_fixed_layout(table, [1.4, 1.6, 2.1, 10.9])
 
     for row_index, item in enumerate(items, start=start_row_index):
         row = table.rows[row_index]
@@ -276,6 +324,9 @@ def write_combo_case_desc_table(table: Table, items: Sequence[Mapping[str, Any]]
         write_cell(row.cells[3], str(item.get("desc", "")))
 
     trim_table_row_count(table, required_rows)
+    for row in table.rows:
+        for cell in row.cells[:3]:
+            _set_cell_no_wrap(cell)
 
 
 def write_combo_case_loads_table(table: Table, items: Sequence[Mapping[str, Any]]) -> None:

@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from docx import Document
+from docx.oxml.ns import qn
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,7 @@ from src.renderers.table_writer import (  # noqa: E402
     find_table_by_header_row,
     write_analysis_summary_table,
     write_basic_case_loads_table,
+    write_combo_case_desc_table,
     write_environment_marine_growth_table,
     write_pile_capacity_table,
 )
@@ -83,6 +85,32 @@ class ReportTableWriterTests(unittest.TestCase):
         self.assertEqual("abc", row[6].text)
         self.assertEqual("", row[7].text)
         self.assertEqual(f"{NON_BREAKING_HYPHEN}12346", row[8].text)
+
+    def test_combo_case_desc_table_keeps_first_columns_readable(self) -> None:
+        document = Document()
+        table = document.add_table(rows=1, cols=4)
+
+        write_combo_case_desc_table(
+            table,
+            [
+                {
+                    "case": 155,
+                    "label": "OP01",
+                    "category": "Operation",
+                    "desc": "DX00*0.013+DY27*0.000",
+                }
+            ],
+        )
+
+        tbl_pr = table._tbl.tblPr
+        self.assertEqual("fixed", tbl_pr.first_child_found_in("w:tblLayout").get(qn("w:type")))
+        self.assertFalse(table.autofit)
+
+        expected_widths = ["794", "907", "1191"]
+        for index, expected_width in enumerate(expected_widths):
+            tc_pr = table.rows[1].cells[index]._tc.get_or_add_tcPr()
+            self.assertEqual(expected_width, tc_pr.tcW.get(qn("w:w")))
+            self.assertIsNotNone(tc_pr.first_child_found_in("w:noWrap"))
 
     def test_pile_capacity_table_formats_only_numeric_columns(self) -> None:
         document = Document()
