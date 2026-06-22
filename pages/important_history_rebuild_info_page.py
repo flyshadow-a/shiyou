@@ -51,6 +51,7 @@ from .file_management_platforms import (
 from .construction_docs_widget import ConstructionDocsWidget
 from .doc_man import DocManWidget, apply_docman_table_style
 from .file_path_bar import PathBreadcrumbBar
+from .history_inspection_summary_page import YearSelectLineEdit
 
 
 class FolderTile(QFrame):
@@ -171,8 +172,7 @@ class InspectionProjectDialog(QDialog):
         form.setSpacing(10)
         self.name_edit = QLineEdit(self)
         self.name_edit.setText(project_name)
-        self.year_edit = QLineEdit(self)
-        self.year_edit.setText(project_year)
+        self.year_edit = YearSelectLineEdit(project_year, self)
         form.addRow("项目名称", self.name_edit)
         form.addRow("年份", self.year_edit)
         layout.addLayout(form)

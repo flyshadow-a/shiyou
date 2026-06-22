@@ -181,7 +181,7 @@ class YearWheelDialog(QDialog):
         layout.addWidget(buttons)
 
     def selected_year_text(self) -> str:
-        return str(self.year_spin.value())
+        return f"{self.year_spin.value()}年"
 
     @classmethod
     def parse_year(cls, value: str) -> int:
@@ -209,7 +209,7 @@ class YearSelectLineEdit(QLineEdit):
         self.setReadOnly(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setPlaceholderText("点击选择年份")
-        self.setText(str(YearWheelDialog.parse_year(value)))
+        self.setText(self.format_year_text(value))
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -222,7 +222,11 @@ class YearSelectLineEdit(QLineEdit):
         dialog = YearWheelDialog(self.text(), self)
         if exec_dialog_safely(dialog, title="年份选择窗口错误", context="检测项目年份选择窗口", parent=self) != QDialog.Accepted:
             return
-        self.setText(dialog.selected_year_text())
+        self.setText(self.format_year_text(dialog.selected_year_text()))
+
+    @staticmethod
+    def format_year_text(value: str) -> str:
+        return f"{YearWheelDialog.parse_year(value)}年"
 
 
 class AddPeriodicInspectionDialog(QDialog):

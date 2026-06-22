@@ -8,6 +8,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QDialog
 
 from pages.history_events_inspection_page import AddInspectionProjectDialog
+from pages.important_history_rebuild_info_page import InspectionProjectDialog as RebuildProjectDialog
 from pages.history_inspection_summary_page import (
     AddPeriodicInspectionDialog,
     AddSpecialEventInspectionDialog,
@@ -101,7 +102,7 @@ def test_wheel_year_spin_box_accumulates_small_deltas() -> None:
 
 def test_year_select_line_edit_is_read_only_and_uses_current_year_default() -> None:
     _ensure_app()
-    current_year = str(max(1950, min(2150, datetime.date.today().year)))
+    current_year = f"{max(1950, min(2150, datetime.date.today().year))}年"
 
     edit = YearSelectLineEdit()
 
@@ -131,7 +132,7 @@ def test_year_select_line_edit_click_dialog_writes_selected_year(monkeypatch) ->
     edit = YearSelectLineEdit("2025")
     edit.open_year_dialog()
 
-    assert edit.text() == "2031"
+    assert edit.text() == "2031年"
 
 
 def test_inspection_project_dialogs_use_year_picker() -> None:
@@ -141,10 +142,12 @@ def test_inspection_project_dialogs_use_year_picker() -> None:
         AddPeriodicInspectionDialog(),
         AddSpecialEventInspectionDialog(),
         InspectionProjectEditDialog(title_text="编辑检测项目", project_year="2028"),
+        RebuildProjectDialog(title_text="编辑改造", project_year="2027"),
     ]
 
     for dialog in dialogs:
         assert isinstance(dialog.year_edit, YearSelectLineEdit)
         assert dialog.year_edit.isReadOnly()
 
-    assert dialogs[-1].year_edit.text() == "2028"
+    assert dialogs[-2].year_edit.text() == "2028年"
+    assert dialogs[-1].year_edit.text() == "2027年"
